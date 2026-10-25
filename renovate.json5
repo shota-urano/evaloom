@@ -1,0 +1,49 @@
+{
+  // harness-kit 標準の Renovate 設定（project-bootstrap が配置）
+  // 方針: minor/patch は CI green で auto-merge、major とセキュリティ修正は人間が見る。
+  // supply chain 対策: リリース直後のバージョンは minimumReleaseAge の日数だけ取り込まない。
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  timezone: "Asia/Tokyo",
+
+  // 通常更新は週1（月曜朝）にまとめて発行する
+  schedule: ["before 7am on monday"],
+
+  // supply chain 対策の核: 公開から5日未満のリリースは採用しない
+  // （乗っ取りパッケージは公開直後に検知・撤回されることが多い）
+  minimumReleaseAge: "5 days",
+
+  packageRules: [
+    {
+      // minor/patch は自動マージ。前提: branch protection で CI チェック必須に
+      // なっていること（未設定だと CI を待たずにマージされる）
+      matchUpdateTypes: ["minor", "patch"],
+      automerge: true,
+      platformAutomerge: true,
+    },
+    {
+      // major は必ず人間レビュー
+      matchUpdateTypes: ["major"],
+      automerge: false,
+    },
+    {
+      // dev 依存は1本のPRにまとめて洪水を防ぐ
+      matchDepTypes: ["devDependencies"],
+      groupName: "dev dependencies",
+    },
+  ],
+
+  // セキュリティ修正だけは遅延・スケジュールを外して即時PR（マージ判断は人間）
+  vulnerabilityAlerts: {
+    minimumReleaseAge: null,
+    schedule: ["at any time"],
+    labels: ["security"],
+    automerge: false,
+  },
+
+  // lockfile の定期再生成（間接依存の放置を防ぐ）
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 7am on monday"],
+  },
+}

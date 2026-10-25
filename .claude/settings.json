@@ -10,6 +10,17 @@
         ],
         "matcher": ""
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "make verify-fast",
+            "timeout": 300
+          }
+        ]
+      }
     ]
   }
 }

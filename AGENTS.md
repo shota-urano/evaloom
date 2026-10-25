@@ -125,3 +125,22 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## プロジェクト構成
+- `backend/`: Go（`evaloomd` と `evaloom-runner`）。`frontend/`: React + Vite + TypeScript の管理画面。
+- 仕様の正本は `docs/specs/`。タスクは `bd ready` から取る。
+
+## 検証
+- 完了と言う前に、リポジトリのルートで `make verify` を実行し、`VERIFY: PASS` の出力を貼る。
+  PASS の証拠が無い報告は未完了として扱う（Default-FAIL）。
+- 起動は `make run`（いまは管理画面の開発サーバを起動する）。
+
+## 実装担当者
+- Frontend: Claude Code（Opus） / Backend: codex
+- 検証: codex（fresh-context。コードレビュー＋ユーザー操作タスクは実機UI検証——dev-loop 手順5）
+  （spec-writer の「## 実装単位」の担当表記と dev-loop のルーティングがこの節を読む。
+  プロジェクトで分担を変えるならここを書き換える）
+
+## Git
+- dev-loop の worktree 内では、タスクの区切りごとに commit してよい。
+- `main` へ直接 commit・push しない。変更は PR で出す。
