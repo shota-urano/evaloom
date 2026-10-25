@@ -91,11 +91,11 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	if err != nil {
 		return "", rejected("worktreeRoot", "not_resolvable")
 	}
-	relative, err := filepath.Rel(root, realPath)
+	withinRoot, err := withinWorktreeRoot(realPath, root)
 	if err != nil {
 		return "", rejected("worktreeRoot", "not_resolvable")
 	}
-	if relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+	if withinRoot {
 		return "", rejected("path", "within_worktree_root")
 	}
 
@@ -158,6 +158,33 @@ func pathError(err error) error {
 		return rejected("path", "not_readable")
 	}
 	return rejected("path", "not_resolvable")
+}
+
+// Compare directory identities rather than path strings: EvalSymlinks preserves
+// case differences on case-insensitive filesystems. Both paths are resolved.
+func withinWorktreeRoot(name, root string) (bool, error) {
+	rootInfo, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		// An existing repository cannot be inside a root not yet created.
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for {
+		info, err := os.Stat(name)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(rootInfo, info) {
+			return true, nil
+		}
+		parent := filepath.Dir(name)
+		if parent == name {
+			return false, nil
+		}
+		name = parent
+	}
 }
 
 // The Runner need not have created its Worktree Root yet. Resolve the existing

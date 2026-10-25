@@ -85,6 +85,38 @@ func TestValidateRepositoryUsesRealPathsForWorktreeCollision(t *testing.T) {
 	assertRejected(t, input, "path", "within_worktree_root")
 }
 
+func TestValidateRepositoryRejectsWorktreeCollisionWithDifferentCase(t *testing.T) {
+	input := newRepository(t)
+	for _, test := range []struct {
+		name string
+		root string
+	}{
+		{"ancestor", filepath.Dir(input.Path)},
+		{"same directory", input.Path},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			alias := strings.ToUpper(test.root)
+			originalInfo, err := os.Stat(test.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aliasInfo, err := os.Stat(alias)
+			if errors.Is(err, os.ErrNotExist) {
+				t.Skip("filesystem does not resolve the differently cased directory")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(originalInfo, aliasInfo) {
+				t.Skip("differently cased paths identify distinct directories")
+			}
+			candidate := input
+			candidate.WorktreeRoot = alias
+			assertRejected(t, candidate, "path", "within_worktree_root")
+		})
+	}
+}
+
 func TestValidateRepositoryAllowsSiblingWithWorktreeRootPrefix(t *testing.T) {
 	input := newRepository(t)
 	// A string prefix check would incorrectly reject this sibling.
