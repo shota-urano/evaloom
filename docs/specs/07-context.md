@@ -42,9 +42,11 @@ Runner が worktree 準備の後（[`05-runner.md`](./05-runner.md) 工程4）�
    git -C <worktree> ls-tree -r --name-only <base_sha>   # 名前が AGENTS.md のものを抽出
    git -C <worktree> show <base_sha>:<path>               # 内容を取得
    ```
-2. 同じ方法で、ハーネス固有の指示ファイルと設定を列挙する（requirements 7.1「Claude Code 固有の指示ファイルやハーネスの設定についても、実行開始時の構成を同様に記録する」）。対象の候補は `CLAUDE.md`、`.claude/` 配下の設定・コマンド・エージェント・Skills、`.codex/` 配下、`.mcp.json`。一覧は実装時に確定する。
+2. 同じ方法で、ハーネス固有の指示ファイルと設定を列挙する（requirements 7.1「Claude Code 固有の指示ファイルやハーネスの設定についても、実行開始時の構成を同様に記録する」）。対象は、ルートとサブディレクトリのすべての `CLAUDE.md` と `.mcp.json`、各階層の `.claude/` と `.codex/` 配下にあるすべての追跡済みファイルとする。設定・コマンド・エージェント・Skills と、その補助ファイルを含む。
 3. 各ファイルの相対パス、内容、SHA-256 を Control Plane へ送り、context_revisions（layer=`project`、source_commit_sha=base_sha）に保存する。
 4. 作業ツリー上のファイルではなく、開始点 commit の内容を読む。実行途中に `AGENTS.md` が変更されても、その Execution で固定した指示としては採用しない。
+
+列挙・取得は `backend/internal/projectcontext.Read` が担当する。開始点には完全な commit SHA を指定し、結果をリポジトリ内の相対パス順に返す。内容は Git blob のバイト列を変換せずに取得し、SHA-256 は小文字の16進数で返す。対象ファイルがシンボリックリンクなどの通常ファイル以外である場合や、Git の読み取りに失敗した場合は、途中までの結果を返さずエラーにする。サブモジュールの内部は列挙しない。
 
 ハーネスが実行中に `AGENTS.md` やハーネス固有の指示ファイルを変更した場合、Gate 1 の結果とともに管理画面と PR 本文で知らせる（[`10-verification-gates.md`](./10-verification-gates.md) 3.2 の `instruction_file_changed`）。Block にするかは requirements に記載が無く、Phase 1 では知らせるだけとする案である。
 
