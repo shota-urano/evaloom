@@ -10,7 +10,7 @@
 PM := npm
 
 # build を含まない検査（Stop hook 用）。bootstrap が実在する scripts に合わせて編集する
-FAST_CHECKS := typecheck lint
+FAST_CHECKS := typecheck lint test
 # フル検証 = FAST_CHECKS + build + e2e（e2e は Playwright 導入済みプロジェクトのみ。
 # 無ければ bootstrap が CHECKS から外し要確認リストへ）
 CHECKS := $(FAST_CHECKS) build
