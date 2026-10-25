@@ -1,0 +1,28 @@
+{
+  "contractVersion": "1",
+  "executionId": "01J...",
+  "task": {
+    "id": "task-001",
+    "title": "...",
+    "body": "...",
+    "acceptanceCriteria": "..."
+  },
+  "project": {
+    "id": "project-a",
+    "workdir": "<Sandbox 内から見た worktree のパス>",
+    "branch": "evaloom/task-001-add-login",
+    "baseSha": "<40桁>"
+  },
+  "profile": {
+    "harnessId": "claude-developer",
+    "version": "1.2.0",
+    "commitSha": "<40桁>",
+    "modelId": "<正式な Model ID>",
+    "definition": { "...": "4.3 の内容" }
+  },
+  "context": {
+    "instructions": "<Context Builder が整形した指示文>",
+    "revisionIds": ["..."]
+  },
+  "limits": { "timeoutSec": 0 }
+}

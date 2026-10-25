@@ -1,0 +1,14 @@
+{
+  "contractVersion": "1",
+  "status": "succeeded",
+  "errorClass": null,
+  "sessionId": "...",
+  "headSha": "<40桁>",
+  "commits": ["<40桁>"],
+  "diffArtifactId": "...",
+  "summary": "作業概要",
+  "logArtifactIds": ["..."],
+  "artifactIds": ["..."],
+  "usage": { "inputTokens": null, "outputTokens": null, "wallTimeMs": 0 },
+  "prUrl": null
+}
