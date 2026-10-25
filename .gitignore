@@ -2,6 +2,9 @@
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
+*.db-wal
+*.db-shm
+.cache/
 .beads-credential-key
 .beads/proxieddb/
 .DS_Store
