@@ -12,3 +12,6 @@
 # harness-kit: ローカル成果物（録画・スクショ）
 docs/loop-artifacts/
 test-results/
+
+# Evaloom runtime data (SQLite, logs and artifact files)
+/data/
