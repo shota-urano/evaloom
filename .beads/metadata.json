@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "evaloom",
+  "project_id": "67d22a14-7333-4737-b748-117a9a8c04c5"
+}
