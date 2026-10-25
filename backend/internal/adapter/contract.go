@@ -1,9 +1,13 @@
 package adapter
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/shota-urano/evaloom/backend/internal/model"
+)
 
 // HarnessRequest is the adapter input described in spec 02, section 5.7.
-// Contract validation belongs to the common-contract implementation.
+// JSON decoding validates the version, required fields and field types.
 type HarnessRequest struct {
 	ContractVersion string         `json:"contractVersion"`
 	ExecutionID     string         `json:"executionId"`
@@ -62,11 +66,12 @@ type HarnessResult struct {
 	PRURL           *string      `json:"prUrl"`
 }
 
-type ResultStatus string
+// Aliases preserve the adapter API while sharing validated enum types.
+type ResultStatus = model.ResultStatus
 
 const (
-	ResultSucceeded ResultStatus = "succeeded"
-	ResultFailed    ResultStatus = "failed"
+	ResultSucceeded = model.ResultSucceeded
+	ResultFailed    = model.ResultFailed
 )
 
 type Usage struct {
@@ -77,15 +82,15 @@ type Usage struct {
 
 // ErrorClass follows spec 02, section 5.4. Adapters use config_error,
 // execution_failed, timeout and cancelled; the remaining classes belong to Runner.
-type ErrorClass string
+type ErrorClass = model.ErrorClass
 
 const (
-	ErrorConfig          ErrorClass = "config_error"
-	ErrorExecutionFailed ErrorClass = "execution_failed"
-	ErrorTestFailed      ErrorClass = "test_failed"
-	ErrorTimeout         ErrorClass = "timeout"
-	ErrorCancelled       ErrorClass = "cancelled"
-	ErrorInterrupted     ErrorClass = "interrupted"
-	ErrorPublishFailed   ErrorClass = "publish_failed"
-	ErrorSandbox         ErrorClass = "sandbox_error"
+	ErrorConfig          = model.ErrorConfig
+	ErrorExecutionFailed = model.ErrorExecutionFailed
+	ErrorTestFailed      = model.ErrorTestFailed
+	ErrorTimeout         = model.ErrorTimeout
+	ErrorCancelled       = model.ErrorCancelled
+	ErrorInterrupted     = model.ErrorInterrupted
+	ErrorPublishFailed   = model.ErrorPublishFailed
+	ErrorSandbox         = model.ErrorSandbox
 )
