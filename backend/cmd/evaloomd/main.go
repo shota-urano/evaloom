@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/api"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -63,7 +65,7 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 	}
 	defer listener.Close()
 	server := &http.Server{
-		Handler:           http.NewServeMux(),
+		Handler:           api.NewHandler(db, slog.New(slog.NewTextHandler(output, nil))),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	served := make(chan error, 1)
