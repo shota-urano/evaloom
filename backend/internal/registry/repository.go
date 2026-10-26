@@ -10,7 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
+
+// The specifications do not set a Git validation deadline. Bound the complete
+// validation, including remote branch discovery, to keep requests finite.
+const repositoryValidationTimeout = 10 * time.Second
 
 // RepositoryInput describes a repository on the local Runner's machine.
 type RepositoryInput struct {
@@ -58,6 +64,9 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, repositoryValidationTimeout)
+	defer cancel()
 	if !filepath.IsAbs(input.Path) {
 		return "", rejected("path", "not_absolute")
 	}
@@ -101,21 +110,28 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 
 	top, err := repositoryGit(ctx, realPath, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", gitError(ctx, "path", "not_git_repository")
+		return "", gitError(parentCtx, "path", "not_git_repository")
 	}
 	// Remove only Git's terminating newline; spaces and newlines may be part
 	// of the directory name itself.
 	topPath, err := filepath.EvalSymlinks(strings.TrimSuffix(top, "\n"))
-	if err != nil || topPath != realPath {
+	if err != nil {
 		return "", rejected("path", "not_repository_root")
 	}
+	topInfo, err := os.Stat(topPath)
+	if err != nil || !os.SameFile(info, topInfo) {
+		return "", rejected("path", "not_repository_root")
+	}
+	// Git reports the physical root's spelling. On case-insensitive volumes,
+	// EvalSymlinks alone can preserve a caller's different capitalization.
+	realPath = topPath
 	remote := input.Remote
 	if remote == "" {
 		remote = "origin"
 	}
 	url, err := repositoryGit(ctx, realPath, "remote", "get-url", "--", remote)
 	if err != nil {
-		return "", gitError(ctx, "url", "remote_not_found")
+		return "", gitError(parentCtx, "url", "remote_not_found")
 	}
 	if input.URL == "" || strings.TrimSuffix(url, "\n") != input.URL {
 		return "", rejected("url", "remote_mismatch")
@@ -123,12 +139,12 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	if input.BaseBranch != "" {
 		ref := "refs/heads/" + input.BaseBranch
 		if _, err := repositoryGit(ctx, realPath, "check-ref-format", ref); err != nil {
-			return "", gitError(ctx, "baseBranch", "invalid_branch")
+			return "", gitError(parentCtx, "baseBranch", "invalid_branch")
 		}
 		refs, err := repositoryGit(ctx, realPath, "ls-remote", "--exit-code", "--heads", "--refs", "--", remote, ref)
 		if err != nil {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
+			if parentCtx.Err() != nil {
+				return "", parentCtx.Err()
 			}
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
@@ -237,6 +253,17 @@ func gitError(ctx context.Context, field, reason string) error {
 func repositoryGit(ctx context.Context, repo string, args ...string) (string, error) {
 	gitArgs := []string{"--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repo}
 	cmd := exec.CommandContext(ctx, "git", append(gitArgs, args...)...)
+	// Git starts transport helpers (for example git-remote-http). Killing only
+	// Git leaves a helper holding stdout open, so Output can outlive the deadline.
+	// Phase 1 runs on macOS; cancel the entire Unix process group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
 	for _, variable := range os.Environ() {
 		if !strings.HasPrefix(variable, "GIT_") {
 			cmd.Env = append(cmd.Env, variable)
