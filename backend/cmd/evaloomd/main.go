@@ -76,6 +76,8 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 	server := &http.Server{
 		Handler:           api.NewHandler(db, logger, auth),
 		ReadHeaderTimeout: readHeaderTimeout,
+		// Cancel long-lived SSE requests before waiting for graceful shutdown.
+		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()

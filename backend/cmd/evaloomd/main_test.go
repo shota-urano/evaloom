@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 func TestRunInitializesDatabaseBeforeWaitingForShutdown(t *testing.T) {
@@ -171,11 +173,46 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 		t.Fatalf("running API: status=%d page=%+v err=%v", response.StatusCode, page, decodeErr)
 	}
 	transport.CloseIdleConnections()
+	// Keep an actual SSE request open during shutdown. Without cancellation
+	// inherited from the daemon, Shutdown waits for its timeout and fails.
+	writer, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, seedErr := writer.Exec(`
+		INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
+		VALUES ('runner', 'Runner', 'unused', '/worktrees', 'offline', '', '2026-10-26T00:00:00Z');
+		INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
+		default_role, context_location, copy_allowlist, test_file_patterns, allowed_operations,
+		approval_policy, timeouts, created_at, updated_at)
+		VALUES ('project', 'Project', '/repo', '', 'runner', 'main', 'developer', 'AGENTS.md',
+		'[]', '[]', '{}', '{}', '{}', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z');
+		INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
+		collaboration_mode, status, idempotency_key, created_at, updated_at)
+		VALUES ('task-001', 'project', 'Title', '', 'events resume', 'sse', 'development', 'solo',
+		'queued', 'stream-test', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z');
+		INSERT INTO executions (id, task_id, seq, mode, status, created_at)
+		VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'task-001', 1, 'fresh', 'pending', '2026-10-26T00:00:00Z');`)
+	closeErr := writer.Close()
+	if seedErr != nil || closeErr != nil {
+		t.Fatalf("seed Execution: %v; close: %v", seedErr, closeErr)
+	}
+	stream, err := client.Get("http://" + address + "/api/executions/01ARZ3NDEKTSV4RRFFQ69G5FAV/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	if stream.StatusCode != 200 || stream.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("SSE before shutdown: status=%d headers=%v", stream.StatusCode, stream.Header)
+	}
 	cancel()
 	select {
 	case <-stopped:
 	case <-time.After(2 * shutdownTimeout):
 		t.Fatal("run did not stop after cancellation")
+	}
+	if body, err := io.ReadAll(stream.Body); err != nil || len(body) != 0 {
+		t.Fatalf("SSE did not end cleanly on shutdown: body=%q err=%v", body, err)
 	}
 	connection, err := net.DialTimeout("tcp4", address, time.Second)
 	if err == nil {
