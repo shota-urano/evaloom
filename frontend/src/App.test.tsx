@@ -77,3 +77,52 @@ describe('ログイン（01-architecture 3.4）', () => {
     expect(screen.getByRole('button', { name: '再試行' })).toBeVisible()
   })
 })
+
+describe('ログイン画面でもサーバーの 400 details を項目に表示する（13 6節）', () => {
+  function loginFails(response: () => Response) {
+    return fakeFetch((request) => (request.url === '/api/session' ? apiError(401, 'unauthenticated', 'x') : response()))
+  }
+
+  async function submit(fake: ReturnType<typeof fakeFetch>) {
+    render(<App api={new ApiClient(fake.fetch)} />)
+    const input = await screen.findByLabelText('ログイン URL')
+    await userEvent.type(input, 'http://127.0.0.1:8080/auth/login?token=abc')
+    await userEvent.click(screen.getByRole('button', { name: 'ログイン' }))
+    return input
+  }
+
+  it('details の loginUrl（too_long）をログイン URL の項目に出し、固定文言に置き換えない', async () => {
+    const fake = loginFails(() =>
+      apiError(400, 'validation_failed', 'invalid request', [{ field: 'loginUrl', reason: 'too_long' }]),
+    )
+    const input = await submit(fake)
+    expect(await screen.findByText('長すぎます')).toBeVisible()
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+    expect(input).toHaveAccessibleDescription(expect.stringContaining('長すぎます'))
+    expect(screen.queryByText('ログイン URL に token が含まれていません。')).toBeNull()
+    expect(screen.getByRole('alert')).toHaveTextContent('入力内容を確認してください')
+  })
+
+  it('フォームに無い項目の details は上部の一覧に出す', async () => {
+    const fake = loginFails(() => apiError(400, 'validation_failed', 'invalid request', [{ field: 'token', reason: 'invalid' }]))
+    const input = await submit(fake)
+    expect(await screen.findByText('token: 値が正しくありません')).toBeVisible()
+    expect(input).not.toHaveAttribute('aria-invalid')
+  })
+
+  it('details の無い 400 はログイン URL の項目に既定の文言を出す', async () => {
+    const fake = loginFails(() => apiError(400, 'validation_failed', 'invalid request'))
+    const input = await submit(fake)
+    expect(await screen.findByText('ログイン URL に token が含まれていません。')).toBeVisible()
+    expect(input).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('token の無い URL は送らずに項目エラーを出す', async () => {
+    const fake = loginFails(() => json(200, {}))
+    render(<App api={new ApiClient(fake.fetch)} />)
+    await userEvent.type(await screen.findByLabelText('ログイン URL'), 'http://127.0.0.1:8080/auth/login')
+    await userEvent.click(screen.getByRole('button', { name: 'ログイン' }))
+    expect(await screen.findByText('ログイン URL に token が含まれていません。')).toBeVisible()
+    expect(fake.calls).toHaveLength(1)
+  })
+})

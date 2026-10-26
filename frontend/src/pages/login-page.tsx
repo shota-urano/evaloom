@@ -1,13 +1,16 @@
 import { useState, type FormEvent } from 'react'
 
-import { ApiError } from '@/api/client'
+import { ApiError, extractLoginToken } from '@/api/client'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { TextField } from '@/components/form-field'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useApiErrors } from '@/hooks/use-api-errors'
 
 const FIELD = 'loginUrl'
+const FIELDS = [FIELD] as const
+const MISSING_TOKEN = 'ログイン URL に token が含まれていません。'
 
 /**
  * ログイン画面（01-architecture 3.4）。evaloomd が起動時に出す一回限りの URL を
@@ -16,26 +19,33 @@ const FIELD = 'loginUrl'
 export function LoginPage() {
   const { login } = useSession()
   const [value, setValue] = useState('')
-  const [fieldErrors, setFieldErrors] = useState<string[]>([])
-  const [error, setError] = useState<unknown>(null)
+  // 画面側の検証と 401 の文言。サーバーの 400 details は useApiErrors で項目に割り当てる（13 6節）。
+  const [localErrors, setLocalErrors] = useState<string[]>([])
+  const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
   const [submitting, setSubmitting] = useState(false)
+
+  // 400 なのに details が1件も無いときは、項目が分からないのでログイン URL の項目に既定の文言を出す。
+  const detailless = error instanceof ApiError && error.status === 400 && error.details.length === 0
+  const errors = [...localErrors, ...(fieldErrors[FIELD] ?? []), ...(detailless ? [MISSING_TOKEN] : [])]
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setError(null)
+    clear()
     if (value.trim() === '') {
-      setFieldErrors(['ログイン URL を入力してください'])
+      setLocalErrors(['ログイン URL を入力してください'])
       return
     }
-    setFieldErrors([])
+    if (extractLoginToken(value) === '') {
+      setLocalErrors([MISSING_TOKEN])
+      return
+    }
+    setLocalErrors([])
     setSubmitting(true)
     try {
       await login(value)
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
-        setFieldErrors(['ログイン URL が無効か、すでに使われています。'])
-      } else if (cause instanceof ApiError && cause.status === 400) {
-        setFieldErrors(['ログイン URL に token が含まれていません。'])
+        setLocalErrors(['ログイン URL が無効か、すでに使われています。'])
       } else {
         setError(cause)
       }
@@ -55,7 +65,7 @@ export function LoginPage() {
         </CardHeader>
         <CardContent>
           <form className="grid gap-4" noValidate onSubmit={handleSubmit}>
-            <ApiErrorAlert error={error} />
+            <ApiErrorAlert error={error} unmatchedDetails={unmatched} />
             <TextField
               name={FIELD}
               label="ログイン URL"
@@ -64,7 +74,7 @@ export function LoginPage() {
               spellCheck={false}
               value={value}
               onChange={(event) => setValue(event.target.value)}
-              errors={fieldErrors}
+              errors={errors}
               hint="URL を使い切った場合は、evaloomd を再起動すると新しい URL が表示されます。"
             />
             <Button type="submit" disabled={submitting}>
