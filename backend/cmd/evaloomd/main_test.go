@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -18,14 +19,22 @@ func TestRunInitializesDatabaseBeforeWaitingForShutdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	output := make(startupOutput, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, []string{"-db", path, "-port", "0"}, io.Discard) }()
+	go func() { done <- run(ctx, []string{"-db", path, "-port", "0"}, output) }()
 	defer func() {
 		cancel()
 		if err := <-done; err != nil {
 			t.Errorf("run: %v", err)
 		}
 	}()
+
+	// Avoid opening a competing reader while startup switches to WAL.
+	select {
+	case <-output:
+	case <-ctx.Done():
+		t.Fatal("server did not initialize before the deadline")
+	}
 
 	// Opening read-only avoids creating a file that would hide a missing
 	// startup call. Observe the database actually initialized by evaloomd.
@@ -34,23 +43,13 @@ func TestRunInitializesDatabaseBeforeWaitingForShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var count int
-		err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count)
-		if err == nil {
-			var mode string
-			if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
-				t.Fatalf("startup journal_mode = %q, err = %v; want wal", mode, err)
-			}
-			return
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("database was not initialized: %v", err)
-		case <-ticker.C:
-		}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil || count == 0 {
+		t.Fatalf("database was not initialized: count=%d err=%v", count, err)
+	}
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("startup journal_mode = %q, err = %v; want wal", mode, err)
 	}
 }
 
@@ -133,10 +132,26 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, _ = io.Copy(io.Discard, response.Body)
 	response.Body.Close()
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("unregistered route status = %d; want 404", response.StatusCode)
 	}
+	response, err = client.Get("http://" + address + "/api/runners?limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page struct {
+		Items      []json.RawMessage `json:"items"`
+		NextCursor string            `json:"nextCursor"`
+	}
+	decodeErr := json.NewDecoder(response.Body).Decode(&page)
+	_, _ = io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || decodeErr != nil || page.Items == nil || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("running API: status=%d page=%+v err=%v", response.StatusCode, page, decodeErr)
+	}
+	transport.CloseIdleConnections()
 	cancel()
 	select {
 	case <-stopped:
