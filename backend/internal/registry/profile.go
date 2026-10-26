@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -77,6 +78,12 @@ func validateProfileDefinition(data []byte, version, adapter string) (json.RawMe
 	if decoder.Decode(&extra) != io.EOF {
 		return nil, "", rejected("definition", "invalid_format")
 	}
+	// encoding/json matches struct fields case-insensitively, even with
+	// DisallowUnknownFields. Reject aliases at every object level before decoding
+	// so the values we validate cannot differ from the definition we store.
+	if !validProfileDefinitionKeys(document) {
+		return nil, "", rejected("definition", "invalid_format")
+	}
 	encoded, err := json.Marshal(document)
 	if err != nil {
 		return nil, "", rejected("definition", "invalid_format")
@@ -115,4 +122,40 @@ func validateProfileDefinition(data []byte, version, adapter string) (json.RawMe
 		return nil, "", rejected("executionConfiguration.adapter", "invalid")
 	}
 	return encoded, def.ModelID, nil
+}
+
+func validProfileDefinitionKeys(document map[string]any) bool {
+	if !onlyProfileKeys(document,
+		"profileVersion", "harnessVersion", "modelId", "promptVersion", "skillVersions",
+		"toolConfiguration", "contextPolicyVersion", "executionConfiguration",
+		"collaborationPolicy", "evaluationPolicyVersion") {
+		return false
+	}
+	if !onlyProfileKeys(document["toolConfiguration"], "allowedTools") ||
+		!onlyProfileKeys(document["executionConfiguration"], "adapter", "args") {
+		return false
+	}
+	skills, ok := document["skillVersions"].([]any)
+	if !ok {
+		return false
+	}
+	for _, skill := range skills {
+		if !onlyProfileKeys(skill, "name", "version") {
+			return false
+		}
+	}
+	return true
+}
+
+func onlyProfileKeys(value any, allowed ...string) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key := range object {
+		if !slices.Contains(allowed, key) {
+			return false
+		}
+	}
+	return true
 }

@@ -121,6 +121,45 @@ func TestHarnessProfilesRejectAdapterMismatch(t *testing.T) {
 	}
 }
 
+func TestHarnessProfilesRejectDefinitionCaseAliases(t *testing.T) {
+	cases := []struct{ name, definition string }{
+		{
+			"profile version mismatch hidden by alias",
+			strings.Replace(validProfileYAML, `profileVersion: "1.2.0"`, `profileVersion: "9.9.9"`, 1) + "profileversion: \"1.2.0\"\n",
+		},
+		{
+			"adapter mismatch hidden by configuration alias",
+			strings.Replace(validProfileYAML, `adapter: "codex"`, `adapter: "claude_code"`, 1) + "executionconfiguration:\n  adapter: codex\n  args: []\n",
+		},
+		{
+			"nested alias alongside adapter mismatch",
+			strings.Replace(validProfileYAML, `adapter: "codex"`, "Adapter: codex\n  adapter: claude_code", 1),
+		},
+	}
+	// Check every object level, including objects inside the skill array.
+	for _, key := range []string{
+		"profileVersion", "harnessVersion", "modelId", "promptVersion", "skillVersions",
+		"toolConfiguration", "allowedTools", "contextPolicyVersion", "executionConfiguration",
+		"adapter", "args", "collaborationPolicy", "evaluationPolicyVersion", "name", "version",
+	} {
+		cases = append(cases, struct{ name, definition string }{
+			"incorrect case for " + key,
+			strings.Replace(validProfileYAML, key+":", strings.ToUpper(key)+":", 1),
+		})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, repo := profileFixture(t)
+			commitProfile(t, repo, "1.2.0", tc.definition, false)
+			status, body := postProfile(t, f, "1.2.0")
+			requireProjectError(t, status, body, 422, PreconditionFailed, "definition", "invalid_format")
+			if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
+				t.Fatal("definition with case alias was persisted")
+			}
+		})
+	}
+}
+
 func TestHarnessProfilesRegisterProvisionalFromTaggedCommit(t *testing.T) {
 	for _, annotated := range []bool{false, true} {
 		name := "lightweight"
