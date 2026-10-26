@@ -53,6 +53,25 @@ func TestIDFormatsDataModel31(t *testing.T) {
 	}
 }
 
+func TestTimestampRejectsNonRFC3339Syntax(t *testing.T) {
+	for _, value := range []string{"2026-10-26T1:34:56Z", "2026-10-26T12:34:56,123Z"} {
+		t.Run(value, func(t *testing.T) {
+			t.Run("ParseTimestamp", func(t *testing.T) {
+				_, err := ParseTimestamp(value)
+				assertValidation(t, err, "timestamp")
+			})
+			t.Run("UnmarshalJSON", func(t *testing.T) {
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var timestamp Timestamp
+				assertValidation(t, json.Unmarshal(data, &timestamp), "timestamp")
+			})
+		})
+	}
+}
+
 func TestTimestampsAreRFC3339UTC(t *testing.T) {
 	for _, value := range []string{"2026-10-26T12:34:56Z", "2026-10-26T12:34:56.123456789Z", "2026-10-26T12:34:56+00:00"} {
 		parsed, err := ParseTimestamp(value)

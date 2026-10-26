@@ -77,7 +77,14 @@ func (t *Timestamp) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+var timestampPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$`)
+
 func ParseTimestamp(value string) (Timestamp, error) {
+	// time.Parse also accepts single-digit hours and comma fractions.
+	// Check RFC 3339 syntax before validating the date and UTC offset.
+	if !timestampPattern.MatchString(value) {
+		return Timestamp{}, invalid("timestamp", "invalid_format")
+	}
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	_, offset := parsed.Zone()
 	if err != nil || offset != 0 {
