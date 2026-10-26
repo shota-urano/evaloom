@@ -15,21 +15,24 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 )
 
 type authFixture struct {
-	db     *sql.DB
-	auth   *OwnerAuth
-	server *httptest.Server
-	cookie *http.Cookie
-	csrf   string
-	calls  atomic.Int32
-	logs   bytes.Buffer
+	adapters *adapter.Registry
+	db       *sql.DB
+	auth     *OwnerAuth
+	server   *httptest.Server
+	cookie   *http.Cookie
+	csrf     string
+	calls    atomic.Int32
+	logs     bytes.Buffer
 }
 
 func newAuthFixture(t *testing.T) *authFixture {
 	t.Helper()
-	f := &authFixture{db: runnerDB(t, 0)}
+	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
 	f.server = httptest.NewUnstartedServer(nil)
 	var err error
 	f.auth, err = NewOwnerAuth(f.db, slog.New(slog.NewTextHandler(&f.logs, nil)), f.server.Listener.Addr().String())
@@ -43,7 +46,7 @@ func newAuthFixture(t *testing.T) *authFixture {
 		f.calls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	})))
-	mux.Handle("/", NewHandler(f.db, nil, f.auth))
+	mux.Handle("/", NewHandler(f.db, nil, f.auth, f.adapters))
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)

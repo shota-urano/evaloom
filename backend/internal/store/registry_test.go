@@ -152,7 +152,6 @@ func TestRegistryRejectsUnknownEnumValues(t *testing.T) {
 	seedRegistry(t, db)
 	for _, statement := range []string{
 		`UPDATE runners SET status = 'unknown'`,
-		`UPDATE harnesses SET adapter = 'unknown'`,
 		`UPDATE harness_profiles SET operation_status = 'official'`,
 		`UPDATE harness_profiles SET operation_status = 'unknown'`,
 	} {

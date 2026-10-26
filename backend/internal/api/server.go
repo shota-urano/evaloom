@@ -7,13 +7,20 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 // NewHandler routes each API through its own authentication class.
-func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Handler {
+// Supply the Runner's Adapter Registry to enable Harness registration. With no
+// Registry, no Adapter names are accepted; concrete Adapters are separate work.
+func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, registries ...*adapter.Registry) http.Handler {
+	adapters := &adapter.Registry{}
+	if len(registries) > 0 && registries[0] != nil {
+		adapters = registries[0]
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger)))
+	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Authentication probe only: claiming work belongs to the task lifecycle.
@@ -37,12 +44,15 @@ func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Handler {
 	return auth.boundary(mux, false)
 }
 
-func newOwnerRoutes(db *sql.DB, logger *slog.Logger) http.Handler {
+func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/projects", listProjects(db, logger))
 	mux.HandleFunc("POST /api/projects", writeProject(db, logger, true))
 	mux.HandleFunc("GET /api/projects/{id}", getProject(db, logger))
 	mux.HandleFunc("PATCH /api/projects/{id}", writeProject(db, logger, false))
+	mux.HandleFunc("GET /api/harnesses", listHarnesses(db, logger))
+	mux.HandleFunc("POST /api/harnesses", writeHarness(db, logger, adapters, true))
+	mux.HandleFunc("PATCH /api/harnesses/{id}", writeHarness(db, logger, adapters, false))
 	mux.HandleFunc("GET /api/executions/{id}/events", executionEvents(db, logger))
 	mux.HandleFunc("GET /api/runners", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)

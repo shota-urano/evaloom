@@ -62,20 +62,7 @@ func RunnerWorktreeRoot(ctx context.Context, reader projectReader, id string) (s
 // ProjectRepositoryPaths is read inside the mutation transaction for filesystem
 // identity checks in addition to the database's path-string UNIQUE constraint.
 func ProjectRepositoryPaths(ctx context.Context, tx *sql.Tx, exceptID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT local_repo_path FROM projects WHERE id <> ?`, exceptID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			return nil, err
-		}
-		paths = append(paths, path)
-	}
-	return paths, rows.Err()
+	return repositoryPaths(ctx, tx, `SELECT local_repo_path FROM projects WHERE id <> ?`, exceptID)
 }
 
 func ListProjects(ctx context.Context, db *sql.DB, after string, limit int) ([]model.Project, error) {
