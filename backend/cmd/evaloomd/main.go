@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -44,6 +45,9 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 			return nil
 		}
 		return err
+	}
+	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "runner" {
+		return registerRunner(ctx, *path, flags.Args()[1:], output)
 	}
 	if *path == "" || flags.NArg() != 0 {
 		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>]")
@@ -94,6 +98,45 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		}
 		return nil
 	}
+}
+
+func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {
+	if len(args) == 0 || args[0] != "register" {
+		return fmt.Errorf("usage: evaloomd -db <database file path> runner register -worktree-root <absolute path> [-name <display name>] <id>")
+	}
+	flags := flag.NewFlagSet("evaloomd runner register", flag.ContinueOnError)
+	flags.SetOutput(output)
+	root := flags.String("worktree-root", "", "absolute directory for Runner worktrees (required)")
+	name := flags.String("name", "", "display name (defaults to Runner ID)")
+	if err := flags.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 1 {
+		return fmt.Errorf("runner register: exactly one Runner ID is required; put flags before the ID")
+	}
+	id := flags.Arg(0)
+	if *name == "" {
+		*name = id
+	}
+	if err := runnerauth.ValidateRegistration(id, *name, *root); err != nil {
+		return err
+	}
+	db, err := store.Open(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	token, err := runnerauth.Register(ctx, db, id, *name, *root)
+	if err != nil {
+		return err
+	}
+	// Only this explicit local command displays the token, once. Normal daemon
+	// startup and the owner Runner list never expose it or its hash.
+	_, err = fmt.Fprintln(output, token)
+	return err
 }
 
 func listenLoopback(ctx context.Context, port int) (net.Listener, error) {

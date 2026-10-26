@@ -5,14 +5,17 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 
+	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -65,6 +68,12 @@ func changesState(method string) bool {
 // Boundary validates the actual listening authority, never forwarded headers.
 // Browser navigations and same-origin reads can omit Origin; writes cannot.
 func (a *OwnerAuth) Boundary(next http.Handler) http.Handler {
+	return a.boundary(next, true)
+}
+
+// Runner clients do not send browser Origin/CSRF credentials. Host checks and
+// validation of any supplied Origin still apply to both authentication classes.
+func (a *OwnerAuth) boundary(next http.Handler, requireOrigin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -73,7 +82,7 @@ func (a *OwnerAuth) Boundary(next http.Handler) http.Handler {
 			return
 		}
 		origins := r.Header.Values("Origin")
-		if len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+a.host) || (len(origins) == 0 && changesState(r.Method)) {
+		if len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+a.host) || (len(origins) == 0 && requireOrigin && changesState(r.Method)) {
 			a.reject(w, r, Forbidden, "origin_mismatch", "request origin is not allowed")
 			return
 		}
@@ -88,13 +97,18 @@ func (a *OwnerAuth) Protect(next http.Handler) http.Handler {
 
 func (a *OwnerAuth) protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var sessions []string
-		for _, cookie := range r.Cookies() {
-			if cookie.Name == ownerCookieName {
-				sessions = append(sessions, cookie.Value)
+		if len(r.Header.Values("Authorization")) != 0 {
+			id, err := a.runnerIdentity(r)
+			if err != nil {
+				WriteError(w, a.logger, err)
+			} else if id == "" {
+				a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+			} else {
+				a.reject(w, r, Forbidden, "wrong_auth_class", "Runner credentials cannot access owner APIs")
 			}
+			return
 		}
-		if len(sessions) != 1 || !secretEqual(sessions[0], a.session) {
+		if !a.validSession(r) {
 			a.reject(w, r, Unauthenticated, "invalid_session", "owner session is missing or invalid")
 			return
 		}
@@ -109,6 +123,59 @@ func (a *OwnerAuth) protect(next http.Handler) http.Handler {
 			}{a.csrf})
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *OwnerAuth) validSession(r *http.Request) bool {
+	var sessions []string
+	for _, cookie := range r.Cookies() {
+		if cookie.Name == ownerCookieName {
+			sessions = append(sessions, cookie.Value)
+		}
+	}
+	return len(sessions) == 1 && secretEqual(sessions[0], a.session)
+}
+
+// runnerIdentity returns an empty ID for absent, malformed, or unknown tokens.
+// Infrastructure errors remain errors, never a successful authentication.
+func (a *OwnerAuth) runnerIdentity(r *http.Request) (string, error) {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return "", nil
+	}
+	parts := strings.Fields(values[0])
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return "", nil
+	}
+	id, err := runnerauth.Authenticate(r.Context(), a.db, parts[1])
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.validSession(r) {
+			a.reject(w, r, Forbidden, "wrong_auth_class", "owner credentials cannot access Runner APIs")
+			return
+		}
+		id, err := a.runnerIdentity(r)
+		if err != nil {
+			WriteError(w, a.logger, err)
+			return
+		}
+		if id == "" {
+			a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+			return
+		}
+		if target := r.PathValue("runnerID"); target != "" && target != id {
+			a.reject(w, r, Forbidden, "runner_mismatch", "Runner cannot access another Runner")
+			return
+		}
+		// Execution-report handlers must additionally verify execution ownership
+		// immediately before mutation. None are implemented in this task.
 		next.ServeHTTP(w, r)
 	})
 }
