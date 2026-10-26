@@ -265,11 +265,11 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 	}
 	warnings := []string{}
 	for _, name := range p.CopyAllowlist {
-		if name == "" || filepath.IsAbs(name) || strings.ContainsAny(name, "*?[]\\\x00") {
+		if name == "" || filepath.IsAbs(name) || strings.Contains(name, "..") || strings.ContainsAny(name, "*?[]\\\x00") {
 			return nil, invalid("copyAllowlist", "invalid_format")
 		}
 		for _, segment := range strings.Split(name, "/") {
-			if segment == ".." || segment == "." || segment == "" {
+			if segment == "." || segment == "" {
 				return nil, invalid("copyAllowlist", "invalid_format")
 			}
 		}

@@ -337,17 +337,123 @@ func TestProjectsInvalidInputReturns400Details(t *testing.T) {
 	}
 }
 
+func TestProjectsCopyAllowlistInvalidPathsFailClosed(t *testing.T) {
+	f := projectFixture(t)
+	input := projectInput(t, "project-a")
+	input["copyAllowlist"] = []string{"fixtures/original.json"}
+	status, body := projectRequest(t, f, "POST", "/api/projects", input)
+	before := requireProject(t, status, body, 201)
+	for _, tc := range []struct{ name, path string }{
+		{"parent only", ".."},
+		{"parent prefix", "../secret"},
+		{"parent suffix", "fixtures/.."},
+		{"parent middle", "fixtures/../secret"},
+		{"current then parent", "./../secret"},
+		{"repeated slash then parent", "fixtures//../secret"},
+		// Spec 03 section 3.3 rejects any path containing "..", including names.
+		{"dots inside filename", "a..b"},
+		{"dots at filename start", "..secret"},
+		{"dots at filename end", "secret.."},
+		{"dots inside nested filename", "fixtures/a..b.json"},
+		{"three dots", "..."},
+		{"absolute file", "/secret"},
+		{"absolute root", "/"},
+		{"absolute repeated slash", "//server/secret"},
+		{"star wildcard", "fixtures/*"},
+		{"question wildcard", "fixtures/data?.json"},
+		{"character class", "fixtures/[ab].json"},
+		{"closing bracket", "fixtures/data].json"},
+		{"backslash", `fixtures\secret`},
+		{"NUL", "fixtures/\x00secret"},
+		{"empty path", ""},
+		{"current only", "."},
+		{"current prefix", "./fixtures/data.json"},
+		{"current middle", "fixtures/./data.json"},
+		{"empty segment", "fixtures//data.json"},
+		{"trailing slash", "fixtures/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, method := range []string{"POST", "PATCH"} {
+				t.Run(method, func(t *testing.T) {
+					// A valid entry before the invalid one must not be partially saved.
+					request := map[string]any{"copyAllowlist": []string{"fixtures/new.json", tc.path}, "name": "Changed"}
+					endpoint := "/api/projects/project-a"
+					if method == "POST" {
+						for key, value := range input {
+							if key != "copyAllowlist" {
+								request[key] = value
+							}
+						}
+						request["id"] = "project-b"
+						endpoint = "/api/projects"
+					}
+					status, body := projectRequest(t, f, method, endpoint, request)
+					requireProjectError(t, status, body, 400, ValidationFailed, "copyAllowlist", "invalid_format")
+					status, body = projectRequest(t, f, "GET", "/api/projects/project-a", nil)
+					if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, before) ||
+						projectCount(t, f, "projects") != 1 || projectCount(t, f, "audit_logs") != 1 {
+						t.Fatalf("invalid allowlist changed project or audit history: %+v", got)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestProjectsCopyAllowlistWarningsDoNotReject(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
-	input["copyAllowlist"] = []string{"fixtures/.env", "test.pem", "ssh/id_test", "fixtures/plain.json"}
-	status, body := projectRequest(t, f, "POST", "/api/projects", input)
-	p := requireProject(t, status, body, 201)
-	var result struct {
-		Warnings []string `json:"warnings"`
+	for _, tc := range []struct {
+		method, endpoint string
+		status           int
+		paths, warnings  []string
+	}{
+		{"POST", "/api/projects", 201,
+			[]string{".env", ".env.test", "test.pem", "test.key", "id_test", "fixtures/plain.json"},
+			[]string{
+				".env may contain secrets; use test-only dummy values",
+				".env.test may contain secrets; use test-only dummy values",
+				"test.pem may contain secrets; use test-only dummy values",
+				"test.key may contain secrets; use test-only dummy values",
+				"id_test may contain secrets; use test-only dummy values",
+			}},
+		{"PATCH", "/api/projects/project-a", 200,
+			[]string{"fixtures/.env", "fixtures/.env.test", "certs/test.pem", "certs/test.key", "ssh/id_test", "fixtures/plain.json"},
+			[]string{
+				"fixtures/.env may contain secrets; use test-only dummy values",
+				"fixtures/.env.test may contain secrets; use test-only dummy values",
+				"certs/test.pem may contain secrets; use test-only dummy values",
+				"certs/test.key may contain secrets; use test-only dummy values",
+				"ssh/id_test may contain secrets; use test-only dummy values",
+			}},
+		{"PATCH", "/api/projects/project-a", 200,
+			[]string{"a.b", ".config/settings.json", "dir.with.dots/data.json", ".envrc", "plain.env", "test.pem.txt", "test.key.txt", "identity.json", ".env/data.json", "id_dir/data.json"},
+			[]string{}},
+		{"PATCH", "/api/projects/project-a", 200, []string{}, []string{}},
+	} {
+		t.Run(tc.method+"/"+strings.Join(tc.paths, ","), func(t *testing.T) {
+			request := map[string]any{"copyAllowlist": tc.paths}
+			if tc.method == "POST" {
+				for key, value := range input {
+					request[key] = value
+				}
+			}
+			status, body := projectRequest(t, f, tc.method, tc.endpoint, request)
+			p := requireProject(t, status, body, tc.status)
+			var result struct {
+				Warnings []string `json:"warnings"`
+			}
+			if err := json.Unmarshal(body, &result); err != nil || !reflect.DeepEqual(result.Warnings, tc.warnings) || !reflect.DeepEqual(p.CopyAllowlist, tc.paths) {
+				t.Fatalf("warnings=%v want=%v project=%+v err=%v", result.Warnings, tc.warnings, p, err)
+			}
+			status, body = projectRequest(t, f, "GET", "/api/projects/project-a", nil)
+			if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, p) {
+				t.Fatalf("persisted=%+v; want=%+v", got, p)
+			}
+		})
 	}
-	if err := json.Unmarshal(body, &result); err != nil || len(result.Warnings) != 3 || len(p.CopyAllowlist) != 4 {
-		t.Fatalf("warnings=%v project=%+v err=%v", result.Warnings, p, err)
+	if projectCount(t, f, "projects") != 1 || projectCount(t, f, "audit_logs") != 4 {
+		t.Fatal("accepted allowlists must persist project and audit history")
 	}
 }
 
