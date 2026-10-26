@@ -39,6 +39,7 @@ func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Handler {
 
 func newOwnerRoutes(db *sql.DB, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/executions/{id}/events", executionEvents(db, logger))
 	mux.HandleFunc("GET /api/runners", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
