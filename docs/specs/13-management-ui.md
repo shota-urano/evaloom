@@ -31,6 +31,7 @@ status: confirmed
 | 配信 | `evaloomd` が静的ファイルを配信する（同一オリジン） | [`01-architecture.md`](./01-architecture.md) 3.1 |
 | リアルタイム | SSE（`GET /api/executions/{id}/events`） | requirements 2.2 |
 | 認証 | 一回限りのログイン URL からセッション Cookie を受け取る。状態を変える要求には `X-CSRF-Token` を付ける（Q2 案） | [`01-architecture.md`](./01-architecture.md) 3.4 |
+| 開発サーバの中継 | `localhost:5173` / `127.0.0.1:5173` から `evaloomd` へ中継する。照合に通らない要求は転送せずに 403 で拒否し、`data/security/` に記録する | [`01-architecture.md`](./01-architecture.md) 3.4「開発時の例外」 |
 | 入力検証 | 画面でも検証するが、正本はサーバー側。サーバーの `details` をフォームの該当項目に表示する | [`01-architecture.md`](./01-architecture.md) 5.3 |
 | 二重送信 | タスク作成では送信ごとに `Idempotency-Key` を生成する | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.1 |
 | 状態の表示名 | [`02-data-model.md`](./02-data-model.md) 5.1 の表示名を使う | - |
