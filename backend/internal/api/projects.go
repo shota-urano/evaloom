@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -84,21 +85,13 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		// Read the current configuration, validate the merged update, and write
-		// the audit row under one transaction. Concurrent PATCH requests cannot
-		// silently overwrite changes made after reading their initial values.
-		tx, err := db.BeginTx(r.Context(), nil)
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		defer tx.Rollback()
 		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
 			ContextLocation: "AGENTS.md", CopyAllowlist: []string{}, TestFilePatterns: []string{},
 			AllowedOperations: map[string]any{}, ApprovalPolicy: map[string]any{}, Timeouts: map[string]int{},
 		}}
 		if !create {
-			before, err = store.GetProject(r.Context(), tx, id)
+			var err error
+			before, err = store.GetProject(r.Context(), db, id)
 			if err != nil {
 				WriteError(w, logger, projectError(err))
 				return
@@ -114,7 +107,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		root, err := store.RunnerWorktreeRoot(r.Context(), tx, settings.RunnerID)
+		root, err := store.RunnerWorktreeRoot(r.Context(), db, settings.RunnerID)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = &Error{Code: PreconditionFailed, Message: "Runner not found", Details: []Detail{{Field: "runnerId", Reason: "not_found"}}}
 		}
@@ -125,6 +118,33 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		settings.LocalRepoPath, err = registry.ValidateRepository(r.Context(), registry.RepositoryInput{
 			Path: settings.LocalRepoPath, URL: settings.GitRemoteURL, BaseBranch: settings.BaseBranch, WorktreeRoot: root,
 		})
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		// Remote Git validation must not hold the store's only DB connection.
+		// Recheck the values it depended on inside the saving transaction so a
+		// concurrent update cannot be overwritten with the stale merged settings.
+		tx, err := db.BeginTx(r.Context(), nil)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		defer tx.Rollback()
+		if !create {
+			current, err := store.GetProject(r.Context(), tx, id)
+			if errors.Is(err, sql.ErrNoRows) || (err == nil && !reflect.DeepEqual(current, before)) {
+				err = &Error{Code: Conflict, Message: "Project changed during repository validation; retry the request"}
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+		}
+		currentRoot, err := store.RunnerWorktreeRoot(r.Context(), tx, settings.RunnerID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && currentRoot != root) {
+			err = &Error{Code: Conflict, Message: "Runner changed during repository validation; retry the request"}
+		}
 		if err != nil {
 			WriteError(w, logger, err)
 			return
