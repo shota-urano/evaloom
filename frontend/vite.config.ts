@@ -3,19 +3,12 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
 
-// 開発サーバ（make run）から evaloomd へ中継する先。evaloomd は Host と Origin が
-// 127.0.0.1:<port> であることを要求するので、中継時に両方を書き換える。
-const evaloomd = process.env.EVALOOMD_URL ?? 'http://127.0.0.1:8080'
+import { evaloomdProxy } from './dev-proxy.ts'
 
-const proxy = {
-  target: evaloomd,
-  changeOrigin: true,
-  configure: (server: { on: (event: 'proxyReq', listener: (req: { getHeader(name: string): unknown; setHeader(name: string, value: string): void }) => void) => void }) => {
-    server.on('proxyReq', (req) => {
-      if (req.getHeader('origin')) req.setHeader('origin', evaloomd)
-    })
-  },
-}
+// 開発サーバ（make run）から evaloomd へ中継する先。照合と書き換えは dev-proxy.ts。
+const evaloomd = process.env.EVALOOMD_URL ?? 'http://127.0.0.1:8080'
+// 中継で許可する Host はこのポートから決まるので、別のポートへずれないよう strictPort にする。
+const devPort = 5173
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -24,7 +17,9 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
-    proxy: { '/api': proxy, '/auth': proxy },
+    port: devPort,
+    strictPort: true,
+    proxy: { '/api': evaloomdProxy(evaloomd, devPort), '/auth': evaloomdProxy(evaloomd, devPort) },
   },
   test: {
     environment: 'jsdom',
