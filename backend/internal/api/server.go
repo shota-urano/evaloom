@@ -10,9 +10,18 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-// NewHandler installs the API foundation. Owner authentication, CSRF and
-// Origin/Host checks are added by the subsequent authentication task.
-func NewHandler(db *sql.DB, logger *slog.Logger) http.Handler {
+// NewHandler installs the owner API behind the process's authentication boundary.
+func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/", auth.protect(newOwnerRoutes(db, logger)))
+	mux.Handle("/auth/login", http.HandlerFunc(auth.login))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
+	}))
+	return auth.Boundary(mux)
+}
+
+func newOwnerRoutes(db *sql.DB, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/runners", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
