@@ -1,14 +1,12 @@
 package api
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -97,7 +95,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 				return
 			}
 		}
-		settings, err := decodeProjectSettings(before.ProjectSettings, patch, create)
+		settings, err := decodeSettings(before.ProjectSettings, patch, create, "reviewRole", "testCommand", "testReportFormat", "testReportPath", "setupCommand")
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -153,15 +151,10 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		// Also compare directory identities while holding the write transaction.
 		paths, err := store.ProjectRepositoryPaths(r.Context(), tx, id)
 		if err == nil {
-			var info os.FileInfo
-			info, err = os.Stat(settings.LocalRepoPath)
-			if err == nil {
-				for _, other := range paths {
-					if otherInfo, statErr := os.Stat(other); statErr == nil && os.SameFile(info, otherInfo) {
-						err = store.ErrProjectConflict
-						break
-					}
-				}
+			var duplicate bool
+			duplicate, err = sameRepository(settings.LocalRepoPath, paths)
+			if duplicate {
+				err = store.ErrProjectConflict
 			}
 		}
 		if err != nil {
@@ -195,47 +188,6 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			Warnings []string `json:"warnings"`
 		}{after, warnings})
 	}
-}
-
-// PATCH replaces supplied top-level values (including objects and arrays).
-// Nullable columns can be cleared with null; ID and timestamps are immutable.
-func decodeProjectSettings(before model.ProjectSettings, patch map[string]json.RawMessage, create bool) (model.ProjectSettings, error) {
-	encoded, err := json.Marshal(before)
-	if err != nil {
-		return before, err
-	}
-	var merged map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &merged); err != nil {
-		return before, err
-	}
-	for field, value := range patch {
-		if field == "id" && create {
-			continue
-		}
-		if _, known := merged[field]; !known {
-			return before, invalid("body", "invalid_json")
-		}
-		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			switch field {
-			case "reviewRole", "testCommand", "testReportFormat", "testReportPath", "setupCommand":
-			default:
-				return before, invalid(field, "required")
-			}
-		}
-		merged[field] = value
-	}
-	encoded, err = json.Marshal(merged)
-	if err != nil {
-		return before, err
-	}
-	var settings model.ProjectSettings
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	decoder.UseNumber()
-	if err := decoder.Decode(&settings); err != nil {
-		return before, invalid("body", "invalid_json")
-	}
-	return settings, nil
 }
 
 func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
@@ -289,9 +241,6 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 // Credentials in a remote URL are not configuration history. Retain the
 // repository identity while omitting URL userinfo, query, and fragment.
 func auditProjectSettings(p model.ProjectSettings) model.ProjectSettings {
-	if remote, err := url.Parse(p.GitRemoteURL); err == nil && remote.Scheme != "" && remote.Host != "" {
-		remote.User, remote.RawQuery, remote.Fragment = nil, "", ""
-		p.GitRemoteURL = remote.String()
-	}
+	p.GitRemoteURL = auditRepositoryURL(p.GitRemoteURL)
 	return p
 }
