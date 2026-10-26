@@ -198,6 +198,12 @@ func (a *OwnerAuth) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: ownerCookieName, Value: a.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	if browserNavigation(r) {
+		// Opening the printed URL in a browser lands on the Management UI, which
+		// then reads the CSRF token from GET /api/session.
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
 		CSRFToken string `json:"csrfToken"`
 	}{a.csrf})
@@ -215,4 +221,13 @@ func (a *OwnerAuth) reject(w http.ResponseWriter, r *http.Request, code Code, re
 		return
 	}
 	WriteError(w, a.logger, &Error{Code: code, Message: message})
+}
+
+// browserNavigation distinguishes a top-level page load from fetch/API clients,
+// which keep receiving the CSRF token as JSON.
+func browserNavigation(r *http.Request) bool {
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode == "navigate"
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }

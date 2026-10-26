@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,10 +12,17 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-// NewHandler routes each API through its own authentication class.
+// NewHandler routes each API through its own authentication class without
+// serving the Management UI.
 // Supply the Runner's Adapter Registry to enable Harness registration. With no
 // Registry, no Adapter names are accepted; concrete Adapters are separate work.
 func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithWeb(db, logger, auth, nil, registries...)
+}
+
+// NewHandlerWithWeb additionally serves the built Management UI from web on the
+// same origin (architecture 3.1). A nil web keeps unknown routes as 404.
+func NewHandlerWithWeb(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
@@ -38,9 +46,13 @@ func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, registries ...
 			WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 		})))
 	}
-	mux.Handle("/", auth.Boundary(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
-	})))
+	}))
+	if web != nil {
+		fallback = webHandler(web, logger)
+	}
+	mux.Handle("/", auth.Boundary(fallback))
 	return auth.boundary(mux, false)
 }
 

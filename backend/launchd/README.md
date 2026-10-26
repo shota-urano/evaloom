@@ -14,6 +14,7 @@
 
 ```sh
 mkdir -p data/bin data/logs data/launchd
+(cd frontend && npm ci && npm run build)
 (cd backend && go build -o ../data/bin/evaloomd ./cmd/evaloomd)
 (cd backend && go build -o ../data/bin/evaloom-runner ./cmd/evaloom-runner)
 python3 - <<'PY'
@@ -59,7 +60,7 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - 既定ポートは8080。変更する場合は`evaloomd -port <番号>`またはplistの`-port`引数を指定する。`-port 0`はOSが空きポートを割り当てる検証用。
 - HTTPヘッダー受信の上限は5秒。SIGTERM等を受けた後のHTTP終了待機も5秒とし、超過した場合は接続を閉じてエラー終了する。
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
-- HTTPハンドラは空の`net/http.ServeMux`。API共通規約、認証、UI配信は後続タスクで実装する。
+- 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
 - Runnerは終了要求を待つ起動骨格だけを持つ。設定読み込み、bootId、heartbeat、pullループは`05-runner.md`の実装単位で扱う。
 
 launchctlによる起動確認は、ホスト変更を伴うため本タスクでは実施しない。
