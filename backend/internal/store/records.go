@@ -70,7 +70,9 @@ type AuditLog struct {
 
 // RecordAuditLog returns the database-assigned audit ID. Callers must remove
 // secrets before supplying Detail; this storage layer does not redact content.
-func RecordAuditLog(ctx context.Context, db *sql.DB, record AuditLog) (int64, error) {
+func RecordAuditLog(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, record AuditLog) (int64, error) {
 	detail, err := recordDetail(record.Detail)
 	if err != nil {
 		return 0, err

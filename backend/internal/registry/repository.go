@@ -106,9 +106,16 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	// Remove only Git's terminating newline; spaces and newlines may be part
 	// of the directory name itself.
 	topPath, err := filepath.EvalSymlinks(strings.TrimSuffix(top, "\n"))
-	if err != nil || topPath != realPath {
+	if err != nil {
 		return "", rejected("path", "not_repository_root")
 	}
+	topInfo, err := os.Stat(topPath)
+	if err != nil || !os.SameFile(info, topInfo) {
+		return "", rejected("path", "not_repository_root")
+	}
+	// Git reports the physical root's spelling. On case-insensitive volumes,
+	// EvalSymlinks alone can preserve a caller's different capitalization.
+	realPath = topPath
 	remote := input.Remote
 	if remote == "" {
 		remote = "origin"
