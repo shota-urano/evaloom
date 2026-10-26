@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -108,7 +109,8 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("server did not start")
 	}
-	address, ok := strings.CutPrefix(strings.TrimSpace(line), "evaloomd: listening on ")
+	lines := strings.Split(strings.TrimSpace(line), "\n")
+	address, ok := strings.CutPrefix(lines[0], "evaloomd: listening on ")
 	if !ok {
 		t.Fatalf("unexpected startup output: %q", line)
 	}
@@ -127,7 +129,24 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 	}
 	transport := &http.Transport{}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: time.Second}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: transport, Timeout: time.Second, Jar: jar}
+	loginURL, ok := strings.CutPrefix(lines[1], "evaloomd: owner login URL: ")
+	if !ok {
+		t.Fatalf("missing login URL: %q", line)
+	}
+	login, err := client.Get(loginURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, login.Body)
+	login.Body.Close()
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d", login.StatusCode)
+	}
 	response, err := client.Get("http://" + address + "/")
 	if err != nil {
 		t.Fatal(err)

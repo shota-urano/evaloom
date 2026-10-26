@@ -19,6 +19,28 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
+// Existing pagination tests exercise the production authentication wrapper with
+// a session obtained through the login endpoint, including closed-DB cases.
+func authenticatedHandler(t *testing.T, db *sql.DB, logger *slog.Logger) http.Handler {
+	t.Helper()
+	auth, err := NewOwnerAuth(db, logger, "127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(db, logger, auth)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", auth.LoginURL(), nil))
+	if w.Code != 200 {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	cookie := w.Result().Cookies()[0]
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Host = "127.0.0.1:8080"
+		r.AddCookie(cookie)
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func runnerDB(t *testing.T, count int) *sql.DB {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "evaloom.db"))
@@ -62,7 +84,7 @@ func readPage(t *testing.T, handler http.Handler, query string) Page[runnerRespo
 
 func TestRunnerListSQLitePagination(t *testing.T) {
 	db := runnerDB(t, 5)
-	handler := NewHandler(db, nil)
+	handler := authenticatedHandler(t, db, nil)
 	var ids []string
 	query := "?limit=2"
 	for index, wantCount := range []int{2, 2, 1} {
@@ -96,7 +118,7 @@ func TestRunnerListSQLitePagination(t *testing.T) {
 }
 
 func TestRunnerListDefaultAndMaximumLimits(t *testing.T) {
-	handler := NewHandler(runnerDB(t, 201), nil)
+	handler := authenticatedHandler(t, runnerDB(t, 201), nil)
 	for _, tc := range []struct {
 		query string
 		count int
@@ -110,7 +132,7 @@ func TestRunnerListDefaultAndMaximumLimits(t *testing.T) {
 
 func TestRunnerListEmptyAndExactLastPage(t *testing.T) {
 	db := runnerDB(t, 2)
-	handler := NewHandler(db, nil)
+	handler := authenticatedHandler(t, db, nil)
 	page := readPage(t, handler, "?limit=2")
 	if len(page.Items) != 2 || page.NextCursor != "" {
 		t.Fatalf("exact page=%+v", page)
@@ -126,7 +148,7 @@ func TestRunnerListEmptyAndExactLastPage(t *testing.T) {
 }
 
 func TestRunnerListJSONFieldAndTimeContract(t *testing.T) {
-	handler := NewHandler(runnerDB(t, 1), nil)
+	handler := authenticatedHandler(t, runnerDB(t, 1), nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/runners", nil))
 	const want = `{"items":[{"id":"runner-001","name":"Runner runner-001","status":"online","lastHeartbeatAt":"2026-10-26T00:00:00Z","createdAt":"2026-10-25T00:00:00Z"}],"nextCursor":""}` + "\n"
@@ -138,7 +160,7 @@ func TestRunnerListJSONFieldAndTimeContract(t *testing.T) {
 func TestRunnerListRejectsInvalidInputBeforeDatabaseAccess(t *testing.T) {
 	db := runnerDB(t, 0)
 	db.Close()
-	handler := NewHandler(db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := authenticatedHandler(t, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, tc := range []struct{ query, field string }{
 		{"limit=201", "limit"}, {"limit=0", "limit"}, {"limit=-1", "limit"}, {"limit=oops", "limit"},
 		{"limit=1&limit=2", "limit"}, {"cursor=invalid!", "cursor"}, {"cursor=a&cursor=b", "cursor"},
@@ -171,7 +193,7 @@ func TestRunnerListDatabaseFailuresAreInternal(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			w := httptest.NewRecorder()
-			NewHandler(db, slog.New(slog.NewTextHandler(&logs, nil))).ServeHTTP(w, httptest.NewRequest("GET", "/api/runners", nil))
+			authenticatedHandler(t, db, slog.New(slog.NewTextHandler(&logs, nil))).ServeHTTP(w, httptest.NewRequest("GET", "/api/runners", nil))
 			if w.Code != 500 || w.Body.String() != "{\"error\":{\"code\":\"internal\",\"message\":\"internal server error\",\"details\":[]}}\n" || logs.Len() == 0 {
 				t.Fatalf("status=%d body=%s logs=%s", w.Code, w.Body.String(), logs.String())
 			}
@@ -181,7 +203,7 @@ func TestRunnerListDatabaseFailuresAreInternal(t *testing.T) {
 
 func TestUnknownRouteUsesErrorEnvelope(t *testing.T) {
 	w := httptest.NewRecorder()
-	NewHandler(runnerDB(t, 0), nil).ServeHTTP(w, httptest.NewRequest("GET", "/api/missing", nil))
+	authenticatedHandler(t, runnerDB(t, 0), nil).ServeHTTP(w, httptest.NewRequest("GET", "/api/missing", nil))
 	if w.Code != 404 || !strings.Contains(w.Body.String(), `"error":{"code":"not_found"`) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}

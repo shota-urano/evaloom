@@ -64,13 +64,18 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		return fmt.Errorf("evaloomd: listen: %w", err)
 	}
 	defer listener.Close()
+	logger := slog.New(slog.NewTextHandler(output, nil))
+	auth, err := api.NewOwnerAuth(db, logger, listener.Addr().String())
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
-		Handler:           api.NewHandler(db, slog.New(slog.NewTextHandler(output, nil))),
+		Handler:           api.NewHandler(db, logger, auth),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
-	fmt.Fprintf(output, "evaloomd: listening on %s\n", listener.Addr())
+	fmt.Fprintf(output, "evaloomd: listening on %s\nevaloomd: owner login URL: %s\n", listener.Addr(), auth.LoginURL())
 
 	select {
 	case err := <-served:
