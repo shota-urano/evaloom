@@ -11,7 +11,15 @@ import { root, run } from './evaloomd.mts'
 function fingerprint() {
   const hash = createHash('sha256')
   for (const path of run('git', ['ls-files', '-z'], { cwd: root }).split('\0').filter(Boolean)) {
-    hash.update(path).update(readFileSync(join(root, path)))
+    hash.update(path)
+    try {
+      hash.update('present:').update(readFileSync(join(root, path)))
+    } catch (error) {
+      // A worker may delete a tracked file before the orchestrator commits it.
+      // Include its absence so the demo must preserve that state as well.
+      if (error.code !== 'ENOENT') throw error
+      hash.update('absent:')
+    }
   }
   for (const name of ['evaloom.db', 'evaloom.db-wal', 'evaloom.db-shm']) {
     const path = join(root, 'data', name)

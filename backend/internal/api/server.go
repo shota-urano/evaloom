@@ -40,15 +40,7 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
-	// Reserve the remaining declared Runner routes in the correct auth class.
-	// They perform no event processing yet.
-	for _, pattern := range []string{
-		"POST /api/executions/{id}/events",
-	} {
-		mux.Handle(pattern, auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
-		})))
-	}
+	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	}))
