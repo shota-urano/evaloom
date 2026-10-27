@@ -60,7 +60,37 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - HTTPヘッダー受信の上限は5秒。SIGTERM等を受けた後のHTTP終了待機も5秒とし、超過した場合は接続を閉じてエラー終了する。
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
-- Runnerは`-config <JSONファイル>`を読み、起動直後にheartbeatを1回送信して終了要求を待つ。設定例と通信時の動作は`docs/specs/05-runner.md`の3.1節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。定期送信とclaimはpullループの実装単位で扱う。
+- Runnerは`-config <JSONファイル>`を読み、起動直後にheartbeatを1回送信して終了要求を待つ。設定例と通信時の動作は次節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。定期送信とclaimはpullループの実装単位で扱う。
+
+## Runnerの設定と起動時heartbeat
+
+正本は`docs/specs/05-runner.md`の3.1・5・9節。
+以下は現在の実装上の選択を説明したもので、仕様の固定値ではない。
+
+起動引数は`evaloom-runner -config <JSONファイル>`。
+設定の各項目を必須とし、未知の項目や複数のJSON値を拒否する。
+設定パスの既定値は設けない。launchdのテンプレートは`data/runner.json`を指定する。
+
+```json
+{
+  "runnerId": "mac-mini",
+  "controlPlaneUrl": "http://127.0.0.1:8080",
+  "tokenFile": "/absolute/path/data/runner.token",
+  "worktreeRoot": "/absolute/path/worktrees",
+  "dataDir": "/absolute/path/data/runner"
+}
+```
+
+3つのファイル・ディレクトリのパスは絶対パスで指定する。
+ディレクトリの作成、worktreeの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
+データディレクトリは利用者がGit管理外に配置する。
+
+- Runner IDの制約は登録コマンドに合わせる。接続先はHTTP(S)の絶対URLとし、認証情報、クエリ、フラグメントを含むURLを拒否する。パスを含む場合は、その下に`api/runners/{id}/heartbeat`を追加する。
+- トークンファイルには登録コマンドが発行したトークンだけを保存する。前後の空白・改行を取り除き、既存の認証と同じ32バイトの正規base64url形式を確認する。トークンファイルは本人だけが読める権限（0600）で用意する。設定やトークンの読み込み失敗・形式不正では通信せず起動を中止する。
+- bootIdは起動ごとに生成する16バイトの暗号学的乱数を小文字hexで表し、プロセス内の再送では同じ値を使う。ファイルに保存しない。
+- heartbeatには`Authorization: Bearer <token>`を付ける。実行中IDが無いときも`runningExecutionIds`は空配列で送る。応答の`cancelExecutionIds`に対応する登録済みExecutionの中止関数を呼ぶ。未知・終了済みのIDは無視し、中止後も終了処理が登録を解除するまでは実行中IDとして送る。中止関数は繰り返し呼べるものを登録する。
+- HTTP要求全体の上限は5秒とし、終了要求のcontextでも通信を中断する。リダイレクトは追わない。応答は200とJSONの中止ID配列を必須にし、1MiBまで読み込む。通信失敗、非200、応答不正では実行中Executionを止めず、エラーを返す。起動時の送信に失敗してもプロセスは終了要求を待つ。エラー出力にはトークンや応答本文を含めない。
+- この実装単位は起動時の1回送信と、後続のpullループから呼べるheartbeat処理までを持つ。定期送信・再送のスケジューリングとclaimは次の実装単位、AdapterとSandboxの停止・`cancelled`の報告はタイムアウトとキャンセルの実装単位で扱う。
 
 ## macOS通知ヘルパーのビルド・署名・配置
 
