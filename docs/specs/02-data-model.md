@@ -427,6 +427,7 @@ requirements 8.3 の11状態。値は snake_case にする。
 | `pushed` | Runner | `sha`, `branch` |
 | `pr_created` | Runner | `prNumber`, `prUrl` |
 | `notification_sent` | Control Plane | `kind`, `channel` |
+| `notification_failed` | Control Plane | `kind`, `channel`, `reason`（`permission_denied` / `launch_failed` / `timeout` / `other`。[`12-notification.md`](./12-notification.md) 3.4） |
 
 ### 5.4 エラー分類（executions.error_class）
 

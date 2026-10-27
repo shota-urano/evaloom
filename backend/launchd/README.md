@@ -4,7 +4,6 @@
 `RunAtLoad`でロード時に起動し、`KeepAlive`で終了後に再起動する。
 シェルや`go run`を経由せず、ビルド済みバイナリを直接起動する。
 
-このタスクではplistを生成・検査するだけで、launchctlへの登録やホスト側への配置は行わない。
 `__EVALOOM_ROOT__`はlaunchdが展開する変数ではない。利用前にリポジトリの絶対パスへ置換する。
 
 ## ビルドとplist生成
@@ -63,4 +62,88 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
 - Runnerは終了要求を待つ起動骨格だけを持つ。設定読み込み、bootId、heartbeat、pullループは`05-runner.md`の実装単位で扱う。
 
-launchctlによる起動確認は、ホスト変更を伴うため本タスクでは実施しない。
+## macOS通知ヘルパーのビルド・署名・配置
+
+通知方式の正本は`docs/specs/12-notification.md`の3.3節。
+上記のバイナリとplistの生成に続けて、ログイン中の本人のアカウントで実行する。
+Swiftコンパイラを含むXcode Command Line Toolsが必要になる。
+`make verify`はこのSwiftビルド・署名・配置や実通知を実行しない。
+
+リポジトリのルートで、毎回新しいビルド先を作る。
+
+```sh
+mkdir -p data
+notify_build_dir="$(mktemp -d "$PWD/data/notification-build.XXXXXX")"
+notify_app="$notify_build_dir/Evaloom Notifications.app"
+mkdir -p "$notify_app/Contents/MacOS"
+cp -f backend/launchd/notification-helper/Info.plist "$notify_app/Contents/Info.plist"
+xcrun swiftc -O -framework AppKit -framework UserNotifications \
+  -module-cache-path "$notify_build_dir/module-cache" \
+  backend/launchd/notification-helper/main.swift \
+  -o "$notify_app/Contents/MacOS/evaloom-notification-helper"
+plutil -lint "$notify_app/Contents/Info.plist"
+codesign --sign - "$notify_app"
+codesign --verify --strict --verbose=2 "$notify_app"
+```
+
+次の処理で`~/Applications/Evaloom Notifications.app`に配置する。
+同名のアプリがある場合は上書きせず失敗する。更新する場合は既存アプリを確認し、
+本人が退避してから実行する。`/tmp`内のアプリからは通知許可を得られなかったため、
+ビルド先から起動せず、配置後のアプリを使う。
+
+```sh
+python3 - "$notify_app" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+target = Path.home() / "Applications" / "Evaloom Notifications.app"
+target.parent.mkdir(parents=True, exist_ok=True)
+shutil.copytree(sys.argv[1], target)  # 既存の配置先は上書きしない
+PY
+```
+
+初回は配置したアプリを起動し、本人が通知を許可する。
+システム設定の「通知」で「Evaloom Notifications」の許可も確認する。
+以下の`task-001`とポートは、確認するタスクとevaloomdの実ポートに置き換える。
+
+```sh
+/usr/bin/open -n -a "$HOME/Applications/Evaloom Notifications.app" --args \
+  'evaloom: 完了' "$(printf '通知の確認\ntask-001\nsucceeded')" \
+  'http://127.0.0.1:8080/tasks/task-001'
+```
+
+ヘルパーは`LSUIElement`を指定してDockに出さず、`UNUserNotificationCenter`で
+通知する。クリック時は通知に保存したタスクURLを`NSWorkspace`で開く。
+URLは`http://127.0.0.1:<port>/tasks/<taskId>`に限定する。
+通知登録後は60秒待って終了する。通知センターからのクリックでmacOSが再起動した
+場合も、通知を追加せず応答を受け付ける。
+
+evaloomdはmacOSで`macos`経路だけを登録し、配置先のアプリを`open -n -a`で起動する。
+本文に使うのはタスクの件名・ID・分類だけで、PR URL・理由・停止工程・Execution IDは使わない。
+分類には検証済みのBlock原因またはエラー分類を使い、値がない場合は通知対象の状態を使う。
+完了の分類は`succeeded`とする。これらの表示形式と待ち時間は実装時の判断であり、仕様の固定値ではない。
+
+`open`の成功だけでは通知の許可を確認できない。
+evaloomdは呼び出しごとに権限0700の一時ディレクトリを作り、
+`EVALOOM_NOTIFICATION_RESULT`環境変数に結果ファイルのパスを設定する。
+`open`が環境変数を新しいアプリに引き継ぐため、件名・本文・URLの3引数は変えない。
+ヘルパーは[通知許可の取得](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/requestauthorization(options:completionhandler:))と
+通知登録を終えてから、固定コードをファイルに原子的に書き込む。
+`sent`以外の結果、起動失敗、結果待ちの30秒超過はNotifierのエラーとして返す。
+ファイルは成功・失敗どちらでも削除する。許可拒否を成功扱いせず、既存のDispatcherへ
+エラーを返す。失敗イベントとDashboardへの記録は別タスク`evaloom-6ie.3`が扱う。
+
+## launchdへの登録と実機確認
+
+ビルド・署名・配置と通知許可の確認を済ませてから、生成済みplistを本人のguiドメインへ登録する。
+既に同じラベルを登録している場合は、この登録手順を繰り返さない。
+
+```sh
+launchctl bootstrap "gui/$(id -u)" "$PWD/data/launchd/org.evaloom.evaloomd.plist"
+launchctl bootstrap "gui/$(id -u)" "$PWD/data/launchd/org.evaloom.evaloom-runner.plist"
+```
+
+起動したevaloomdでタスクを完了または失敗させ、デスクトップへの表示と、
+通知をクリックした際にそのタスクの詳細画面が開くことを確認する。
+これは`make verify`の範囲外の手動確認とする。

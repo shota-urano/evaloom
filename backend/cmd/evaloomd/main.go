@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -97,8 +99,15 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
-	// Concrete transports are registered by the Control Plane. Until a
-	// transport is configured, durable requests remain pending in SQLite.
+	// Tests may supply transports explicitly; production Phase 1 registers only
+	// the macOS helper, using the actual bound port (including -port 0).
+	if channels == nil && runtime.GOOS == "darwin" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("evaloomd: notification helper home: %w", err)
+		}
+		channels = phase1NotificationChannels(runtime.GOOS, home, listener.Addr().(*net.TCPAddr).Port)
+	}
 	notificationCtx, cancelNotifications := context.WithCancel(ctx)
 	notificationsDone := make(chan struct{})
 	dispatcher := notification.Dispatcher{DB: db, Channels: channels}
@@ -145,6 +154,14 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 			return nil
 		}
 	}
+}
+
+func phase1NotificationChannels(goos, home string, port int) []notification.Channel {
+	if goos != "darwin" {
+		return nil
+	}
+	helper := filepath.Join(home, "Applications", "Evaloom Notifications.app")
+	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(helper, port)}}
 }
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {

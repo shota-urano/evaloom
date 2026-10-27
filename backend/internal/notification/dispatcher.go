@@ -29,7 +29,7 @@ func (d *Dispatcher) Run(ctx context.Context, logger *slog.Logger) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if err := d.DispatchPending(ctx); err != nil && ctx.Err() == nil {
+		if err := d.DispatchPending(ctx); err != nil {
 			logger.Error("notification dispatch failed", "error", err)
 		}
 		select {
@@ -61,14 +61,24 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 			return errors.Join(errs, err)
 		}
 		for _, channel := range d.Channels {
+			kind := model.EventNotificationSent
+			fields := map[string]string{
+				"kind": string(n.Status), "channel": channel.Name,
+			}
 			if err := channel.Notifier.Notify(ctx, *n); err != nil {
 				errs = errors.Join(errs, fmt.Errorf("notification: %s/%s via %s: %w", n.ExecutionID, n.Status, channel.Name, err))
-				continue
+				kind = model.EventNotificationFailed
+				fields["reason"] = failureReason(err)
+			} else {
+				fields["status"] = string(n.Status)
 			}
-			payload, _ := json.Marshal(map[string]string{
-				"status": string(n.Status), "kind": string(n.Status), "channel": channel.Name,
-			})
-			if _, err := store.AppendExecutionEvent(ctx, d.DB, n.ExecutionID, model.EventNotificationSent, payload); err != nil {
+			payload, _ := json.Marshal(fields)
+			// Persist the outcome even if cancellation caused the transport to
+			// fail. Bound this final write so shutdown cannot wait indefinitely.
+			eventCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_, err := store.AppendExecutionEvent(eventCtx, d.DB, n.ExecutionID, kind, payload)
+			cancel()
+			if err != nil {
 				errs = errors.Join(errs, err)
 			}
 		}

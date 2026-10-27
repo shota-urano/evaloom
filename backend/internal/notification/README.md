@@ -12,7 +12,13 @@ Runnerの結果報告、Context Builderのfailed・blocked、heartbeatのbootId�
 送信には`notification.Notifier`を使う。`Notify(ctx, Notification) error`は
 エラーを返せる。Control Planeは`Channel{Name, Notifier}`で送信先を登録し、
 `Dispatcher`が登録先すべてに要求する。ある送信先が失敗しても残りを呼ぶ。
-macOSの実装と登録は6ie.2、失敗イベントとDashboardへの表示は6ie.3で扱う。
+macOSでは`MacOS`を`macos`経路として登録する。ヘルパーのビルド・署名・配置と
+許可拒否の結果受信は`backend/launchd/README.md`を参照する。
+失敗した送信先ごとに`notification_failed`イベントを保存する。
+payloadは`kind`・`channel`・`reason`だけとし、エラー詳細はControl Planeのログに出す。
+`reason`は許可なし・起動失敗・時間切れのsentinelとdeadlineから分類し、
+該当しないエラーは`other`にする。エラーの文字列で分類しない。
+Dashboardへの表示は管理画面の別タスクで扱う。
 送信先が未登録の間は要求を未処理のまま残す。
 
 仕様に記載がない部分の実装判断は次のとおり。
@@ -39,5 +45,6 @@ macOSの実装と登録は6ie.2、失敗イベントとDashboardへの表示は6
   Block原因は最初のBlockから、停止工程は対象状態への最初の
   `status_changed.from`から取得する。本文・Context・ログは読み込まない。
   各通知方式が表示項目を選び、macOSは仕様12の3.3節の制限に従う。
-- Notifierと送信済みイベント保存のエラーは送信処理の呼び出し元へ返す。
+- Notifierと結果イベント保存のエラーは送信処理の呼び出し元へ返す。
+  結果イベントは、送信中にキャンセルされても最大5秒待って保存する。
   状態遷移は既にcommitされており、エラーで取り消さない。
