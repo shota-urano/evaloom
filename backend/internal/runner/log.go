@@ -34,8 +34,7 @@ type ArtifactRegistrar interface {
 // Log collects one Execution stream. Read may be called concurrently for stdout
 // and stderr. Deliver runs separately, so network failures never block Read.
 // Call Finish after all readers stop, and keep Deliver alive until it returns.
-// Input must already have passed the Runner's redaction policy. Redaction itself
-// belongs to the next implementation unit in spec 05, section 9.
+// Read redacts secrets before any bytes reach the file or event delivery.
 type Log struct {
 	runner                                    *Runner
 	registrar                                 ArtifactRegistrar
@@ -46,9 +45,12 @@ type Log struct {
 	finished, delivering, delivered, redacted bool
 	writeErr                                  error
 	retryInterval                             time.Duration
+	secrets                                   []string
 }
 
-func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegistrar) (*Log, error) {
+// The Runner token is always excluded. Stage handlers must also pass any other
+// credentials they hold (GitHub/model API etc.); do not pass them to a sandbox.
+func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegistrar, secrets ...string) (*Log, error) {
 	if registrar == nil {
 		return nil, fmt.Errorf("runner: artifact registrar is required")
 	}
@@ -69,7 +71,8 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 		return nil, err
 	}
 	return &Log{runner: runner, registrar: registrar, id: id, executionID: executionID, stream: stream,
-		path: path, file: file, retryInterval: time.Second}, nil
+		path: path, file: file, retryInterval: time.Second,
+		secrets: append([]string{runner.token}, secrets...)}, nil
 }
 
 // Path is the Runner-local log, retained even after successful delivery.
@@ -79,7 +82,14 @@ func (log *Log) Path() string { return log.path }
 // normalizing LF/CRLF and the final line to one LF in the persisted log.
 // A read failure preserves any partial output before returning the error.
 func (log *Log) Read(source io.Reader) error {
-	reader := bufio.NewReader(source)
+	patterns := &patternReader{source: bufio.NewReader(source)}
+	literals := newSecretReader(patterns, log.secrets)
+	defer func() {
+		log.mu.Lock()
+		log.redacted = log.redacted || patterns.changed || literals.changed
+		log.mu.Unlock()
+	}()
+	reader := bufio.NewReader(literals)
 	for {
 		line, readErr := reader.ReadString('\n')
 		if len(line) > 0 {
@@ -118,8 +128,8 @@ func (log *Log) appendLine(text string) error {
 	return nil
 }
 
-// Finish closes collection independently of delivery. Pass true when the
-// upstream redactor has processed this stream; never store unredacted secrets.
+// Finish closes collection independently of delivery. The argument preserves
+// upstream redaction metadata; false cannot clear replacements made by Read.
 // Delivery can continue with its own context after an Execution is cancelled.
 func (log *Log) Finish(redacted bool) error {
 	log.mu.Lock()
@@ -127,7 +137,7 @@ func (log *Log) Finish(redacted bool) error {
 	if log.finished {
 		return log.writeErr
 	}
-	log.finished, log.redacted = true, redacted
+	log.finished, log.redacted = true, log.redacted || redacted
 	log.writeErr = errors.Join(log.writeErr, log.file.Sync(), log.file.Close())
 	return log.writeErr
 }
