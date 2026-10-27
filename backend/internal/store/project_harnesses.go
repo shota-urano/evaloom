@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
@@ -24,4 +25,34 @@ func SaveProjectHarness(ctx context.Context, tx *sql.Tx, assignment model.Projec
 		profile_id = excluded.profile_id, assigned_at = excluded.assigned_at`,
 		assignment.ProjectID, assignment.Role, assignment.HarnessID, assignment.ProfileID, assignment.AssignedAt)
 	return err
+}
+
+// ListProjectHarnesses returns the pinned Profile of every role for the given
+// Projects, with the Profile's version and commit SHA, ordered by Project and role.
+func ListProjectHarnesses(ctx context.Context, db *sql.DB, projectIDs []string) ([]model.ProjectHarnessView, error) {
+	views := []model.ProjectHarnessView{}
+	if len(projectIDs) == 0 {
+		return views, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(projectIDs)), ", ")
+	args := make([]any, len(projectIDs))
+	for i, id := range projectIDs {
+		args[i] = id
+	}
+	rows, err := db.QueryContext(ctx, `SELECT ph.project_id, ph.role, ph.harness_id, ph.profile_id,
+		hp.version, hp.commit_sha, ph.assigned_at
+		FROM project_harnesses ph JOIN harness_profiles hp ON hp.id = ph.profile_id
+		WHERE ph.project_id IN (`+placeholders+`) ORDER BY ph.project_id, ph.role`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var v model.ProjectHarnessView
+		if err := rows.Scan(&v.ProjectID, &v.Role, &v.HarnessID, &v.ProfileID, &v.Version, &v.CommitSHA, &v.AssignedAt); err != nil {
+			return nil, err
+		}
+		views = append(views, v)
+	}
+	return views, rows.Err()
 }

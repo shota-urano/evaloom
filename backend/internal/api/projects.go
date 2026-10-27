@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,34 @@ func projectError(err error) error {
 	return err
 }
 
+// projectView is a Project as read by the owner, with each role's pinned
+// Harness Profile (management UI: Projects list and detail).
+type projectView struct {
+	model.Project
+	Harnesses []model.ProjectHarnessView `json:"harnesses"`
+}
+
+func withHarnesses(ctx context.Context, db *sql.DB, projects []model.Project) ([]projectView, error) {
+	ids := make([]string, len(projects))
+	for i, p := range projects {
+		ids[i] = p.ID
+	}
+	assignments, err := store.ListProjectHarnesses(ctx, db, ids)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]projectView, len(projects))
+	for i, p := range projects {
+		views[i] = projectView{Project: p, Harnesses: []model.ProjectHarnessView{}}
+		for _, a := range assignments {
+			if a.ProjectID == p.ID {
+				views[i].Harnesses = append(views[i].Harnesses, a)
+			}
+		}
+	}
+	return views, nil
+}
+
 func listProjects(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
@@ -45,7 +74,12 @@ func listProjects(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, NewPage(projects, page.Limit, "projects", func(p model.Project) string { return p.ID }))
+		views, err := withHarnesses(r.Context(), db, projects)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, NewPage(views, page.Limit, "projects", func(p projectView) string { return p.ID }))
 	}
 }
 
@@ -61,7 +95,12 @@ func getProject(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, projectError(err))
 			return
 		}
-		writeJSON(w, http.StatusOK, project)
+		views, err := withHarnesses(r.Context(), db, []model.Project{project})
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, views[0])
 	}
 }
 

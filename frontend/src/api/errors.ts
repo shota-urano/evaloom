@@ -21,6 +21,14 @@ const REASON_LABELS: Record<string, string> = {
   within_worktree_root: 'Runner の worktree 置き場の中は指定できません',
   not_git_repository: 'Git リポジトリではありません',
   remote_mismatch: 'Git URL がリポジトリの remote と一致しません',
+  not_directory: 'ディレクトリではありません',
+  not_readable: '読み取れません（権限を確認してください）',
+  not_resolvable: 'パスを解決できません',
+  not_repository_root: 'Git リポジトリのルートではありません',
+  remote_not_found: 'remote（origin）が設定されていません',
+  invalid_branch: 'ブランチ名として正しくありません',
+  remote_unavailable: 'remote に接続できません',
+  out_of_range: '範囲外の値です',
 }
 
 /** details の reason（機械向けの語）を画面の文言にする。未知の語は原文を添えて出す。 */
@@ -28,8 +36,9 @@ export function reasonLabel(reason: string): string {
   return REASON_LABELS[reason] ?? `値が正しくありません（${reason}）`
 }
 
-export function formatDetail(detail: ErrorDetail): string {
-  return `${detail.field}: ${reasonLabel(detail.reason)}`
+/** fieldLabels があれば項目名（details[].field）を画面の名前にして出す。 */
+export function formatDetail(detail: ErrorDetail, fieldLabels: Readonly<Record<string, string>> = {}): string {
+  return `${fieldLabels[detail.field] ?? detail.field}: ${reasonLabel(detail.reason)}`
 }
 
 export function describeError(error: unknown): ErrorDisplay {
@@ -92,4 +101,18 @@ export function splitFieldErrors(
     }
   }
   return { fieldErrors, unmatched }
+}
+
+/**
+ * 422 precondition_failed の details（パス検証の失敗理由など）を、フォームの項目に対応づける。
+ * mapping は details[].field → フォームの項目名。422 は ApiErrorAlert にも一覧するので、ここは項目側の表示用。
+ */
+export function preconditionFieldErrors(error: unknown, mapping: Readonly<Record<string, string>>): FieldErrors {
+  const fieldErrors: FieldErrors = {}
+  if (!(error instanceof ApiError) || error.status !== 422) return fieldErrors
+  for (const detail of error.details) {
+    const field = mapping[detail.field]
+    if (field) (fieldErrors[field] ??= []).push(reasonLabel(detail.reason))
+  }
+  return fieldErrors
 }

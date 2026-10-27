@@ -267,3 +267,47 @@ func TestProjectHarnessesConcurrentReplacementPreservesAuditChain(t *testing.T) 
 		t.Fatalf("concurrent assignment history=%+v", audits)
 	}
 }
+
+// The management UI shows each role's pinned Harness and version on the
+// Projects list and the Project detail (spec 13, 3.2).
+func TestProjectReadsIncludePinnedHarnessVersions(t *testing.T) {
+	f, _, profiles := assignmentFixture(t)
+	for _, a := range []struct{ role, version string }{{"reviewer", profiles[1].Version}, {"developer", profiles[0].Version}} {
+		status, body := postAssignment(t, f, "project-a", a.role, "harness-a", a.version)
+		requireAssignment(t, status, body, 201)
+	}
+	type view struct {
+		ID        string                     `json:"id"`
+		Harnesses []model.ProjectHarnessView `json:"harnesses"`
+	}
+	status, body := projectRequest(t, f, "GET", "/api/projects/project-a", nil)
+	var detail view
+	if status != 200 || json.Unmarshal(body, &detail) != nil {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if len(detail.Harnesses) != 2 {
+		t.Fatalf("harnesses=%+v", detail.Harnesses)
+	}
+	for i, want := range []struct {
+		role    string
+		profile model.HarnessProfile
+	}{{"developer", profiles[0]}, {"reviewer", profiles[1]}} {
+		got := detail.Harnesses[i]
+		if got.ProjectID != "project-a" || got.Role != want.role || got.HarnessID != "harness-a" || got.ProfileID != want.profile.ID ||
+			got.Version != want.profile.Version || got.CommitSHA != want.profile.CommitSHA {
+			t.Fatalf("harnesses[%d]=%+v want role=%s profile=%+v", i, got, want.role, want.profile)
+		}
+	}
+	status, body = projectRequest(t, f, "GET", "/api/projects", nil)
+	var page struct{ Items []view }
+	if status != 200 || json.Unmarshal(body, &page) != nil || len(page.Items) != 2 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if page.Items[0].ID != "project-a" || !reflect.DeepEqual(page.Items[0].Harnesses, detail.Harnesses) {
+		t.Fatalf("list project-a=%+v", page.Items[0])
+	}
+	// A Project without pins lists an empty array, not null.
+	if page.Items[1].ID != "project-b" || page.Items[1].Harnesses == nil || len(page.Items[1].Harnesses) != 0 {
+		t.Fatalf("list project-b=%+v body=%s", page.Items[1], body)
+	}
+}
