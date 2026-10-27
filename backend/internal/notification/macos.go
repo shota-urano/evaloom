@@ -35,8 +35,11 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(m.helperPath) || m.port < 1 || m.port > 65535 || n.TaskID == "" {
-		return fmt.Errorf("notification: invalid macOS helper path, port or task ID")
+	if !filepath.IsAbs(m.helperPath) {
+		return fmt.Errorf("%w: invalid macOS helper path", ErrLaunchFailed)
+	}
+	if m.port < 1 || m.port > 65535 || n.TaskID == "" {
+		return fmt.Errorf("notification: invalid macOS port or task ID")
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
@@ -56,7 +59,7 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	cmd := exec.CommandContext(ctx, "/usr/bin/open", "-n", "-a", m.helperPath, "--args", title, body, taskURL)
 	cmd.Env = append(os.Environ(), resultEnvironment+"="+resultPath)
 	if err := m.run(cmd); err != nil {
-		return fmt.Errorf("notification: launch macOS helper: %w", err)
+		return fmt.Errorf("%w: %w", ErrLaunchFailed, err)
 	}
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -67,8 +70,10 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 			case "sent":
 				return nil
 			case "permission_denied":
-				return errors.New("notification: macOS notification permission denied")
-			case "authorization_failed", "registration_failed", "invalid_arguments", "timed_out":
+				return ErrPermissionDenied
+			case "timed_out":
+				return ErrTimeout
+			case "authorization_failed", "registration_failed", "invalid_arguments":
 				return fmt.Errorf("notification: macOS helper: %s", result)
 			default:
 				// Never copy arbitrary helper output into Control Plane logs.

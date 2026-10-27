@@ -264,7 +264,7 @@ func TestTaskTablesConstrainOtherEnumeratedColumns(t *testing.T) {
 		{"worktrees", "status", []string{"active", "retained", "cleaned"}},
 		{"worktrees", "setup_status", []string{"pending", "succeeded", "failed"}},
 		{"execution_events", "type", []string{"status_changed", "log", "worktree_ready", "context_pinned",
-			"harness_started", "harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent"}},
+			"harness_started", "harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent", "notification_failed"}},
 		{"context_revisions", "layer", []string{"global", "harness", "project", "task"}},
 	} {
 		t.Run(test.table+"/"+test.column, func(t *testing.T) {
