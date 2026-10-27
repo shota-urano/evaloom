@@ -29,6 +29,8 @@ const REASON_LABELS: Record<string, string> = {
   invalid_branch: 'ブランチ名として正しくありません',
   remote_unavailable: 'remote に接続できません',
   out_of_range: '範囲外の値です',
+  // 04-task-lifecycle 3.1: Project の default_role に Harness の割り当てが無い（422）
+  default_harness_missing: '既定の役割に Harness が割り当てられていません。プロジェクトの詳細画面で割り当ててください',
 }
 
 /** details の reason（機械向けの語）を画面の文言にする。未知の語は原文を添えて出す。 */

@@ -14,11 +14,15 @@ import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
 import { ProjectListPage } from '@/pages/projects/project-list-page'
 import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
+import { TASK_NEW_PATH, TASKS_PATH } from '@/pages/tasks/labels'
+import { TaskNewPage } from '@/pages/tasks/task-form-page'
+import { TaskListPage } from '@/pages/tasks/task-list-page'
 
 const NAV = [
   { to: '/', label: 'ホーム' },
   { to: '/projects', label: 'Projects' },
   { to: '/harnesses', label: 'Harnesses' },
+  { to: TASKS_PATH, label: 'Tasks' },
 ]
 
 function Routes({ path, state }: ReturnType<typeof useLocation>) {
@@ -34,6 +38,8 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (harnessEdit) return <HarnessEditPage key={harnessEdit.id} id={harnessEdit.id} />
   const harness = matchPath('/harnesses/:id', path)
   if (harness) return <HarnessDetailPage key={harness.id} id={harness.id} />
+  if (path === TASKS_PATH) return <TaskListPage state={state} />
+  if (path === TASK_NEW_PATH) return <TaskNewPage />
   if (path === '/') {
     return (
       <div>

@@ -26,3 +26,16 @@
 - 既存ストアの単一接続による直列化の中で、キー検索・割り当て確認・作成・
   `QueueExecutionTx` による遷移・記録を行う。再送は行を追加しない。
   どの書き込みで失敗しても全体をロールバックし、共通形式の500を返す。
+
+# タスク一覧API
+
+`GET /api/tasks` は管理画面の Tasks 一覧（`13-management-ui.md` 3.2）のために追加した。
+仕様は一覧 API の存在（`01-architecture.md` 5.1）だけを定めるので、次を実装判断とする。
+
+- 絞り込みは `?status=`（`02-data-model.md` 5.1 の値）と `?projectId=` の完全一致。
+  どちらも省略または空文字なら絞り込まない。不正な値と複数指定は400。
+- 並びはタスクIDの数値部分の降順（新しい順）。`task-1000` は `task-999` より前に来る。
+  ページングは共通の `limit` / `cursor`。カーソルは直前ページ最後のタスクIDを持つ。
+- 各要素はタスクの列に加えて `latestExecution`（seqが最大のExecutionの
+  `id`・`seq`・`mode`・`status`・`errorClass`。無ければnull）と、
+  `prUrl`（`pr_url` を持つExecutionのうちseqが最大のもの。無ければnull）を返す。

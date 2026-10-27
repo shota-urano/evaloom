@@ -94,14 +94,33 @@ export type RequestOptions = {
 
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>
 
+/** SSE の購読（01-architecture 5.4）。ブラウザでは EventSource。テストでは差し替える。 */
+export type EventSourceListener = (event: MessageEvent<string>) => void
+export type EventSourceLike = {
+  addEventListener(type: string, listener: EventSourceListener): void
+  removeEventListener(type: string, listener: EventSourceListener): void
+  close(): void
+}
+export type EventSourceFactory = (url: string) => EventSourceLike
+
 export class ApiClient {
   private csrfToken: string | null = null
   private readonly fetchImpl: FetchLike
+  private readonly eventSourceImpl: EventSourceFactory
   private readonly unauthorizedListeners = new Set<() => void>()
 
-  constructor(fetchImpl?: FetchLike) {
+  constructor(fetchImpl?: FetchLike, eventSourceImpl?: EventSourceFactory) {
     // テストで globalThis.fetch を差し替えられるよう、呼び出し時に解決する。
     this.fetchImpl = fetchImpl ?? ((input, init) => globalThis.fetch(input, init))
+    this.eventSourceImpl = eventSourceImpl ?? ((url) => new EventSource(url))
+  }
+
+  /**
+   * SSE を購読する（GET、同一オリジンなのでセッション Cookie が付く）。
+   * 切断時はブラウザの EventSource が自動で再接続し、Last-Event-ID を送って続きから再開する（13 6節）。
+   */
+  events(path: string): EventSourceLike {
+    return this.eventSourceImpl(path)
   }
 
   get hasCsrfToken(): boolean {
