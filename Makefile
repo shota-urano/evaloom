@@ -14,11 +14,12 @@
 # 例: PACKAGES := frontend backend
 PACKAGES := frontend backend
 
-.PHONY: verify verify-fast run artifacts preview-url
+.PHONY: verify verify-fast run artifacts preview-url demo demo-test
 
 verify:
 	@test -n "$(strip $(PACKAGES))" || { echo "VERIFY: FAIL (パッケージがゼロ)"; exit 1; }
 	@for p in $(PACKAGES); do $(MAKE) -C $$p verify || { echo "VERIFY: FAIL ($$p)"; exit 1; }; done
+	@$(MAKE) demo-test || { echo "VERIFY: FAIL (demo)"; exit 1; }
 	@echo "VERIFY: PASS"
 
 verify-fast:
@@ -30,6 +31,12 @@ verify-fast:
 # ルートの run は「主たるアプリ」1つだけを起動する（全パッケージ同時起動はしない——
 # 人間が見たいのは画面であって、プロセス一覧ではない）。bootstrap が RUN_PACKAGE を確定する。
 RUN_PACKAGE := frontend
+demo:
+	@node scripts/demo.mts
+
+demo-test:
+	@node --test scripts/demo.test.mjs
+
 run:
 	@test -n "$(strip $(RUN_PACKAGE))" || { echo "RUN: FAIL (RUN_PACKAGE 未設定)"; exit 1; }
 	@# for ループにするのは make -n 対策。$(MAKE) を含む行は -n でも実行されるため、

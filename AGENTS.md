@@ -134,6 +134,7 @@ bd prime                # Refresh Beads context
 - 完了と言う前に、リポジトリのルートで `make verify` を実行し、`VERIFY: PASS` の出力を貼る。
   PASS の証拠が無い報告は未完了として扱う（Default-FAIL）。
 - 起動は `make run`（いまは管理画面の開発サーバを起動する）。
+- `make demo` は evaloomd と管理画面を一時データで起動し、ログイン URL と確認用リポジトリのパスを表示する。Ctrl-C で終了すると一時データも消す。
 
 ## 実装担当者
 - Frontend: Claude Code（Opus） / Backend: codex

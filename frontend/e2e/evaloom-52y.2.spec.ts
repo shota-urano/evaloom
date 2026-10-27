@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base, type Page } from '@playwright/test'
 
 import { run, startEvaloomd } from './evaloomd.ts'
+import { createRepo, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.2: Projects 一覧・登録・編集・詳細（Profile 割り当てを含む）。
 //
@@ -23,26 +24,7 @@ const PROFILES = [
   { version: '1.1.0', sha: '9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c' },
 ]
 
-type Repo = { path: string; url: string }
 type Server = { origin: string; cookie: string; repos: Record<string, Repo>; notGit: string }
-
-function git(cwd: string, ...args: string[]) {
-  run('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd })
-}
-
-/** origin（bare リポジトリ）に main を push 済みの Git リポジトリを作る。 */
-function createRepo(root: string, name: string): Repo {
-  const url = join(root, 'remotes', `${name}.git`)
-  const path = join(root, 'repos', name)
-  mkdirSync(url, { recursive: true })
-  mkdirSync(path, { recursive: true })
-  git(url, 'init', '--quiet', '--bare', '-b', 'main')
-  git(path, 'init', '--quiet', '-b', 'main')
-  git(path, 'commit', '--quiet', '--allow-empty', '-m', 'init')
-  git(path, 'remote', 'add', 'origin', url)
-  git(path, 'push', '--quiet', 'origin', 'main')
-  return { path, url }
-}
 
 function seedHarness(db: string) {
   const now = new Date().toISOString()
