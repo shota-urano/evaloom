@@ -36,10 +36,7 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 	mux := http.NewServeMux()
 	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
-	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Authentication probe only: claiming work belongs to the task lifecycle.
-		WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Runner claim is not available"})
-	})))
+	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
 	// Reserve the remaining declared Runner routes in the correct auth class.
 	// They perform no heartbeat, event or result processing yet.

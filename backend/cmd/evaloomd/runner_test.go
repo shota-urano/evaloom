@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -79,7 +80,7 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 	}{
 		{"Runner token on owner API", "GET", "/api/runners", "forbidden", false, true, 403},
 		{"owner session on Runner API", "POST", "/api/runners/mac-mini/claim", "forbidden", true, false, 403},
-		{"Runner token on Runner API", "POST", "/api/runners/mac-mini/claim", "precondition_failed", false, true, 422},
+		{"Runner token on Runner API", "POST", "/api/runners/mac-mini/claim", "", false, true, 204},
 		{"owner session on owner API", "GET", "/api/runners", "", true, false, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +100,13 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer response.Body.Close()
+			if tc.status == http.StatusNoContent {
+				body, err := io.ReadAll(response.Body)
+				if err != nil || response.StatusCode != tc.status || len(body) != 0 {
+					t.Fatalf("empty claim status=%d body=%s err=%v", response.StatusCode, body, err)
+				}
+				return
+			}
 			var body map[string]any
 			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 				t.Fatal(err)
