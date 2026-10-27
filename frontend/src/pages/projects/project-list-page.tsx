@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
+import { PROJECT_NEW_PATH } from './labels'
 
 /** 「役割: Harness 版」の一覧。割り当てが無ければその旨を出す。 */
 export function AssignmentSummary({ harnesses }: { harnesses: readonly ProjectHarness[] }) {
@@ -31,7 +32,7 @@ export function ProjectListPage() {
         title="Projects"
         actions={
           <Button asChild>
-            <Link to="/projects/new">プロジェクトを登録</Link>
+            <Link to={PROJECT_NEW_PATH}>プロジェクトを登録</Link>
           </Button>
         }
       />

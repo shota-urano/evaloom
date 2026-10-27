@@ -1,3 +1,9 @@
+/**
+ * 登録画面のパス。Project ID は slug（^[a-z0-9]+(-[a-z0-9]+)*$、backend/internal/api/validation.go）なので、
+ * slug に使えない「_」を含めて、どの Project の詳細（/projects/:id）とも衝突しないようにする。
+ */
+export const PROJECT_NEW_PATH = '/projects/_new'
+
 import type { TimeoutKey } from '@/api/registry'
 
 // Project の各項目の表示名（13 3.2「Project 登録・編集」、02-data-model 3.2 projects）。

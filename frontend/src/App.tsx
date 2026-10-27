@@ -9,6 +9,7 @@ import { LoginPage } from '@/pages/login-page'
 import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
 import { ProjectListPage } from '@/pages/projects/project-list-page'
+import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
 
 const NAV = [
   { to: '/', label: 'ホーム' },
@@ -17,7 +18,7 @@ const NAV = [
 
 function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (path === '/projects') return <ProjectListPage />
-  if (path === '/projects/new') return <ProjectNewPage />
+  if (path === PROJECT_NEW_PATH) return <ProjectNewPage />
   const edit = matchPath('/projects/:id/edit', path)
   if (edit) return <ProjectEditPage key={edit.id} id={edit.id} />
   const detail = matchPath('/projects/:id', path)

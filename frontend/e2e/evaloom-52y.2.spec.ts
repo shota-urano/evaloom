@@ -167,7 +167,7 @@ test('2つのプロジェクトを画面から登録でき、一覧に表示さ�
 })
 
 test('パス検証の失敗理由が表示され、登録されない', async ({ page, server }) => {
-  await page.goto('/projects/new')
+  await page.goto('/projects/_new')
   await fillProject(page, { id: 'broken', name: '検証に失敗する', repo: { path: server.notGit, url: server.repos.gamma.url } })
   await page.getByRole('button', { name: '登録' }).click()
   const alert = page.getByTestId('api-error')
@@ -196,7 +196,8 @@ test('パス検証の失敗理由が表示され、登録されない', async ({
 })
 
 test('役割に Harness と版を割り当てられ、差し替えと別の役割の追加もできる', async ({ page, server }) => {
-  await registerProject(page, { id: 'gamma-web', name: 'Gamma Web', repo: server.repos.gamma })
+  // Project ID「new」は slug として正当なので、登録画面（/projects/_new）と衝突せず詳細を開けること。
+  await registerProject(page, { id: 'new', name: 'Gamma Web', repo: server.repos.gamma })
   const card = page.locator('[data-slot=card]').filter({ hasText: 'Harness Profile の割り当て' })
   await expect(card.getByText('まだ割り当てがありません。')).toBeVisible()
 
@@ -251,6 +252,10 @@ test('役割に Harness と版を割り当てられ、差し替えと別の役�
   const row = page.getByRole('table', { name: '登録済みプロジェクト' }).locator('tbody tr').filter({ hasText: 'Gamma Web' })
   await expect(row).toContainText(`developer: ${HARNESS} v1.1.0`)
   await expect(row).toContainText(`reviewer: ${HARNESS} v1.0.0`)
+  await row.getByRole('link', { name: 'Gamma Web' }).click()
+  await expect(page).toHaveURL('/projects/new')
+  await expect(page.getByRole('heading', { name: 'Gamma Web' })).toBeVisible()
+  await page.getByRole('link', { name: '一覧へ戻る' }).click()
   await screenshot(page, 'projects')
 })
 

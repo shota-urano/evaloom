@@ -73,7 +73,7 @@ describe('一覧 API', () => {
 
 describe('プロジェクトの登録', () => {
   it('必須項目が空なら送信せず、項目ごとにエラーを出す', async () => {
-    const fake = renderAt('/projects/new', (request) => (request.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(500, {})))
+    const fake = renderAt('/projects/_new', (request) => (request.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(500, {})))
     await userEvent.click(await screen.findByRole('button', { name: '登録' }))
     for (const label of ['Project ID', '名称', 'ローカルリポジトリのパス', 'Git リポジトリ URL', 'Runner']) {
       expect(within(fieldOf(label)).getByText('入力してください')).toBeVisible()
@@ -82,7 +82,7 @@ describe('プロジェクトの登録', () => {
   })
 
   it('送信内容は API の項目名で、空欄の任意項目は null、許可リストは行ごとの配列になる', async () => {
-    const fake = renderAt('/projects/new', (request) => {
+    const fake = renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       if (request.method === 'POST') return json(201, { ...PROJECT, warnings: [] })
       return json(200, PROJECT)
@@ -118,7 +118,7 @@ describe('プロジェクトの登録', () => {
   })
 
   it('保存の応答に warnings があれば詳細画面に表示する', async () => {
-    renderAt('/projects/new', (request) => {
+    renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       if (request.method === 'POST') return json(201, { ...PROJECT, warnings: ['.env.test may contain secrets; use test-only dummy values'] })
       return json(200, PROJECT)
@@ -135,7 +135,7 @@ describe('プロジェクトの登録', () => {
 
   it('400 の details は同じ名前の項目に、422 のパス検証の理由は対応する項目と一覧に出す', async () => {
     let status = 400
-    renderAt('/projects/new', (request) => {
+    renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       return status === 400
         ? apiError(400, 'validation_failed', 'invalid', [{ field: 'timeouts.testSec', reason: 'out_of_range' }])
@@ -156,6 +156,40 @@ describe('プロジェクトの登録', () => {
     expect(await within(fieldOf('Base Branch')).findByText('見つかりません')).toBeVisible()
     expect(screen.getByRole('alert')).toHaveTextContent('Base Branch: 見つかりません')
     expect(within(fieldOf('テストのタイムアウト（秒）')).queryByText('範囲外の値です')).toBeNull()
+  })
+})
+
+describe('Project ID「new」（slug として正当な値）', () => {
+  it('詳細 /projects/new は登録画面ではなく詳細を開き、一覧のリンクと登録後の遷移も詳細へ行く', async () => {
+    const project = { ...PROJECT, id: 'new', name: 'New という名前の Project' }
+    let registered = false
+    const fake = renderAt('/projects', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
+      if (request.method === 'POST') {
+        registered = true
+        return json(201, { ...project, warnings: [] })
+      }
+      if (request.url.startsWith('/api/projects?')) return json(200, { items: registered ? [project] : [], nextCursor: '' })
+      return json(200, project)
+    })
+    await userEvent.click(await screen.findByRole('link', { name: 'プロジェクトを登録' }))
+    expect(window.location.pathname).toBe('/projects/_new')
+    await userEvent.type(await screen.findByLabelText('Project ID'), 'new')
+    await userEvent.type(screen.getByLabelText('名称'), project.name)
+    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/new')
+    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:new.git')
+    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
+    await userEvent.click(screen.getByRole('button', { name: '登録' }))
+    expect(await screen.findByRole('heading', { name: project.name })).toBeVisible()
+    expect(window.location.pathname).toBe('/projects/new')
+    expect(screen.getByText('Harness Profile の割り当て')).toBeVisible()
+    expect(screen.queryByRole('button', { name: '登録' })).toBeNull()
+
+    await userEvent.click(screen.getByRole('link', { name: '一覧へ戻る' }))
+    await userEvent.click(await screen.findByRole('link', { name: project.name }))
+    expect(await screen.findByRole('heading', { name: project.name })).toBeVisible()
+    expect(fake.calls.filter((c) => c.url === '/api/projects/new').length).toBeGreaterThanOrEqual(2)
   })
 })
 
