@@ -7,10 +7,11 @@
 読み込むファイルの相対パス一覧を受け取る。タグやHEAD、作業ツリーの定義を読み直さない。
 `registry.ReadProfile`が解決した`HarnessProfile.CommitSHA`をそのまま渡せる。
 
-仕様はProfile定義によるファイル選択を求めるが、現行の4.3のスキーマにはパス指定欄や
-版からパスへの対応規約が無い。この読み込み処理では、呼び出し側から明示した一覧を
-渡す。`promptVersion`や`skillVersions`から配置を推測せず、Profileのスキーマも変更しない。
-Profile定義からの選択はContext Builderの実装時に接続する。
+仕様はProfile定義によるファイル選択を求めるが、4.3にはパス指定欄や版からパスへの
+対応規約が無い。hb9.4で任意の`contextFiles`配列をProfile定義に追加した。
+呼び出し側は固定した登録済み定義の`contextFiles`を`paths`に渡す。
+`promptVersion`や`skillVersions`から配置を推測しない。
+詳細は`backend/internal/api/context.md`に記載する。
 
 Project Contextの既存処理を`internal/gitcontext`へ移し、両方の読み込みで共用する。
 固定commitのtreeから対象のblob IDを取得するため、`git show <SHA>:<path>`と同じ内容を、

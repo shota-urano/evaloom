@@ -40,7 +40,7 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 		// Authentication probe only: claiming work belongs to the task lifecycle.
 		WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Runner claim is not available"})
 	})))
-	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts)))
+	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
 	// Reserve the remaining declared Runner routes in the correct auth class.
 	// They perform no heartbeat, event or result processing yet.
 	for _, pattern := range []string{

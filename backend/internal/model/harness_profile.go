@@ -16,7 +16,10 @@ type ProfileDefinition struct {
 	ToolConfiguration struct {
 		AllowedTools []string `json:"allowedTools"`
 	} `json:"toolConfiguration"`
-	ContextPolicyVersion   string `json:"contextPolicyVersion"`
+	ContextPolicyVersion string `json:"contextPolicyVersion"`
+	// ContextFiles explicitly selects repository-relative files at CommitSHA.
+	// Omission selects no files; version labels are never interpreted as paths.
+	ContextFiles           []string `json:"contextFiles,omitempty"`
 	ExecutionConfiguration struct {
 		Adapter string   `json:"adapter"`
 		Args    []string `json:"args"`

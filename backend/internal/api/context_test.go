@@ -26,6 +26,9 @@ const contextPath = "/api/executions/" + otherExecution + "/context"
 func contextFixture(t *testing.T, config ContextConfig) (*authFixture, string, contextInput) {
 	t.Helper()
 	f := newAuthFixture(t, config)
+	if err := f.adapters.Register("codex", &contextTestAdapter{native: []string{"AGENTS.md", "CLAUDE.md"}}); err != nil {
+		t.Fatal(err)
+	}
 	token := registerAuthRunner(t, f)
 	seedStreamExecutions(t, f)
 	for _, statement := range []string{
@@ -47,9 +50,37 @@ func contextFixture(t *testing.T, config ContextConfig) (*authFixture, string, c
 			t.Fatal(err)
 		}
 	}
+	setContextDefinition(t, f, "codex", []string{"prompts/developer.md"})
 	return f, token, contextInput{
+		HeadSHA: strings.Repeat("a", 40),
 		Project: []gitcontext.File{testContextFile("AGENTS.md", "Project instructions\r\n日本語\n", strings.Repeat("a", 40))},
 		Harness: []gitcontext.File{testContextFile("prompts/developer.md", "Harness prompt\n", strings.Repeat("b", 40))},
+	}
+}
+
+// Context tests exercise only declared capabilities, never launch a CLI.
+type contextTestAdapter struct {
+	adapter.Adapter
+	native []string
+}
+
+func (a *contextTestAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{NativeInstructionFiles: a.native}
+}
+
+func setContextDefinition(t *testing.T, f *authFixture, name string, files []string) {
+	t.Helper()
+	definition, err := json.Marshal(map[string]any{
+		"profileVersion": "1.2.0", "harnessVersion": "1.2.0", "modelId": "test-model",
+		"promptVersion": "1", "skillVersions": []any{}, "toolConfiguration": map[string]any{"allowedTools": []any{}},
+		"contextPolicyVersion": "1", "executionConfiguration": map[string]any{"adapter": name, "args": []any{}},
+		"collaborationPolicy": "solo", "evaluationPolicyVersion": nil, "contextFiles": files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE harness_profiles SET definition = ?, definition_hash = ? WHERE id = 'profile-a'`, string(definition), contextHash(string(definition))); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -155,6 +186,7 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 	input.Project[0].Content += suffix
 	input.Harness[0].Content += suffix
 	projectRepo, baseSHA := contextRepo(t, "AGENTS.md", input.Project[0].Content)
+	input.HeadSHA = baseSHA
 	harnessRepo, profileSHA := contextRepo(t, "prompts/developer.md", input.Harness[0].Content)
 	writeContextFile(t, root, "context/development.md", "Working tree changes must not be pinned")
 	writeContextFile(t, projectRepo, "AGENTS.md", "Working tree changes must not be pinned")
@@ -168,6 +200,9 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(`UPDATE executions SET base_sha = ?, profile_commit_sha = ? WHERE id = ?`, baseSHA, profileSHA, otherExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE harness_profiles SET commit_sha = ? WHERE id = 'profile-a'`, profileSHA); err != nil {
 		t.Fatal(err)
 	}
 	status, body := postContext(t, f, token, contextPath, input)
@@ -230,17 +265,22 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 }
 
 func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
-	for _, test := range []string{"hash", "project SHA", "harness SHA", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field", "invalid base64", "unknown file field"} {
+	for _, test := range []string{"hash", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field", "invalid base64", "unknown file field", "unselected project", "unselected harness", "malformed SHA", "bad hash after wrong pin"} {
 		t.Run(test, func(t *testing.T) {
 			f, token, input := contextFixture(t, ContextConfig{})
 			var value any = input
 			switch test {
 			case "hash":
 				input.Project[0].ContentHash = strings.Repeat("0", 64)
-			case "project SHA":
-				input.Project[0].SourceCommitSHA = strings.Repeat("b", 40)
-			case "harness SHA":
-				input.Harness[0].SourceCommitSHA = strings.Repeat("a", 40)
+			case "malformed SHA":
+				input.Harness[0].SourceCommitSHA = "not-a-commit"
+			case "bad hash after wrong pin":
+				input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+				input.Project[0].ContentHash = "invalid"
+			case "unselected project":
+				input.Project[0].Path = "README.md"
+			case "unselected harness":
+				input.Harness[0].Path = "other-profile.md"
 			case "absolute":
 				input.Project[0].Path = "/AGENTS.md"
 			case "traversal":
@@ -250,13 +290,13 @@ func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
 			case "missing arrays":
 				value = map[string]any{}
 			case "null arrays":
-				value = map[string]any{"project": nil, "harness": []any{}}
+				value = map[string]any{"headSha": input.HeadSHA, "project": nil, "harness": []any{}}
 			case "unknown field":
-				value = map[string]any{"project": input.Project, "harness": input.Harness, "global": []any{}}
+				value = map[string]any{"headSha": input.HeadSHA, "project": input.Project, "harness": input.Harness, "global": []any{}}
 			case "invalid base64":
-				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "content": "!not-base64!"}}, "harness": input.Harness}
+				value = map[string]any{"headSha": input.HeadSHA, "project": []map[string]string{{"path": "AGENTS.md", "content": "!not-base64!"}}, "harness": input.Harness}
 			case "unknown file field":
-				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "extra": "unknown"}}, "harness": input.Harness}
+				value = map[string]any{"headSha": input.HeadSHA, "project": []map[string]string{{"path": "AGENTS.md", "extra": "unknown"}}, "harness": input.Harness}
 			}
 			// Slice edits are shared by value; appending changes the slice header.
 			if test == "duplicate" {
@@ -265,6 +305,7 @@ func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
 			status, body := postContext(t, f, token, contextPath, value)
 			assertAuthError(t, status, body, 400, ValidationFailed)
 			assertContextCounts(t, f, 0, 0)
+			assertContextState(t, f, "preparing", "running", "", "")
 		})
 	}
 }
@@ -290,6 +331,34 @@ func TestContextAPIRefusesReplacingPinnedFiles(t *testing.T) {
 				t.Fatal("rejected request changed pinned rows")
 			}
 			assertContextCounts(t, f, 3, 1)
+		})
+	}
+}
+
+func TestContextAPIRequiresCurrentHeadBeforeLifecycleChanges(t *testing.T) {
+	for _, head := range []string{"", "HEAD", strings.Repeat("a", 39), strings.Repeat("g", 40), strings.Repeat("A", 40)} {
+		t.Run(head, func(t *testing.T) {
+			f, token, input := contextFixture(t, ContextConfig{})
+			attachContextWorktree(t, f)
+			input.HeadSHA = head
+			// Even a version conflict cannot produce a block without a valid HEAD.
+			input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+			value := map[string]any{"project": input.Project, "harness": input.Harness}
+			if head != "" {
+				value["headSha"] = head
+			}
+			status, body := postContext(t, f, token, contextPath, value)
+			assertAuthError(t, status, body, 400, ValidationFailed)
+			var response struct{ Error Error }
+			if err := json.Unmarshal(body, &response); err != nil || !reflect.DeepEqual(response.Error.Details, []Detail{{Field: "headSha", Reason: "invalid_format"}}) {
+				t.Fatalf("HEAD validation=%s err=%v", body, err)
+			}
+			assertContextState(t, f, "preparing", "running", "", "")
+			assertContextCounts(t, f, 0, 0)
+			var worktreeStatus string
+			if err := f.db.QueryRow(`SELECT status FROM worktrees WHERE id = 'context-worktree'`).Scan(&worktreeStatus); err != nil || worktreeStatus != "active" {
+				t.Fatalf("invalid HEAD changed worktree=%s err=%v", worktreeStatus, err)
+			}
 		})
 	}
 }
@@ -433,6 +502,7 @@ func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
 				projectGit(t, root, "init", "--quiet", "--initial-branch=main")
 			}
 			f, token, input := contextFixture(t, ContextConfig{RepositoryRoot: root, GlobalPaths: []string{"context/first.md", selected}})
+			attachContextWorktree(t, f)
 			status, body := postContext(t, f, token, contextPath, input)
 			assertAuthError(t, status, body, 422, PreconditionFailed)
 			assertContextCounts(t, f, 0, 1)
@@ -442,6 +512,10 @@ func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
 			}
 			if executionStatus != "failed" || taskStatus != "failed" || errorClass != "config_error" || finishedAt == "" {
 				t.Fatalf("execution=%s task=%s errorClass=%s finishedAt=%s", executionStatus, taskStatus, errorClass, finishedAt)
+			}
+			var worktreeStatus string
+			if err := f.db.QueryRow(`SELECT status FROM worktrees WHERE id = 'context-worktree'`).Scan(&worktreeStatus); err != nil || worktreeStatus != "retained" {
+				t.Fatalf("failed worktree=%s err=%v; want retained", worktreeStatus, err)
 			}
 			if err := f.db.QueryRow(`SELECT payload FROM execution_events WHERE type = 'status_changed'`).Scan(&payload); err != nil || !strings.Contains(payload, "config_error") {
 				t.Fatalf("failure event=%s err=%v", payload, err)

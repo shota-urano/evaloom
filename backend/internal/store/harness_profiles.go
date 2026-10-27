@@ -24,6 +24,11 @@ func GetHarnessProfile(ctx context.Context, reader projectReader, harnessID, ver
 		FROM harness_profiles WHERE harness_id = ? AND version = ?`, harnessID, version))
 }
 
+func GetHarnessProfileByID(ctx context.Context, reader projectReader, id string) (model.HarnessProfile, error) {
+	return scanHarnessProfile(reader.QueryRowContext(ctx, `SELECT `+harnessProfileColumns+`
+		FROM harness_profiles WHERE id = ?`, id))
+}
+
 func ListHarnessProfiles(ctx context.Context, db *sql.DB, harnessID, after string, limit int) ([]model.HarnessProfile, error) {
 	rows, err := db.QueryContext(ctx, `SELECT `+harnessProfileColumns+`
 		FROM harness_profiles WHERE id > ? AND (? = '' OR harness_id = ?) ORDER BY id LIMIT ?`, after, harnessID, harnessID, limit)
