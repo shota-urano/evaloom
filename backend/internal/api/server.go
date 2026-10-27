@@ -64,6 +64,7 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 
 func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/tasks", createTask(db, logger))
 	mux.HandleFunc("GET /api/projects", listProjects(db, logger))
 	mux.HandleFunc("POST /api/projects", writeProject(db, logger, true))
 	mux.HandleFunc("GET /api/projects/{id}", getProject(db, logger))
