@@ -243,6 +243,49 @@ func TestNotificationFailureDoesNotRollbackOrRetryAndStillFansOut(t *testing.T) 
 	}
 }
 
+type notificationLogWriter chan string
+
+func (w notificationLogWriter) Write(p []byte) (int, error) {
+	w <- string(p)
+	return len(p), nil
+}
+
+func TestNotificationWorkerLogsTransportFailureWithoutChangingState(t *testing.T) {
+	f, token, id, _ := resultFixture(t, "publishing")
+	status, body := postResult(t, f, token, id, resultBody("publishing", "succeeded"))
+	if status != 204 {
+		t.Fatalf("result status=%d body=%s", status, body)
+	}
+	before := readResultSnapshot(t, f, id)
+	broken := &recordingNotifier{err: errors.New("transport unavailable")}
+	d := notificationDispatcher(f, broken)
+	logs := make(notificationLogWriter, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.Run(ctx, slog.New(slog.NewTextHandler(logs, nil)))
+	}()
+	defer func() { cancel(); <-done }()
+	select {
+	case line := <-logs:
+		for _, want := range []string{"level=ERROR", "notification dispatch failed", id, "succeeded", "fake", "transport unavailable"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("Control Plane log=%q; missing %q", line, want)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("notification failure never reached Control Plane log")
+	}
+	after := readResultSnapshot(t, f, id)
+	// Failure-event persistence is checked separately; all lifecycle fields must
+	// remain unchanged, including the successful Execution's finished_at.
+	before.Events = after.Events
+	if after != before || after.Task != "completed" || after.Execution != "succeeded" || len(broken.recorded()) != 1 {
+		t.Fatalf("state=%+v want=%+v calls=%v", after, before, broken.recorded())
+	}
+}
+
 func TestUncommittedAndRolledBackTransitionsNeverNotify(t *testing.T) {
 	f, _, id, _ := resultFixture(t, "running")
 	var seq int
