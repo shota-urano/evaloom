@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
 // Finding is the persisted shape from data-model section 5.5. Gate-specific
@@ -47,6 +50,18 @@ type ExecutionBlock struct {
 	GateResultID           *string
 	HeadSHA                string
 	Detail                 map[string]any
+}
+
+// SaveExecutionBlockTx is shared by Context Builder and Runner reports. Both
+// the undecided block and its event belong to the state change's transaction.
+func SaveExecutionBlockTx(ctx context.Context, tx *sql.Tx, record ExecutionBlock) error {
+	record.ID = ulid.Make().String()
+	if err := RecordExecutionBlock(ctx, tx, record); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]string{"cause": record.Cause, "blockId": record.ID})
+	_, err := AppendExecutionEvent(ctx, tx, record.ExecutionID, model.EventBlocked, payload)
+	return err
 }
 
 // RecordExecutionBlock creates an undecided block. The lifecycle service owns

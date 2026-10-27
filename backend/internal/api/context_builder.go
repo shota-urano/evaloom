@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -158,26 +156,16 @@ func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.Co
 		FromTask: execution.TaskStatus, FromExecution: execution.Status, ToExecution: to}); err != nil {
 		return err
 	}
-	// Spec 06 section 3.6 retains worktrees on both failure and Blocked.
-	if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET status = 'retained'
-		WHERE id = (SELECT worktree_id FROM executions WHERE id = ?)`, execution.ID); err != nil {
-		return err
-	}
 	if failure.conflict {
-		blockID := ulid.Make().String()
-		if err := store.RecordExecutionBlock(ctx, tx, store.ExecutionBlock{
-			ID: blockID, ExecutionID: execution.ID, Cause: classification, HeadSHA: headSHA,
+		if err := store.SaveExecutionBlockTx(ctx, tx, store.ExecutionBlock{
+			ExecutionID: execution.ID, Cause: classification, HeadSHA: headSHA,
 			Detail: map[string]any{"field": failure.field, "reason": failure.reason},
 		}); err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(map[string]string{"cause": classification, "blockId": blockID})
-		if _, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventBlocked, payload); err != nil {
-			return err
-		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = ?, error_message = ?, finished_at = ? WHERE id = ?`,
-			classification, failure.Error(), time.Now().UTC().Format(time.RFC3339Nano), execution.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = ?, error_message = ? WHERE id = ?`,
+			classification, failure.Error(), execution.ID); err != nil {
 			return err
 		}
 	}
