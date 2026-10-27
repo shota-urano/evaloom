@@ -6,6 +6,10 @@ import { cn } from '@/lib/utils'
 import { Link } from '@/lib/link'
 import { matchPath, useLocation } from '@/lib/router'
 import { LoginPage } from '@/pages/login-page'
+import { HarnessDetailPage } from '@/pages/harnesses/harness-detail-page'
+import { HarnessEditPage, HarnessNewPage } from '@/pages/harnesses/harness-form-page'
+import { HarnessListPage } from '@/pages/harnesses/harness-list-page'
+import { HARNESS_NEW_PATH } from '@/pages/harnesses/labels'
 import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
 import { ProjectListPage } from '@/pages/projects/project-list-page'
@@ -14,6 +18,7 @@ import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
 const NAV = [
   { to: '/', label: 'ホーム' },
   { to: '/projects', label: 'Projects' },
+  { to: '/harnesses', label: 'Harnesses' },
 ]
 
 function Routes({ path, state }: ReturnType<typeof useLocation>) {
@@ -23,6 +28,12 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (edit) return <ProjectEditPage key={edit.id} id={edit.id} />
   const detail = matchPath('/projects/:id', path)
   if (detail) return <ProjectDetailPage key={detail.id} id={detail.id} state={state} />
+  if (path === '/harnesses') return <HarnessListPage />
+  if (path === HARNESS_NEW_PATH) return <HarnessNewPage />
+  const harnessEdit = matchPath('/harnesses/:id/edit', path)
+  if (harnessEdit) return <HarnessEditPage key={harnessEdit.id} id={harnessEdit.id} />
+  const harness = matchPath('/harnesses/:id', path)
+  if (harness) return <HarnessDetailPage key={harness.id} id={harness.id} />
   if (path === '/') {
     return (
       <div>
