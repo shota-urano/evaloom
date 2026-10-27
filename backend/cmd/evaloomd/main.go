@@ -42,6 +42,12 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 	path := flags.String("db", "", "SQLite database file path (required)")
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
+	contextRoot := flags.String("context-root", ".", "evaloom repository root for Global Context")
+	var globalPaths []string
+	flags.Func("global-context", "selected Global Context file below context/ (repeatable)", func(value string) error {
+		globalPaths = append(globalPaths, value)
+		return nil
+	})
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -85,7 +91,7 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithWeb(db, logger, auth, web),
+		Handler:           api.NewHandlerWithContext(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

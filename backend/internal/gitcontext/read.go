@@ -15,11 +15,22 @@ import (
 
 // File is a context snapshot shared by the project and harness readers.
 // ContentHash is the lowercase SHA-256 of the unmodified Git blob bytes.
+// Content holds raw bytes as a Go string; JSON transfers them as base64.
 type File struct {
-	Path            string
-	Content         string
-	ContentHash     string
-	SourceCommitSHA string
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	ContentHash     string `json:"contentHash"`
+	SourceCommitSHA string `json:"sourceCommitSha"`
+}
+
+// HeadCommitSHA resolves HEAD once for callers that need to pin the current
+// repository version before reading files with Read.
+func HeadCommitSHA(ctx context.Context, repo string) (string, error) {
+	commit, err := git(ctx, repo, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(commit)), nil
 }
 
 // Read returns the regular files selected by include, sorted by relative path.
