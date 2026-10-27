@@ -52,6 +52,7 @@ func contextFixture(t *testing.T, config ContextConfig) (*authFixture, string, c
 	}
 	setContextDefinition(t, f, "codex", []string{"prompts/developer.md"})
 	return f, token, contextInput{
+		HeadSHA: strings.Repeat("a", 40),
 		Project: []gitcontext.File{testContextFile("AGENTS.md", "Project instructions\r\n日本語\n", strings.Repeat("a", 40))},
 		Harness: []gitcontext.File{testContextFile("prompts/developer.md", "Harness prompt\n", strings.Repeat("b", 40))},
 	}
@@ -185,6 +186,7 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 	input.Project[0].Content += suffix
 	input.Harness[0].Content += suffix
 	projectRepo, baseSHA := contextRepo(t, "AGENTS.md", input.Project[0].Content)
+	input.HeadSHA = baseSHA
 	harnessRepo, profileSHA := contextRepo(t, "prompts/developer.md", input.Harness[0].Content)
 	writeContextFile(t, root, "context/development.md", "Working tree changes must not be pinned")
 	writeContextFile(t, projectRepo, "AGENTS.md", "Working tree changes must not be pinned")
@@ -288,13 +290,13 @@ func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
 			case "missing arrays":
 				value = map[string]any{}
 			case "null arrays":
-				value = map[string]any{"project": nil, "harness": []any{}}
+				value = map[string]any{"headSha": input.HeadSHA, "project": nil, "harness": []any{}}
 			case "unknown field":
-				value = map[string]any{"project": input.Project, "harness": input.Harness, "global": []any{}}
+				value = map[string]any{"headSha": input.HeadSHA, "project": input.Project, "harness": input.Harness, "global": []any{}}
 			case "invalid base64":
-				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "content": "!not-base64!"}}, "harness": input.Harness}
+				value = map[string]any{"headSha": input.HeadSHA, "project": []map[string]string{{"path": "AGENTS.md", "content": "!not-base64!"}}, "harness": input.Harness}
 			case "unknown file field":
-				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "extra": "unknown"}}, "harness": input.Harness}
+				value = map[string]any{"headSha": input.HeadSHA, "project": []map[string]string{{"path": "AGENTS.md", "extra": "unknown"}}, "harness": input.Harness}
 			}
 			// Slice edits are shared by value; appending changes the slice header.
 			if test == "duplicate" {
@@ -329,6 +331,34 @@ func TestContextAPIRefusesReplacingPinnedFiles(t *testing.T) {
 				t.Fatal("rejected request changed pinned rows")
 			}
 			assertContextCounts(t, f, 3, 1)
+		})
+	}
+}
+
+func TestContextAPIRequiresCurrentHeadBeforeLifecycleChanges(t *testing.T) {
+	for _, head := range []string{"", "HEAD", strings.Repeat("a", 39), strings.Repeat("g", 40), strings.Repeat("A", 40)} {
+		t.Run(head, func(t *testing.T) {
+			f, token, input := contextFixture(t, ContextConfig{})
+			attachContextWorktree(t, f)
+			input.HeadSHA = head
+			// Even a version conflict cannot produce a block without a valid HEAD.
+			input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+			value := map[string]any{"project": input.Project, "harness": input.Harness}
+			if head != "" {
+				value["headSha"] = head
+			}
+			status, body := postContext(t, f, token, contextPath, value)
+			assertAuthError(t, status, body, 400, ValidationFailed)
+			var response struct{ Error Error }
+			if err := json.Unmarshal(body, &response); err != nil || !reflect.DeepEqual(response.Error.Details, []Detail{{Field: "headSha", Reason: "invalid_format"}}) {
+				t.Fatalf("HEAD validation=%s err=%v", body, err)
+			}
+			assertContextState(t, f, "preparing", "running", "", "")
+			assertContextCounts(t, f, 0, 0)
+			var worktreeStatus string
+			if err := f.db.QueryRow(`SELECT status FROM worktrees WHERE id = 'context-worktree'`).Scan(&worktreeStatus); err != nil || worktreeStatus != "active" {
+				t.Fatalf("invalid HEAD changed worktree=%s err=%v", worktreeStatus, err)
+			}
 		})
 	}
 }
@@ -472,6 +502,7 @@ func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
 				projectGit(t, root, "init", "--quiet", "--initial-branch=main")
 			}
 			f, token, input := contextFixture(t, ContextConfig{RepositoryRoot: root, GlobalPaths: []string{"context/first.md", selected}})
+			attachContextWorktree(t, f)
 			status, body := postContext(t, f, token, contextPath, input)
 			assertAuthError(t, status, body, 422, PreconditionFailed)
 			assertContextCounts(t, f, 0, 1)
@@ -481,6 +512,10 @@ func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
 			}
 			if executionStatus != "failed" || taskStatus != "failed" || errorClass != "config_error" || finishedAt == "" {
 				t.Fatalf("execution=%s task=%s errorClass=%s finishedAt=%s", executionStatus, taskStatus, errorClass, finishedAt)
+			}
+			var worktreeStatus string
+			if err := f.db.QueryRow(`SELECT status FROM worktrees WHERE id = 'context-worktree'`).Scan(&worktreeStatus); err != nil || worktreeStatus != "retained" {
+				t.Fatalf("failed worktree=%s err=%v; want retained", worktreeStatus, err)
 			}
 			if err := f.db.QueryRow(`SELECT payload FROM execution_events WHERE type = 'status_changed'`).Scan(&payload); err != nil || !strings.Contains(payload, "config_error") {
 				t.Fatalf("failure event=%s err=%v", payload, err)

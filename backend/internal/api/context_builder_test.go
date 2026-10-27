@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/shota-urano/evaloom/backend/internal/gitcontext"
+	"github.com/shota-urano/evaloom/backend/internal/projectcontext"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -70,7 +72,7 @@ func TestContextBuilderVersionConflictsBlockBeforeExecution(t *testing.T) {
 			}
 			assertContextCounts(t, f, 0, 2)
 			var payload, head string
-			if err := f.db.QueryRow(`SELECT head_sha FROM execution_blocks WHERE execution_id = ?`, otherExecution).Scan(&head); err != nil || head != strings.Repeat("a", 40) {
+			if err := f.db.QueryRow(`SELECT head_sha FROM execution_blocks WHERE execution_id = ?`, otherExecution).Scan(&head); err != nil || head != input.HeadSHA {
 				t.Fatalf("block head=%s err=%v", head, err)
 			}
 			if err := f.db.QueryRow(`SELECT payload FROM execution_events WHERE type = 'blocked' AND execution_id = ?`, otherExecution).Scan(&payload); err != nil {
@@ -87,6 +89,60 @@ func TestContextBuilderVersionConflictsBlockBeforeExecution(t *testing.T) {
 			// A repeated failure cannot create another block/event or run a harness.
 			status, body = postContext(t, f, token, contextPath, input)
 			assertAuthError(t, status, body, 409, Conflict)
+			assertContextCounts(t, f, 0, 2)
+		})
+	}
+}
+
+func TestContextBuilderContinueBlocksAtCurrentHead(t *testing.T) {
+	for _, layer := range []string{"project", "harness"} {
+		t.Run(layer, func(t *testing.T) {
+			f, token, input := contextFixture(t, ContextConfig{})
+			repo, baseSHA := contextRepo(t, "AGENTS.md", "Pinned project instructions")
+			worktree := filepath.Join(t.TempDir(), "continued")
+			projectGit(t, repo, "worktree", "add", "-b", "continued-task", worktree, baseSHA)
+			writeContextFile(t, worktree, "implementation.txt", "Previous execution's work")
+			projectGit(t, worktree, "add", ".")
+			projectGit(t, worktree, "commit", "--quiet", "-m", "previous execution")
+			headSHA, err := gitcontext.HeadCommitSHA(context.Background(), worktree)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if headSHA == baseSHA {
+				t.Fatal("continue fixture must have HEAD different from base_sha")
+			}
+			attachContextWorktree(t, f)
+			if _, err := f.db.Exec(`UPDATE worktrees SET path = ?, base_sha = ? WHERE id = 'context-worktree'`, worktree, baseSHA); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`UPDATE executions SET status = 'failed', base_sha = ?, harness_head_sha = ?,
+				worktree_id = 'context-worktree' WHERE id = ?`, baseSHA, headSHA, streamExecution); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`UPDATE executions SET mode = 'continue', base_sha = ? WHERE id = ?`, baseSHA, otherExecution); err != nil {
+				t.Fatal(err)
+			}
+			input.Project, err = projectcontext.Read(context.Background(), worktree, baseSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if layer == "harness" {
+				input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+			} else {
+				input.Project[0].SourceCommitSHA = headSHA
+			}
+			input.HeadSHA = headSHA
+			status, body := postContext(t, f, token, contextPath, input)
+			assertAuthError(t, status, body, 409, Conflict)
+			assertContextState(t, f, "blocked", "blocked", "", "context_conflict")
+			var blockedHead, savedBase string
+			if err := f.db.QueryRow(`SELECT b.head_sha, e.base_sha FROM execution_blocks b
+				JOIN executions e ON e.id = b.execution_id WHERE e.id = ?`, otherExecution).Scan(&blockedHead, &savedBase); err != nil {
+				t.Fatal(err)
+			}
+			if blockedHead != headSHA || savedBase != baseSHA {
+				t.Fatalf("block head_sha=%s, actual HEAD=%s, saved base_sha=%s, inherited base_sha=%s", blockedHead, headSHA, savedBase, baseSHA)
+			}
 			assertContextCounts(t, f, 0, 2)
 		})
 	}
@@ -210,6 +266,7 @@ func TestContextBuilderConfigurationFailures(t *testing.T) {
 	for _, failure := range []string{"missing required file", "registered SHA", "registered version", "definition hash", "unknown adapter", "too much context"} {
 		t.Run(failure, func(t *testing.T) {
 			f, token, input := contextFixture(t, ContextConfig{})
+			attachContextWorktree(t, f)
 			switch failure {
 			case "missing required file":
 				input.Harness = []gitcontext.File{}
@@ -239,20 +296,37 @@ func TestContextBuilderConfigurationFailures(t *testing.T) {
 				t.Fatalf("missing error classification: %s", body)
 			}
 			assertContextState(t, f, "failed", "failed", "config_error", "")
+			var worktreeStatus string
+			if err := f.db.QueryRow(`SELECT status FROM worktrees WHERE id = 'context-worktree'`).Scan(&worktreeStatus); err != nil || worktreeStatus != "retained" {
+				t.Fatalf("failed worktree=%s err=%v; want retained", worktreeStatus, err)
+			}
 			assertContextCounts(t, f, 0, 1)
 		})
 	}
 }
 
 func TestContextBuilderFailureWritesAreAtomic(t *testing.T) {
-	for _, target := range []string{"execution_blocks", "execution_events"} {
-		t.Run(target, func(t *testing.T) {
+	for _, test := range []struct {
+		name, trigger string
+		configError   bool
+	}{
+		{"blocked record", "BEFORE INSERT ON execution_blocks", false},
+		{"blocked event", "BEFORE INSERT ON execution_events", false},
+		{"blocked retention", "BEFORE UPDATE ON worktrees", false},
+		{"failed event", "BEFORE INSERT ON execution_events", true},
+		{"failed retention", "BEFORE UPDATE ON worktrees", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			f, token, input := contextFixture(t, ContextConfig{})
 			attachContextWorktree(t, f)
-			if _, err := f.db.Exec(`CREATE TRIGGER reject_context_failure BEFORE INSERT ON ` + target + ` BEGIN SELECT RAISE(FAIL, 'injected'); END`); err != nil {
+			if _, err := f.db.Exec(`CREATE TRIGGER reject_context_failure ` + test.trigger + ` BEGIN SELECT RAISE(FAIL, 'injected'); END`); err != nil {
 				t.Fatal(err)
 			}
-			input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+			if test.configError {
+				input.Harness = []gitcontext.File{}
+			} else {
+				input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+			}
 			status, body := postContext(t, f, token, contextPath, input)
 			assertAuthError(t, status, body, 500, Internal)
 			assertContextState(t, f, "preparing", "running", "", "")

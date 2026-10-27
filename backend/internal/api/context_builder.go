@@ -149,7 +149,7 @@ func projectConfigPath(name string) bool {
 
 // Persist the state, classification, block record and events together. Any
 // write failure leaves the Execution preparing and the context unpinned.
-func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.ContextExecution, failure *contextBuildError) error {
+func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.ContextExecution, headSHA string, failure *contextBuildError) error {
 	to, classification := model.ExecutionFailed, string(model.ErrorConfig)
 	if failure.conflict {
 		to, classification = model.ExecutionBlocked, string(model.BlockContextConflict)
@@ -158,16 +158,17 @@ func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.Co
 		FromTask: execution.TaskStatus, FromExecution: execution.Status, ToExecution: to}); err != nil {
 		return err
 	}
+	// Spec 06 section 3.6 retains worktrees on both failure and Blocked.
+	if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET status = 'retained'
+		WHERE id = (SELECT worktree_id FROM executions WHERE id = ?)`, execution.ID); err != nil {
+		return err
+	}
 	if failure.conflict {
 		blockID := ulid.Make().String()
 		if err := store.RecordExecutionBlock(ctx, tx, store.ExecutionBlock{
-			ID: blockID, ExecutionID: execution.ID, Cause: classification, HeadSHA: execution.BaseSHA,
+			ID: blockID, ExecutionID: execution.ID, Cause: classification, HeadSHA: headSHA,
 			Detail: map[string]any{"field": failure.field, "reason": failure.reason},
 		}); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET status = 'retained'
-			WHERE id = (SELECT worktree_id FROM executions WHERE id = ?)`, execution.ID); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]string{"cause": classification, "blockId": blockID})
@@ -185,12 +186,12 @@ func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.Co
 	return err
 }
 
-func contextBuildResponse(ctx context.Context, tx *sql.Tx, execution store.ContextExecution, err error) error {
+func contextBuildResponse(ctx context.Context, tx *sql.Tx, execution store.ContextExecution, headSHA string, err error) error {
 	var failure *contextBuildError
 	if !errors.As(err, &failure) {
 		return err
 	}
-	if err := recordContextBuildError(ctx, tx, execution, failure); err != nil {
+	if err := recordContextBuildError(ctx, tx, execution, headSHA, failure); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

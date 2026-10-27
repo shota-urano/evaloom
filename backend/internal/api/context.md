@@ -10,12 +10,18 @@
 所有権確認と保存には同じDBトランザクションを使う。
 
 要求形式は次のとおり。空のファイル一覧も両方を明示する。
+Runnerは送信直前にworktreeの現在のHEADを`gitcontext.HeadCommitSHA`で取得し、
+必須のheadShaとして送る。これはContextの固定元であるbase_shaとは別に扱う。
+APIでの受け取り方法は仕様に未定義のため、hb9.4の修正時にこの必須項目を追加した。
+既存のSHA検証と同じく小文字の完全なcommit SHAを要求し、省略・不正値は400で拒否する。
+その場合は状態・Context・イベント・worktreeを変更せず、base_shaによる補完はしない。
 既存の`projectcontext.Read`と`harnesscontext.Read`が返すFileをそのままJSON化できる。
 `content`は元のバイト列をbase64にした文字列とする。FileのJSON処理が変換と復号を行い、
 不正なUTF-8を含む内容も変えずに転送する。ハッシュは復号した元のバイト列で照合する。
 
 ```json
 {
+  "headSha": "<Runnerが確認した現在のHEAD>",
   "project": [
     {"path":"AGENTS.md","content":"<base64>","contentHash":"<SHA-256>","sourceCommitSha":"<base_sha>"}
   ],
@@ -38,8 +44,12 @@ commit SHA・定義ハッシュを検証する。現在のproject_harnesses割�
 failed(config_error)にする。提出したProject/HarnessファイルのSHAが固定値と異なる場合は
 構造的な矛盾としてTaskとExecutionをblocked、execution_blocks.causeをcontext_conflictにする。
 blockedではerror_classに値を入れず、causeで分類する。HTTPは409でdetails.reasonも
-context_conflictとする。ブロックには準備時点のbase_shaを記録し、関連worktreeをretainedにする。
-状態遷移・ブロック行・blocked/status_changedイベントは同一トランザクションで保存する。
+context_conflictとする。ブロックのhead_shaには、02-data-model.mdの定義に従い、
+認証済みRunnerが報告したheadShaを保存する。continueでは06-worktree.mdの3.3節に従って
+以前のbase_shaを引き継ぐため、head_shaとbase_shaは異なる場合がある。
+関連worktreeは、blockedとfailed(config_error)のどちらでもretainedにする
+（06-worktree.mdの3.6節）。状態遷移・エラー分類・ブロック行・worktreeの保持状態・
+blocked/status_changedイベントは同一トランザクションで保存する。
 意味の矛盾の判定や、ルートAGENTS.mdを必須とする独自規則は追加していない。
 
 4.3のスキーマにはファイルのパス指定が無いため、hb9.4の実装判断として任意のcontextFilesを

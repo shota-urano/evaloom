@@ -32,6 +32,9 @@ type ContextConfig struct {
 }
 
 type contextInput struct {
+	// The authenticated Runner reads the worktree HEAD immediately before
+	// submitting Context. On continue this can differ from the pinned base.
+	HeadSHA string            `json:"headSha"`
 	Project []gitcontext.File `json:"project"`
 	Harness []gitcontext.File `json:"harness"`
 }
@@ -83,9 +86,13 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 			WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Execution is missing its context pins"})
 			return
 		}
+		if !fullCommitSHA(input.HeadSHA) {
+			WriteError(w, logger, invalid("headSha", "invalid_format"))
+			return
+		}
 		submitted, err := submittedRevisions(input, execution)
 		if err != nil {
-			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, err))
 			return
 		}
 		existing, err := store.ListContextRevisions(r.Context(), tx, id)
@@ -101,25 +108,25 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 		}
 		builder, err := newContextBuilder(r.Context(), tx, execution, adapters)
 		if err != nil {
-			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, err))
 			return
 		}
 		if len(existing) > 0 {
 			result, err := builder.build(existing)
 			if err != nil {
-				WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+				WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, err))
 				return
 			}
 			writeJSON(w, http.StatusOK, result)
 			return
 		}
 		if err := builder.checkSelection(submitted); err != nil {
-			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, err))
 			return
 		}
 		globals, err := readGlobalContext(r.Context(), config)
 		if err != nil {
-			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, &contextBuildError{field: "global", reason: "read_failed"}))
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, &contextBuildError{field: "global", reason: "read_failed"}))
 			return
 		}
 		taskContent, err := json.Marshal(struct {
@@ -137,7 +144,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 		revisions = append(revisions, store.ContextRevision{Layer: "task", Kind: "task_input", SourceCommitSHA: execution.BaseSHA, Content: string(taskContent), ContentHash: contextHash(string(taskContent))})
 		result, err := builder.build(revisions)
 		if err != nil {
-			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, input.HeadSHA, err))
 			return
 		}
 		now := time.Now().UTC()
