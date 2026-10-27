@@ -22,14 +22,16 @@ type File = gitcontext.File
 // target contents cannot be pinned by reading the link's blob. Submodules are
 // not traversed. On any failure, no partial snapshot is returned.
 func Read(ctx context.Context, worktree, baseSHA string) ([]File, error) {
-	files, err := gitcontext.Read(ctx, worktree, baseSHA, isInstruction)
+	files, err := gitcontext.Read(ctx, worktree, baseSHA, IsInstruction)
 	if err != nil {
 		return nil, fmt.Errorf("project context: %w", err)
 	}
 	return files, nil
 }
 
-func isInstruction(filePath string) bool {
+// IsInstruction reports the Project paths selected by spec 07 section 3.2.
+// Callers must validate that filePath is a normalized repository-relative path.
+func IsInstruction(filePath string) bool {
 	switch path.Base(filePath) {
 	case "AGENTS.md", "CLAUDE.md", ".mcp.json":
 		return true

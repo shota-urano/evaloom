@@ -19,6 +19,10 @@
   空白以外を含む文字列とし、Phase 1のcollaborationPolicyは`solo`、
   evaluationPolicyVersionは明示的なnullだけを受け付ける。
   Model Registryや追加引数の実行時の許可判定はこの登録処理に追加しない。
+- hb9.4では、ファイル選択のパス欄が仕様に無いため、任意の`contextFiles`配列を追加した。
+  個別のリポジトリ相対パスだけを指定し、省略・空配列は空の選択とする。
+  null・重複・絶対パス・正規化されていないパスは登録時に拒否する。
+  選択も定義全文とハッシュに含める。実行時の扱いは`context.md`を参照する。
 - YAMLのコメント・表記は保存対象に含めず、全文をキー順の安定したJSONへ変換して
   definitionに保存する。definition_hashはその保存JSONバイト列のSHA-256とする。
   YAMLパーサーにはyaml.v3、ULID生成にはoklog/ulidを使う。

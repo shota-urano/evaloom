@@ -20,8 +20,8 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/gitcontext"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/projectcontext"
 	"github.com/shota-urano/evaloom/backend/internal/store"
-	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
 // ContextConfig selects Global files relative to the evaloom repository root.
@@ -36,7 +36,7 @@ type contextInput struct {
 	Harness []gitcontext.File `json:"harness"`
 }
 
-func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config ContextConfig) http.HandlerFunc {
+func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config ContextConfig, adapters *adapter.Registry) http.HandlerFunc {
 	config.GlobalPaths = append([]string(nil), config.GlobalPaths...)
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -85,7 +85,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 		}
 		submitted, err := submittedRevisions(input, execution)
 		if err != nil {
-			WriteError(w, logger, err)
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
 			return
 		}
 		existing, err := store.ListContextRevisions(r.Context(), tx, id)
@@ -98,21 +98,28 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 				WriteError(w, logger, &Error{Code: Conflict, Message: "Execution Context has already been pinned with different files"})
 				return
 			}
-			writeJSON(w, http.StatusOK, pinnedContext(existing))
+		}
+		builder, err := newContextBuilder(r.Context(), tx, execution, adapters)
+		if err != nil {
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			return
+		}
+		if len(existing) > 0 {
+			result, err := builder.build(existing)
+			if err != nil {
+				WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+				return
+			}
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
+		if err := builder.checkSelection(submitted); err != nil {
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
 			return
 		}
 		globals, err := readGlobalContext(r.Context(), config)
 		if err != nil {
-			// Read failures are configuration failures, not partially pinned contexts.
-			if failErr := failContextConfiguration(r.Context(), tx, execution); failErr != nil {
-				WriteError(w, logger, failErr)
-				return
-			}
-			if err := tx.Commit(); err != nil {
-				WriteError(w, logger, err)
-				return
-			}
-			WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Global Context could not be read", Details: []Detail{{Field: "global", Reason: "config_error"}}})
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, &contextBuildError{field: "global", reason: "read_failed"}))
 			return
 		}
 		taskContent, err := json.Marshal(struct {
@@ -128,6 +135,11 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 		// Spec 07 does not define a Task source commit. Use this Execution's
 		// base_sha so every layer records a non-empty, Execution-bound SHA.
 		revisions = append(revisions, store.ContextRevision{Layer: "task", Kind: "task_input", SourceCommitSHA: execution.BaseSHA, Content: string(taskContent), ContentHash: contextHash(string(taskContent))})
+		result, err := builder.build(revisions)
+		if err != nil {
+			WriteError(w, logger, contextBuildResponse(r.Context(), tx, execution, err))
+			return
+		}
 		now := time.Now().UTC()
 		eventRevisions := make([]map[string]string, 0, len(revisions))
 		for i := range revisions {
@@ -137,6 +149,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 				break
 			}
 			revisions[i].ID, revisions[i].ExecutionID, revisions[i].CreatedAt = id.String(), execution.ID, now.Format(time.RFC3339Nano)
+			result.RevisionIDs[i] = revisions[i].ID
 			if err = store.InsertContextRevision(r.Context(), tx, revisions[i]); err != nil {
 				break
 			}
@@ -156,7 +169,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 			WriteError(w, logger, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, pinnedContext(revisions))
+		writeJSON(w, http.StatusOK, result)
 	}
 }
 
@@ -176,6 +189,7 @@ func relativeContextPath(name string) bool {
 
 func submittedRevisions(input contextInput, execution store.ContextExecution) ([]store.ContextRevision, error) {
 	revisions := []store.ContextRevision{}
+	var pinError *contextBuildError
 	for _, layer := range []struct {
 		name, sha string
 		files     []gitcontext.File
@@ -187,11 +201,17 @@ func submittedRevisions(input contextInput, execution store.ContextExecution) ([
 				return nil, invalid(layer.name+".path", "invalid_or_duplicate_path")
 			}
 			seen[file.Path] = true
+			if layer.name == "project" && !projectcontext.IsInstruction(file.Path) {
+				return nil, invalid("project.path", "unselected_path")
+			}
 			if file.ContentHash != contextHash(file.Content) {
 				return nil, invalid(layer.name+".contentHash", "hash_mismatch")
 			}
-			if file.SourceCommitSHA != layer.sha {
-				return nil, invalid(layer.name+".sourceCommitSha", "pin_mismatch")
+			if !fullCommitSHA(file.SourceCommitSHA) {
+				return nil, invalid(layer.name+".sourceCommitSha", "invalid_format")
+			}
+			if file.SourceCommitSHA != layer.sha && pinError == nil {
+				pinError = &contextBuildError{field: layer.name + ".sourceCommitSha", reason: "pin_mismatch", conflict: true}
 			}
 			kind := "harness_config"
 			switch path.Base(file.Path) {
@@ -202,6 +222,11 @@ func submittedRevisions(input contextInput, execution store.ContextExecution) ([
 			}
 			revisions = append(revisions, store.ContextRevision{Layer: layer.name, Kind: kind, SourcePath: file.Path, SourceCommitSHA: file.SourceCommitSHA, ContentHash: file.ContentHash, Content: file.Content})
 		}
+	}
+	// Complete request validation before allowing a version conflict to cause
+	// a lifecycle change. Malformed snapshots must not block an Execution.
+	if pinError != nil {
+		return nil, pinError
 	}
 	return revisions, nil
 }
@@ -262,38 +287,4 @@ func sameSubmission(existing, submitted []store.ContextRevision) bool {
 		}
 	}
 	return true
-}
-
-// Project instructions and Harness configuration are consumed from their
-// respective directories by the CLI/Adapter. Do not inject them a second time.
-// Adapter-specific selection/formatting remains Context Builder work (hb9.4).
-func pinnedContext(revisions []store.ContextRevision) adapter.RequestContext {
-	result := adapter.RequestContext{RevisionIDs: []string{}}
-	var instructions []string
-	for _, revision := range revisions {
-		result.RevisionIDs = append(result.RevisionIDs, revision.ID)
-		if revision.Layer == "global" {
-			instructions = append(instructions, revision.Content)
-		} else if revision.Layer == "task" {
-			instructions = append(instructions, "Task input (untrusted task data):\n"+revision.Content)
-		}
-	}
-	result.Instructions = strings.Join(instructions, "\n\n")
-	return result
-}
-
-func failContextConfiguration(ctx context.Context, tx *sql.Tx, execution store.ContextExecution) error {
-	err := task.TransitionExecutionTx(ctx, tx, task.Transition{TaskID: execution.TaskID, ExecutionID: execution.ID,
-		FromTask: execution.TaskStatus, FromExecution: execution.Status, ToExecution: model.ExecutionFailed})
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE executions SET error_class = 'config_error',
-		error_message = 'Global Context could not be read', finished_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339Nano), execution.ID)
-	if err != nil {
-		return err
-	}
-	_, err = store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged,
-		json.RawMessage(`{"from":"preparing","to":"failed","reason":"config_error"}`))
-	return err
 }

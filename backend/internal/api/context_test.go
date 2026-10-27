@@ -26,6 +26,9 @@ const contextPath = "/api/executions/" + otherExecution + "/context"
 func contextFixture(t *testing.T, config ContextConfig) (*authFixture, string, contextInput) {
 	t.Helper()
 	f := newAuthFixture(t, config)
+	if err := f.adapters.Register("codex", &contextTestAdapter{native: []string{"AGENTS.md", "CLAUDE.md"}}); err != nil {
+		t.Fatal(err)
+	}
 	token := registerAuthRunner(t, f)
 	seedStreamExecutions(t, f)
 	for _, statement := range []string{
@@ -47,9 +50,36 @@ func contextFixture(t *testing.T, config ContextConfig) (*authFixture, string, c
 			t.Fatal(err)
 		}
 	}
+	setContextDefinition(t, f, "codex", []string{"prompts/developer.md"})
 	return f, token, contextInput{
 		Project: []gitcontext.File{testContextFile("AGENTS.md", "Project instructions\r\n日本語\n", strings.Repeat("a", 40))},
 		Harness: []gitcontext.File{testContextFile("prompts/developer.md", "Harness prompt\n", strings.Repeat("b", 40))},
+	}
+}
+
+// Context tests exercise only declared capabilities, never launch a CLI.
+type contextTestAdapter struct {
+	adapter.Adapter
+	native []string
+}
+
+func (a *contextTestAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{NativeInstructionFiles: a.native}
+}
+
+func setContextDefinition(t *testing.T, f *authFixture, name string, files []string) {
+	t.Helper()
+	definition, err := json.Marshal(map[string]any{
+		"profileVersion": "1.2.0", "harnessVersion": "1.2.0", "modelId": "test-model",
+		"promptVersion": "1", "skillVersions": []any{}, "toolConfiguration": map[string]any{"allowedTools": []any{}},
+		"contextPolicyVersion": "1", "executionConfiguration": map[string]any{"adapter": name, "args": []any{}},
+		"collaborationPolicy": "solo", "evaluationPolicyVersion": nil, "contextFiles": files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`UPDATE harness_profiles SET definition = ?, definition_hash = ? WHERE id = 'profile-a'`, string(definition), contextHash(string(definition))); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -170,6 +200,9 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 	if _, err := f.db.Exec(`UPDATE executions SET base_sha = ?, profile_commit_sha = ? WHERE id = ?`, baseSHA, profileSHA, otherExecution); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.db.Exec(`UPDATE harness_profiles SET commit_sha = ? WHERE id = 'profile-a'`, profileSHA); err != nil {
+		t.Fatal(err)
+	}
 	status, body := postContext(t, f, token, contextPath, input)
 	response := requireContext(t, status, body)
 	assertContextCounts(t, f, 4, 1)
@@ -230,17 +263,22 @@ func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix stri
 }
 
 func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
-	for _, test := range []string{"hash", "project SHA", "harness SHA", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field", "invalid base64", "unknown file field"} {
+	for _, test := range []string{"hash", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field", "invalid base64", "unknown file field", "unselected project", "unselected harness", "malformed SHA", "bad hash after wrong pin"} {
 		t.Run(test, func(t *testing.T) {
 			f, token, input := contextFixture(t, ContextConfig{})
 			var value any = input
 			switch test {
 			case "hash":
 				input.Project[0].ContentHash = strings.Repeat("0", 64)
-			case "project SHA":
-				input.Project[0].SourceCommitSHA = strings.Repeat("b", 40)
-			case "harness SHA":
-				input.Harness[0].SourceCommitSHA = strings.Repeat("a", 40)
+			case "malformed SHA":
+				input.Harness[0].SourceCommitSHA = "not-a-commit"
+			case "bad hash after wrong pin":
+				input.Harness[0].SourceCommitSHA = strings.Repeat("c", 40)
+				input.Project[0].ContentHash = "invalid"
+			case "unselected project":
+				input.Project[0].Path = "README.md"
+			case "unselected harness":
+				input.Harness[0].Path = "other-profile.md"
 			case "absolute":
 				input.Project[0].Path = "/AGENTS.md"
 			case "traversal":
@@ -265,6 +303,7 @@ func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
 			status, body := postContext(t, f, token, contextPath, value)
 			assertAuthError(t, status, body, 400, ValidationFailed)
 			assertContextCounts(t, f, 0, 0)
+			assertContextState(t, f, "preparing", "running", "", "")
 		})
 	}
 }
