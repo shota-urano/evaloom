@@ -39,7 +39,10 @@ func open(ctx context.Context, path string, source fs.FS) (*sql.DB, error) {
 	// Treat the supplied path as a filename, never as a caller-provided SQLite
 	// URI. Apply foreign_keys to every connection, including replacements.
 	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
-	query := url.Values{"_pragma": {"foreign_keys(1)"}}
+	// Acquire the write reservation before lifecycle reads (notably claim's
+	// capacity check). BeginTx must use BEGIN IMMEDIATE, never a deferred read
+	// transaction that could race another writer before its first UPDATE.
+	query := url.Values{"_pragma": {"foreign_keys(1)"}, "_txlock": {"immediate"}}
 	dsn.RawQuery = query.Encode()
 	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {

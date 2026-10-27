@@ -40,7 +40,7 @@ func TestVerificationMigrationUpgradesAndRoundTripsAllTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6})
 	sha := strings.Repeat("a", 40)
 	for _, test := range []struct {
 		table string

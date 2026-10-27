@@ -114,7 +114,9 @@ func TestRunnerCredentialsAreCheckedAgainstDatabaseOnEveryRequest(t *testing.T) 
 		})
 	}
 	status, body := request()
-	assertAuthError(t, status, body, 422, PreconditionFailed)
+	if status != http.StatusNoContent || len(body) != 0 {
+		t.Fatalf("empty claim status=%d body=%s", status, body)
+	}
 	if _, err := f.db.Exec(`UPDATE runners SET token_hash = 'revoked' WHERE id = 'mac-mini'`); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +140,8 @@ func TestRunnerAuthenticationFailsClosedOnDatabaseErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "ambiguous identity":
-				if _, err := f.db.Exec(`INSERT INTO runners SELECT 'other', name, token_hash, worktree_root, status, last_heartbeat_at, created_at FROM runners`); err != nil {
+				if _, err := f.db.Exec(`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
+					SELECT 'other', name, token_hash, worktree_root, status, last_heartbeat_at, created_at FROM runners`); err != nil {
 					t.Fatal(err)
 				}
 			}

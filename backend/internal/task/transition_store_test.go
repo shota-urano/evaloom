@@ -373,7 +373,8 @@ func lifecycleDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, `INSERT INTO runners VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
+		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
 		default_role, context_location, copy_allowlist, test_file_patterns, allowed_operations, approval_policy, timeouts, created_at, updated_at)
 		VALUES ('project', 'Project', '/repos/project', 'https://example.test/repo.git', 'runner', 'main',

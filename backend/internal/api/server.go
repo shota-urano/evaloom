@@ -36,17 +36,14 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 	mux := http.NewServeMux()
 	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
-	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Authentication probe only: claiming work belongs to the task lifecycle.
-		WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Runner claim is not available"})
-	})))
+	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
+	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
+	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	// Reserve the remaining declared Runner routes in the correct auth class.
-	// They perform no heartbeat, event or result processing yet.
+	// They perform no event processing yet.
 	for _, pattern := range []string{
-		"POST /api/runners/{runnerID}/heartbeat",
 		"POST /api/executions/{id}/events",
-		"POST /api/executions/{id}/result",
 	} {
 		mux.Handle(pattern, auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
@@ -64,6 +61,8 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 
 func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/tasks", createTask(db, logger))
+	mux.HandleFunc("POST /api/tasks/{id}/cancel", cancelTask(db, logger))
 	mux.HandleFunc("GET /api/projects", listProjects(db, logger))
 	mux.HandleFunc("POST /api/projects", writeProject(db, logger, true))
 	mux.HandleFunc("GET /api/projects/{id}", getProject(db, logger))

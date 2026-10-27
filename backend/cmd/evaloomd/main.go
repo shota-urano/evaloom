@@ -97,25 +97,39 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 	served := make(chan error, 1)
+	recoveryStartedAt := time.Now().UTC()
 	go func() { served <- server.Serve(listener) }()
+	// Serve heartbeats throughout the startup grace period so a surviving
+	// Runner can keep its Execution after a Control Plane restart.
+	recoveryTimer := time.NewTimer(store.StartupHeartbeatGrace)
+	defer recoveryTimer.Stop()
 	fmt.Fprintf(output, "evaloomd: listening on %s\nevaloomd: owner login URL: %s\n", listener.Addr(), auth.LoginURL())
 
-	select {
-	case err := <-served:
-		return fmt.Errorf("evaloomd: serve: %w", err)
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			server.Close()
-			<-served
-			return fmt.Errorf("evaloomd: shutdown: %w", err)
-		}
-		err := <-served
-		if !errors.Is(err, http.ErrServerClosed) {
+	for {
+		select {
+		case <-recoveryTimer.C:
+			if err := recoverOnStartup(ctx, db, recoveryStartedAt, time.Now().UTC()); err != nil {
+				logger.Error("startup recovery failed", "error", err)
+				// A failed transaction has no partial effects. Retry recovery, never
+				// the Executions, while keeping heartbeat and shutdown available.
+				recoveryTimer.Reset(store.StartupHeartbeatGrace)
+			}
+		case err := <-served:
 			return fmt.Errorf("evaloomd: serve: %w", err)
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				server.Close()
+				<-served
+				return fmt.Errorf("evaloomd: shutdown: %w", err)
+			}
+			err := <-served
+			if !errors.Is(err, http.ErrServerClosed) {
+				return fmt.Errorf("evaloomd: serve: %w", err)
+			}
+			return nil
 		}
-		return nil
 	}
 }
 
