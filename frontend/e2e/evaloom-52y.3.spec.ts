@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base, type Page } from '@playwright/test'
 
 import { run, startEvaloomd } from './evaloomd.ts'
+import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.3: Harnesses 一覧・登録・編集・詳細（Profile の版の登録と一覧）。
 //
@@ -22,60 +23,7 @@ const SCREENSHOTS = fileURLToPath(new URL('../../docs/design/screenshots/', impo
 const HARNESS = 'claude-developer'
 const HARNESS_NAME = 'Claude Developer'
 
-type Repo = { path: string; url: string }
 type Server = { origin: string; cookie: string; harness: Repo; project: Repo }
-
-function git(cwd: string, ...args: string[]): string {
-  return run('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
-    cwd,
-  }).trim()
-}
-
-/** origin（bare リポジトリ）に main を push 済みの Git リポジトリを作る。 */
-function createRepo(root: string, name: string): Repo {
-  const url = join(root, 'remotes', `${name}.git`)
-  const path = join(root, 'repos', name)
-  mkdirSync(url, { recursive: true })
-  mkdirSync(path, { recursive: true })
-  git(url, 'init', '--quiet', '--bare', '-b', 'main')
-  git(path, 'init', '--quiet', '-b', 'main')
-  git(path, 'commit', '--quiet', '--allow-empty', '-m', 'init')
-  git(path, 'remote', 'add', 'origin', url)
-  git(path, 'push', '--quiet', 'origin', 'main')
-  return { path, url }
-}
-
-/** 02-data-model 4.3 の Profile 定義。adapter は Harness の Adapter（claude_code）と一致させる。 */
-function profileYAML(version: string, promptVersion: string) {
-  return `profileVersion: "${version}"
-harnessVersion: "${version}"
-modelId: "claude-e2e-model"
-promptVersion: "${promptVersion}"
-skillVersions:
-  - { name: "e2e-skill", version: "1" }
-toolConfiguration:
-  allowedTools: ["read", "write"]
-contextPolicyVersion: "1"
-executionConfiguration:
-  adapter: "claude_code"
-  args: []
-collaborationPolicy: "solo"
-evaluationPolicyVersion: null
-`
-}
-
-/**
- * Harness リポジトリに版 version の定義を commit し、profile/v<version> のタグを付ける（既にあれば付け替える）。
- * 戻り値はタグが指す commit SHA。
- */
-function tagProfile(repo: string, version: string, promptVersion: string): string {
-  mkdirSync(join(repo, 'evaloom'), { recursive: true })
-  writeFileSync(join(repo, 'evaloom', 'profile.yaml'), profileYAML(version, promptVersion))
-  git(repo, 'add', 'evaloom/profile.yaml')
-  git(repo, 'commit', '--quiet', '-m', `profile ${version} (${promptVersion})`)
-  git(repo, 'tag', '-f', `profile/v${version}`)
-  return git(repo, 'rev-parse', `refs/tags/profile/v${version}^{commit}`)
-}
 
 function seedHarnesses(db: string, harness: Repo, other: string) {
   const now = new Date().toISOString()
