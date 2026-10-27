@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -344,6 +345,104 @@ func TestResultProgressAndStaleReports(t *testing.T) {
 	}
 	if _, err := ParseTimestamp(started); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResultRejectsChangingSavedBaseSHA(t *testing.T) {
+	for _, pinned := range []bool{false, true} {
+		for _, target := range []string{"running", "failed", "blocked"} {
+			t.Run(fmt.Sprintf("context_pinned=%t/to_%s", pinned, target), func(t *testing.T) {
+				f, token, input := contextFixture(t, ContextConfig{})
+				attachContextWorktree(t, f)
+				if pinned {
+					status, body := postContext(t, f, token, contextPath, input)
+					requireContext(t, status, body)
+				}
+				before := readResultSnapshot(t, f, otherExecution)
+				revisions := pinnedRows(t, f)
+				if pinned {
+					var projects int
+					for _, revision := range revisions {
+						if revision.Layer == "project" {
+							projects++
+							if revision.SourceCommitSHA != input.HeadSHA {
+								t.Fatalf("unexpected Project Context source: %+v", revision)
+							}
+						}
+					}
+					if projects == 0 {
+						t.Fatal("regression requires pinned Project Context")
+					}
+				}
+				report := resultBody("preparing", target)
+				report["baseSha"] = strings.Repeat("c", 40)
+				status, body := postResult(t, f, token, otherExecution, report)
+				if status != 422 {
+					t.Fatalf("base SHA mismatch report=%d %s; want 422", status, body)
+				}
+				assertAuthError(t, status, body, 422, PreconditionFailed)
+				if after := readResultSnapshot(t, f, otherExecution); after != before {
+					t.Fatalf("base SHA mismatch mutated DB: before=%+v after=%+v", before, after)
+				}
+				var base string
+				if err := f.db.QueryRow(`SELECT base_sha FROM executions WHERE id = ?`, otherExecution).Scan(&base); err != nil || base != input.HeadSHA {
+					t.Fatalf("saved base SHA changed: %s err=%v", base, err)
+				}
+				if after := pinnedRows(t, f); !reflect.DeepEqual(after, revisions) {
+					t.Fatalf("base SHA mismatch mutated Context: before=%+v after=%+v", revisions, after)
+				}
+			})
+		}
+	}
+}
+
+func TestResultAcceptsInitialBaseSHA(t *testing.T) {
+	f, token, id, _ := resultFixture(t, "claimed")
+	var base sql.NullString
+	if err := f.db.QueryRow(`SELECT base_sha FROM executions WHERE id = ?`, id).Scan(&base); err != nil || base.Valid {
+		t.Fatalf("expected unset base SHA: %+v err=%v", base, err)
+	}
+	input := resultBody("claimed", "preparing")
+	input["baseSha"] = strings.Repeat("a", 40)
+	status, body := postResult(t, f, token, id, input)
+	if status != 204 {
+		t.Fatalf("initial base SHA report=%d %s", status, body)
+	}
+	if err := f.db.QueryRow(`SELECT base_sha FROM executions WHERE id = ?`, id).Scan(&base); err != nil || !base.Valid || base.String != input["baseSha"] {
+		t.Fatalf("initial base SHA not saved: %+v err=%v", base, err)
+	}
+	if after := readResultSnapshot(t, f, id); after.Execution != "preparing" || after.Task != "running" || after.Requests != 0 {
+		t.Fatalf("initial base SHA report state=%+v", after)
+	}
+}
+
+func TestResultPreservesContextWithSameOrOmittedBaseSHA(t *testing.T) {
+	for _, same := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same=%t", same), func(t *testing.T) {
+			f, token, input := contextFixture(t, ContextConfig{})
+			attachContextWorktree(t, f)
+			status, body := postContext(t, f, token, contextPath, input)
+			requireContext(t, status, body)
+			revisions := pinnedRows(t, f)
+			report := resultBody("preparing", "running")
+			if same {
+				report["baseSha"] = input.HeadSHA
+			}
+			status, body = postResult(t, f, token, otherExecution, report)
+			if status != 204 {
+				t.Fatalf("same or omitted base SHA report=%d %s", status, body)
+			}
+			if after := readResultSnapshot(t, f, otherExecution); after.Execution != "running" || after.Task != "running" || after.Requests != 0 {
+				t.Fatalf("same or omitted base SHA report state=%+v", after)
+			}
+			var base string
+			if err := f.db.QueryRow(`SELECT base_sha FROM executions WHERE id = ?`, otherExecution).Scan(&base); err != nil || base != input.HeadSHA {
+				t.Fatalf("saved base SHA changed: %s err=%v", base, err)
+			}
+			if after := pinnedRows(t, f); !reflect.DeepEqual(after, revisions) {
+				t.Fatalf("accepted result mutated Context: before=%+v after=%+v", revisions, after)
+			}
+		})
 	}
 }
 

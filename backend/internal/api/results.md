@@ -24,6 +24,10 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   `harnessSessionId`、`errorClass`、`errorMessage`とする。
   省略またはnullの任意文字列・数値は既存値を保持する。
   SHAの形式は既存のContext APIと同じ検証を使う。
+  `baseSha`は初回設定と保存済みの値と同じ報告だけを受け付ける。
+  保存済みの開始点SHAと異なる値は、Context固定の前後を問わず422にし、
+  状態・Context・通知要求を変更しない。仕様06の開始点記録と仕様07の3.2節に従う。
+  不一致時の応答コードは、既存のSHA整合性検証に合わせて422とした。
   保存済みの値を含めて`pushedSha`と`verifiedSha`の一致を確認し、不一致は422にする。
   `worktreeId`は同じTask・Project・Runnerに属し、未削除の既存行だけを参照できる。
   worktreeの作成やGate結果の生成は、それぞれの工程の実装に属する。

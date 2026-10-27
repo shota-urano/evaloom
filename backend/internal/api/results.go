@@ -145,6 +145,12 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 			return invalid(field.name, "invalid_format")
 		}
 	}
+	// The worktree start commit is immutable once recorded (spec 06, 3.2).
+	// Project Context is pinned to this SHA (spec 07, 3.2). This snapshot was
+	// read under the same BEGIN IMMEDIATE transaction used to save the result.
+	if input.BaseSHA != nil && execution.BaseSHA != "" && *input.BaseSHA != execution.BaseSHA {
+		return &Error{Code: PreconditionFailed, Message: "Base SHA must equal the recorded start commit"}
+	}
 	if input.PRNumber != nil && *input.PRNumber < 1 {
 		return invalid("prNumber", "out_of_range")
 	}
