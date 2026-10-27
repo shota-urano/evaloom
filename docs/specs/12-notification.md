@@ -18,7 +18,7 @@ status: confirmed
 | 区分 | 内容 |
 |---|---|
 | 入力 | タスク・Execution の状態遷移（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4） |
-| 出力 | macOS 通知、`notification_sent` イベント |
+| 出力 | macOS 通知、`notification_sent` イベント、送信に失敗したときは `notification_failed` イベント |
 
 ## 3. 処理詳細
 
@@ -74,6 +74,14 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 
 - 同じ Execution の同じ状態について通知は1回だけ送る。送ったことを `notification_sent` イベントで記録し、再起動後に二重に送らない。
 - 通知の送信に失敗しても、タスクの状態遷移は取り消さない。失敗は execution_events と Control Plane のログに残し、管理画面の Dashboard のエラー状況に出す。
+- execution_events には `notification_failed` イベントを書く（[`02-data-model.md`](./02-data-model.md) 5.3）。payload は `kind`・`channel`・`reason` だけにし、エラーの文字列は入れない。エラーの詳細は Control Plane のログにだけ出す（2026-10-27 本人が決定）。
+
+| `reason` | 当てはまる失敗 |
+|---|---|
+| `permission_denied` | 本人が通知を許可していない（ヘルパーが許可なしを返した） |
+| `launch_failed` | ヘルパーを起動できない（パスが無い・`open` が失敗した） |
+| `timeout` | ヘルパーの結果を待つ間に時間切れになった |
+| `other` | 上のどれにも当てはまらない失敗 |
 
 ## 4. 設定値・確定値
 
@@ -88,14 +96,14 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
 
 ## 5. インターフェース
 
-- イベント: `notification_sent`（[`02-data-model.md`](./02-data-model.md) 5.3）
+- イベント: `notification_sent`、`notification_failed`（[`02-data-model.md`](./02-data-model.md) 5.3）
 - 通知先の設定: `GET/PATCH /api/settings`（[`01-architecture.md`](./01-architecture.md) 5.1）
 
 ## 6. エラー処理
 
 | 状況 | 処理 |
 |---|---|
-| 通知の送信失敗 | 状態遷移は取り消さない。記録して Dashboard に出す |
+| 通知の送信失敗 | 状態遷移は取り消さない。`notification_failed` イベントと Control Plane のログに記録して Dashboard に出す |
 | 通知方式が使えない環境（ログインセッションが無い等） | 送信をあきらめ、記録する。再送はしない（案） |
 
 ## 7. スコープ外
