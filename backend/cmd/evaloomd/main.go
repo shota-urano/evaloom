@@ -43,6 +43,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	flags := flag.NewFlagSet("evaloomd", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
+	dataDir := flags.String("data", "", "artifact data directory (default: database parent directory)")
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
 	contextRoot := flags.String("context-root", ".", "evaloom repository root for Global Context")
@@ -80,6 +81,14 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
+	if *dataDir == "" {
+		*dataDir = filepath.Dir(*path)
+	}
+	artifacts, err := store.NewArtifactStore(db, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, artifacts.Close()) }()
 
 	// Bind only after database initialization succeeds. The host is deliberately
 	// not configurable: neither a wildcard nor an IPv6 listener is permitted.
@@ -94,7 +103,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithContext(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}),
+		Handler:           api.NewHandlerWithArtifacts(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

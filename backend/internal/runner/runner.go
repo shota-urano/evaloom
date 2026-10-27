@@ -25,6 +25,7 @@ const heartbeatTimeout = 5 * time.Second
 type Runner struct {
 	bootID, token, heartbeatURL string
 	claimURL                    string
+	controlPlaneURL, dataDir    string
 	client                      *http.Client
 	mu                          sync.Mutex
 	executions                  map[string]context.CancelFunc
@@ -61,6 +62,7 @@ func New(config Config) (*Runner, error) {
 	return &Runner{
 		bootID: hex.EncodeToString(boot[:]), token: token, heartbeatURL: endpoint,
 		claimURL: claimURL, pollInterval: 5 * time.Second,
+		controlPlaneURL: config.ControlPlaneURL, dataDir: config.DataDir,
 		client: &http.Client{
 			Timeout: heartbeatTimeout,
 			// Redirects must not forward credentials or change POST semantics.

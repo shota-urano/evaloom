@@ -106,12 +106,13 @@ Runner用の認証は `01-architecture.md` 3.4のQ3案と5.2、6節、
 SSE配信は `01-architecture.md` 5.1・5.4、保存先とイベント種別は
 `02-data-model.md` 3.2の `execution_events` と5.3に基づく。
 `GET /api/executions/{id}/events` を既存の本人用認証で保護する。
-同じパスのRunner用POSTは従来の認証・404応答を維持する。
-基盤の発行経路はControl Plane内部の `store.AppendExecutionEvent` のみとした。
+基盤実装時点の発行経路はControl Plane内部の `store.AppendExecutionEvent` のみとした。
 実在するExecutionのイベントを永続化でき、業務イベントの発生元やRunnerの
 Execution所有権検証を今回追加する必要がないためである。
 関数はDBとトランザクションの両方を受け付ける。呼び出し元が機密情報を除外し、
 状態変更と同じトランザクションで保存した場合はcommit後に配信する。
+現在は同じパスのRunner用POSTでログも受け付ける。要求形式、再送時の重複排除、
+Artifact登録は`backend/launchd/README.md`の「Runnerのログ収集と再送」を参照する。
 
 以下は仕様に記載がない部分の実装判断。
 
