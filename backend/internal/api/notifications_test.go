@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -219,27 +221,69 @@ func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
 }
 
 func TestNotificationFailureDoesNotRollbackOrRetryAndStillFansOut(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
-	if status != 204 {
-		t.Fatalf("result status=%d body=%s", status, body)
-	}
-	before := readResultSnapshot(t, f, id)
-	broken, healthy := &recordingNotifier{err: errors.New("transport unavailable")}, &recordingNotifier{}
-	d := notification.Dispatcher{DB: f.db, Channels: []notification.Channel{{Name: "broken", Notifier: broken}, {Name: "healthy", Notifier: healthy}}}
-	if err := d.DispatchPending(context.Background()); !errors.Is(err, broken.err) {
-		t.Fatalf("delivery error=%v", err)
-	}
-	after := readResultSnapshot(t, f, id)
-	before.Events++ // Only the healthy transport writes notification_sent.
-	if after != before || len(broken.recorded()) != 1 || len(healthy.recorded()) != 1 {
-		t.Fatalf("state=%+v want=%+v broken=%v healthy=%v", after, before, broken.recorded(), healthy.recorded())
-	}
-	restartNotificationFixture(t, f)
-	fresh := &recordingNotifier{}
-	restarted := notificationDispatcher(f, fresh)
-	if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 0 {
-		t.Fatalf("failed transport retried: %v %v", fresh.recorded(), err)
+	for _, tc := range []struct {
+		reason string
+		err    error
+	}{
+		{"permission_denied", notification.ErrPermissionDenied},
+		{"launch_failed", notification.ErrLaunchFailed},
+		{"timeout", notification.ErrTimeout},
+		{"other", errors.New("permission_denied launch_failed timeout")},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			f, token, id, _ := resultFixture(t, "running")
+			status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+			if status != 204 {
+				t.Fatalf("result status=%d body=%s", status, body)
+			}
+			before := readResultSnapshot(t, f, id)
+			broken, healthy := &recordingNotifier{err: fmt.Errorf("PRIVATE-ERROR-DETAIL: %w", tc.err)}, &recordingNotifier{}
+			d := notification.Dispatcher{DB: f.db, Channels: []notification.Channel{{Name: "broken", Notifier: broken}, {Name: "healthy", Notifier: healthy}}}
+			if err := d.DispatchPending(context.Background()); !errors.Is(err, broken.err) {
+				t.Fatalf("delivery error=%v", err)
+			}
+			after := readResultSnapshot(t, f, id)
+			before.Events += 2 // One failure event and one successful delivery receipt.
+			if after != before || len(broken.recorded()) != 1 || len(healthy.recorded()) != 1 {
+				t.Fatalf("state=%+v want=%+v broken=%v healthy=%v", after, before, broken.recorded(), healthy.recorded())
+			}
+			events, err := store.ListExecutionEvents(context.Background(), f.db, id, 0, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var failed, sent int
+			for _, event := range events {
+				switch event.Type {
+				case model.EventNotificationFailed:
+					failed++
+					var payload map[string]string
+					if err := json.Unmarshal(event.Payload, &payload); err != nil {
+						t.Fatal(err)
+					}
+					if len(payload) != 3 || payload["kind"] != "failed" || payload["channel"] != "broken" || payload["reason"] != tc.reason {
+						t.Fatalf("unsafe or incorrect failure payload: %s", event.Payload)
+					}
+				case model.EventNotificationSent:
+					sent++
+					var payload map[string]string
+					if err := json.Unmarshal(event.Payload, &payload); err != nil || payload["channel"] != "healthy" {
+						t.Fatalf("failed transport recorded as sent: %s, %v", event.Payload, err)
+					}
+				}
+			}
+			if failed != 1 || sent != 1 {
+				t.Fatalf("failed=%d sent=%d; want one of each", failed, sent)
+			}
+			restartNotificationFixture(t, f)
+			fresh := &recordingNotifier{}
+			restarted := notificationDispatcher(f, fresh)
+			if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 0 {
+				t.Fatalf("failed transport retried: %v %v", fresh.recorded(), err)
+			}
+			if after := readResultSnapshot(t, f, id); after != before {
+				t.Fatalf("restart changed state or duplicated events: %+v want %+v", after, before)
+			}
+		})
 	}
 }
 
@@ -248,6 +292,77 @@ type notificationLogWriter chan string
 func (w notificationLogWriter) Write(p []byte) (int, error) {
 	w <- string(p)
 	return len(p), nil
+}
+
+type notificationFunc func(context.Context, notification.Notification) error
+
+func (f notificationFunc) Notify(ctx context.Context, n notification.Notification) error {
+	return f(ctx, n)
+}
+
+func TestNotificationWorkerRecordsAndLogsFailureDuringShutdown(t *testing.T) {
+	f, token, id, _ := resultFixture(t, "running")
+	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	if status != 204 {
+		t.Fatalf("result status=%d body=%s", status, body)
+	}
+	before := readResultSnapshot(t, f, id)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := notification.Dispatcher{DB: f.db, Channels: []notification.Channel{{Name: "fake", Notifier: notificationFunc(
+		func(ctx context.Context, _ notification.Notification) error {
+			cancel()
+			return fmt.Errorf("PRIVATE-CANCELLATION-DETAIL: %w", ctx.Err())
+		})}}}
+	logs := make(notificationLogWriter, 10)
+	d.Run(ctx, slog.New(slog.NewTextHandler(logs, nil)))
+	select {
+	case line := <-logs:
+		if !strings.Contains(line, "PRIVATE-CANCELLATION-DETAIL") {
+			t.Fatalf("shutdown failure detail missing from log: %s", line)
+		}
+	default:
+		t.Fatal("shutdown failure was not logged")
+	}
+	before.Events++
+	if after := readResultSnapshot(t, f, id); after != before {
+		t.Fatalf("cancellation changed state or lost failure event: %+v want %+v", after, before)
+	}
+	var payload string
+	if err := f.db.QueryRow(`SELECT payload FROM execution_events WHERE execution_id = ? AND type = 'notification_failed'`, id).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload != `{"channel":"fake","kind":"failed","reason":"other"}` {
+		t.Fatalf("unsafe cancellation payload: %s", payload)
+	}
+}
+
+func TestNotificationFailureEventWriteErrorStillFansOutWithoutRetry(t *testing.T) {
+	f, token, id, _ := resultFixture(t, "running")
+	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	if status != 204 {
+		t.Fatalf("result status=%d body=%s", status, body)
+	}
+	before := readResultSnapshot(t, f, id)
+	if _, err := f.db.Exec(`CREATE TRIGGER reject_failure BEFORE INSERT ON execution_events
+		WHEN NEW.type = 'notification_failed' BEGIN SELECT RAISE(ABORT, 'failure receipt unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	broken, healthy := &recordingNotifier{err: errors.New("transport unavailable")}, &recordingNotifier{}
+	d := notification.Dispatcher{DB: f.db, Channels: []notification.Channel{{Name: "broken", Notifier: broken}, {Name: "healthy", Notifier: healthy}}}
+	if err := d.DispatchPending(context.Background()); !errors.Is(err, broken.err) || !strings.Contains(err.Error(), "failure receipt unavailable") {
+		t.Fatalf("missing transport or persistence error: %v", err)
+	}
+	before.Events++ // Healthy channel's receipt survives the failed event write.
+	if after := readResultSnapshot(t, f, id); after != before || len(healthy.recorded()) != 1 {
+		t.Fatalf("event write error changed state or stopped fanout: %+v want %+v, calls=%v", after, before, healthy.recorded())
+	}
+	restartNotificationFixture(t, f)
+	fresh := &recordingNotifier{}
+	restarted := notificationDispatcher(f, fresh)
+	if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 0 {
+		t.Fatalf("failed event write caused retry: %v %v", fresh.recorded(), err)
+	}
 }
 
 func TestNotificationWorkerLogsTransportFailureWithoutChangingState(t *testing.T) {
@@ -278,9 +393,7 @@ func TestNotificationWorkerLogsTransportFailureWithoutChangingState(t *testing.T
 		t.Fatal("notification failure never reached Control Plane log")
 	}
 	after := readResultSnapshot(t, f, id)
-	// Failure-event persistence is checked separately; all lifecycle fields must
-	// remain unchanged, including the successful Execution's finished_at.
-	before.Events = after.Events
+	before.Events++ // The failure event must also be recorded for succeeded.
 	if after != before || after.Task != "completed" || after.Execution != "succeeded" || len(broken.recorded()) != 1 {
 		t.Fatalf("state=%+v want=%+v calls=%v", after, before, broken.recorded())
 	}

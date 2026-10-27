@@ -27,6 +27,7 @@ func TestSpecEnumValues(t *testing.T) {
 		{"event", decode[model.ExecutionEventType], []string{
 			"status_changed", "log", "worktree_ready", "context_pinned", "harness_started",
 			"harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent",
+			"notification_failed",
 		}},
 		{"error", decode[model.ErrorClass], []string{
 			"config_error", "execution_failed", "test_failed", "timeout", "cancelled",

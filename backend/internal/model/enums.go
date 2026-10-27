@@ -92,22 +92,23 @@ func (v *ExecutionStatus) UnmarshalJSON(data []byte) error {
 type ExecutionEventType string
 
 const (
-	EventStatusChanged    ExecutionEventType = "status_changed"
-	EventLog              ExecutionEventType = "log"
-	EventWorktreeReady    ExecutionEventType = "worktree_ready"
-	EventContextPinned    ExecutionEventType = "context_pinned"
-	EventHarnessStarted   ExecutionEventType = "harness_started"
-	EventHarnessFinished  ExecutionEventType = "harness_finished"
-	EventGateResult       ExecutionEventType = "gate_result"
-	EventBlocked          ExecutionEventType = "blocked"
-	EventPushed           ExecutionEventType = "pushed"
-	EventPRCreated        ExecutionEventType = "pr_created"
-	EventNotificationSent ExecutionEventType = "notification_sent"
+	EventStatusChanged      ExecutionEventType = "status_changed"
+	EventLog                ExecutionEventType = "log"
+	EventWorktreeReady      ExecutionEventType = "worktree_ready"
+	EventContextPinned      ExecutionEventType = "context_pinned"
+	EventHarnessStarted     ExecutionEventType = "harness_started"
+	EventHarnessFinished    ExecutionEventType = "harness_finished"
+	EventGateResult         ExecutionEventType = "gate_result"
+	EventBlocked            ExecutionEventType = "blocked"
+	EventPushed             ExecutionEventType = "pushed"
+	EventPRCreated          ExecutionEventType = "pr_created"
+	EventNotificationSent   ExecutionEventType = "notification_sent"
+	EventNotificationFailed ExecutionEventType = "notification_failed"
 )
 
 func (v ExecutionEventType) Validate() error {
 	switch v {
-	case EventStatusChanged, EventLog, EventWorktreeReady, EventContextPinned, EventHarnessStarted, EventHarnessFinished, EventGateResult, EventBlocked, EventPushed, EventPRCreated, EventNotificationSent:
+	case EventStatusChanged, EventLog, EventWorktreeReady, EventContextPinned, EventHarnessStarted, EventHarnessFinished, EventGateResult, EventBlocked, EventPushed, EventPRCreated, EventNotificationSent, EventNotificationFailed:
 		return nil
 	default:
 		return fmt.Errorf("invalid ExecutionEventType %q", v)

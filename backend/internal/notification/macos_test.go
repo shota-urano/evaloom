@@ -103,7 +103,7 @@ func TestMacOSReturnsLaunchAndHelperErrors(t *testing.T) {
 			resultPath = helperResultPath(t, cmd)
 			return launchErr
 		}
-		if err := m.Notify(context.Background(), n); !errors.Is(err, launchErr) {
+		if err := m.Notify(context.Background(), n); !errors.Is(err, launchErr) || !errors.Is(err, ErrLaunchFailed) {
 			t.Fatalf("launch error = %v", err)
 		}
 		if _, err := os.Stat(filepath.Dir(resultPath)); !errors.Is(err, os.ErrNotExist) {
@@ -120,8 +120,20 @@ func TestMacOSReturnsLaunchAndHelperErrors(t *testing.T) {
 			if err == nil || strings.Contains(err.Error(), "PRIVATE-HELPER-OUTPUT") {
 				t.Fatalf("helper error = %v", err)
 			}
-			if code == "permission_denied" && !strings.Contains(err.Error(), "permission denied") {
-				t.Fatalf("permission denied not reported: %v", err)
+			wantReason := "other"
+			if code == "permission_denied" {
+				wantReason = "permission_denied"
+				if !errors.Is(err, ErrPermissionDenied) {
+					t.Fatalf("permission denied not typed: %v", err)
+				}
+			} else if code == "timed_out" {
+				wantReason = "timeout"
+				if !errors.Is(err, ErrTimeout) {
+					t.Fatalf("helper timeout not typed: %v", err)
+				}
+			}
+			if got := failureReason(err); got != wantReason {
+				t.Fatalf("helper reason = %q; want %q", got, wantReason)
 			}
 		})
 	}
@@ -132,7 +144,7 @@ func TestMacOSDoesNotTreatOpenSuccessAsDelivery(t *testing.T) {
 	m.timeout = 30 * time.Millisecond
 	m.run = func(cmd *exec.Cmd) error { return nil }
 	err := m.Notify(context.Background(), Notification{TaskID: "task-001", Status: model.ExecutionSucceeded})
-	if !errors.Is(err, context.DeadlineExceeded) {
+	if !errors.Is(err, context.DeadlineExceeded) || failureReason(err) != "timeout" {
 		t.Fatalf("open without helper response = %v; want deadline", err)
 	}
 }
