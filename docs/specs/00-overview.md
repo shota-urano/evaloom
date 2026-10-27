@@ -209,7 +209,7 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q14 | Blocked から続行を選ぶ操作を、どの SHA に結び付けるか | 続行の判断を、その時点の HEAD SHA に結び付け、SHA が変わったら無効（提案） | 04, 10 |
 | Q15 | タイムアウト値（ハーネス実行・setup・テスト） | requirements に値なし。Project Registry と全体設定で持つ | 03, 05 |
 | Q16 | 費用上限（15.2 必須対策）を Phase 1 で実装するか | 15.2 は必須対策に挙げるが Phase 1 の範囲が不明。トークン数・実行時間の記録（usage_records）は Phase 1 で行う案 | 02, 05 |
-| Q17 | macOS 通知の実現方式（21章） | launchd のユーザーエージェントから通知を出す方式を実機で確認して決める | 12 |
+| Q17 | macOS 通知の実現方式（21章） | 決定（2026-10-27 実機確認）: 自作の通知用ヘルパーアプリ。クリックでタスク詳細を開く。詳細は 12 の 3.3 | 12 |
 | Q18 | Linear コメントによる通知（8.8）を Phase 1 で行うか | Linear API キーの利用が Phase 2（6.6）のため、Phase 1 は macOS 通知だけとする案 | 12 |
 | Q19 | Model Registry（5.3）を Phase 1 で作るか | Phase 1 ロードマップに無い。Profile に Model ID 文字列を持たせ、models テーブルは後の Phase とする案 | 02, 03 |
 | Q20 | Global Context と Harness Context の Phase 1 での置き場所 | Global は evaloom リポジトリの `context/`、Harness はハーネスリポジトリ内（Profile の commit SHA で固定）とする案 | 07 |
