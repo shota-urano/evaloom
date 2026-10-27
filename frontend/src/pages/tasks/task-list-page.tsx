@@ -13,6 +13,7 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import type { NavigationState } from '@/lib/router'
 import { cn } from '@/lib/utils'
+import { useLiveTaskList } from './live'
 import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskStatusLabel } from './labels'
 
 // 状態は色だけでなく文字でも示す（13 3.5）。色は補助。
@@ -68,6 +69,7 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
   const [filter, setFilter] = useState(readFilter)
   const list = useResource((signal) => tasks.list(api, filter, signal), `tasks:${filter.status}:${filter.projectId}`)
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
+  useLiveTaskList(api, list.data, list.reload)
   const projectName = new Map((projects.data ?? []).map((p) => [p.id, p.name]))
   const filtered = filter.status !== '' || filter.projectId !== ''
 

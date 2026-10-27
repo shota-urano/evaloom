@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,7 +23,7 @@ const PROJECTS = [
   { id: 'beta-app', name: 'Beta アプリ' },
 ] as const
 
-type Server = { origin: string; cookie: string }
+type Server = { origin: string; cookie: string; runnerToken: string }
 
 function seedHarness(db: string, harness: Repo) {
   const now = new Date().toISOString()
@@ -66,6 +67,15 @@ async function createTask(server: Server, projectId: string, title: string): Pro
   )) as ListedTask
 }
 
+/** Runner として次の仕事を claim する（POST /api/runners/{id}/claim）。Execution が pending → claimed、タスクが Queued → Running になる。 */
+async function claim(server: Server) {
+  const response = await fetch(`${server.origin}/api/runners/local/claim`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${server.runnerToken}`, Accept: 'application/json' },
+  })
+  expect(response.status, `claim: ${await response.text()}`).toBe(200)
+}
+
 const test = base.extend<{ server: Server }, { worker: Server }>({
   worker: [
     // oxlint-disable-next-line no-empty-pattern
@@ -76,14 +86,17 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const db = join(temp, 'evaloom.db')
       const harness = createRepo(temp, 'harness')
       tagProfile(harness.path, '1.0.0', 'first')
-      run(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'])
+      // runner register はトークンを一度だけ標準エラーに出す。
+      const registered = spawnSync(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'], { encoding: 'utf8' })
+      const runnerToken = registered.stderr.trim()
+      if (registered.status !== 0 || !/^[A-Za-z0-9_-]{43}$/.test(runnerToken)) throw new Error(`runner register が失敗した: ${registered.stderr}`)
       seedHarness(db, harness)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
         const response = await fetch(evaloomd.loginURL, { headers: { Accept: 'application/json' } })
         const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
         if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
-        const server = { origin: evaloomd.origin, cookie }
+        const server = { origin: evaloomd.origin, cookie, runnerToken }
         await owner(server, 'POST', '/api/harness-profiles', { harnessId: HARNESS, version: '1.0.0' })
         for (const project of PROJECTS) {
           const repo = createRepo(temp, project.id)
@@ -231,4 +244,36 @@ test('状態とプロジェクトで絞り込める', async ({ page, server }) =
   await page.getByRole('button', { name: '絞り込みを解除' }).click()
   await expect(page).toHaveURL('/tasks')
   await expect(taskRows(page).filter({ hasText: cancelledAlpha.title })).toHaveCount(1)
+})
+
+test('実行中のタスクは status_changed で、画面を読み直さずに状態と絞り込み結果が更新される', async ({ page, server }) => {
+  await createTask(server, PROJECTS[0].id, 'Alpha の実行待ち')
+  await createTask(server, PROJECTS[1].id, 'Beta の実行待ち')
+  const running = async () => (await listTasks(server, '&status=running')).map((t) => t.id)
+
+  await page.goto('/tasks?status=queued')
+  await expect(taskRows(page).filter({ hasText: 'Beta の実行待ち' })).toHaveCount(1)
+  // 画面を読み直していないことの目印。
+  await page.evaluate(() => Object.assign(globalThis, { __notReloaded: true }))
+
+  // Runner が claim する（作成順に、Running のタスクが無いプロジェクトの Execution を取る。claims.md）。
+  // Queued で絞り込んだ一覧から、claim されたタスクが消える。
+  await claim(server)
+  const [firstId] = await running()
+  const first = (await listTasks(server)).find((t) => t.id === firstId)!
+  await expect(taskRows(page).filter({ hasText: first.id })).toHaveCount(0)
+  await expect(page).toHaveURL('/tasks?status=queued')
+
+  // 絞り込みを外し、もう一方のプロジェクトの Queued のタスクが claim されると、その行が Running になる。
+  await page.getByRole('button', { name: '絞り込みを解除' }).click()
+  const other = (await listTasks(server, '&status=queued')).filter((t) => t.projectId !== first.projectId).sort((a, b) => Number(a.id.slice(5)) - Number(b.id.slice(5)))[0]
+  const row = taskRows(page).filter({ hasText: other.id })
+  await expect(row).toContainText('Queued')
+  await expect(row).toContainText('#1 pending')
+  await claim(server)
+  await expect(row).toContainText('Running')
+  await expect(row).toContainText('#1 claimed')
+  await expect(taskRows(page).filter({ hasText: first.id })).toContainText('Running')
+  expect((await running()).sort()).toEqual([first.id, other.id].sort())
+  expect(await page.evaluate(() => (globalThis as { __notReloaded?: boolean }).__notReloaded)).toBe(true)
 })

@@ -1,10 +1,11 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { ApiClient } from '@/api/client'
 import type { Project } from '@/api/registry'
 import type { TaskSummary } from '@/api/tasks'
+import { fakeEvents } from '@/test/fake-events'
 import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
 import App from '@/App'
 
@@ -32,8 +33,9 @@ const task = (id: string, projectId: string, status: TaskSummary['status'], extr
   ...extra,
 })
 
-const TASKS = [
-  task('task-003', 'alpha', 'cancelled'),
+let TASKS: TaskSummary[] = []
+const INITIAL_TASKS = [
+  task('task-003', 'alpha', 'cancelled', { latestExecution: { id: 'e3', seq: 1, mode: 'continue', status: 'cancelled', errorClass: 'cancelled' } }),
   task('task-002', 'beta', 'completed', {
     latestExecution: { id: 'e2', seq: 2, mode: 'continue', status: 'succeeded', errorClass: null },
     prUrl: 'https://example.com/pr/2',
@@ -42,6 +44,10 @@ const TASKS = [
 ]
 
 /** GET /api/tasks の status・projectId を本物の API と同じく完全一致で絞り込む。 */
+beforeEach(() => {
+  TASKS = INITIAL_TASKS.map((t) => ({ ...t }))
+})
+
 function serveTasks(request: Recorded) {
   const url = new URL(request.url, 'http://127.0.0.1')
   if (url.pathname !== '/api/tasks' || request.method !== 'GET') return undefined
@@ -59,8 +65,9 @@ function renderAt(path: string, handler: (request: Recorded) => Response | Promi
     if (request.url.startsWith('/api/projects')) return page(PROJECTS)
     return serveTasks(request) ?? json(500, {})
   })
-  render(<App api={new ApiClient(fake.fetch)} />)
-  return fake
+  const events = fakeEvents()
+  render(<App api={new ApiClient(fake.fetch, events.factory)} />)
+  return { ...fake, events }
 }
 
 function fieldOf(label: string) {
@@ -203,5 +210,62 @@ describe('Tasks 一覧', () => {
     await screen.findByText('件名 task-002')
     expect(rows()).toHaveLength(1)
     expect(screen.getByLabelText('状態')).toHaveValue('completed')
+  })
+
+  it('実行中のタスクは status_changed を受けると、画面を読み直さずに状態と絞り込み結果が更新される', async () => {
+    const fake = renderAt('/tasks?status=queued')
+    await screen.findByText('件名 task-001')
+    expect(rows()).toHaveLength(1)
+    // 終端でない最新 Execution（task-001 の pending）だけを購読する。終端（cancelled・succeeded）は購読しない。
+    const url = '/api/executions/e-task-001/events'
+    expect(fake.events.sources.map((s) => s.url)).toEqual([url])
+    const [source] = fake.events.open(url)
+    const fetches = () => fake.calls.filter((c) => c.url.startsWith('/api/tasks')).length
+    const before = fetches()
+
+    // 購読開始時に届く過去のイベント（表示中の状態への遷移）では取り直さない。
+    act(() => source.emit('status_changed', { from: 'received', to: 'queued', reason: 'task_created' }, 1))
+    await new Promise((r) => setTimeout(r, 150))
+    expect(fetches()).toBe(before)
+
+    // Runner が claim した。一覧を取り直し、Queued の絞り込みから外れる。
+    TASKS[2] = { ...TASKS[2], status: 'running', latestExecution: { ...TASKS[2].latestExecution!, status: 'claimed' } }
+    act(() => source.emit('status_changed', { from: 'pending', to: 'claimed', reason: 'runner_claimed' }, 2))
+    expect(await screen.findByText('条件に合うタスクはありません。')).toBeVisible()
+    expect(fetches()).toBe(before + 1)
+    expect(window.location.pathname + window.location.search).toBe('/tasks?status=queued')
+    // 一覧から外れた Execution の購読は閉じる。
+    expect(source.closed).toBe(true)
+
+    // 絞り込みを外すと Running で出て、引き続き購読する。
+    await userEvent.click(screen.getByRole('button', { name: '絞り込みを解除' }))
+    const running = await screen.findByText('件名 task-001')
+    const row = running.closest('tr') as HTMLElement
+    expect(row).toHaveTextContent('Running')
+    expect(row).toHaveTextContent('#1 claimed')
+    const [again] = fake.events.open(url)
+
+    // PR まで作って完了すると、状態と PR へのリンクが更新され、終端になったので購読を閉じる。
+    TASKS[2] = {
+      ...TASKS[2],
+      status: 'completed',
+      latestExecution: { ...TASKS[2].latestExecution!, status: 'succeeded' },
+      prUrl: 'https://example.com/pr/1',
+    }
+    act(() => again.emit('status_changed', { from: 'publishing', to: 'succeeded', reason: 'runner_result' }, 9))
+    expect(await within(row).findByText('Completed')).toBeVisible()
+    expect(row).toHaveTextContent('#1 succeeded')
+    expect(within(row).getByRole('link', { name: 'PR を開く' })).toHaveAttribute('href', 'https://example.com/pr/1')
+    expect(again.closed).toBe(true)
+    expect(fake.events.sources.every((s) => s.closed)).toBe(true)
+  })
+
+  it('画面を離れると購読を閉じる', async () => {
+    const fake = renderAt('/tasks')
+    await screen.findByText('件名 task-001')
+    expect(fake.events.open('/api/executions/e-task-001/events')).toHaveLength(1)
+    await userEvent.click(screen.getByRole('navigation', { name: '画面' }).querySelector('a[href="/projects"]') as HTMLElement)
+    await screen.findByRole('heading', { name: 'Projects' })
+    expect(fake.events.sources.every((s) => s.closed)).toBe(true)
   })
 })
