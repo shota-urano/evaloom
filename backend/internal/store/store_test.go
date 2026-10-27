@@ -34,6 +34,42 @@ func TestOpenEnablesWAL(t *testing.T) {
 	}
 }
 
+func TestTransactionsReserveWriterBeforeReading(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "immediate.db")
+	db, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	other, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	// Check both the original and a replacement pooled connection. A deferred
+	// transaction would let the other writer succeed before our first read.
+	for _, replace := range []bool{false, true} {
+		if replace {
+			db.SetMaxIdleConns(0)
+		}
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, writeErr := other.Exec(`UPDATE schema_migrations SET name = name WHERE version = 1`)
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if writeErr == nil || !strings.Contains(writeErr.Error(), "SQLITE_BUSY") {
+			t.Fatalf("writer was not reserved at BeginTx: %v", writeErr)
+		}
+		// Rollback must release the reservation without leaking a transaction.
+		if _, err := other.Exec(`UPDATE schema_migrations SET name = name WHERE version = 1`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestOpenConvertsExistingDatabaseToWAL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "existing.db")
 	db, err := sql.Open("sqlite", path)

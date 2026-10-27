@@ -114,7 +114,9 @@ func TestRunnerCredentialsAreCheckedAgainstDatabaseOnEveryRequest(t *testing.T) 
 		})
 	}
 	status, body := request()
-	assertAuthError(t, status, body, 422, PreconditionFailed)
+	if status != http.StatusNoContent || len(body) != 0 {
+		t.Fatalf("empty claim status=%d body=%s", status, body)
+	}
 	if _, err := f.db.Exec(`UPDATE runners SET token_hash = 'revoked' WHERE id = 'mac-mini'`); err != nil {
 		t.Fatal(err)
 	}
