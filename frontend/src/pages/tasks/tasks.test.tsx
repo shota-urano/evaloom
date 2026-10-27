@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient } from '@/api/client'
 import type { Project } from '@/api/registry'
@@ -8,6 +8,7 @@ import type { TaskSummary } from '@/api/tasks'
 import { fakeEvents } from '@/test/fake-events'
 import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
 import App from '@/App'
+import { MAX_TASK_SUBSCRIPTIONS, TASK_LIST_POLL_MS } from './live'
 
 const page = <T,>(items: T[]) => json(200, { items, nextCursor: '' })
 
@@ -268,4 +269,77 @@ describe('Tasks 一覧', () => {
     await screen.findByRole('heading', { name: 'Projects' })
     expect(fake.events.sources.every((s) => s.closed)).toBe(true)
   })
+
+  it('タスク状態が running のまま Execution が preparing → running に進むと、最新 Execution の表示が更新される', async () => {
+    TASKS[2] = { ...TASKS[2], status: 'running', latestExecution: { ...TASKS[2].latestExecution!, status: 'preparing' } }
+    const fake = renderAt('/tasks')
+    const row = (await screen.findByText('件名 task-001')).closest('tr') as HTMLElement
+    expect(row).toHaveTextContent('#1 preparing')
+    const [source] = fake.events.open('/api/executions/e-task-001/events')
+    const fetches = () => fake.calls.filter((c) => c.url.startsWith('/api/tasks')).length
+    const before = fetches()
+
+    // 表示中の Execution の状態（preparing）への遷移は、購読開始時に届く過去のイベントなので取り直さない。
+    act(() => source.emit('status_changed', { from: 'claimed', to: 'preparing', reason: 'runner_result' }, 3))
+    await new Promise((r) => setTimeout(r, 150))
+    expect(fetches()).toBe(before)
+
+    // タスク状態は running のまま、Execution だけ preparing → running に進む（02 5.2）。
+    TASKS[2] = { ...TASKS[2], latestExecution: { ...TASKS[2].latestExecution!, status: 'running' } }
+    act(() => source.emit('status_changed', { from: 'preparing', to: 'running', reason: 'runner_result' }, 4))
+    expect(await within(row).findByText('running')).toBeVisible()
+    expect(row).toHaveTextContent('#1 running')
+    expect(row).toHaveTextContent('Running')
+    expect(fetches()).toBe(before + 1)
+  })
+
+  it('購読の上限から漏れたタスク（Blocked 4件＋Queued 1件の Queued）が claim されても、一定間隔の取り直しで一覧が更新される', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const blocked = Array.from({ length: MAX_TASK_SUBSCRIPTIONS }, (_, i) =>
+        task(`task-00${i + 2}`, 'beta', 'blocked', {
+          latestExecution: { id: `e-blocked-${i}`, seq: 1, mode: 'continue', status: 'blocked', errorClass: null },
+        }),
+      )
+      const queued = task('task-001', 'alpha', 'queued')
+      TASKS = [...blocked.reverse(), queued]
+      const fake = renderAt('/tasks')
+      const row = (await screen.findByText('件名 task-001')).closest('tr') as HTMLElement
+      expect(row).toHaveTextContent('Queued')
+      // Blocked の4件だけを購読し、Queued の Execution は購読していない。
+      const subscribed = fake.events.sources.filter((s) => !s.closed).map((s) => s.url)
+      expect(subscribed).toHaveLength(MAX_TASK_SUBSCRIPTIONS)
+      expect(subscribed).not.toContain('/api/executions/e-task-001/events')
+
+      // 購読していない Execution が claim された。SSE は届かないが、一定間隔の取り直しで拾う。
+      TASKS = TASKS.map((t) =>
+        t.id === 'task-001' ? { ...t, status: 'running', latestExecution: { ...t.latestExecution!, status: 'claimed' } } : t,
+      )
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TASK_LIST_POLL_MS)
+      })
+      expect(await within(row).findByText('Running')).toBeVisible()
+      expect(row).toHaveTextContent('#1 claimed')
+      expect(window.location.pathname).toBe('/tasks')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('購読の上限に収まっている間は、一定間隔の取り直しをしない', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const fake = renderAt('/tasks')
+      await screen.findByText('件名 task-001')
+      const fetches = () => fake.calls.filter((c) => c.url.startsWith('/api/tasks')).length
+      const before = fetches()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(TASK_LIST_POLL_MS * 2)
+      })
+      expect(fetches()).toBe(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
