@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -36,7 +37,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, args []string, output io.Writer) (err error) {
+func run(ctx context.Context, args []string, output io.Writer, channels ...notification.Channel) (err error) {
 	flags := flag.NewFlagSet("evaloomd", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
@@ -96,6 +97,19 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
+	// Concrete transports are registered by the Control Plane. Until a
+	// transport is configured, durable requests remain pending in SQLite.
+	notificationCtx, cancelNotifications := context.WithCancel(ctx)
+	notificationsDone := make(chan struct{})
+	dispatcher := notification.Dispatcher{DB: db, Channels: channels}
+	go func() {
+		defer close(notificationsDone)
+		dispatcher.Run(notificationCtx, logger)
+	}()
+	defer func() {
+		cancelNotifications()
+		<-notificationsDone // Stop DB users before closing the connection.
+	}()
 	served := make(chan error, 1)
 	recoveryStartedAt := time.Now().UTC()
 	go func() { served <- server.Serve(listener) }()
