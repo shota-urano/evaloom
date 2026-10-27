@@ -5,9 +5,69 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrRunnerExists = errors.New("runner is already registered")
+
+var ErrHeartbeatExecutionOwner = errors.New("heartbeat execution does not belong to runner")
+
+// Heartbeat validates ownership before recording liveness and reading pending
+// cancellation instructions in one transaction. Unknown IDs are also denied;
+// terminal reports can race a heartbeat and are harmless, but are not renewed.
+// Boot-ID recovery belongs to the separate restart-recovery lifecycle path.
+func Heartbeat(ctx context.Context, db *sql.DB, runnerID string, runningIDs []string) ([]string, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	for _, id := range runningIDs {
+		var own bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM executions WHERE id = ? AND runner_id = ?)`, id, runnerID).Scan(&own); err != nil {
+			return nil, err
+		}
+		if !own {
+			return nil, ErrHeartbeatExecutionOwner
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE runners SET status = 'online', last_heartbeat_at = ? WHERE id = ?`, now, runnerID); err != nil {
+		return nil, err
+	}
+	for _, id := range runningIDs {
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET last_heartbeat_at = ?
+			WHERE id = ? AND runner_id = ? AND status IN `+activeExecutionStatuses, now, id, runnerID); err != nil {
+			return nil, err
+		}
+	}
+	// Read all active owned Executions, including a just-claimed one that the
+	// Runner has not yet added to its reported list. Never consume the request:
+	// repeat delivery until result transitions it out of the active set.
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM executions WHERE runner_id = ?
+		AND status IN `+activeExecutionStatuses+` AND cancel_requested_at IS NOT NULL ORDER BY id`, runnerID)
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
 
 // RegisterRunner inserts a new offline Runner. Never replace an existing token.
 func RegisterRunner(ctx context.Context, db *sql.DB, id, name, tokenHash, root, createdAt string) error {
