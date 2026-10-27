@@ -14,9 +14,14 @@
   直前のExecutionとそのworktreeから読み、未記録の各値はnullで返す。
 - Projectは既存のRegistry表現で返す。Profile定義とSHAは登録済み行から読み、
   Gitタグを再解決しない。Contextの固定は既存の準備工程のAPIで行う。
+- 同じExecutionをBlockedから続行する場合は、保存済みのrole・Harness・Profileを使う。
+  Profile定義は保存済みのProfile IDから読み、版とSHAはExecutionの列値を返す。
+  再claimではRunnerとclaim時刻だけを更新する。初回かどうかはProfile IDが未保存かで判定し、
+  新しいExecutionの再実行では現在の割り当てから版を固定する。
 - 作成後にDefault Roleの割り当てがなくなった場合も422
   `precondition_failed`、詳細は`projectId/default_harness_missing`とする。
   取得対象を別のExecutionに差し替えず、そのトランザクションを取り消す。
+  この条件は初回claimに適用し、固定済みのExecutionの続行は現在の割り当てに依存しない。
 - claim成功時は`status_changed`イベントにExecutionの`pending`から`claimed`への
   遷移と`reason=runner_claimed`を記録する。監査記録は
   `runner:<id>/execution.claim/execution/<Execution ID>`とし、Task ID、
