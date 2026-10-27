@@ -43,15 +43,13 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := process.Heartbeat(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil
-		}
-		// Connection failures must not stop ongoing executions. Scheduling
-		// subsequent heartbeats and claim calls belongs to the pull-loop task.
+	fmt.Fprintln(output, "evaloom-runner: started (execution stages are not implemented)")
+	return process.Run(ctx, func(ctx context.Context, _ runner.Claim) {
+		// Stage execution belongs to the next implementation unit. Keep the
+		// claimed job registered until cancellation/shutdown, without claiming
+		// success or freeing its slot before execution is implemented.
+		<-ctx.Done()
+	}, func(err error) {
 		fmt.Fprintln(output, err)
-	}
-	fmt.Fprintln(output, "evaloom-runner: started (pull loop is not implemented)")
-	<-ctx.Done()
-	return nil
+	})
 }

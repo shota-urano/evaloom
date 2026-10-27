@@ -24,9 +24,13 @@ const heartbeatTimeout = 5 * time.Second
 // connections nor opens the Control Plane database.
 type Runner struct {
 	bootID, token, heartbeatURL string
+	claimURL                    string
 	client                      *http.Client
 	mu                          sync.Mutex
 	executions                  map[string]context.CancelFunc
+	claimPending                bool
+	loopRunning                 bool
+	pollInterval                time.Duration
 }
 
 func New(config Config) (*Runner, error) {
@@ -50,8 +54,13 @@ func New(config Config) (*Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runner: invalid heartbeat URL")
 	}
+	claimURL, err := url.JoinPath(config.ControlPlaneURL, "api", "runners", url.PathEscape(config.RunnerID), "claim")
+	if err != nil {
+		return nil, fmt.Errorf("runner: invalid claim URL")
+	}
 	return &Runner{
 		bootID: hex.EncodeToString(boot[:]), token: token, heartbeatURL: endpoint,
+		claimURL: claimURL, pollInterval: 5 * time.Second,
 		client: &http.Client{
 			Timeout: heartbeatTimeout,
 			// Redirects must not forward credentials or change POST semantics.
@@ -63,7 +72,7 @@ func New(config Config) (*Runner, error) {
 
 // RegisterExecution connects heartbeat cancellation to the current execution
 // stage. Cancellation must be safe to repeat, as with context.CancelFunc.
-// The scheduler remains responsible for admission and concurrency limits.
+// A pending claim reserves a slot too, so registration cannot race admission.
 func (runner *Runner) RegisterExecution(id string, cancel context.CancelFunc) error {
 	if id == "" || cancel == nil {
 		return fmt.Errorf("runner: execution ID and cancellation function are required")
@@ -72,6 +81,9 @@ func (runner *Runner) RegisterExecution(id string, cancel context.CancelFunc) er
 	defer runner.mu.Unlock()
 	if _, exists := runner.executions[id]; exists {
 		return fmt.Errorf("runner: execution is already registered")
+	}
+	if !runner.hasCapacityLocked() {
+		return fmt.Errorf("runner: execution limit reached")
 	}
 	runner.executions[id] = cancel
 	return nil
@@ -87,7 +99,7 @@ func (runner *Runner) ForgetExecution(id string) {
 
 // Heartbeat sends the current state once and dispatches cancellation requests.
 // On failure it leaves all executions running; the caller can resend with the
-// same bootId. Periodic scheduling and report retries belong to later tasks.
+// same bootId. Run schedules subsequent heartbeats; report retries are separate.
 func (runner *Runner) Heartbeat(ctx context.Context) error {
 	runner.mu.Lock()
 	ids := make([]string, 0, len(runner.executions))

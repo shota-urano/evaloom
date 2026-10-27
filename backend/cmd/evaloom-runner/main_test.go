@@ -26,6 +26,10 @@ func (output startupOutput) Write(p []byte) (int, error) {
 func TestRunWaitsUntilShutdown(t *testing.T) {
 	request := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/api/runners/mac-mini/claim" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method != "POST" || r.URL.Path != "/api/runners/mac-mini/heartbeat" {
 			t.Errorf("unexpected startup request: %s %s", r.Method, r.URL.Path)
 		}
@@ -43,7 +47,7 @@ func TestRunWaitsUntilShutdown(t *testing.T) {
 	configPath := writeConfig(t, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	output := make(startupOutput, 1)
+	output := make(startupOutput, 8)
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, []string{"-config", configPath}, output) }()
 	select {
@@ -105,16 +109,17 @@ func TestRunSurvivesControlPlaneFailure(t *testing.T) {
 	path := writeConfig(t, server.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	output := make(startupOutput, 2)
+	output := make(startupOutput, 8)
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, []string{"-config", path}, output) }()
-	select {
-	case line := <-output:
-		if !strings.Contains(line, "HTTP 503") {
-			t.Fatalf("heartbeat error not reported: %s", line)
+	deadline := time.After(time.Second)
+	for failed := false; !failed; {
+		select {
+		case line := <-output:
+			failed = strings.Contains(line, "HTTP 503")
+		case <-deadline:
+			t.Fatal("runner did not report failed heartbeat")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("runner did not report failed heartbeat")
 	}
 	select {
 	case err := <-done:
