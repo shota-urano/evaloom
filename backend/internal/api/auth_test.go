@@ -30,7 +30,7 @@ type authFixture struct {
 	logs     bytes.Buffer
 }
 
-func newAuthFixture(t *testing.T) *authFixture {
+func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
 	t.Helper()
 	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
 	f.server = httptest.NewUnstartedServer(nil)
@@ -46,7 +46,11 @@ func newAuthFixture(t *testing.T) *authFixture {
 		f.calls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	})))
-	mux.Handle("/", NewHandler(f.db, nil, f.auth, f.adapters))
+	var config ContextConfig
+	if len(contexts) > 0 {
+		config = contexts[0]
+	}
+	mux.Handle("/", NewHandlerWithContext(f.db, nil, f.auth, nil, config, f.adapters))
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)

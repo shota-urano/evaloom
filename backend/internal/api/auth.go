@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
@@ -155,6 +156,8 @@ func (a *OwnerAuth) runnerIdentity(r *http.Request) (string, error) {
 	return id, err
 }
 
+type runnerIdentityKey struct{}
+
 func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.validSession(r) {
@@ -174,9 +177,8 @@ func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
 			a.reject(w, r, Forbidden, "runner_mismatch", "Runner cannot access another Runner")
 			return
 		}
-		// Execution-report handlers must additionally verify execution ownership
-		// immediately before mutation. None are implemented in this task.
-		next.ServeHTTP(w, r)
+		// Execution handlers verify ownership again inside their saving transaction.
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), runnerIdentityKey{}, id)))
 	})
 }
 

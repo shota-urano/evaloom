@@ -16,10 +16,10 @@ import (
 // File is a context snapshot shared by the project and harness readers.
 // ContentHash is the lowercase SHA-256 of the unmodified Git blob bytes.
 type File struct {
-	Path            string
-	Content         string
-	ContentHash     string
-	SourceCommitSHA string
+	Path            string `json:"path"`
+	Content         string `json:"content"`
+	ContentHash     string `json:"contentHash"`
+	SourceCommitSHA string `json:"sourceCommitSha"`
 }
 
 // Read returns the regular files selected by include, sorted by relative path.

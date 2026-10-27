@@ -23,6 +23,12 @@ func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, registries ...
 // NewHandlerWithWeb additionally serves the built Management UI from web on the
 // same origin (architecture 3.1). A nil web keeps unknown routes as 404.
 func NewHandlerWithWeb(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithContext(db, logger, auth, web, ContextConfig{}, registries...)
+}
+
+// NewHandlerWithContext enables explicitly selected Global Context files. The
+// configuration belongs to the Control Plane, never the Runner request.
+func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
@@ -34,13 +40,13 @@ func NewHandlerWithWeb(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.
 		// Authentication probe only: claiming work belongs to the task lifecycle.
 		WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Runner claim is not available"})
 	})))
+	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts)))
 	// Reserve the remaining declared Runner routes in the correct auth class.
-	// They perform no heartbeat, event, result, or context processing yet.
+	// They perform no heartbeat, event or result processing yet.
 	for _, pattern := range []string{
 		"POST /api/runners/{runnerID}/heartbeat",
 		"POST /api/executions/{id}/events",
 		"POST /api/executions/{id}/result",
-		"POST /api/executions/{id}/context",
 	} {
 		mux.Handle(pattern, auth.protectRunner(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
