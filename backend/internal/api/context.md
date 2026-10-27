@@ -11,14 +11,16 @@
 
 要求形式は次のとおり。空のファイル一覧も両方を明示する。
 既存の`projectcontext.Read`と`harnesscontext.Read`が返すFileをそのままJSON化できる。
+`content`は元のバイト列をbase64にした文字列とする。FileのJSON処理が変換と復号を行い、
+不正なUTF-8を含む内容も変えずに転送する。ハッシュは復号した元のバイト列で照合する。
 
 ```json
 {
   "project": [
-    {"path":"AGENTS.md","content":"...","contentHash":"<SHA-256>","sourceCommitSha":"<base_sha>"}
+    {"path":"AGENTS.md","content":"<base64>","contentHash":"<SHA-256>","sourceCommitSha":"<base_sha>"}
   ],
   "harness": [
-    {"path":"prompts/developer.md","content":"...","contentHash":"<SHA-256>","sourceCommitSha":"<profile_commit_sha>"}
+    {"path":"prompts/developer.md","content":"<base64>","contentHash":"<SHA-256>","sourceCommitSha":"<profile_commit_sha>"}
   ]
 }
 ```
@@ -32,14 +34,17 @@ RunnerでのHarness読み込み失敗は既存のConfigErrorによってfailed(c
 
 GlobalはControl Plane起動時の`-context-root <evaloomルート>`と、繰り返し指定できる
 `-global-context context/<相対パス>`で選ぶ。指定が無ければGlobalファイルを読まない。
-ディレクトリ全体を暗黙に収集しない。ファイルの読み取りをcontextディレクトリ内に制限する。
+ディレクトリ全体を暗黙に収集しない。選択はcontext配下の相対パスに制限する。
+読み取り時点のevaloomリポジトリのHEADを完全なcommit SHAに一度だけ解決し、
+既存のgitcontext.Readで、そのcommitの通常ファイルだけを取得する。作業ツリーは読まない。
+全Global行のsource_commit_shaには、この解決済みSHAを保存する。
 選択したファイルが読めない場合は、TaskとExecutionをfailed、error_classをconfig_errorにして
 status_changedイベントを同時に保存し、422を返す。context_revisionsは保存しない。
 
 Taskは保存済みのtitle・body・acceptanceCriteriaの3項目を、この順のJSONオブジェクトとして
 1行に保存する。kindはtask_input、source_pathは空文字とする。
-Globalはファイル内容を固定する方式であり、TaskはDBの入力なので、両者には読み取り元commitが無い。
-source_commit_shaには空文字を保存し、Executionのbase_shaやProfileのSHAを転用しない。
+仕様にTaskのsource_commit_shaの値の定義が無いため、そのExecutionの開始点commitである
+base_shaを採用する。Taskの内容自体はDBの入力から取得する。
 Projectにはbase_sha、Harnessにはprofile_commit_shaを保存する。
 全行のcontent_hashは、保存したcontentのバイト列に対する小文字のSHA-256である。
 

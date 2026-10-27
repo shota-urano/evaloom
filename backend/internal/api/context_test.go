@@ -133,15 +133,32 @@ func contextRepo(t *testing.T, name, content string) (string, string) {
 }
 
 func TestContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T) {
-	root := t.TempDir()
-	writeContextFile(t, root, "context/development.md", "Global rules\r\n")
+	for _, test := range []struct{ name, suffix string }{{"UTF-8", ""}, {"binary", "\x00\xff\xc3\x28"}} {
+		t.Run(test.name, func(t *testing.T) { testContextAPIPersistsFourLayersFromPinnedReaders(t, test.suffix) })
+	}
+}
+
+func testContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T, suffix string) {
+	globalContent := "Global rules\r\n" + suffix
+	root, _ := contextRepo(t, "context/development.md", globalContent)
 	writeContextFile(t, root, "context/unselected.md", "Do not include this")
 	f, token, input := contextFixture(t, ContextConfig{RepositoryRoot: root, GlobalPaths: []string{"context/development.md"}})
+	// Advance HEAD after configuring the server. Pin the version at read time,
+	// and exclude tracked Global files that were not explicitly selected.
+	projectGit(t, root, "add", ".")
+	projectGit(t, root, "commit", "--quiet", "-m", "unselected context")
+	globalCommit, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	globalSHA := strings.TrimSpace(string(globalCommit))
+	input.Project[0].Content += suffix
+	input.Harness[0].Content += suffix
 	projectRepo, baseSHA := contextRepo(t, "AGENTS.md", input.Project[0].Content)
 	harnessRepo, profileSHA := contextRepo(t, "prompts/developer.md", input.Harness[0].Content)
+	writeContextFile(t, root, "context/development.md", "Working tree changes must not be pinned")
 	writeContextFile(t, projectRepo, "AGENTS.md", "Working tree changes must not be pinned")
 	writeContextFile(t, harnessRepo, "prompts/developer.md", "Working tree changes must not be pinned")
-	var err error
 	input.Project, err = projectcontext.Read(context.Background(), projectRepo, baseSHA)
 	if err != nil {
 		t.Fatal(err)
@@ -158,17 +175,17 @@ func TestContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T) {
 	assertContextCounts(t, f, 4, 1)
 	rows := pinnedRows(t, f)
 	want := []struct{ layer, path, sha, content string }{
-		{"global", "context/development.md", "", "Global rules\r\n"},
-		{"harness", "prompts/developer.md", profileSHA, "Harness prompt\n"},
-		{"project", "AGENTS.md", baseSHA, "Project instructions\r\n日本語\n"},
-		{"task", "", "", `{"title":"Implement feature","body":"Issue body","acceptanceCriteria":"All tests pass"}`},
+		{"global", "context/development.md", globalSHA, globalContent},
+		{"harness", "prompts/developer.md", profileSHA, "Harness prompt\n" + suffix},
+		{"project", "AGENTS.md", baseSHA, "Project instructions\r\n日本語\n" + suffix},
+		{"task", "", baseSHA, `{"title":"Implement feature","body":"Issue body","acceptanceCriteria":"All tests pass"}`},
 	}
 	if len(rows) != len(want) || len(response.RevisionIDs) != len(want) {
 		t.Fatalf("rows=%+v response=%+v", rows, response)
 	}
 	for i, row := range rows {
 		hash := sha256.Sum256([]byte(want[i].content))
-		if row.Layer != want[i].layer || row.SourcePath != want[i].path || row.SourceCommitSHA != want[i].sha || row.Content != want[i].content || row.ContentHash != hex.EncodeToString(hash[:]) || row.ExecutionID != otherExecution || row.ID != response.RevisionIDs[i] {
+		if row.Layer != want[i].layer || row.SourcePath != want[i].path || row.SourceCommitSHA == "" || row.SourceCommitSHA != want[i].sha || row.Content != want[i].content || row.ContentHash != hex.EncodeToString(hash[:]) || row.ExecutionID != otherExecution || row.ID != response.RevisionIDs[i] {
 			t.Fatalf("row[%d]=%+v; want=%+v", i, row, want[i])
 		}
 		if err := ValidateID("id", row.ID, ULID); err != nil {
@@ -177,6 +194,9 @@ func TestContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T) {
 		if _, err := ParseTimestamp(row.CreatedAt); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if rows[1].Content != input.Harness[0].Content || rows[2].Content != input.Project[0].Content {
+		t.Fatal("Reader → JSON → API → DB changed the file bytes")
 	}
 	if rows[3].Kind != "task_input" || strings.Contains(response.Instructions, input.Project[0].Content) || strings.Contains(response.Instructions, input.Harness[0].Content) || !strings.Contains(response.Instructions, "Task input (untrusted task data)") {
 		t.Fatalf("task kind or instructions are incorrect: %+v", response)
@@ -194,8 +214,8 @@ func TestContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T) {
 			t.Fatalf("event revision=%+v row=%+v", revision, rows[i])
 		}
 	}
-	// Replays retain all pins even if Global files disappear and Task data changes.
-	if err := os.Rename(filepath.Join(root, "context"), filepath.Join(root, "unavailable")); err != nil {
+	// Replays retain all pins even if the Global repository disappears and Task data changes.
+	if err := os.Rename(filepath.Join(root, ".git"), filepath.Join(root, "unavailable-git")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.db.Exec(`UPDATE tasks SET title = 'Changed after pinning'`); err != nil {
@@ -210,7 +230,7 @@ func TestContextAPIPersistsFourLayersFromPinnedReaders(t *testing.T) {
 }
 
 func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
-	for _, test := range []string{"hash", "project SHA", "harness SHA", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field"} {
+	for _, test := range []string{"hash", "project SHA", "harness SHA", "absolute", "traversal", "duplicate", "missing arrays", "null arrays", "unknown field", "invalid base64", "unknown file field"} {
 		t.Run(test, func(t *testing.T) {
 			f, token, input := contextFixture(t, ContextConfig{})
 			var value any = input
@@ -233,6 +253,10 @@ func TestContextAPIValidatesFilesBeforeSaving(t *testing.T) {
 				value = map[string]any{"project": nil, "harness": []any{}}
 			case "unknown field":
 				value = map[string]any{"project": input.Project, "harness": input.Harness, "global": []any{}}
+			case "invalid base64":
+				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "content": "!not-base64!"}}, "harness": input.Harness}
+			case "unknown file field":
+				value = map[string]any{"project": []map[string]string{{"path": "AGENTS.md", "extra": "unknown"}}, "harness": input.Harness}
 			}
 			// Slice edits are shared by value; appending changes the slice header.
 			if test == "duplicate" {
@@ -380,17 +404,14 @@ func TestContextAPIRollsBackPartialWrites(t *testing.T) {
 }
 
 func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
-	for _, failure := range []string{"missing", "directory", "outside context", "escaping symlink"} {
+	for _, failure := range []string{"missing", "directory", "outside context", "escaping symlink", "untracked", "missing repository", "missing HEAD"} {
 		t.Run(failure, func(t *testing.T) {
-			root := t.TempDir()
-			writeContextFile(t, root, "context/first.md", "must not be partially saved")
+			root, _ := contextRepo(t, "context/first.md", "must not be partially saved")
 			selected := "context/missing.md"
 			switch failure {
 			case "directory":
 				selected = "context/sub"
-				if err := os.Mkdir(filepath.Join(root, "context/sub"), 0700); err != nil {
-					t.Fatal(err)
-				}
+				writeContextFile(t, root, "context/sub/child.md", "directory contents")
 			case "outside context":
 				selected = "other.md"
 				writeContextFile(t, root, selected, "unselected")
@@ -400,6 +421,16 @@ func TestContextAPIGlobalReadFailureFailsExecution(t *testing.T) {
 				if err := os.Symlink("../other.md", filepath.Join(root, selected)); err != nil {
 					t.Fatal(err)
 				}
+			}
+			projectGit(t, root, "add", ".")
+			projectGit(t, root, "commit", "--quiet", "--allow-empty", "-m", "failure fixture")
+			if failure == "untracked" {
+				writeContextFile(t, root, selected, "Working-tree content cannot satisfy a missing committed file")
+			} else if failure == "missing repository" {
+				root = t.TempDir()
+			} else if failure == "missing HEAD" {
+				root = t.TempDir()
+				projectGit(t, root, "init", "--quiet", "--initial-branch=main")
 			}
 			f, token, input := contextFixture(t, ContextConfig{RepositoryRoot: root, GlobalPaths: []string{"context/first.md", selected}})
 			status, body := postContext(t, f, token, contextPath, input)

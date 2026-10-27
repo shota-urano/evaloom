@@ -9,12 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -104,7 +101,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 			writeJSON(w, http.StatusOK, pinnedContext(existing))
 			return
 		}
-		globals, err := readGlobalContext(config)
+		globals, err := readGlobalContext(r.Context(), config)
 		if err != nil {
 			// Read failures are configuration failures, not partially pinned contexts.
 			if failErr := failContextConfiguration(r.Context(), tx, execution); failErr != nil {
@@ -128,7 +125,9 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, confi
 			return
 		}
 		revisions := append(globals, submitted...)
-		revisions = append(revisions, store.ContextRevision{Layer: "task", Kind: "task_input", Content: string(taskContent), ContentHash: contextHash(string(taskContent))})
+		// Spec 07 does not define a Task source commit. Use this Execution's
+		// base_sha so every layer records a non-empty, Execution-bound SHA.
+		revisions = append(revisions, store.ContextRevision{Layer: "task", Kind: "task_input", SourceCommitSHA: execution.BaseSHA, Content: string(taskContent), ContentHash: contextHash(string(taskContent))})
 		now := time.Now().UTC()
 		eventRevisions := make([]map[string]string, 0, len(revisions))
 		for i := range revisions {
@@ -207,7 +206,7 @@ func submittedRevisions(input contextInput, execution store.ContextExecution) ([
 	return revisions, nil
 }
 
-func readGlobalContext(config ContextConfig) ([]store.ContextRevision, error) {
+func readGlobalContext(ctx context.Context, config ContextConfig) ([]store.ContextRevision, error) {
 	revisions := []store.ContextRevision{}
 	if len(config.GlobalPaths) == 0 {
 		return revisions, nil
@@ -216,42 +215,28 @@ func readGlobalContext(config ContextConfig) ([]store.ContextRevision, error) {
 	if rootPath == "" {
 		rootPath = "."
 	}
-	root, err := os.OpenRoot(filepath.Join(rootPath, "context"))
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	paths := append([]string(nil), config.GlobalPaths...)
-	sort.Strings(paths)
 	seen := map[string]bool{}
-	for _, name := range paths {
+	for _, name := range config.GlobalPaths {
 		if !relativeContextPath(name) || !strings.HasPrefix(name, "context/") {
 			return nil, fmt.Errorf("invalid Global Context path")
 		}
-		if seen[name] {
-			continue
-		}
 		seen[name] = true
-		relative := strings.TrimPrefix(name, "context/")
-		info, err := root.Stat(relative)
-		if err != nil || !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("Global Context is not a regular file")
-		}
-		file, err := root.Open(relative)
-		if err != nil {
-			return nil, err
-		}
-		info, err = file.Stat()
-		if err != nil || !info.Mode().IsRegular() {
-			file.Close()
-			return nil, fmt.Errorf("Global Context is not a regular file")
-		}
-		content, err := io.ReadAll(file)
-		closeErr := file.Close()
-		if err != nil || closeErr != nil {
-			return nil, errors.Join(err, closeErr)
-		}
-		revisions = append(revisions, store.ContextRevision{Layer: "global", Kind: "global_policy", SourcePath: name, Content: string(content), ContentHash: contextHash(string(content))})
+	}
+	// Resolve the moving ref once, then use only that immutable commit for all
+	// selected blobs. Working-tree changes never enter the snapshot.
+	sha, err := gitcontext.HeadCommitSHA(ctx, rootPath)
+	if err != nil {
+		return nil, err
+	}
+	files, err := gitcontext.Read(ctx, rootPath, sha, func(name string) bool { return seen[name] })
+	if err != nil {
+		return nil, err
+	}
+	if len(files) != len(seen) {
+		return nil, fmt.Errorf("Global Context file is missing from commit %s", sha)
+	}
+	for _, file := range files {
+		revisions = append(revisions, store.ContextRevision{Layer: "global", Kind: "global_policy", SourcePath: file.Path, SourceCommitSHA: file.SourceCommitSHA, Content: file.Content, ContentHash: file.ContentHash})
 	}
 	return revisions, nil
 }

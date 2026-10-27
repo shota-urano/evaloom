@@ -8,7 +8,8 @@ import (
 )
 
 // ContextRevision is one immutable file (or the task input) pinned to an Execution.
-// Non-Git sources use an empty SourceCommitSHA; ContentHash always covers Content.
+// SourceCommitSHA records the source commit (Task uses the Execution's base_sha).
+// ContentHash always covers the exact Content bytes.
 type ContextRevision struct {
 	ID, ExecutionID, Layer, Kind, SourcePath, SourceCommitSHA, ContentHash, Content, CreatedAt string
 }
