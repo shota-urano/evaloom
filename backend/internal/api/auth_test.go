@@ -322,3 +322,39 @@ func TestOwnerRestartInvalidatesSession(t *testing.T) {
 	NewHandler(f.db, nil, other).ServeHTTP(w, r)
 	assertAuthError(t, w.Code, w.Body.Bytes(), 401, Unauthenticated)
 }
+
+// A browser opening the printed login URL lands on the Management UI with the
+// session cookie; the token stays out of the page and is read via /api/session.
+func TestOwnerLoginBrowserNavigationRedirectsToUI(t *testing.T) {
+	for name, header := range map[string][2]string{
+		"sec-fetch":   {"Sec-Fetch-Mode", "navigate"},
+		"accept-html": {"Accept", "text/html,application/xhtml+xml"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			db := runnerDB(t, 0)
+			auth, err := NewOwnerAuth(db, nil, "127.0.0.1:8080")
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler := NewHandler(db, nil, auth)
+			r := httptest.NewRequest("GET", auth.LoginURL(), nil)
+			r.Header.Set(header[0], header[1])
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			cookies := w.Result().Cookies()
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" || len(cookies) != 1 || !cookies[0].HttpOnly {
+				t.Fatalf("status=%d location=%q cookies=%v", w.Code, w.Header().Get("Location"), cookies)
+			}
+			if strings.Contains(w.Body.String(), "csrfToken") {
+				t.Fatalf("navigation response exposes CSRF token: %q", w.Body.String())
+			}
+			session := httptest.NewRequest("GET", "http://127.0.0.1:8080/api/session", nil)
+			session.AddCookie(cookies[0])
+			w = httptest.NewRecorder()
+			handler.ServeHTTP(w, session)
+			if w.Code != 200 || !strings.Contains(w.Body.String(), `"csrfToken":"`) {
+				t.Fatalf("session after navigation login: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +41,7 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
+	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -50,10 +52,19 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		return registerRunner(ctx, *path, flags.Args()[1:], output)
 	}
 	if *path == "" || flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>]")
+		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-web <built UI directory>]")
 	}
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("evaloomd: port must be between 0 and 65535")
+	}
+	var web fs.FS
+	if *webDir != "" {
+		root, err := openWeb(*webDir)
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+		web = root.FS()
 	}
 	db, err := store.Open(ctx, *path)
 	if err != nil {
@@ -74,7 +85,7 @@ func run(ctx context.Context, args []string, output io.Writer) (err error) {
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandler(db, logger, auth),
+		Handler:           api.NewHandlerWithWeb(db, logger, auth, web),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -144,4 +155,19 @@ func registerRunner(ctx context.Context, path string, args []string, output io.W
 func listenLoopback(ctx context.Context, port int) (net.Listener, error) {
 	var config net.ListenConfig
 	return config.Listen(ctx, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+}
+
+// openWeb confines UI serving to dir (symlinks cannot escape it) and fails at
+// startup, not on the first request, when the build output is missing.
+func openWeb(dir string) (*os.Root, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: web directory: %w", err)
+	}
+	info, err := root.Stat("index.html")
+	if err != nil || !info.Mode().IsRegular() {
+		root.Close()
+		return nil, fmt.Errorf("evaloomd: web directory %q has no index.html; build the frontend first", dir)
+	}
+	return root, nil
 }

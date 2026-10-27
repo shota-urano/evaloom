@@ -260,3 +260,66 @@ func TestRunRejectsInvalidDatabaseConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestRunRejectsWebDirectoryWithoutIndex(t *testing.T) {
+	dir := t.TempDir()
+	err := run(context.Background(), []string{"-db", filepath.Join(t.TempDir(), "evaloom.db"), "-port", "0", "-web", dir}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "index.html") {
+		t.Fatalf("run with empty web directory: %v; want index.html error", err)
+	}
+}
+
+// Acceptance (13-management-ui 9): evaloomd serves the built UI on its own origin.
+func TestRunServesBuiltManagementUI(t *testing.T) {
+	web := t.TempDir()
+	const index = `<!doctype html><title>Evaloom</title><div id="root"></div>`
+	if err := os.WriteFile(filepath.Join(web, "index.html"), []byte(index), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output := make(startupOutput, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, []string{"-db", filepath.Join(t.TempDir(), "evaloom.db"), "-port", "0", "-web", web}, output)
+	}()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("run: %v", err)
+		}
+	}()
+	var line string
+	select {
+	case line = <-output:
+	case err := <-done:
+		t.Fatalf("server exited before startup: %v", err)
+	}
+	address, ok := strings.CutPrefix(strings.Split(line, "\n")[0], "evaloomd: listening on ")
+	if !ok {
+		t.Fatalf("unexpected startup output: %q", line)
+	}
+	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: time.Second}
+	get := func(path string) (int, string) {
+		response, err := client.Get("http://" + address + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, string(body)
+	}
+	for _, path := range []string{"/", "/tasks/task-001"} {
+		if status, body := get(path); status != http.StatusOK || body != index {
+			t.Fatalf("GET %s = %d %q; want UI index", path, status, body)
+		}
+	}
+	if status, body := get("/api/runners"); status != http.StatusUnauthorized || strings.Contains(body, "<title>") {
+		t.Fatalf("GET /api/runners without session = %d %q; want 401 JSON", status, body)
+	}
+}

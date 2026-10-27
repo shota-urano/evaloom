@@ -11,6 +11,8 @@
         <string>__EVALOOM_ROOT__/data/evaloom.db</string>
         <string>-port</string>
         <string>8080</string>
+        <string>-web</string>
+        <string>__EVALOOM_ROOT__/frontend/dist</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__EVALOOM_ROOT__</string>
