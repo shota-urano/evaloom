@@ -34,7 +34,7 @@ func runnerHeartbeat(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			return
 		}
 		runner, _ := r.Context().Value(runnerIdentityKey{}).(string)
-		ids, err := store.Heartbeat(r.Context(), db, runner, input.RunningExecutionIDs)
+		ids, err := store.Heartbeat(r.Context(), db, runner, input.BootID, input.RunningExecutionIDs)
 		if errors.Is(err, store.ErrHeartbeatExecutionOwner) {
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
 			return

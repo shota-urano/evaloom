@@ -58,6 +58,7 @@ ID の例外（提案）:
 | worktree_root | TEXT | worktree を作るディレクトリ（requirements 3.3 Worktree Root） |
 | status | TEXT | `online` / `offline` |
 | last_heartbeat_at | TEXT | 最後の heartbeat |
+| boot_id | TEXT NULL | 最後に受信した heartbeat の bootId。未受信・既存DBの移行直後は NULL |
 | created_at | TEXT | |
 
 #### projects
