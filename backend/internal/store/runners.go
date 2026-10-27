@@ -13,10 +13,11 @@ var ErrRunnerExists = errors.New("runner is already registered")
 var ErrHeartbeatExecutionOwner = errors.New("heartbeat execution does not belong to runner")
 
 // Heartbeat validates ownership before recording liveness and reading pending
-// cancellation instructions in one transaction. Unknown IDs are also denied;
+// cancellation instructions in one transaction. A changed, known boot identity
+// interrupts all active owned Executions in that same transaction.
+// Unknown IDs are also denied;
 // terminal reports can race a heartbeat and are harmless, but are not renewed.
-// Boot-ID recovery belongs to the separate restart-recovery lifecycle path.
-func Heartbeat(ctx context.Context, db *sql.DB, runnerID string, runningIDs []string) ([]string, error) {
+func Heartbeat(ctx context.Context, db *sql.DB, runnerID, bootID string, runningIDs []string) ([]string, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -31,8 +32,17 @@ func Heartbeat(ctx context.Context, db *sql.DB, runnerID string, runningIDs []st
 			return nil, ErrHeartbeatExecutionOwner
 		}
 	}
+	var previous sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT boot_id FROM runners WHERE id = ?`, runnerID).Scan(&previous); err != nil {
+		return nil, err
+	}
+	if previous.Valid && previous.String != bootID {
+		if err := interruptRunnerTx(ctx, tx, runnerID, "runner_boot_changed"); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `UPDATE runners SET status = 'online', last_heartbeat_at = ? WHERE id = ?`, now, runnerID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE runners SET status = 'online', last_heartbeat_at = ?, boot_id = ? WHERE id = ?`, now, bootID, runnerID); err != nil {
 		return nil, err
 	}
 	for _, id := range runningIDs {

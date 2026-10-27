@@ -133,6 +133,14 @@ Runner は起動のたびに新しい起動 ID（bootId）を作り、最初の 
 5. 失敗の通知を要求する。
 6. 自動では再実行しない（自動リトライは0回）。
 
+実装時の確定事項:
+
+- heartbeat 途絶のしきい値と起動後の猶予は30秒。ローカルの再接続やスケジューリングの遅延を許容しつつ、未完了の Execution を長時間残さないためとする。Runner の送信間隔は別途確定する。
+- Control Plane はHTTP受付を始めてから30秒待ち、起動後の heartbeat が無く、最終 heartbeat から30秒以上経過した Runner を1回回収する。最終 heartbeat が未記録の場合も猶予後に回収する。起動後に heartbeat を再開した Runner は実行を続ける。常時の途絶監視は行わない。
+- boot_id が未記録の場合、最初の heartbeat は比較用の初期値として保存する。既知の値が変わった場合だけ bootId 変化として回収する。
+- 回収では `status_changed` イベントと `system` の `execution.interrupt` 監査ログを記録する。理由は `runner_boot_changed` または `runner_heartbeat_lost`。同じ理由を error_message に保存する。途絶経路では Runner を `offline` にする。
+- heartbeat の保存・回収・イベント・監査ログ・通知要求は同一トランザクションで処理する。DB エラーでは全更新を取り消す。起動時の回収に失敗した場合はログに残し、30秒後に回収を再試行する。Execution は再実行しない。
+
 ### 3.7 再実行（`POST /api/tasks/{id}/retry`）
 
 入力: `mode`（`continue` / `fresh`）。`fresh` は本人が明示的に最初からやり直す場合だけに使う（requirements 8.5）。
