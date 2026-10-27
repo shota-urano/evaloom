@@ -88,7 +88,7 @@ export type HarnessProfile = {
 export type Assignment = { projectId: string; role: string; harnessId: string; profileId: string; assignedAt: string }
 
 /** 一覧 API を nextCursor が空になるまで読む。 */
-async function listAll<T>(api: ApiClient, path: string, signal?: AbortSignal): Promise<T[]> {
+export async function listAll<T>(api: ApiClient, path: string, signal?: AbortSignal): Promise<T[]> {
   const items: T[] = []
   let cursor = ''
   const separator = path.includes('?') ? '&' : '?'
