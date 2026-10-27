@@ -9,10 +9,12 @@ type Props = {
   onReload?: () => void
   /** フォームの項目に割り当てられなかった details。 */
   unmatchedDetails?: readonly ErrorDetail[]
+  /** details[].field を画面の項目名で出すための対応表。 */
+  fieldLabels?: Readonly<Record<string, string>>
 }
 
 /** API エラーの共通表示（13-management-ui 6節）。error が null/undefined なら何も出さない。 */
-export function ApiErrorAlert({ error, onReload, unmatchedDetails = [] }: Props) {
+export function ApiErrorAlert({ error, onReload, unmatchedDetails = [], fieldLabels }: Props) {
   if (error === null || error === undefined) return null
   const display = describeError(error)
   // 400 の details はフォーム項目に出すので、ここには割り当てられなかった分だけを出す。
@@ -26,7 +28,7 @@ export function ApiErrorAlert({ error, onReload, unmatchedDetails = [] }: Props)
         {details.length > 0 ? (
           <ul className="list-disc pl-5">
             {details.map((detail) => (
-              <li key={`${detail.field}:${detail.reason}`}>{formatDetail(detail)}</li>
+              <li key={`${detail.field}:${detail.reason}`}>{formatDetail(detail, fieldLabels)}</li>
             ))}
           </ul>
         ) : null}

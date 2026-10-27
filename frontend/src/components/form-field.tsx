@@ -2,6 +2,7 @@ import { useId, type ComponentProps, type ReactNode } from 'react'
 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
 /** 項目の下に出すエラー文言。入力欄とは aria-describedby で結びつける。 */
@@ -86,6 +87,25 @@ export function TextAreaField({
       errors={errors}
       hint={hint}
       control={(control) => <Textarea {...props} {...control} />}
+    />
+  )
+}
+
+/** 選択肢から選ぶ版の TextField。 */
+export function SelectField({
+  name,
+  label,
+  errors,
+  hint,
+  ...props
+}: FieldProps & Omit<ComponentProps<'select'>, 'name' | 'id'>) {
+  return (
+    <FieldShell
+      name={name}
+      label={label}
+      errors={errors}
+      hint={hint}
+      control={(control) => <NativeSelect {...props} {...control} />}
     />
   )
 }
