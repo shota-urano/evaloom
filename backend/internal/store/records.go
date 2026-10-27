@@ -51,7 +51,9 @@ type ExecutionBlock struct {
 
 // RecordExecutionBlock creates an undecided block. The lifecycle service owns
 // subsequent owner decisions and execution state transitions.
-func RecordExecutionBlock(ctx context.Context, db *sql.DB, record ExecutionBlock) error {
+func RecordExecutionBlock(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, record ExecutionBlock) error {
 	detail, err := recordDetail(record.Detail)
 	if err != nil {
 		return err

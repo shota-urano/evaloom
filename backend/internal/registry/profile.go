@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -121,6 +122,19 @@ func validateProfileDefinition(data []byte, version, adapter string) (json.RawMe
 	if def.ExecutionConfiguration.Adapter != adapter {
 		return nil, "", rejected("executionConfiguration.adapter", "invalid")
 	}
+	if raw, present := document["contextFiles"]; present {
+		if _, ok := raw.([]any); !ok {
+			return nil, "", rejected("contextFiles", "invalid_format")
+		}
+	}
+	seen := map[string]bool{}
+	for _, name := range def.ContextFiles {
+		if name == "" || name == "." || name == ".." || path.IsAbs(name) || path.Clean(name) != name ||
+			strings.HasPrefix(name, "../") || strings.ContainsAny(name, "\x00\\") || seen[name] {
+			return nil, "", rejected("contextFiles", "invalid_format")
+		}
+		seen[name] = true
+	}
 	return encoded, def.ModelID, nil
 }
 
@@ -128,7 +142,7 @@ func validProfileDefinitionKeys(document map[string]any) bool {
 	if !onlyProfileKeys(document,
 		"profileVersion", "harnessVersion", "modelId", "promptVersion", "skillVersions",
 		"toolConfiguration", "contextPolicyVersion", "executionConfiguration",
-		"collaborationPolicy", "evaluationPolicyVersion") {
+		"collaborationPolicy", "evaluationPolicyVersion", "contextFiles") {
 		return false
 	}
 	if !onlyProfileKeys(document["toolConfiguration"], "allowedTools") ||
