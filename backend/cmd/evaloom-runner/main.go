@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/shota-urano/evaloom/backend/internal/runner"
 )
 
 func main() {
@@ -23,18 +25,33 @@ func main() {
 func run(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("evaloom-runner", flag.ContinueOnError)
 	flags.SetOutput(output)
+	configPath := flags.String("config", "", "Runner JSON configuration file path (required)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloom-runner")
+	if *configPath == "" || flags.NArg() != 0 {
+		return fmt.Errorf("usage: evaloom-runner -config <configuration file path>")
 	}
-	// Configuration, heartbeat and the pull loop belong to the Runner tasks.
-	// This process has no listener and does not access the Control Plane DB.
-	fmt.Fprintln(output, "evaloom-runner: started (execution loop is not implemented)")
+	config, err := runner.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	process, err := runner.New(config)
+	if err != nil {
+		return err
+	}
+	if err := process.Heartbeat(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		// Connection failures must not stop ongoing executions. Scheduling
+		// subsequent heartbeats and claim calls belongs to the pull-loop task.
+		fmt.Fprintln(output, err)
+	}
+	fmt.Fprintln(output, "evaloom-runner: started (pull loop is not implemented)")
 	<-ctx.Done()
 	return nil
 }
