@@ -1,15 +1,11 @@
 package api
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -83,16 +79,19 @@ func reportLogEvents(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 		defer tx.Rollback()
 		executionID := r.PathValue("id")
 		for _, event := range input.Events {
+			// The stable source ID lives in the existing JSON payload. No
+			// receipt table or schema extension is needed for retry detection.
 			payload, _ := json.Marshal(struct {
-				Stream string `json:"stream"`
-				Text   string `json:"text"`
-			}{event.Stream, event.Text})
-			hash := sha256.Sum256(payload)
-			digest := hex.EncodeToString(hash[:])
-			var previousExecution, previousHash string
-			err := tx.QueryRowContext(r.Context(), `SELECT execution_id, payload_hash FROM runner_event_receipts WHERE source_id = ?`, event.ID).Scan(&previousExecution, &previousHash)
+				SourceID string `json:"sourceId"`
+				Stream   string `json:"stream"`
+				Text     string `json:"text"`
+			}{event.ID, event.Stream, event.Text})
+			var previous string
+			err := tx.QueryRowContext(r.Context(), `SELECT payload FROM execution_events
+				WHERE execution_id = ? AND type = 'log' AND json_extract(payload, '$.sourceId') = ?`,
+				executionID, event.ID).Scan(&previous)
 			if err == nil {
-				if previousExecution != executionID || previousHash != digest {
+				if previous != string(payload) {
 					WriteError(w, logger, &Error{Code: Conflict, Message: "Event ID already used for another payload"})
 					return
 				}
@@ -100,9 +99,6 @@ func reportLogEvents(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			}
 			if errors.Is(err, sql.ErrNoRows) {
 				_, err = store.AppendExecutionEvent(r.Context(), tx, executionID, model.EventLog, payload)
-				if err == nil {
-					_, err = tx.ExecContext(r.Context(), `INSERT INTO runner_event_receipts (source_id, execution_id, payload_hash) VALUES (?, ?, ?)`, event.ID, executionID, digest)
-				}
 			}
 			if err != nil {
 				WriteError(w, logger, err)
@@ -115,76 +111,4 @@ func reportLogEvents(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-}
-
-// Raw upload avoids loading a finished log into memory or exposing Runner-local
-// filesystem paths. The Control Plane chooses storage paths and computes hashes.
-func uploadLogArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, artifacts *store.ArtifactStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		artifactID := r.PathValue("artifactID")
-		if err := ValidateID("artifactID", artifactID, ULID); err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		query, err := parseLogArtifactQuery(r)
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		tx := logTransaction(w, r, db, logger, auth)
-		if tx == nil {
-			return
-		}
-		defer tx.Rollback()
-		if artifacts == nil {
-			WriteError(w, logger, &Error{Code: PreconditionFailed, Message: "Artifact storage is not configured"})
-			return
-		}
-		executionID, kind := r.PathValue("id"), query.stream+"_log"
-		var previousExecution, previousKind, previousHash string
-		var previousSize int64
-		var previousRedacted bool
-		err = tx.QueryRowContext(r.Context(), `SELECT execution_id, kind, sha256, size_bytes, redacted FROM artifacts WHERE id = ?`, artifactID).
-			Scan(&previousExecution, &previousKind, &previousHash, &previousSize, &previousRedacted)
-		if err == nil {
-			hash := sha256.New()
-			size, copyErr := io.Copy(hash, r.Body)
-			if copyErr != nil {
-				WriteError(w, logger, invalid("body", "read_failed"))
-				return
-			}
-			if previousExecution != executionID || previousKind != kind || previousRedacted != query.redacted || previousSize != size || previousHash != hex.EncodeToString(hash.Sum(nil)) {
-				WriteError(w, logger, &Error{Code: Conflict, Message: "Artifact ID already used for another payload"})
-				return
-			}
-		} else if errors.Is(err, sql.ErrNoRows) {
-			_, err = artifacts.SaveTx(r.Context(), tx, artifactID, executionID, kind, query.redacted, r.Body)
-		}
-		if err == nil {
-			err = tx.Commit()
-		}
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
-
-type logArtifactQuery struct {
-	stream   string
-	redacted bool
-}
-
-func parseLogArtifactQuery(r *http.Request) (logArtifactQuery, error) {
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return logArtifactQuery{}, invalid("query", "invalid")
-	}
-	stream, redacted := query.Get("stream"), query.Get("redacted")
-	if len(query) != 2 || len(query["stream"]) != 1 || len(query["redacted"]) != 1 ||
-		!logStream(stream) || stream == "runner" || (redacted != "true" && redacted != "false") {
-		return logArtifactQuery{}, invalid("query", "invalid")
-	}
-	return logArtifactQuery{stream, redacted == "true"}, nil
 }

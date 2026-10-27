@@ -19,6 +19,18 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// LogArtifact describes a closed Runner-local file. A registrar owns copying
+// the file and registering its metadata; it must make retries with the same ID
+// idempotent. The transport to the Control Plane awaits an API specification.
+type LogArtifact struct {
+	ID, ExecutionID, Kind, Path string
+	Redacted                    bool
+}
+
+type ArtifactRegistrar interface {
+	RegisterLogArtifact(context.Context, LogArtifact) error
+}
+
 // Log collects one Execution stream. Read may be called concurrently for stdout
 // and stderr. Deliver runs separately, so network failures never block Read.
 // Call Finish after all readers stop, and keep Deliver alive until it returns.
@@ -26,6 +38,7 @@ import (
 // belongs to the next implementation unit in spec 05, section 9.
 type Log struct {
 	runner                                    *Runner
+	registrar                                 ArtifactRegistrar
 	id, executionID, stream, path             string
 	mu                                        sync.Mutex
 	file                                      *os.File
@@ -35,7 +48,10 @@ type Log struct {
 	retryInterval                             time.Duration
 }
 
-func (runner *Runner) NewLog(executionID, stream string) (*Log, error) {
+func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegistrar) (*Log, error) {
+	if registrar == nil {
+		return nil, fmt.Errorf("runner: artifact registrar is required")
+	}
 	if id, err := ulid.ParseStrict(executionID); err != nil || id.String() != executionID {
 		return nil, fmt.Errorf("runner: invalid log execution ID")
 	}
@@ -52,7 +68,7 @@ func (runner *Runner) NewLog(executionID, stream string) (*Log, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Log{runner: runner, id: id, executionID: executionID, stream: stream,
+	return &Log{runner: runner, registrar: registrar, id: id, executionID: executionID, stream: stream,
 		path: path, file: file, retryInterval: time.Second}, nil
 }
 
@@ -181,15 +197,10 @@ func (log *Log) Deliver(ctx context.Context) error {
 			if writeErr != nil {
 				return writeErr
 			}
-			// Use a fresh descriptor per attempt. The HTTP transport owns its
-			// request body and may still be closing it when Do returns an error.
-			artifact, err := os.Open(log.path)
-			if err != nil {
-				return err
-			}
-			endpoint := "artifacts/" + log.id + "?stream=" + log.stream + "&redacted=" + fmt.Sprint(redacted)
-			err = log.post(ctx, endpoint, artifact, "text/plain; charset=utf-8")
-			artifact.Close()
+			err := log.registrar.RegisterLogArtifact(ctx, LogArtifact{
+				ID: log.id, ExecutionID: log.executionID, Kind: log.stream + "_log",
+				Path: log.path, Redacted: redacted,
+			})
 			if err == nil {
 				log.mu.Lock()
 				log.delivered = true

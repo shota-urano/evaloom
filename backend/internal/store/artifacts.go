@@ -59,18 +59,6 @@ func (s *ArtifactStore) Close() error { return s.root.Close() }
 // On a write or database failure it removes only its newly created file.
 // Redacted records whether the caller applied redaction; Save does not do so.
 func (s *ArtifactStore) Save(ctx context.Context, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, err error) {
-	return s.save(ctx, s.db, id, executionID, kind, redacted, content)
-}
-
-// SaveTx keeps the caller's ownership check and registration in one transaction.
-// As with a process crash, a failed outer commit can leave an unregistered file.
-func (s *ArtifactStore) SaveTx(ctx context.Context, tx *sql.Tx, id, executionID, kind string, redacted bool, content io.Reader) (Artifact, error) {
-	return s.save(ctx, tx, id, executionID, kind, redacted, content)
-}
-
-func (s *ArtifactStore) save(ctx context.Context, writer interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, err error) {
 	if err := ctx.Err(); err != nil {
 		return Artifact{}, err
 	}
@@ -101,7 +89,7 @@ func (s *ArtifactStore) save(ctx context.Context, writer interface {
 		SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size,
 		Redacted: redacted, CreatedAt: recordTime(),
 	}
-	_, err = writer.ExecContext(ctx, `INSERT INTO artifacts
+	_, err = s.db.ExecContext(ctx, `INSERT INTO artifacts
 		(id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, artifact.ID, artifact.ExecutionID, artifact.Kind,
 		artifact.StoragePath, artifact.SHA256, artifact.SizeBytes, artifact.Redacted, artifact.CreatedAt)

@@ -3,9 +3,7 @@ package runner
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,14 +28,13 @@ import (
 const logExecution = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 type logControlPlane struct {
-	t                             *testing.T
-	db                            *sql.DB
-	config                        Config
-	server                        *httptest.Server
-	artifacts                     *store.ArtifactStore
-	cookie                        *http.Cookie
-	dbPath, dataDir, address      string
-	loseEventAck, loseArtifactAck atomic.Bool
+	t                        *testing.T
+	db                       *sql.DB
+	config                   Config
+	server                   *httptest.Server
+	cookie                   *http.Cookie
+	dbPath, dataDir, address string
+	loseEventAck             atomic.Bool
 }
 
 func newLogControlPlane(t *testing.T) *logControlPlane {
@@ -75,10 +73,6 @@ func (f *logControlPlane) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.artifacts, err = store.NewArtifactStore(f.db, f.dataDir)
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	server := httptest.NewUnstartedServer(nil)
 	if f.address != "" {
 		server.Listener.Close()
@@ -93,10 +87,9 @@ func (f *logControlPlane) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ContextConfig{}, f.artifacts)
+	handler := api.NewHandler(f.db, logger, auth)
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lose := r.Method == "POST" && ((strings.HasSuffix(r.URL.Path, "/events") && f.loseEventAck.Swap(false)) ||
-			(strings.Contains(r.URL.Path, "/artifacts/") && f.loseArtifactAck.Swap(false)))
+		lose := r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/events") && f.loseEventAck.Swap(false)
 		if !lose {
 			handler.ServeHTTP(w, r)
 			return
@@ -131,10 +124,6 @@ func (f *logControlPlane) stop() {
 		f.server.CloseClientConnections()
 		f.server.Close()
 		f.server = nil
-	}
-	if f.artifacts != nil {
-		f.artifacts.Close()
-		f.artifacts = nil
 	}
 	if f.db != nil {
 		f.db.Close()
@@ -201,20 +190,42 @@ func startLogDelivery(t *testing.T, log *Log) <-chan error {
 	return done
 }
 
-func assertLogArtifact(t *testing.T, f *logControlPlane, log *Log, want string) {
+// This stub records the registration boundary without defining an HTTP API
+// or accessing the Control Plane DB from the Runner.
+type recordingArtifactRegistrar struct {
+	mu       sync.Mutex
+	artifact LogArtifact
+	content  string
+	calls    int
+	failures int
+}
+
+func (registrar *recordingArtifactRegistrar) RegisterLogArtifact(ctx context.Context, artifact LogArtifact) error {
+	registrar.mu.Lock()
+	defer registrar.mu.Unlock()
+	registrar.calls++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if registrar.failures > 0 {
+		registrar.failures--
+		return fmt.Errorf("registration temporarily unavailable")
+	}
+	content, err := os.ReadFile(artifact.Path)
+	if err != nil {
+		return err
+	}
+	registrar.artifact, registrar.content = artifact, string(content)
+	return nil
+}
+
+func assertLogArtifact(t *testing.T, registrar *recordingArtifactRegistrar, log *Log, want string) {
 	t.Helper()
-	artifact, file, err := f.artifacts.Open(context.Background(), logExecution, log.id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	content, err := io.ReadAll(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := sha256.Sum256([]byte(want))
-	if string(content) != want || artifact.Kind != log.stream+"_log" || artifact.SizeBytes != int64(len(want)) || artifact.SHA256 != hex.EncodeToString(hash[:]) || artifact.Redacted {
-		t.Fatalf("artifact mismatch: %+v content=%q", artifact, content)
+	registrar.mu.Lock()
+	defer registrar.mu.Unlock()
+	artifact := registrar.artifact
+	if registrar.calls != 1 || artifact.ID != log.id || artifact.ExecutionID != logExecution || artifact.Kind != log.stream+"_log" || artifact.Path != log.Path() || artifact.Redacted || registrar.content != want {
+		t.Fatalf("registration calls=%d artifact=%+v content=%q", registrar.calls, artifact, registrar.content)
 	}
 	local, err := os.ReadFile(log.Path())
 	if err != nil || string(local) != want {
@@ -232,7 +243,8 @@ func TestHarnessLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log, err := process.NewLog(logExecution, "harness")
+	registrar := &recordingArtifactRegistrar{}
+	log, err := process.NewLog(logExecution, "harness", registrar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +281,7 @@ func TestHarnessLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
 	if err := await(t, done); err != nil {
 		t.Fatal(err)
 	}
-	assertLogArtifact(t, f, log, "first\n\nstderr line\nlast without newline\n")
+	assertLogArtifact(t, registrar, log, "first\n\nstderr line\nlast without newline\n")
 }
 
 func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
@@ -278,7 +290,8 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log, err := process.NewLog(logExecution, "setup")
+	registrar := &recordingArtifactRegistrar{}
+	log, err := process.NewLog(logExecution, "setup", registrar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +305,7 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	}
 	readLogFrame(t, reader, "setup", "before stop")
 	response.Body.Close()
-	f.stop() // Stop HTTP and close SQLite and artifact storage, not a mocked 503.
+	f.stop() // Stop HTTP and close SQLite, not a mocked 503.
 	longLine := strings.Repeat("x", 128<<10)
 	want := "before stop\nwhile offline\n" + longLine + "\nafter EOF\n"
 	if err := log.Read(strings.NewReader("while offline\n" + longLine + "\nafter EOF")); err != nil {
@@ -318,7 +331,7 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	if err := await(t, done); err != nil {
 		t.Fatal(err)
 	}
-	assertLogArtifact(t, f, log, want)
+	assertLogArtifact(t, registrar, log, want)
 	var count int
 	if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'`).Scan(&count); err != nil || count != 4 {
 		t.Fatalf("events=%d err=%v", count, err)
@@ -328,12 +341,12 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 	f := newLogControlPlane(t)
 	f.loseEventAck.Store(true)
-	f.loseArtifactAck.Store(true)
 	process, err := New(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	log, err := process.NewLog(logExecution, "test")
+	registrar := &recordingArtifactRegistrar{}
+	log, err := process.NewLog(logExecution, "test", registrar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,17 +359,13 @@ func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 	if err := await(t, startLogDelivery(t, log)); err != nil {
 		t.Fatal(err)
 	}
-	for table, want := range map[string]int{"execution_events": 2, "runner_event_receipts": 2, "artifacts": 1} {
+	for table, want := range map[string]int{"execution_events": 2, "artifacts": 0} {
 		var got int
 		if err := f.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(f.dataDir, "artifacts", "*"))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("artifact files=%v err=%v", files, err)
-	}
-	assertLogArtifact(t, f, log, "one\ntwo\n")
+	assertLogArtifact(t, registrar, log, "one\ntwo\n")
 	rows, err := f.db.Query(`SELECT payload FROM execution_events ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
@@ -370,8 +379,107 @@ func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 		}
 		got = append(got, payload)
 	}
-	want := []string{`{"stream":"test","text":"one"}`, `{"stream":"test","text":"two"}`}
+	want := []string{
+		fmt.Sprintf(`{"sourceId":"%s:0","stream":"test","text":"one"}`, log.id),
+		fmt.Sprintf(`{"sourceId":"%s:4","stream":"test","text":"two"}`, log.id),
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatal(fmt.Sprintf("log events=%v want=%v", got, want))
 	}
+}
+
+func TestLogArtifactRegistrationRetriesOnlyAfterFinish(t *testing.T) {
+	f := newLogControlPlane(t)
+	process, err := New(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := &recordingArtifactRegistrar{failures: 2}
+	log, err := process.NewLog(logExecution, "test", registrar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { log.Finish(true) })
+	done := startLogDelivery(t, log)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, reader := f.stream(ctx)
+	if err := log.Read(strings.NewReader("test output\n")); err != nil {
+		t.Fatal(err)
+	}
+	readLogFrame(t, reader, "test", "test output")
+	registrar.mu.Lock()
+	beforeFinish := registrar.calls
+	registrar.mu.Unlock()
+	if beforeFinish != 0 {
+		t.Fatalf("registered an open log: calls=%d", beforeFinish)
+	}
+	if err := log.Finish(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := await(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if registrar.calls != 3 || !registrar.artifact.Redacted || registrar.content != "test output\n" {
+		t.Fatalf("registration retries: %+v", registrar)
+	}
+	if err := log.Deliver(ctx); err != nil || registrar.calls != 3 {
+		t.Fatalf("repeated delivery: calls=%d err=%v", registrar.calls, err)
+	}
+	var count int
+	if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("registration retry resent events: count=%d err=%v", count, err)
+	}
+}
+
+func TestLogDeliveryResumesWithoutDuplicatesAfterControlPlaneRestart(t *testing.T) {
+	f := newLogControlPlane(t)
+	process, err := New(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := &recordingArtifactRegistrar{}
+	log, err := process.NewLog(logExecution, "harness", registrar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { log.Finish(false) })
+	log.retryInterval = 5 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	deliveryCtx, stopDelivery := context.WithCancel(ctx)
+	defer stopDelivery()
+	done := make(chan error, 1)
+	go func() { done <- log.Deliver(deliveryCtx) }()
+	response, reader := f.stream(ctx)
+	if err := log.Read(strings.NewReader("before restart\n")); err != nil {
+		t.Fatal(err)
+	}
+	readLogFrame(t, reader, "harness", "before restart")
+	stopDelivery()
+	if err := await(t, done); err != context.Canceled {
+		t.Fatalf("stopped delivery: %v", err)
+	}
+	response.Body.Close()
+	f.stop()
+	if err := log.Read(strings.NewReader("after restart\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Finish(false); err != nil {
+		t.Fatal(err)
+	}
+	f.start()
+	// A new Deliver call replays from byte zero. Deduplication must survive
+	// reopening the DB and must not depend on an in-memory receipt cache.
+	if err := log.Deliver(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, reader = f.stream(ctx)
+	readLogFrame(t, reader, "harness", "before restart")
+	readLogFrame(t, reader, "harness", "after restart")
+	var count int
+	if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("events after replay=%d err=%v", count, err)
+	}
+	assertLogArtifact(t, registrar, log, "before restart\nafter restart\n")
 }

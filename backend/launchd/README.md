@@ -120,19 +120,18 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 正本は`docs/specs/05-runner.md`の3.4・6・9節、イベント形式は
 `02-data-model.md`の5.3節。以下はログ収集の実装上の選択である。
 
-- 工程は`Runner.NewLog(executionID, stream)`でログを作る。streamは`harness`・`setup`・`test`。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。未実装のAdapter・setup・テスト工程をCLIへ接続する変更は行っていない。
+- 工程は`Runner.NewLog(executionID, stream, registrar)`でログを作る。streamは`harness`・`setup`・`test`。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。未実装のAdapter・setup・テスト工程をCLIへ接続する変更は行っていない。
 - Runnerは`dataDir/logs/<ULID>.log`を新規作成する。既存ファイルを上書きしない。親ディレクトリは0700、ファイルは0600。書き込みはバッファせず、終了時にSyncして閉じる。LF・CRLFをLFへ統一し、末尾に改行のない行にもLFを付ける。空行と64KiBを超える行も収集する。同じstream内ではファイルへの書き込み順に送る。stdoutとstderrの間の順序はreaderが行を書き込んだ順になる。
 - Deliverはファイルを読み、最大100行、通常256KiBまでを1バッチで送る。1行が256KiBを超える場合は、その行を分割せずに送る。全履歴をメモリに積まない。新着確認と送信失敗後の再試行は1秒間隔。HTTP要求全体の上限は既存の5秒で、Bearer認証とリダイレクト禁止も共通とする。送信処理が待機・失敗してもreaderはファイルへの書き込みを続ける。書き込み・読み取り・Syncの失敗は呼び出し元へ返す。
-- `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`stream`と`text`だけとする。RunnerにControl PlaneのDB接続を持たせない。
-- Control Planeはログと再送IDの受領記録を同じトランザクションで保存する。同じID・Execution・payloadの再送は204、同じIDで内容を変えた要求は409。バッチの一部だけは保存しない。認証したRunnerの所有権を同じトランザクションで確認する。終了済み・過去のExecutionにも所有するRunnerの未送信ログを受け付ける。別Runnerの報告は403と監査記録を返す。
-- 全行の送信後、Deliverはファイルを`POST /api/executions/{id}/artifacts/{artifactId}?stream=harness&redacted=false`へ本文として送る。仕様にはArtifactの登録用HTTP形式がないため、このRunner用経路を追加した。artifactIdはログのULID。Control Planeは受信したファイルのSHA-256とサイズを計算して、`harness_log`・`setup_log`・`test_log`として登録し、204を返す。同じIDの再送では本文のハッシュ・サイズ・Execution・kind・redactedが一致することを確認する。不一致は409。再送でファイルを重複作成しない。
-- `evaloomd -data <ディレクトリ>`でControl Plane側のArtifact保存先を指定する。省略時はDBファイルの親ディレクトリ。保存先は`artifacts/`配下で、Runnerの保存先と同じである必要はない。RunnerのファイルパスをControl Planeへ送らず、本文を転送するため、接続先を移しても共有ファイルシステムを必要としない。両方のデータディレクトリはGit管理外に配置する。
-- イベント・Artifactの送信失敗は終了後も再試行する。Deliverのcontextを中止すると送信を止め、ローカルファイルを保持する。同じLogでDeliverを再度呼ぶと先頭から読み直し、受領記録で重複を排除する。Runnerプロセス自体の再起動時にログを自動回収する処理は含めない。既存仕様どおり最初のheartbeatで前回のExecutionをinterruptedにする。
+- `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`sourceId`・`stream`・`text`とし、sourceIdには要求のidを保存する。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。
+- Control Planeは既存の`execution_events.payload`のsourceIdをExecution内で照合し、重複を排除する。新しいテーブルや列は追加しない。同じExecutionで同じID・payloadの再送は204、同じIDで内容を変えた要求は409。バッチの一部だけは保存しない。認証したRunnerの所有権を同じトランザクションで確認する。終了済み・過去のExecutionにも所有するRunnerの未送信ログを受け付ける。別Runnerの報告は403と監査記録を返す。
+- 全行の送信とFinishの完了後、Deliverは渡された`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。引数にはログのULID・Execution ID・kind（`harness_log`・`setup_log`・`test_log`）・ローカルパス・redactedを渡す。登録側は同じIDの再試行を重複登録しない契約とする。Artifact登録のHTTP経路は仕様未定のため接続せず、新しい公開APIは追加しない。テストではスタブで登録要求とファイル内容を確認する。registrarの省略はエラーとし、登録していないログを登録済みとは扱わない。
+- イベント・Artifactの送信失敗は終了後も再試行する。Deliverのcontextを中止すると送信を止め、ローカルファイルを保持する。同じLogでDeliverを再度呼ぶと先頭から読み直し、保存済みイベントのsourceIdで重複を排除する。Runnerプロセス自体の再起動時にログを自動回収する処理は含めない。既存仕様どおり最初のheartbeatで前回のExecutionをinterruptedにする。
 - 機密情報の除外は次の実装単位で扱う。Readへ渡す前に除外処理を適用する契約とし、Finishの引数でArtifactのredactedを引き継ぐ。今回の収集処理だけで除外済みとは扱わない。タイムアウト、Adapterの中止、使用量の記録にも変更を加えていない。
 
-結合テストは実際の認証・events受信・SSE・Artifact保存を通し、出力の読み取り中にSSEへ届くことを確認する。
+結合テストは実際の認証・events受信・SSEを通し、出力の読み取り中にSSEへ届くことを確認する。Artifact登録はスタブで呼び出しを確認する。
 HTTPサーバーとDBを閉じている間にログを読み、同じDB・URLで再開して全行が届くことも確認する。
-保存成功後にHTTP応答だけを失わせ、再送でイベントやArtifactが増えないことも検証する。
+保存成功後にHTTP応答だけを失わせ、再送でイベントが増えないことも検証する。
 
 ## macOS通知ヘルパーのビルド・署名・配置
 
