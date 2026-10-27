@@ -30,6 +30,28 @@ status: confirmed
 
 Control Plane の URL を設定で持つため、Control Plane を別サーバーへ移しても Runner の設定変更だけで切り替えられる（requirements 2.3）。
 
+実装時の確定事項（設定読み込み・起動時heartbeatの実装単位）:
+
+- 起動引数は`evaloom-runner -config <JSONファイル>`。設定の各項目を必須とし、未知の項目や複数のJSON値を拒否する。設定パスの既定値は設けない。launchdのテンプレートは`data/runner.json`を指定する。
+- 設定例は次のとおり。3つのファイル・ディレクトリのパスは絶対パスで指定する。ディレクトリの作成、worktreeの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。データディレクトリは利用者がGit管理外に配置する。
+
+```json
+{
+  "runnerId": "mac-mini",
+  "controlPlaneUrl": "http://127.0.0.1:8080",
+  "tokenFile": "/absolute/path/data/runner.token",
+  "worktreeRoot": "/absolute/path/worktrees",
+  "dataDir": "/absolute/path/data/runner"
+}
+```
+
+- Runner IDの制約は登録コマンドに合わせる。接続先はHTTP(S)の絶対URLとし、認証情報、クエリ、フラグメントを含むURLを拒否する。パスを含む場合は、その下に`api/runners/{id}/heartbeat`を追加する。
+- トークンファイルには登録コマンドが発行したトークンだけを保存する。前後の空白・改行を取り除き、既存の認証と同じ32バイトの正規base64url形式を確認する。トークンファイルは本人だけが読める権限（0600）で用意する。設定やトークンの読み込み失敗・形式不正では通信せず起動を中止する。
+- bootIdは起動ごとに生成する16バイトの暗号学的乱数を小文字hexで表し、プロセス内の再送では同じ値を使う。ファイルに保存しない。
+- heartbeatには`Authorization: Bearer <token>`を付ける。実行中IDが無いときも`runningExecutionIds`は空配列で送る。応答の`cancelExecutionIds`に対応する登録済みExecutionの中止関数を呼ぶ。未知・終了済みのIDは無視し、中止後も終了処理が登録を解除するまでは実行中IDとして送る。中止関数は繰り返し呼べるものを登録する。
+- HTTP要求全体の上限は5秒とし、終了要求のcontextでも通信を中断する。リダイレクトは追わない。応答は200とJSONの中止ID配列を必須にし、1MiBまで読み込む。通信失敗、非200、応答不正では実行中Executionを止めず、エラーを返す。起動時の送信に失敗してもプロセスは終了要求を待つ。エラー出力にはトークンや応答本文を含めない。
+- この実装単位は起動時の1回送信と、後続のpullループから呼べるheartbeat処理までを持つ。定期送信・再送のスケジューリングとclaimは次の実装単位、AdapterとSandboxの停止・`cancelled`の報告はタイムアウトとキャンセルの実装単位で扱う。
+
 ### 3.2 pull ループ
 
 ```

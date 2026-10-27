@@ -60,7 +60,7 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - HTTPヘッダー受信の上限は5秒。SIGTERM等を受けた後のHTTP終了待機も5秒とし、超過した場合は接続を閉じてエラー終了する。
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
-- Runnerは終了要求を待つ起動骨格だけを持つ。設定読み込み、bootId、heartbeat、pullループは`05-runner.md`の実装単位で扱う。
+- Runnerは`-config <JSONファイル>`を読み、起動直後にheartbeatを1回送信して終了要求を待つ。設定例と通信時の動作は`docs/specs/05-runner.md`の3.1節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。定期送信とclaimはpullループの実装単位で扱う。
 
 ## macOS通知ヘルパーのビルド・署名・配置
 
