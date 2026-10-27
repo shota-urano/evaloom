@@ -54,7 +54,26 @@ export type ProjectInput = Omit<ProjectSettings, 'reviewRole' | 'contextLocation
 
 export type Runner = { id: string; name: string; status: 'online' | 'offline'; lastHeartbeatAt: string | null; createdAt: string }
 
-export type Harness = { id: string; name: string; adapter: string; specialty: string }
+/** 本人が画面で編集する Harness の項目（03 3.4、backend/internal/model/harness.go）。 */
+export type HarnessInput = {
+  name: string
+  adapter: string
+  repoPath: string
+  repoUrl: string
+  supportedModels: string[]
+  availableTools: string[]
+  toolPermissions: Record<string, unknown>
+}
+
+/** specialty・supportedTasks・contractVersion は Phase 1 では固定値（developer・["development"]・"1"）なので送らない。 */
+export type Harness = HarnessInput & {
+  id: string
+  specialty: string
+  supportedTasks: string[]
+  contractVersion: string
+  createdAt: string
+  updatedAt: string
+}
 
 export type HarnessProfile = {
   id: string
@@ -83,6 +102,7 @@ async function listAll<T>(api: ApiClient, path: string, signal?: AbortSignal): P
 }
 
 const projectPath = (id: string) => `/api/projects/${encodeURIComponent(id)}`
+const harnessPath = (id: string) => `/api/harnesses/${encodeURIComponent(id)}`
 
 export const registry = {
   listProjects: (api: ApiClient, signal?: AbortSignal) => listAll<Project>(api, '/api/projects', signal),
@@ -93,6 +113,14 @@ export const registry = {
     api.post<Assignment>(`${projectPath(id)}/harnesses`, input),
   listRunners: (api: ApiClient, signal?: AbortSignal) => listAll<Runner>(api, '/api/runners', signal),
   listHarnesses: (api: ApiClient, signal?: AbortSignal) => listAll<Harness>(api, '/api/harnesses', signal),
+  /** 個別の GET は API に無い（backend/internal/api/harnesses.md）ので、一覧から探す。無ければ undefined。 */
+  getHarness: async (api: ApiClient, id: string, signal?: AbortSignal) =>
+    (await listAll<Harness>(api, '/api/harnesses', signal)).find((harness) => harness.id === id),
+  createHarness: (api: ApiClient, id: string, input: HarnessInput) => api.post<Harness>('/api/harnesses', { id, ...input }),
+  updateHarness: (api: ApiClient, id: string, input: HarnessInput) => api.patch<Harness>(harnessPath(id), input),
+  /** Profile の版の登録（03 3.5）。新規は 201、同じ commit SHA の再登録は 200 で既存の行が返る。 */
+  registerHarnessProfile: (api: ApiClient, input: { harnessId: string; version: string }) =>
+    api.post<HarnessProfile>('/api/harness-profiles', input),
   listHarnessProfiles: (api: ApiClient, harnessId: string, signal?: AbortSignal) =>
     listAll<HarnessProfile>(api, `/api/harness-profiles?harnessId=${encodeURIComponent(harnessId)}`, signal),
 }
