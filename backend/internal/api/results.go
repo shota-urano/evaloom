@@ -1,0 +1,253 @@
+package api
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+
+	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/store"
+	"github.com/shota-urano/evaloom/backend/internal/task"
+)
+
+// Status strings are validated as transitions, including unknown values (409).
+// Other enum values are input validation errors (400).
+type resultInput struct {
+	FromStatus       string           `json:"fromStatus"`
+	Status           string           `json:"status"`
+	WorktreeID       *string          `json:"worktreeId"`
+	BranchName       *string          `json:"branchName"`
+	BaseSHA          *string          `json:"baseSha"`
+	Gate1BaseSHA     *string          `json:"gate1BaseSha"`
+	HarnessHeadSHA   *string          `json:"harnessHeadSha"`
+	VerifiedSHA      *string          `json:"verifiedSha"`
+	PushedSHA        *string          `json:"pushedSha"`
+	PRNumber         *int             `json:"prNumber"`
+	PRURL            *string          `json:"prUrl"`
+	HarnessSessionID *string          `json:"harnessSessionId"`
+	ErrorClass       model.ErrorClass `json:"errorClass"`
+	ErrorMessage     *string          `json:"errorMessage"`
+	Block            *resultBlock     `json:"block"`
+}
+
+type resultBlock struct {
+	Cause        model.BlockCause `json:"cause"`
+	GateResultID *string          `json:"gateResultId"`
+	HeadSHA      string           `json:"headSha"`
+	Detail       map[string]any   `json:"detail"`
+}
+
+func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := ValidateID("id", id, ULID); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		var input resultInput
+		if err := DecodeJSON(r, &input); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		ctx := r.Context()
+		tx, err := db.BeginTx(ctx, nil) // BEGIN IMMEDIATE, as in claim.
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		defer tx.Rollback()
+		execution, err := store.GetContextExecution(ctx, tx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: NotFound, Message: "Execution not found"}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		runner, _ := ctx.Value(runnerIdentityKey{}).(string)
+		if runner == "" || execution.RunnerID != runner {
+			tx.Rollback() // Release the connection before recording the denial.
+			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
+			return
+		}
+		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
+			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
+			return
+		}
+		// Validate the transition before accepting any metadata or side effects.
+		var resume sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT resume_point FROM executions WHERE id = ?`, id).Scan(&resume)
+		if err == nil {
+			err = task.ValidateExecutionTransition(execution.Status, model.ExecutionStatus(input.Status), resume.String)
+		}
+		if err == nil {
+			err = validateResult(r, tx, execution, input)
+		}
+		if err == nil {
+			err = saveResult(r, tx, execution, input)
+		}
+		if err == nil {
+			err = task.TransitionExecutionTx(ctx, tx, task.Transition{
+				TaskID: execution.TaskID, ExecutionID: id, FromTask: execution.TaskStatus,
+				FromExecution: execution.Status, ToExecution: model.ExecutionStatus(input.Status),
+			})
+		}
+		if err == nil {
+			payload, _ := json.Marshal(map[string]string{"from": input.FromStatus, "to": input.Status, "reason": "runner_result"})
+			_, err = store.AppendExecutionEvent(ctx, tx, id, model.EventStatusChanged, payload)
+		}
+		if err == nil {
+			_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
+				Actor: "runner:" + runner, Action: "execution.result", TargetType: "execution", TargetID: id,
+				Detail: map[string]any{"taskId": execution.TaskID, "from": input.FromStatus, "to": input.Status},
+			})
+		}
+		if err == nil {
+			err = tx.Commit()
+		}
+		if errors.Is(err, task.ErrConflict) {
+			err = &Error{Code: Conflict, Message: err.Error()}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func runnerResultSource(status model.ExecutionStatus) bool {
+	switch status {
+	case model.ExecutionClaimed, model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionVerifying, model.ExecutionPublishing:
+		return true
+	}
+	return false
+}
+
+func runnerResultTarget(status string) bool {
+	switch model.ExecutionStatus(status) {
+	case model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionVerifying, model.ExecutionPublishing,
+		model.ExecutionSucceeded, model.ExecutionBlocked, model.ExecutionFailed, model.ExecutionCancelled, model.ExecutionTimedOut:
+		return true
+	}
+	return false
+}
+
+func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
+	for _, field := range []struct {
+		name string
+		sha  *string
+	}{{"baseSha", input.BaseSHA}, {"gate1BaseSha", input.Gate1BaseSHA}, {"harnessHeadSha", input.HarnessHeadSHA}, {"verifiedSha", input.VerifiedSHA}, {"pushedSha", input.PushedSHA}} {
+		if field.sha != nil && !fullCommitSHA(*field.sha) {
+			return invalid(field.name, "invalid_format")
+		}
+	}
+	if input.PRNumber != nil && *input.PRNumber < 1 {
+		return invalid("prNumber", "out_of_range")
+	}
+	// Spec 02 requires the pushed commit to be the verified commit. Check
+	// the effective values, including metadata saved by an earlier report.
+	if input.PushedSHA != nil || input.VerifiedSHA != nil {
+		var verified, pushed string
+		if err := tx.QueryRowContext(r.Context(), `SELECT coalesce(?, verified_sha, ''), coalesce(?, pushed_sha, '')
+			FROM executions WHERE id = ?`, input.VerifiedSHA, input.PushedSHA, execution.ID).Scan(&verified, &pushed); err != nil {
+			return err
+		}
+		if pushed != "" && pushed != verified {
+			return &Error{Code: PreconditionFailed, Message: "Pushed SHA must equal the verified SHA"}
+		}
+	}
+	if input.Status == "blocked" {
+		if input.Block == nil || input.Block.Cause.Validate() != nil || !fullCommitSHA(input.Block.HeadSHA) {
+			return invalid("block", "cause_and_head_sha_required")
+		}
+	} else if input.Block != nil {
+		return invalid("block", "only_for_blocked")
+	}
+	if input.Status == "failed" && input.ErrorClass == "" {
+		return invalid("errorClass", "required")
+	}
+	if input.ErrorClass != "" && input.Status != "failed" && input.Status != "cancelled" && input.Status != "timed_out" {
+		return invalid("errorClass", "only_for_failure")
+	}
+	if input.Status == "timed_out" && input.ErrorClass != "" && input.ErrorClass != model.ErrorTimeout ||
+		input.Status == "cancelled" && input.ErrorClass != "" && input.ErrorClass != model.ErrorCancelled {
+		return invalid("errorClass", "status_mismatch")
+	}
+	if input.WorktreeID != nil {
+		if err := ValidateID("worktreeId", *input.WorktreeID, ULID); err != nil {
+			return err
+		}
+		var own bool
+		err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM worktrees w JOIN tasks t ON t.id = w.task_id
+			WHERE w.id = ? AND w.task_id = ? AND w.project_id = t.project_id AND w.runner_id = ? AND w.status != 'cleaned')`,
+			*input.WorktreeID, execution.TaskID, execution.RunnerID).Scan(&own)
+		if err != nil {
+			return err
+		}
+		if !own {
+			return &Error{Code: PreconditionFailed, Message: "Worktree does not belong to this Execution's Task and Runner"}
+		}
+	}
+	if input.Block != nil && input.Block.GateResultID != nil {
+		if err := ValidateID("block.gateResultId", *input.Block.GateResultID, ULID); err != nil {
+			return err
+		}
+		var own bool
+		err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM gate_results WHERE id = ? AND execution_id = ?)`, *input.Block.GateResultID, execution.ID).Scan(&own)
+		if err != nil {
+			return err
+		}
+		if !own {
+			return &Error{Code: PreconditionFailed, Message: "Gate result does not belong to this Execution"}
+		}
+	}
+	return nil
+}
+
+func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
+	// Identifiers and column names are fixed in code; values remain parameters.
+	columns := []string{}
+	values := []any{}
+	for _, field := range []struct {
+		column string
+		value  *string
+	}{{"worktree_id", input.WorktreeID}, {"branch_name", input.BranchName}, {"base_sha", input.BaseSHA},
+		{"gate1_base_sha", input.Gate1BaseSHA}, {"harness_head_sha", input.HarnessHeadSHA}, {"verified_sha", input.VerifiedSHA},
+		{"pushed_sha", input.PushedSHA}, {"pr_url", input.PRURL}, {"harness_session_id", input.HarnessSessionID}, {"error_message", input.ErrorMessage}} {
+		if field.value != nil {
+			columns = append(columns, field.column+" = ?")
+			values = append(values, *field.value)
+		}
+	}
+	if input.PRNumber != nil {
+		columns = append(columns, "pr_number = ?")
+		values = append(values, *input.PRNumber)
+	}
+	classification := input.ErrorClass
+	if input.Status == "timed_out" {
+		classification = model.ErrorTimeout
+	} else if input.Status == "cancelled" {
+		classification = model.ErrorCancelled
+	}
+	if classification != "" {
+		columns = append(columns, "error_class = ?")
+		values = append(values, classification)
+	}
+	if len(columns) > 0 {
+		values = append(values, execution.ID)
+		if _, err := tx.ExecContext(r.Context(), `UPDATE executions SET `+strings.Join(columns, ", ")+` WHERE id = ?`, values...); err != nil {
+			return err
+		}
+	}
+	if input.Block != nil {
+		return store.SaveExecutionBlockTx(r.Context(), tx, store.ExecutionBlock{
+			ExecutionID: execution.ID, Cause: string(input.Block.Cause), GateResultID: input.Block.GateResultID,
+			HeadSHA: input.Block.HeadSHA, Detail: input.Block.Detail,
+		})
+	}
+	return nil
+}

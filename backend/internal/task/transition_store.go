@@ -33,7 +33,8 @@ func TransitionExecution(ctx context.Context, db *sql.DB, change Transition) err
 
 // TransitionExecutionTx lets claim/result/cancel/resume handlers include their
 // metadata, events and audit records in the same transaction. The caller must
-// roll back the transaction on any error. It does not commit or notify.
+// roll back the transaction on any error. It records durable notification
+// requests, but does not commit or send notifications.
 func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) error {
 	fromTask, err := TaskStatusForExecution(change.FromExecution)
 	if err != nil {
@@ -72,7 +73,42 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 	if err := expectOne(result, err); err != nil {
 		return err
 	}
-	return updateTask(ctx, tx, change.TaskID, change.FromTask, toTask)
+	if err := updateTask(ctx, tx, change.TaskID, change.FromTask, toTask); err != nil {
+		return err
+	}
+	return recordTransitionEffects(ctx, tx, change.ExecutionID, change.ToExecution)
+}
+
+// Shared by Runner results, Context Builder failures and owner/system paths.
+// Spec 06 retains worktrees on unsuccessful stops; success keeps its worktree.
+func recordTransitionEffects(ctx context.Context, tx *sql.Tx, id string, status model.ExecutionStatus) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	switch status {
+	case model.ExecutionRunning:
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET started_at = COALESCE(started_at, ?) WHERE id = ?`, now, id); err != nil {
+			return err
+		}
+	case model.ExecutionBlocked, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionCancelled, model.ExecutionTimedOut:
+		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET status = 'retained'
+			WHERE id = (SELECT worktree_id FROM executions WHERE id = ?) AND status = 'active'`, id); err != nil {
+			return err
+		}
+	}
+	switch status {
+	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionCancelled, model.ExecutionTimedOut:
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET finished_at = ? WHERE id = ?`, now, id); err != nil {
+			return err
+		}
+	}
+	// Spec 12 section 3.1 explicitly excludes cancellation. The unique key
+	// survives restart and a second blocked episode after an owner continuation.
+	switch status {
+	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionBlocked:
+		_, err := tx.ExecContext(ctx, `INSERT INTO notification_requests (execution_id, status, created_at)
+			VALUES (?, ?, ?) ON CONFLICT (execution_id, status) DO NOTHING`, id, status, now)
+		return err
+	}
+	return nil
 }
 
 // QueueExecutionTx attaches an already inserted pending Execution to a received
