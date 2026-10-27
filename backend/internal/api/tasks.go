@@ -7,7 +7,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,5 +135,91 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusCreated, created)
+	}
+}
+
+type executionSummaryView struct {
+	ID         string  `json:"id"`
+	Seq        int     `json:"seq"`
+	Mode       string  `json:"mode"`
+	Status     string  `json:"status"`
+	ErrorClass *string `json:"errorClass"`
+}
+
+type taskSummaryView struct {
+	model.Task
+	LatestExecution *executionSummaryView `json:"latestExecution"`
+	PRURL           *string               `json:"prUrl"`
+}
+
+// listTasks serves GET /api/tasks (13 3.2 Tasks 一覧). Optional filters are
+// ?status= (a task status from data-model 5.1) and ?projectId=; both match
+// exactly. Results are newest first with the shared limit/cursor paging.
+func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			WriteError(w, logger, invalid("query", "invalid"))
+			return
+		}
+		page, err := ParsePage(query, "tasks")
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		var filter store.TaskFilter
+		for _, param := range []struct {
+			name  string
+			value *string
+			check func(string) error
+		}{
+			{"status", &filter.Status, func(v string) error {
+				if model.TaskStatus(v).Validate() != nil {
+					return invalid("status", "invalid")
+				}
+				return nil
+			}},
+			{"projectId", &filter.ProjectID, func(v string) error { return ValidateID("projectId", v, SlugID) }},
+		} {
+			values, ok := query[param.name]
+			if !ok || (len(values) == 1 && values[0] == "") {
+				continue
+			}
+			if len(values) != 1 {
+				WriteError(w, logger, invalid(param.name, "invalid"))
+				return
+			}
+			if err := param.check(values[0]); err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			*param.value = values[0]
+		}
+		var before int64
+		if page.After != "" {
+			if ValidateID("cursor", page.After, TaskID) != nil {
+				WriteError(w, logger, invalid("cursor", "invalid"))
+				return
+			}
+			before, err = strconv.ParseInt(strings.TrimPrefix(page.After, "task-"), 10, 64)
+			if err != nil || before <= 0 {
+				WriteError(w, logger, invalid("cursor", "invalid"))
+				return
+			}
+		}
+		rows, err := store.ListTasks(r.Context(), db, filter, before, page.Limit+1)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		views := make([]taskSummaryView, 0, len(rows))
+		for _, row := range rows {
+			view := taskSummaryView{Task: row.Task, PRURL: row.PRURL}
+			if e := row.LatestExecution; e != nil {
+				view.LatestExecution = &executionSummaryView{e.ID, e.Seq, e.Mode, e.Status, e.ErrorClass}
+			}
+			views = append(views, view)
+		}
+		writeJSON(w, http.StatusOK, NewPage(views, page.Limit, "tasks", func(v taskSummaryView) string { return v.ID }))
 	}
 }
