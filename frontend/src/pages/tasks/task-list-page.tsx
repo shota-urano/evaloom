@@ -14,7 +14,7 @@ import { Link } from '@/lib/link'
 import type { NavigationState } from '@/lib/router'
 import { cn } from '@/lib/utils'
 import { useLiveTaskList } from './live'
-import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskStatusLabel } from './labels'
+import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskDetailPath, taskStatusLabel } from './labels'
 
 // 状態は色だけでなく文字でも示す（13 3.5）。色は補助。
 const STATUS_TONES: Record<string, string> = {
@@ -175,7 +175,9 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
               {list.data.map((task) => (
                 <tr key={task.id} className="border-t align-top">
                   <td className="px-4 py-3">
-                    <div className="font-medium">{task.title}</div>
+                    <Link to={taskDetailPath(task.id)} className="font-medium underline-offset-4 hover:underline">
+                      {task.title}
+                    </Link>
                     <div className="text-muted-foreground font-mono text-xs">
                       {task.id} · {task.shortName}
                     </div>

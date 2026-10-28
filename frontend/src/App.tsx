@@ -16,6 +16,7 @@ import { ProjectListPage } from '@/pages/projects/project-list-page'
 import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
 import { TASK_NEW_PATH, TASKS_PATH } from '@/pages/tasks/labels'
 import { TaskNewPage } from '@/pages/tasks/task-form-page'
+import { TaskDetailPage } from '@/pages/tasks/task-detail-page'
 import { TaskListPage } from '@/pages/tasks/task-list-page'
 
 const NAV = [
@@ -40,6 +41,8 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (harness) return <HarnessDetailPage key={harness.id} id={harness.id} />
   if (path === TASKS_PATH) return <TaskListPage state={state} />
   if (path === TASK_NEW_PATH) return <TaskNewPage />
+  const task = matchPath('/tasks/:id', path)
+  if (task) return <TaskDetailPage key={task.id} id={task.id} />
   if (path === '/') {
     return (
       <div>

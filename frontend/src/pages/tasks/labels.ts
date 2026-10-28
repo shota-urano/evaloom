@@ -4,6 +4,10 @@ export const TASKS_PATH = '/tasks'
 /** タスク ID は task-<数字> なので、「_」を含むこのパスはタスク詳細（/tasks/:id）と衝突しない。 */
 export const TASK_NEW_PATH = '/tasks/_new'
 
+export function taskDetailPath(id: string) {
+  return `${TASKS_PATH}/${encodeURIComponent(id)}`
+}
+
 /** 02-data-model 5.1 の表示名。 */
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   received: 'Received',
@@ -47,3 +51,11 @@ export const TASK_LABELS = {
 
 /** 04 3.1 の短い名前（backend/internal/api/tasks.go の shortNamePattern）。 */
 export const SHORT_NAME_PATTERN = /^[a-z0-9-]{1,40}$/
+
+/** 04 3.7 の再実行の種類の表示名。 */
+export const RETRY_MODE_LABELS: Record<string, string> = { continue: '継続', fresh: '最初から' }
+
+/** 中止できるタスク状態（04 3.2 の遷移表・3.5）。判定の正本はサーバー（対象外は 409）。 */
+export const CANCELLABLE_TASK_STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'verifying', 'blocked'])
+/** 再実行できるタスク状態（04 3.2 の遷移表・3.7）。判定の正本はサーバー（対象外は 409）。 */
+export const RETRYABLE_TASK_STATUSES: ReadonlySet<string> = new Set(['failed', 'timed_out', 'cancelled', 'completed', 'blocked'])
