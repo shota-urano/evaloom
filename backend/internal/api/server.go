@@ -29,6 +29,11 @@ func NewHandlerWithWeb(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.
 // NewHandlerWithContext enables explicitly selected Global Context files. The
 // configuration belongs to the Control Plane, never the Runner request.
 func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithArtifacts(db, logger, auth, web, contexts, ArtifactConfig{}, registries...)
+}
+
+// NewHandlerWithArtifacts uses only Control Plane supplied storage and limits.
+func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
@@ -41,6 +46,7 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
+	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	}))
