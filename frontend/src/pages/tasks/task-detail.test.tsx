@@ -219,6 +219,44 @@ describe('タスク詳細', () => {
     expect(historyRows()[0]).toHaveTextContent('test_failed')
   })
 
+  it('表示中の Execution が running から終端状態になると、SSE の購読を止めて保存済みログへ切り替える', async () => {
+    const item = history(E1, 1, 'running')
+    TASK = taskWith('running', [item])
+    EXECUTIONS = { [E1]: detailOf(item) }
+    const { calls, events } = renderTask((request) =>
+      request.url === `/api/executions/${E1}/logs` ? json(200, { harness: 'live 1\nlive 2\nsaved 3\n', setup: '', test: '', runner: 'runner done\n' }) : undefined,
+    )
+    await screen.findByRole('log')
+    await waitFor(() => expect(streams).toHaveLength(1))
+    act(() => {
+      streams[0].log(40, 'harness', 'live 1')
+      streams[0].log(41, 'harness', 'live 2')
+    })
+    await screen.findByText('live 2')
+    expect(screen.getByTestId('log-source')).toHaveTextContent('受信中')
+    expect(calls.some((c) => c.url.endsWith('/logs'))).toBe(false)
+
+    // 同じ Execution が running → failed になる（status_changed を受けてタスクを読み直す）。
+    const done = history(E1, 1, 'failed', { errorClass: 'harness_failed', finishedAt: '2026-10-28T04:00:00Z' })
+    TASK = taskWith('failed', [done])
+    EXECUTIONS = { [E1]: detailOf(done) }
+    const source = events.open(`/api/executions/${E1}/events`)[0]
+    act(() => source.emit('status_changed', { from: 'running', to: 'failed', reason: 'runner_result' }, 42))
+
+    await waitFor(() => expect(screen.getByTestId('log-source')).toHaveTextContent('保存済みのログを表示しています'))
+    await screen.findByText('saved 3')
+    expect(logLines()).toEqual(['live 1', 'live 2', 'saved 3'])
+    expect(calls.filter((c) => c.url === `/api/executions/${E1}/logs`)).toHaveLength(1)
+    await userEvent.click(screen.getByRole('tab', { name: 'runner (1)' }))
+    expect(logLines()).toEqual(['runner done'])
+
+    // 購読は止めたので、元の接続が切れても再接続しない。
+    act(() => streams[0].fail())
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(streams).toHaveLength(1)
+    expect(calls.filter((c) => c.url === `/api/executions/${E1}/events`)).toHaveLength(1)
+  })
+
   it('再実行（継続）で新しい Execution が履歴に増え、その Execution を表示する', async () => {
     const first = history(E1, 1, 'cancelled', { errorClass: 'cancelled', finishedAt: '2026-10-28T03:00:00Z' })
     TASK = taskWith('cancelled', [first])

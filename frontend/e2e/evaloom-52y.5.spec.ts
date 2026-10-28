@@ -101,6 +101,16 @@ async function reportLogs(server: Server, executionId: string, stream: string, l
   expect(response.status, `log report: ${await response.text()}`).toBe(204)
 }
 
+/** Runner として工程の結果を報告する（POST /api/executions/{id}/result）。 */
+async function reportResult(server: Server, executionId: string, body: Record<string, unknown>) {
+  const response = await fetch(`${server.origin}/api/executions/${executionId}/result`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${server.runnerToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  })
+  expect(response.status, `result: ${await response.text()}`).toBe(204)
+}
+
 function sessionCookie(value: string) {
   return { name: 'evaloom_session', value, domain: '127.0.0.1', path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Strict' as const }
 }
@@ -217,7 +227,7 @@ test('再実行で新しい Execution が履歴に増える（継続・最初か
   await expect(historyRows(page).first()).toContainText('cancelled')
 })
 
-test('実行中のログが逐次表示される', async ({ page, server }) => {
+test('実行中のログが逐次表示され、終了すると保存済みログに切り替わる', async ({ page, server }) => {
   const task = await createTask(server, PROJECTS[0].id, 'Alpha のログ表示')
   const { executionId, taskId } = await claim(server)
   expect(taskId).toBe(task.id)
@@ -245,6 +255,20 @@ test('実行中のログが逐次表示される', async ({ page, server }) => {
 
   mkdirSync(SCREENSHOTS, { recursive: true })
   await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-52y.5-task-detail.png'), fullPage: true })
+
+  // Runner が Execution を終了（cancelled）にする。
+  // E2E の evaloomd は成果物の保存先（-data-dir）を持たないので、harness のログファイルは登録しない。
+  // 保存済みログ（GET /api/executions/{id}/logs）では harness は空、runner は保存済みのイベントから返る。
+  await reportResult(server, executionId, { fromStatus: 'claimed', status: 'cancelled' })
+  // 画面を読み直さずに、SSE の追記表示から保存済みログの表示へ切り替わる。
+  await expect(page.getByTestId('log-source')).toHaveText('保存済みのログを表示しています')
+  await expect(historyRows(page).first()).toContainText('cancelled')
+  await expect(page.getByRole('tab', { name: 'harness (0)' })).toBeVisible()
+  await page.getByRole('tab', { name: 'harness (0)' }).click()
+  await expect(page.getByRole('log')).toHaveText('この stream の保存済みログはありません。')
+  await page.getByRole('tab', { name: 'runner (1)' }).click()
+  await expect(logLines(page)).toHaveText(['worktree を準備しました'])
+  expect(await page.evaluate(() => (globalThis as { __notReloaded?: boolean }).__notReloaded)).toBe(true)
 })
 
 test('切断から再接続すると、欠けなく続きが表示される', async ({ page, context, server }) => {

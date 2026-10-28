@@ -18,11 +18,11 @@ const STATE_LABELS: Record<StreamState, string> = {
 
 /**
  * 選んだ Execution のログ（13 3.3）。実行中は SSE で追記し、終了後は保存済みログ（GET /api/executions/{id}/logs）を表示する。
- * どちらで読むかは表示し始めたときの状態で決める。表示中に終了しても SSE の受信は続け、届いたログを最後まで足す。
+ * 表示中の Execution が終端状態になったら、SSE の購読を止めて保存済みログへ切り替える。
  * stream（harness / setup / test / runner）で切り替える。
  */
 export function ExecutionLog({ api, executionId, status }: { api: ApiClient; executionId: string; status: string }) {
-  const [live] = useState(() => !FINAL_EXECUTION_STATUSES.has(status))
+  const live = !FINAL_EXECUTION_STATUSES.has(status)
   const [stream, setStream] = useState<LogStream>('harness')
   const liveLog = useLiveLog(api, executionId, live)
   const saved = useResource((signal) => (live ? Promise.resolve(undefined) : tasks.getLogs(api, executionId, signal)), `logs:${executionId}:${live}`)
