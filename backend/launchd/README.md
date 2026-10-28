@@ -125,11 +125,12 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - Deliverはファイルを読み、最大100行、通常256KiBまでを1バッチで送る。1行が256KiBを超える場合は、その行を分割せずに送る。全履歴をメモリに積まない。新着確認と送信失敗後の再試行は1秒間隔。HTTP要求全体の上限は既存の5秒で、Bearer認証とリダイレクト禁止も共通とする。送信処理が待機・失敗してもreaderはファイルへの書き込みを続ける。書き込み・読み取り・Syncの失敗は呼び出し元へ返す。
 - `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`sourceId`・`stream`・`text`とし、sourceIdには要求のidを保存する。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。
 - Control Planeは既存の`execution_events.payload`のsourceIdをExecution内で照合し、重複を排除する。新しいテーブルや列は追加しない。同じExecutionで同じID・payloadの再送は204、同じIDで内容を変えた要求は409。バッチの一部だけは保存しない。認証したRunnerの所有権を同じトランザクションで確認する。終了済み・過去のExecutionにも所有するRunnerの未送信ログを受け付ける。別Runnerの報告は403と監査記録を返す。
-- 全行の送信とFinishの完了後、Deliverは渡された`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。引数にはログのULID・Execution ID・kind（`harness_log`・`setup_log`・`test_log`）・ローカルパス・redactedを渡す。登録側は同じIDの再試行を重複登録しない契約とする。Artifact登録のHTTP経路は仕様未定のため接続せず、新しい公開APIは追加しない。テストではスタブで登録要求とファイル内容を確認する。registrarの省略はエラーとし、登録していないログを登録済みとは扱わない。
+- 全行の送信とFinishの完了後、Deliverは`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。registrarにnilを渡すとRunner自身のHTTP登録を使う。Runnerは`POST /api/executions/{id}/artifacts`へ`application/octet-stream`でファイルの内容を送り、クエリに`artifactId`・`kind`・`redacted=0/1`を付ける。Control Planeは保存した内容からSHA-256とサイズを計算する。同じExecution・ID・SHA-256の再送は204、異なる内容は409、別Runnerは403と監査記録になる。
+- Control Planeの保存先と本文上限は`evaloomd -data-dir <保存先> -artifact-max-bytes <正のバイト数>`で明示する。保存先はGit管理外に置く。両方とも未指定の場合、既存APIは起動するが成果物登録は500で拒否する。既定値が仕様で未確定のため、保存先と上限を暗黙に選ばない。片方だけの指定や負の上限は起動時に拒否する。
 - イベント・Artifactの送信失敗は終了後も再試行する。Deliverのcontextを中止すると送信を止め、ローカルファイルを保持する。同じLogでDeliverを再度呼ぶと先頭から読み直し、保存済みイベントのsourceIdで重複を排除する。Runnerプロセス自体の再起動時にログを自動回収する処理は含めない。既存仕様どおり最初のheartbeatで前回のExecutionをinterruptedにする。
 - 機密情報の除外はRead内で行う。置換後の内容だけをファイルへ書き、Deliverもそのファイルからeventsを作る。置換があればArtifactのredactedをtrueにし、Finish(false)でも取り消さない。Finish(true)は呼び出し元で除外処理を通した場合の情報を引き継ぐ。
 
-結合テストは実際の認証・events受信・SSEを通し、出力の読み取り中にSSEへ届くことを確認する。Artifact登録はスタブで呼び出しを確認する。
+結合テストは実際の認証・events受信・SSEを通し、出力の読み取り中にSSEへ届くことを確認する。Artifact登録は実際のHTTP経路でも確認し、保存した内容・SHA-256・サイズ・kind・redactedを照合する。
 HTTPサーバーとDBを閉じている間にログを読み、同じDB・URLで再開して全行が届くことも確認する。
 保存成功後にHTTP応答だけを失わせ、再送でイベントが増えないことも検証する。
 
@@ -144,7 +145,7 @@ HTTPサーバーとDBを閉じている間にログを読み、同じDB・URLで
 - PEM形式は`-----BEGIN PRIVATE KEY-----`、およびRSA・EC・OPENSSH・ENCRYPTEDなど大文字英数字の語を前置したPRIVATE KEYの開始から、同じ種別のENDまでを除外する。行途中の開始・終了にも対応する。開始位置へ`[REDACTED]`を出し、内部の改行だけを残す。ENDが無ければ、そのRead入力のEOFまたは読み取りエラーまでを除外する。公開鍵や証明書は対象にしない。
 - PEM・ヘッダーを先に除外し、その出力へ秘密値の照合を行う。読み取り途中の内容を未加工のファイルや再送用データへ保存しない。入力エラーは内容を含まない固定のエラー文で返す。
 
-結合テストはharness・setup・testで、秘密値・ヘッダー・複数行の秘密鍵が保存ログとeventsから除外されることを確認する。ArtifactRegistrarのスタブへredacted=trueが渡ること、およびテスト専用の接続で既存ArtifactStoreへ保存した行のredactedが1になることも確認する。Artifact登録のHTTP経路は引き続き未接続である。
+結合テストはharness・setup・testで、秘密値・ヘッダー・複数行の秘密鍵が保存ログとeventsから除外されることを確認する。ArtifactRegistrarへredacted=trueが渡ること、およびHTTP経由で保存した行のredactedが1になることも確認する。
 
 ## macOS通知ヘルパーのビルド・署名・配置
 

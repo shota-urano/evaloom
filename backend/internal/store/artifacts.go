@@ -59,17 +59,67 @@ func (s *ArtifactStore) Close() error { return s.root.Close() }
 // On a write or database failure it removes only its newly created file.
 // Redacted records whether the caller applied redaction; Save does not do so.
 func (s *ArtifactStore) Save(ctx context.Context, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, err error) {
-	if err := ctx.Err(); err != nil {
+	artifact, cleanup, err := s.write(ctx, id, executionID, kind, redacted, content)
+	if err != nil {
 		return Artifact{}, err
 	}
+	if err := insertArtifact(ctx, s.db, artifact); err != nil {
+		return Artifact{}, errors.Join(err, cleanup())
+	}
+	return artifact, nil
+}
+
+var ErrArtifactConflict = errors.New("artifact ID already used for another Execution or content")
+
+// RegisterTx requires the caller to check Execution ownership in tx before
+// calling it. The returned cleanup must run if tx is rolled back or commit
+// fails. Duplicate uploads are removed here, leaving the original untouched.
+func (s *ArtifactStore) RegisterTx(ctx context.Context, tx *sql.Tx, id, executionID, kind string, redacted bool, content io.Reader) (Artifact, func() error, error) {
+	artifact, cleanup, err := s.write(ctx, id, executionID, kind, redacted, content)
+	if err != nil {
+		return Artifact{}, nil, err
+	}
+	var previous Artifact
+	err = tx.QueryRowContext(ctx, `SELECT id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at
+		FROM artifacts WHERE id = ?`, id).Scan(&previous.ID, &previous.ExecutionID, &previous.Kind,
+		&previous.StoragePath, &previous.SHA256, &previous.SizeBytes, &previous.Redacted, &previous.CreatedAt)
+	if err == nil {
+		if previous.ExecutionID != executionID || previous.SHA256 != artifact.SHA256 {
+			err = ErrArtifactConflict
+		}
+		return previous, func() error { return nil }, errors.Join(err, cleanup())
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		err = insertArtifact(ctx, tx, artifact)
+	}
+	if err != nil {
+		return Artifact{}, nil, errors.Join(err, cleanup())
+	}
+	return artifact, cleanup, nil
+}
+
+func insertArtifact(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, artifact Artifact) error {
+	_, err := db.ExecContext(ctx, `INSERT INTO artifacts
+		(id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, artifact.ID, artifact.ExecutionID, artifact.Kind,
+		artifact.StoragePath, artifact.SHA256, artifact.SizeBytes, artifact.Redacted, artifact.CreatedAt)
+	return err
+}
+
+func (s *ArtifactStore) write(ctx context.Context, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, cleanup func() error, err error) {
+	if err := ctx.Err(); err != nil {
+		return Artifact{}, nil, err
+	}
 	if id == "" || executionID == "" || content == nil {
-		return Artifact{}, fmt.Errorf("store: artifact ID, execution ID and content are required")
+		return Artifact{}, nil, fmt.Errorf("store: artifact ID, execution ID and content are required")
 	}
 	// A generated filename avoids interpreting record IDs as filesystem paths.
 	path := filepath.Join("artifacts", rand.Text())
 	file, err := s.root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return Artifact{}, err
+		return Artifact{}, nil, err
 	}
 	defer func() {
 		if err != nil {
@@ -82,21 +132,14 @@ func (s *ArtifactStore) Save(ctx context.Context, id, executionID, kind string, 
 		copyErr = file.Sync()
 	}
 	if err = errors.Join(copyErr, file.Close()); err != nil {
-		return Artifact{}, err
+		return Artifact{}, nil, err
 	}
 	artifact := Artifact{
 		ID: id, ExecutionID: executionID, Kind: kind, StoragePath: path,
 		SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size,
 		Redacted: redacted, CreatedAt: recordTime(),
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO artifacts
-		(id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, artifact.ID, artifact.ExecutionID, artifact.Kind,
-		artifact.StoragePath, artifact.SHA256, artifact.SizeBytes, artifact.Redacted, artifact.CreatedAt)
-	if err != nil {
-		return Artifact{}, err
-	}
-	return artifact, nil
+	return artifact, func() error { return s.root.Remove(path) }, nil
 }
 
 // Open reads metadata and opens its file within the configured data directory.

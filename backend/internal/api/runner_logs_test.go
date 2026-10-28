@@ -75,7 +75,7 @@ func TestLogReportValidationAndDatabaseFailure(t *testing.T) {
 	}
 }
 
-// Artifact upload has no specified public API. Only the events POST is wired.
+// Upload uses the collection endpoint with query metadata, never an ID suffix.
 func TestLogArtifactUploadRouteIsNotAvailable(t *testing.T) {
 	f, _ := logReportFixture(t)
 	status, body := f.request(t, "POST", "/api/executions/"+streamExecution+"/artifacts/01ARZ3NDEKTSV4RRFFQ69G5FAX", true, f.csrf, nil)

@@ -21,7 +21,7 @@ import (
 
 // LogArtifact describes a closed Runner-local file. A registrar owns copying
 // the file and registering its metadata; it must make retries with the same ID
-// idempotent. The transport to the Control Plane awaits an API specification.
+// idempotent. Runner implements this through the artifact registration API.
 type LogArtifact struct {
 	ID, ExecutionID, Kind, Path string
 	Redacted                    bool
@@ -50,9 +50,10 @@ type Log struct {
 
 // The Runner token is always excluded. Stage handlers must also pass any other
 // credentials they hold (GitHub/model API etc.); do not pass them to a sandbox.
+// A nil registrar selects the Runner's HTTP artifact registration.
 func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegistrar, secrets ...string) (*Log, error) {
 	if registrar == nil {
-		return nil, fmt.Errorf("runner: artifact registrar is required")
+		registrar = runner
 	}
 	if id, err := ulid.ParseStrict(executionID); err != nil || id.String() != executionID {
 		return nil, fmt.Errorf("runner: invalid log execution ID")

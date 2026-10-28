@@ -16,6 +16,11 @@ Control Planeは`NewArtifactStore(db, dataDir)`で保存先を指定する。
 `Open`はExecution IDとArtifact IDで対象を検索し、保存先ディレクトリ内の
 ファイルを開く。呼び出し側は返されたファイルと`ArtifactStore`を閉じる。
 
+Runnerの登録APIは所有権を確認したトランザクションを`RegisterTx`へ渡す。
+同じExecution・ID・SHA-256の再送は既存行を返し、受信時に作ったファイルを除去する。
+別のExecutionや異なるSHA-256へのIDの再利用は`ErrArtifactConflict`を返す。
+呼び出し側はcommitが失敗した場合、返されたcleanupを呼んで新規ファイルを除去する。
+
 JSON列への書き込みには`RecordGateResult`、`RecordExecutionBlock`、
 `RecordAuditLog`を使う。Findingは型付き配列、detailはJSONオブジェクトとして
 エンコードし、不正なJSONやエンコードできない値はDBへの書き込み前に拒否する。
