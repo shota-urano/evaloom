@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -67,8 +69,13 @@ type Execution struct {
 	// Set by the worktree stage once its existing worktrees row is available.
 	// The next progress/terminal report associates it with this Execution.
 	WorktreeID string
-	control    *ExecutionControl
-	status     model.ExecutionStatus
+	// The harness stage supplies the adapter result, including nullable tokens.
+	HarnessResult     *adapter.HarnessResult
+	control           *ExecutionControl
+	status            model.ExecutionStatus
+	startedAt         time.Time
+	harnessWallTimeMS *int64
+	now               func() time.Time
 }
 
 // StageFunc performs one stage. A failure or block must return an error; the
@@ -89,6 +96,7 @@ type executionStage struct {
 type Executor struct {
 	stages  []executionStage
 	control *ExecutionControl
+	now     func() time.Time
 }
 
 // NewExecutor requires every stage, including stages skipped when resuming.
@@ -107,7 +115,7 @@ func NewExecutor(handlers map[StageID]StageFunc) (*Executor, error) {
 	if len(handlers) != len(table) {
 		return nil, fmt.Errorf("runner: unknown stage handler")
 	}
-	return &Executor{stages: stages}, nil
+	return &Executor{stages: stages, now: time.Now}, nil
 }
 
 // StageError identifies the failing stage while retaining the original error
@@ -146,12 +154,13 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 			return fmt.Errorf("runner: invalid resume point")
 		}
 	}
-	execution := &Execution{Claim: claim, control: executor.control, status: model.ExecutionClaimed}
+	execution := &Execution{Claim: claim, control: executor.control, status: model.ExecutionClaimed, now: executor.now}
 	if executor.control != nil {
 		if err := executor.control.validateTimeouts(claim.Project.Timeouts); err != nil {
 			return err
 		}
 	}
+	execution.startedAt = executor.now()
 	started := false
 	for _, stage := range executor.stages {
 		started = started || stage.ID == start
@@ -176,9 +185,17 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 			}
 		}
 		stageCtx, cancel := execution.stageContext(ctx, stage.ID)
+		var harnessStartedAt time.Time
+		if stage.ID == StageHarness {
+			harnessStartedAt = executor.now()
+		}
 		err := stageCtx.Err()
 		if err == nil {
 			err = stage.run(stageCtx, execution)
+		}
+		if stage.ID == StageHarness {
+			elapsed := executor.now().Sub(harnessStartedAt).Milliseconds()
+			execution.harnessWallTimeMS = &elapsed
 		}
 		if executor.control != nil && stageCtx.Err() != nil {
 			err = errors.Join(stageCtx.Err(), err)
