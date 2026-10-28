@@ -123,7 +123,7 @@ func TestControlledExecutorReportsCancellationEvenWhenStageReturnsNil(t *testing
 }
 
 func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *testing.T) {
-	for _, outcome := range []string{"cancelled", "offline", "allowed"} {
+	for _, outcome := range []string{"cancelled", "cancelled_error", "offline", "allowed"} {
 		t.Run(outcome, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -131,7 +131,10 @@ func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *test
 			checkErr := errors.New("control plane unavailable")
 			var checked, published bool
 			var reports []ExecutionResult
-			control.Reporter = reportFunc(func(_ context.Context, _ string, result ExecutionResult) error {
+			control.Reporter = reportFunc(func(ctx context.Context, _ string, result ExecutionResult) error {
+				if ctx.Err() != nil {
+					t.Fatal("result reused the cancelled execution context")
+				}
 				reports = append(reports, result)
 				return nil
 			})
@@ -140,6 +143,9 @@ func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *test
 				switch outcome {
 				case "cancelled":
 					cancel()
+				case "cancelled_error":
+					cancel()
+					return checkErr
 				case "offline":
 					return checkErr
 				}
@@ -164,8 +170,11 @@ func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *test
 				t.Fatalf("checked=%v published=%v", checked, published)
 			}
 			switch outcome {
-			case "cancelled":
-				if !errors.Is(err, context.Canceled) || reports[0].Status != model.ExecutionCancelled {
+			case "cancelled", "cancelled_error":
+				want := []ExecutionResult{
+					{FromStatus: model.ExecutionClaimed, Status: model.ExecutionCancelled, ErrorClass: model.ErrorCancelled},
+				}
+				if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(reports, want) {
 					t.Fatalf("cancelled push: error=%v reports=%v", err, reports)
 				}
 			case "offline":

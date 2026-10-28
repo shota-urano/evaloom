@@ -162,11 +162,12 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 			return execution.stageError(stage.Stage, err)
 		}
 		if executor.control != nil && stage.ID == StagePublish {
-			if err := executor.control.CheckCancellation(ctx); err != nil {
-				return &StageError{stage.Stage, err}
-			}
+			checkErr := executor.control.CheckCancellation(ctx)
 			if err := ctx.Err(); err != nil {
 				return execution.stageError(stage.Stage, err)
+			}
+			if checkErr != nil {
+				return &StageError{stage.Stage, checkErr}
 			}
 		}
 		if executor.control != nil && stage.ID != StageComplete {
