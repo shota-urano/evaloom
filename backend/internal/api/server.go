@@ -39,7 +39,7 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 		adapters = registries[0]
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters)))
+	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters, artifacts)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
@@ -57,7 +57,7 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 	return auth.boundary(mux, false)
 }
 
-func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry) http.Handler {
+func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, artifacts ArtifactConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tasks", listTasks(db, logger))
 	mux.HandleFunc("POST /api/tasks", createTask(db, logger))
@@ -75,6 +75,7 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry)
 	mux.HandleFunc("GET /api/harness-profiles", listHarnessProfiles(db, logger))
 	mux.HandleFunc("POST /api/harness-profiles", registerHarnessProfile(db, logger))
 	mux.HandleFunc("GET /api/executions/{id}/events", executionEvents(db, logger))
+	mux.HandleFunc("GET /api/executions/{id}/artifacts/{artifactId}", getArtifact(logger, artifacts))
 	mux.HandleFunc("GET /api/runners", func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
