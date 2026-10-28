@@ -1,12 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,106 @@ import (
 const artifactID = "01ARZ3NDEKTSV4RRFFQ69G5FAX"
 const artifactPath = "/api/executions/" + streamExecution + "/artifacts"
 const artifactQuery = "?artifactId=" + artifactID + "&kind=harness_log&redacted=0"
+const artifactDownloadPath = artifactPath + "/" + artifactID
+
+func uploadDownloadArtifact(t *testing.T, f *authFixture, token, content string) {
+	t.Helper()
+	status, body := postArtifact(t, f, token, artifactPath+artifactQuery, content)
+	if status != http.StatusNoContent {
+		t.Fatalf("upload status=%d body=%s", status, body)
+	}
+}
+
+func TestGetArtifactReturnsUploadedBytes(t *testing.T) {
+	for name, content := range map[string]string{
+		"empty": "", "text": "diff\n日本語\r\n[REDACTED]\n", "binary": "\x00\xff\x01\x80\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, token, _ := artifactFixture(t)
+			uploadDownloadArtifact(t, f, token, content)
+			// Use the production HTTP router and the cookie from a real login.
+			r, err := http.NewRequest("GET", f.server.URL+artifactDownloadPath, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.AddCookie(f.cookie)
+			response, err := f.server.Client().Do(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != http.StatusOK || !bytes.Equal(body, []byte(content)) {
+				t.Fatalf("download status=%d body=%q want=%q err=%v", response.StatusCode, body, content, err)
+			}
+			if response.Header.Get("Content-Type") != "application/octet-stream" ||
+				response.Header.Get("Content-Length") != strconv.Itoa(len(content)) ||
+				response.Header.Get("Cache-Control") != "no-store" {
+				t.Fatalf("download headers=%v", response.Header)
+			}
+		})
+	}
+}
+
+func TestGetArtifactOtherExecutionReturns404(t *testing.T) {
+	f, token, _ := artifactFixture(t)
+	uploadDownloadArtifact(t, f, token, "only this execution")
+	status, body := f.request(t, "GET", "/api/executions/"+otherExecution+"/artifacts/"+artifactID, true, "", nil)
+	assertAuthError(t, status, body, 404, NotFound)
+}
+
+func TestGetArtifactWithoutLoginReturns401(t *testing.T) {
+	f, token, _ := artifactFixture(t)
+	uploadDownloadArtifact(t, f, token, "private artifact")
+	status, body := f.request(t, "GET", artifactDownloadPath, false, "", nil)
+	assertAuthError(t, status, body, 401, Unauthenticated)
+	f.assertAudit(t, "GET", artifactDownloadPath, "invalid_session", 401, Unauthenticated)
+}
+
+func TestGetArtifactRunnerTokenReturns403(t *testing.T) {
+	f, token, _ := artifactFixture(t)
+	uploadDownloadArtifact(t, f, token, "owner only")
+	status, body := f.request(t, "GET", artifactDownloadPath, false, "", func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token)
+	})
+	assertAuthError(t, status, body, 403, Forbidden)
+}
+
+func TestGetArtifactMissingReturns404(t *testing.T) {
+	f, _, _ := artifactFixture(t)
+	for _, path := range []string{artifactDownloadPath, "/api/executions/" + artifactID + "/artifacts/" + artifactID} {
+		status, body := f.request(t, "GET", path, true, "", nil)
+		assertAuthError(t, status, body, 404, NotFound)
+	}
+}
+
+func TestGetArtifactInvalidIDsReturn400(t *testing.T) {
+	f, _, _ := artifactFixture(t)
+	for _, path := range []string{artifactPath + "/invalid", "/api/executions/invalid/artifacts/" + artifactID} {
+		status, body := f.request(t, "GET", path, true, "", nil)
+		assertAuthError(t, status, body, 400, ValidationFailed)
+	}
+}
+
+func TestGetArtifactStorageFailureReturnsJSON500(t *testing.T) {
+	t.Run("unconfigured", func(t *testing.T) {
+		f := newAuthFixture(t)
+		status, body := f.request(t, "GET", artifactDownloadPath, true, "", nil)
+		assertAuthError(t, status, body, 500, Internal)
+	})
+	t.Run("unreadable path", func(t *testing.T) {
+		f, token, _ := artifactFixture(t)
+		uploadDownloadArtifact(t, f, token, "content")
+		if _, err := f.db.Exec(`UPDATE artifacts SET storage_path='../outside' WHERE id=?`, artifactID); err != nil {
+			t.Fatal(err)
+		}
+		status, body := f.request(t, "GET", artifactDownloadPath, true, "", nil)
+		assertAuthError(t, status, body, 500, Internal)
+		if bytes.Contains(body, []byte("outside")) {
+			t.Fatalf("storage path leaked: %s", body)
+		}
+	})
+}
 
 func artifactFixture(t *testing.T) (*authFixture, string, string) {
 	t.Helper()
