@@ -79,6 +79,8 @@ func TestLaunchAgents(t *testing.T) {
 			want := []string{"__EVALOOM_ROOT__/data/bin/" + process}
 			if process == "evaloomd" {
 				want = append(want, "-db", "__EVALOOM_ROOT__/data/evaloom.db", "-port", "8080", "-web", "__EVALOOM_ROOT__/frontend/dist")
+			} else {
+				want = append(want, "-config", "__EVALOOM_ROOT__/data/runner.json")
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("ProgramArguments = %q; want %q", got, want)

@@ -7,6 +7,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>__EVALOOM_ROOT__/data/bin/evaloom-runner</string>
+        <string>-config</string>
+        <string>__EVALOOM_ROOT__/data/runner.json</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__EVALOOM_ROOT__</string>

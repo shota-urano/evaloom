@@ -60,7 +60,91 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - HTTPヘッダー受信の上限は5秒。SIGTERM等を受けた後のHTTP終了待機も5秒とし、超過した場合は接続を閉じてエラー終了する。
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
-- Runnerは終了要求を待つ起動骨格だけを持つ。設定読み込み、bootId、heartbeat、pullループは`05-runner.md`の実装単位で扱う。
+- Runnerは`-config <JSONファイル>`を読み、起動直後からheartbeatとclaimのpullループを動かす。設定例と通信時の動作は次節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。
+
+## Runnerの設定と起動時heartbeat
+
+正本は`docs/specs/05-runner.md`の3.1・5・9節。
+以下は現在の実装上の選択を説明したもので、仕様の固定値ではない。
+
+起動引数は`evaloom-runner -config <JSONファイル>`。
+設定の各項目を必須とし、未知の項目や複数のJSON値を拒否する。
+設定パスの既定値は設けない。launchdのテンプレートは`data/runner.json`を指定する。
+
+```json
+{
+  "runnerId": "mac-mini",
+  "controlPlaneUrl": "http://127.0.0.1:8080",
+  "tokenFile": "/absolute/path/data/runner.token",
+  "worktreeRoot": "/absolute/path/worktrees",
+  "dataDir": "/absolute/path/data/runner"
+}
+```
+
+3つのファイル・ディレクトリのパスは絶対パスで指定する。
+ディレクトリの作成、worktreeの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
+データディレクトリは利用者がGit管理外に配置する。
+
+- Runner IDの制約は登録コマンドに合わせる。接続先はHTTP(S)の絶対URLとし、認証情報、クエリ、フラグメントを含むURLを拒否する。パスを含む場合は、その下に`api/runners/{id}/heartbeat`を追加する。
+- トークンファイルには登録コマンドが発行したトークンだけを保存する。前後の空白・改行を取り除き、既存の認証と同じ32バイトの正規base64url形式を確認する。トークンファイルは本人だけが読める権限（0600）で用意する。設定やトークンの読み込み失敗・形式不正では通信せず起動を中止する。
+- bootIdは起動ごとに生成する16バイトの暗号学的乱数を小文字hexで表し、プロセス内の再送では同じ値を使う。ファイルに保存しない。
+- heartbeatには`Authorization: Bearer <token>`を付ける。実行中IDが無いときも`runningExecutionIds`は空配列で送る。応答の`cancelExecutionIds`に対応する登録済みExecutionの中止関数を呼ぶ。未知・終了済みのIDは無視し、中止後も終了処理が登録を解除するまでは実行中IDとして送る。中止関数は繰り返し呼べるものを登録する。
+- HTTP要求全体の上限は5秒とし、終了要求のcontextでも通信を中断する。リダイレクトは追わない。heartbeatの応答は200とJSONの中止ID配列を必須にし、1MiBまで読み込む。通信失敗、非200、応答不正では実行中Executionを止めず、エラーを返す。起動時の送信に失敗してもプロセスは次回の送信を待つ。エラー出力にはトークンや応答本文を含めない。
+- AdapterとSandboxの停止・`cancelled`の報告はタイムアウトとキャンセルの実装単位で扱う。
+
+## Runnerのpullループと同時実行上限
+
+正本は`docs/specs/05-runner.md`の3.2・9節と`04-task-lifecycle.md`の3.3節。
+以下の待機間隔と未実装工程の扱いは、今回の実装上の選択である。
+
+- 起動直後にheartbeatを送り、成功した場合だけ空き枠を確認してclaimを1回送る。各周回の通信後に5秒待つ。実行中が2本でもheartbeatは続ける。起動直後のheartbeatに失敗した場合も、成功するまでclaimせず、bootIdによる前回起動の回収を先に行う。
+- claimは同じ接続先の`api/runners/{id}/claim`へBearerトークン付きでPOSTする。要求全体の上限は5秒、リダイレクトは禁止。HTTP 204は仕事なしとして待機する。HTTP 200は最大1MiBのJSONを読み、Execution IDとTask IDを必須にする。それ以外のステータスや応答不正はログに出し、次の周回へ進む。応答本文やトークンはログに含めない。
+- Runnerは登録済みExecutionと通信中のclaimの予約枠を合わせて2本までに制限する。claimが仕事なし・エラーなら予約枠を解放し、実行処理を呼ばない。仕事があれば中止関数を登録して別のgoroutineで実行処理を呼ぶ。処理が戻った後に登録を解除する。同じRunnerでpullループを重複起動することは拒否する。
+- 通信失敗では実行中の処理を止めない。次の周回でheartbeatとclaimの通信を再試行するが、取得済みExecutionを再実行しない。中止指示ではそのExecutionのcontextを中止し、実行処理が戻るまでは枠とheartbeatのIDを保持する。終了要求では通信と各実行処理のcontextを中止し、開始済みの実行処理が戻るのを待つ。
+- `Runner.Run`はclaimの入力とcontextを実行関数へ渡す。実行関数は処理停止と結果報告を終えてから戻る契約とする。現在のCLIは取得した仕事を中止・終了要求まで待機させる仮の関数を渡す。worktree作成、Adapter起動、結果報告は行わず、仕事を成功扱いにしない。CLIの起動ログにも工程未実装を明記する。
+
+## Executionの工程実行器
+
+正本は`docs/specs/05-runner.md`の3.3・9節と`04-task-lifecycle.md`の3.8節。
+`backend/internal/runner/execution.go`の`ExecutionStages()`で、仕様表の14工程と
+工程番号・Execution状態を固定する。呼び出し側が表を変更しても実行順には影響しない。
+
+- `NewExecutor`に`StageID`ごとの工程関数を渡す。全14工程を必須とし、不足・nil・未知の工程を拒否する。登録後のmapの変更は実行器に反映しない。前回PRがない場合の工程2など、条件付きの処理は工程関数が判断する。
+- `Executor.Execute(ctx, claim)`は通常は工程1から、`resumePoint=gate2`なら工程11、`gate3`なら工程12、`publish`なら工程13から実行する。null以外の未知の値や空文字は工程を呼ぶ前に拒否する。この拒否方法は実装上の選択である。
+- 工程関数には同じcontextと、実行ごとに確保した`Execution`を渡す。`Execution.Claim`はpullで受け取った入力を保持する。工程がエラーを返したら直ちに打ち切り、再試行や後続工程の呼び出しはしない。Blockも工程側からエラーとして返す。`StageError`で工程番号と元のエラーを保持し、`errors.Is/As`で分類を取り出せる。エラー文字列には工程関数の自由文を含めない。
+- `Runner.Run`の実行関数から`Execute`を呼び、その結果の報告を終えてから戻る。工程表の状態は報告用の情報であり、実行器はControl Planeの状態を直接変更しない。工程開始・終了の報告、各工程の中身、再開時のHEAD照合、ログ・使用量、Adapter/Sandboxの停止・タイムアウトは各実装で扱う。contextが中止済みなら次の工程を開始しない。
+- 各工程の実装が揃うまではCLIに実行器を接続せず、上記の待機処理を維持する。未実装工程を成功するスタブに置き換えて本番の仕事を進めない。
+
+## Runnerのログ収集と再送
+
+正本は`docs/specs/05-runner.md`の3.4・6・9節、イベント形式は
+`02-data-model.md`の5.3節。以下はログ収集の実装上の選択である。
+
+- 工程は`Runner.NewLog(executionID, stream, registrar)`でログを作る。streamは`harness`・`setup`・`test`。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。未実装のAdapter・setup・テスト工程をCLIへ接続する変更は行っていない。
+- Runnerは`dataDir/logs/<ULID>.log`を新規作成する。既存ファイルを上書きしない。親ディレクトリは0700、ファイルは0600。書き込みはバッファせず、終了時にSyncして閉じる。LF・CRLFをLFへ統一し、末尾に改行のない行にもLFを付ける。空行と64KiBを超える行も収集する。同じstream内ではファイルへの書き込み順に送る。stdoutとstderrの間の順序はreaderが行を書き込んだ順になる。
+- Deliverはファイルを読み、最大100行、通常256KiBまでを1バッチで送る。1行が256KiBを超える場合は、その行を分割せずに送る。全履歴をメモリに積まない。新着確認と送信失敗後の再試行は1秒間隔。HTTP要求全体の上限は既存の5秒で、Bearer認証とリダイレクト禁止も共通とする。送信処理が待機・失敗してもreaderはファイルへの書き込みを続ける。書き込み・読み取り・Syncの失敗は呼び出し元へ返す。
+- `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`sourceId`・`stream`・`text`とし、sourceIdには要求のidを保存する。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。
+- Control Planeは既存の`execution_events.payload`のsourceIdをExecution内で照合し、重複を排除する。新しいテーブルや列は追加しない。同じExecutionで同じID・payloadの再送は204、同じIDで内容を変えた要求は409。バッチの一部だけは保存しない。認証したRunnerの所有権を同じトランザクションで確認する。終了済み・過去のExecutionにも所有するRunnerの未送信ログを受け付ける。別Runnerの報告は403と監査記録を返す。
+- 全行の送信とFinishの完了後、Deliverは渡された`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。引数にはログのULID・Execution ID・kind（`harness_log`・`setup_log`・`test_log`）・ローカルパス・redactedを渡す。登録側は同じIDの再試行を重複登録しない契約とする。Artifact登録のHTTP経路は仕様未定のため接続せず、新しい公開APIは追加しない。テストではスタブで登録要求とファイル内容を確認する。registrarの省略はエラーとし、登録していないログを登録済みとは扱わない。
+- イベント・Artifactの送信失敗は終了後も再試行する。Deliverのcontextを中止すると送信を止め、ローカルファイルを保持する。同じLogでDeliverを再度呼ぶと先頭から読み直し、保存済みイベントのsourceIdで重複を排除する。Runnerプロセス自体の再起動時にログを自動回収する処理は含めない。既存仕様どおり最初のheartbeatで前回のExecutionをinterruptedにする。
+- 機密情報の除外はRead内で行う。置換後の内容だけをファイルへ書き、Deliverもそのファイルからeventsを作る。置換があればArtifactのredactedをtrueにし、Finish(false)でも取り消さない。Finish(true)は呼び出し元で除外処理を通した場合の情報を引き継ぐ。
+
+結合テストは実際の認証・events受信・SSEを通し、出力の読み取り中にSSEへ届くことを確認する。Artifact登録はスタブで呼び出しを確認する。
+HTTPサーバーとDBを閉じている間にログを読み、同じDB・URLで再開して全行が届くことも確認する。
+保存成功後にHTTP応答だけを失わせ、再送でイベントが増えないことも検証する。
+
+## Runnerログの機密情報除外
+
+正本は`docs/specs/05-runner.md`の3.5節。以下はQ24を含む実装時の選択である。
+
+- Runnerトークンは自動で除外する。工程が保持するGitHub・モデルAPIなどの認証情報は`NewLog`の追加引数へ値を渡す。現在のRunnerが読み込む秘密値はRunnerトークンだけであり、追加の設定項目や環境変数の自動収集は設けない。秘密値の一覧はログ作成時にコピーする。
+- 値は大文字・小文字を区別したバイト列の完全一致で置換する。値が長い文字列の一部として現れた場合も、その値全体を置換する。値の一部分だけの出力、エンコード・変形された出力は対象にしない。空の値は無視する。同じ位置で複数の値が一致したら最長を採用する。
+- ログと秘密値のCRLFを既存ログ形式のLFへ統一して照合し、同じRead入力のチャンク・行の境界をまたぐ値も置換する。これにより、保存時の改行統一で秘密値が再現される場合も除外する。stdoutとstderrなど別々のRead入力は連結して照合しない。複数行の秘密値は改行を含めて1つの`[REDACTED]`へ置換する。
+- 既知形式は、まず大文字・小文字を区別しない`Authorization:`と`Proxy-Authorization:`のコロン後から行末までを除外する。ヘッダー名とコロンは残す。コロン前の空白・タブも受け付ける。折り返されたヘッダーの継続行はこのパターンの対象にしない。
+- PEM形式は`-----BEGIN PRIVATE KEY-----`、およびRSA・EC・OPENSSH・ENCRYPTEDなど大文字英数字の語を前置したPRIVATE KEYの開始から、同じ種別のENDまでを除外する。行途中の開始・終了にも対応する。開始位置へ`[REDACTED]`を出し、内部の改行だけを残す。ENDが無ければ、そのRead入力のEOFまたは読み取りエラーまでを除外する。公開鍵や証明書は対象にしない。
+- PEM・ヘッダーを先に除外し、その出力へ秘密値の照合を行う。読み取り途中の内容を未加工のファイルや再送用データへ保存しない。入力エラーは内容を含まない固定のエラー文で返す。
+
+結合テストはharness・setup・testで、秘密値・ヘッダー・複数行の秘密鍵が保存ログとeventsから除外されることを確認する。ArtifactRegistrarのスタブへredacted=trueが渡ること、およびテスト専用の接続で既存ArtifactStoreへ保存した行のredactedが1になることも確認する。Artifact登録のHTTP経路は引き続き未接続である。
 
 ## macOS通知ヘルパーのビルド・署名・配置
 

@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/shota-urano/evaloom/backend/internal/runner"
 )
 
 func main() {
@@ -23,18 +25,31 @@ func main() {
 func run(ctx context.Context, args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("evaloom-runner", flag.ContinueOnError)
 	flags.SetOutput(output)
+	configPath := flags.String("config", "", "Runner JSON configuration file path (required)")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloom-runner")
+	if *configPath == "" || flags.NArg() != 0 {
+		return fmt.Errorf("usage: evaloom-runner -config <configuration file path>")
 	}
-	// Configuration, heartbeat and the pull loop belong to the Runner tasks.
-	// This process has no listener and does not access the Control Plane DB.
-	fmt.Fprintln(output, "evaloom-runner: started (execution loop is not implemented)")
-	<-ctx.Done()
-	return nil
+	config, err := runner.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	process, err := runner.New(config)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(output, "evaloom-runner: started (execution stages are not implemented)")
+	return process.Run(ctx, func(ctx context.Context, _ runner.Claim) {
+		// Stage execution belongs to the next implementation unit. Keep the
+		// claimed job registered until cancellation/shutdown, without claiming
+		// success or freeing its slot before execution is implemented.
+		<-ctx.Done()
+	}, func(err error) {
+		fmt.Fprintln(output, err)
+	})
 }
