@@ -141,6 +141,22 @@ export class ApiClient {
       headers['Content-Type'] = 'application/json'
       body = JSON.stringify(options.body)
     }
+    const response = await this.send(path, method, headers, body, options.signal)
+    if (response.status === 204) return undefined as T
+    const text = await response.text()
+    return (text === '' ? undefined : JSON.parse(text)) as T
+  }
+
+  /**
+   * SSE を fetch で開き、本文を読まずに返す（GET /api/executions/{id}/events）。
+   * EventSource と違って Last-Event-ID を自分で付けられるので、再接続の契機と続きの位置を呼び出し側で決められる（13 6節）。
+   * 応答が 2xx 以外なら request と同じく ApiError にする（401 ではログインへ戻す）。
+   */
+  stream(path: string, options: { headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<Response> {
+    return this.send(path, 'GET', { Accept: 'text/event-stream', ...options.headers }, undefined, options.signal)
+  }
+
+  private async send(path: string, method: string, headers: Record<string, string>, body: string | undefined, signal?: AbortSignal): Promise<Response> {
     if (changesState(method) && this.csrfToken !== null) {
       headers[CSRF_HEADER] = this.csrfToken
     }
@@ -151,7 +167,7 @@ export class ApiClient {
         headers,
         body,
         credentials: 'same-origin',
-        signal: options.signal,
+        signal,
       })
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
@@ -165,9 +181,7 @@ export class ApiClient {
       }
       throw error
     }
-    if (response.status === 204) return undefined as T
-    const text = await response.text()
-    return (text === '' ? undefined : JSON.parse(text)) as T
+    return response
   }
 
   get<T>(path: string, options?: Omit<RequestOptions, 'method' | 'body'>) {

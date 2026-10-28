@@ -1,11 +1,9 @@
 import { useEffect, useRef } from 'react'
 
 import type { ApiClient } from '@/api/client'
-import type { TaskSummary } from '@/api/tasks'
+import { FINAL_EXECUTION_STATUSES, type TaskSummary } from '@/api/tasks'
 import { useExecutionStatusEvents, type StatusChanged } from '@/hooks/use-execution-events'
 
-// 02-data-model 5.2 の終端の Execution 状態。これ以外（blocked を含む）は状態が進みうるので見張る。
-const FINAL_EXECUTION_STATUSES = new Set(['succeeded', 'failed', 'interrupted', 'cancelled', 'timed_out'])
 // 購読の優先順（タスク状態）。実行中のものを先にし、待機中は古いもの（先に claim されるもの）から。
 const WATCH_PRIORITY: Record<string, number> = { running: 0, verifying: 1, blocked: 2, received: 3, queued: 4 }
 /**
