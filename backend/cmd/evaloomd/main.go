@@ -43,6 +43,8 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	flags := flag.NewFlagSet("evaloomd", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
+	dataDir := flags.String("data-dir", "", "Control Plane artifact data directory outside Git tracking (requires -artifact-max-bytes)")
+	artifactMaxBytes := flags.Int64("artifact-max-bytes", 0, "maximum artifact body size in bytes (requires -data-dir)")
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
 	contextRoot := flags.String("context-root", ".", "evaloom repository root for Global Context")
@@ -66,6 +68,9 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("evaloomd: port must be between 0 and 65535")
 	}
+	if (*dataDir == "") != (*artifactMaxBytes == 0) || *artifactMaxBytes < 0 {
+		return fmt.Errorf("evaloomd: -data-dir and a positive -artifact-max-bytes must be supplied together")
+	}
 	var web fs.FS
 	if *webDir != "" {
 		root, err := openWeb(*webDir)
@@ -80,6 +85,15 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
+	var artifacts api.ArtifactConfig
+	if *dataDir != "" {
+		files, err := store.NewArtifactStore(db, *dataDir)
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, files.Close()) }()
+		artifacts = api.ArtifactConfig{Store: files, MaxBytes: *artifactMaxBytes}
+	}
 
 	// Bind only after database initialization succeeds. The host is deliberately
 	// not configurable: neither a wildcard nor an IPv6 listener is permitted.
@@ -94,7 +108,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithContext(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}),
+		Handler:           api.NewHandlerWithArtifacts(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

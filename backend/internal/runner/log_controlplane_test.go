@@ -30,11 +30,13 @@ const logExecution = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 type logControlPlane struct {
 	t                        *testing.T
 	db                       *sql.DB
+	files                    *store.ArtifactStore
 	config                   Config
 	server                   *httptest.Server
 	cookie                   *http.Cookie
 	dbPath, dataDir, address string
 	loseEventAck             atomic.Bool
+	loseArtifactAck          atomic.Bool
 }
 
 func newLogControlPlane(t *testing.T) *logControlPlane {
@@ -87,9 +89,13 @@ func (f *logControlPlane) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	handler := api.NewHandler(f.db, logger, auth)
+	f.files, err = store.NewArtifactStore(f.db, f.dataDir)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ContextConfig{}, api.ArtifactConfig{Store: f.files, MaxBytes: 1 << 20})
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lose := r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/events") && f.loseEventAck.Swap(false)
+		lose := r.Method == "POST" && (strings.HasSuffix(r.URL.Path, "/events") && f.loseEventAck.Swap(false) || strings.HasSuffix(r.URL.Path, "/artifacts") && f.loseArtifactAck.Swap(false))
 		if !lose {
 			handler.ServeHTTP(w, r)
 			return
@@ -126,6 +132,8 @@ func (f *logControlPlane) stop() {
 		f.server = nil
 	}
 	if f.db != nil {
+		f.files.Close()
+		f.files = nil
 		f.db.Close()
 		f.db = nil
 	}

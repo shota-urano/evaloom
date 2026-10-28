@@ -2,8 +2,11 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -63,6 +66,16 @@ func ExecutionStages() []Stage {
 // implementations are introduced, without sharing mutable state between jobs.
 type Execution struct {
 	Claim Claim
+	// Set by the worktree stage once its existing worktrees row is available.
+	// The next progress/terminal report associates it with this Execution.
+	WorktreeID string
+	// The harness stage supplies the adapter result, including nullable tokens.
+	HarnessResult     *adapter.HarnessResult
+	control           *ExecutionControl
+	status            model.ExecutionStatus
+	startedAt         time.Time
+	harnessWallTimeMS *int64
+	now               func() time.Time
 }
 
 // StageFunc performs one stage. A failure or block must return an error; the
@@ -75,12 +88,15 @@ type executionStage struct {
 	run StageFunc
 }
 
-// Executor only sequences stages. It does not retry, report results, delete
-// worktrees, or implement Adapter/Sandbox timeouts and cancellation.
+// Executor sequences stages. NewExecutorWithControl additionally enables
+// stage deadlines, process supervision and progress/stop reports. Neither
+// constructor deletes worktrees or retries stage handlers.
 // It may be reused by concurrent Runner.Run callbacks if handlers are safe
 // for concurrent calls and keep per-execution data in Execution.
 type Executor struct {
-	stages []executionStage
+	stages  []executionStage
+	control *ExecutionControl
+	now     func() time.Time
 }
 
 // NewExecutor requires every stage, including stages skipped when resuming.
@@ -99,7 +115,7 @@ func NewExecutor(handlers map[StageID]StageFunc) (*Executor, error) {
 	if len(handlers) != len(table) {
 		return nil, fmt.Errorf("runner: unknown stage handler")
 	}
-	return &Executor{stages: stages}, nil
+	return &Executor{stages: stages, now: time.Now}, nil
 }
 
 // StageError identifies the failing stage while retaining the original error
@@ -119,6 +135,8 @@ func (err *StageError) Unwrap() error { return err.Err }
 // Execute accepts the same claim and context as Runner.Run's callback. The
 // callback must handle the returned error and finish result reporting before
 // returning to Run, which then releases the concurrency slot.
+// A controlled executor reports progress, success, timeout and cancellation;
+// other stage errors retain their classification for caller-owned reporting.
 func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 	if executor == nil || len(executor.stages) == 0 {
 		return fmt.Errorf("runner: executor must be constructed with stage handlers")
@@ -136,7 +154,13 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 			return fmt.Errorf("runner: invalid resume point")
 		}
 	}
-	execution := &Execution{Claim: claim}
+	execution := &Execution{Claim: claim, control: executor.control, status: model.ExecutionClaimed, now: executor.now}
+	if executor.control != nil {
+		if err := executor.control.validateTimeouts(claim.Project.Timeouts); err != nil {
+			return err
+		}
+	}
+	execution.startedAt = executor.now()
 	started := false
 	for _, stage := range executor.stages {
 		started = started || stage.ID == start
@@ -144,10 +168,46 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			return &StageError{stage.Stage, err}
+			return execution.stageError(stage.Stage, err)
 		}
-		if err := stage.run(ctx, execution); err != nil {
-			return &StageError{stage.Stage, err}
+		if executor.control != nil && stage.ID == StagePublish {
+			checkErr := executor.control.CheckCancellation(ctx)
+			if err := ctx.Err(); err != nil {
+				return execution.stageError(stage.Stage, err)
+			}
+			if checkErr != nil {
+				return &StageError{stage.Stage, checkErr}
+			}
+		}
+		if executor.control != nil && stage.ID != StageComplete {
+			if err := execution.report(stage.Status, ""); err != nil {
+				return &StageError{stage.Stage, err}
+			}
+		}
+		stageCtx, cancel := execution.stageContext(ctx, stage.ID)
+		var harnessStartedAt time.Time
+		if stage.ID == StageHarness {
+			harnessStartedAt = executor.now()
+		}
+		err := stageCtx.Err()
+		if err == nil {
+			err = stage.run(stageCtx, execution)
+		}
+		if stage.ID == StageHarness {
+			elapsed := executor.now().Sub(harnessStartedAt).Milliseconds()
+			execution.harnessWallTimeMS = &elapsed
+		}
+		if executor.control != nil && stageCtx.Err() != nil {
+			err = errors.Join(stageCtx.Err(), err)
+		}
+		cancel()
+		if err != nil {
+			return execution.stageError(stage.Stage, err)
+		}
+		if executor.control != nil && stage.ID == StageComplete {
+			if err := execution.report(stage.Status, ""); err != nil {
+				return &StageError{stage.Stage, err}
+			}
 		}
 	}
 	return nil

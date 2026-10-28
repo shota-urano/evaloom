@@ -31,6 +31,10 @@ type authFixture struct {
 }
 
 func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
+	return newConfiguredAuthFixture(t, nil, contexts...)
+}
+
+func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
 	t.Helper()
 	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
 	f.server = httptest.NewUnstartedServer(nil)
@@ -50,7 +54,11 @@ func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
 	if len(contexts) > 0 {
 		config = contexts[0]
 	}
-	mux.Handle("/", NewHandlerWithContext(f.db, nil, f.auth, nil, config, f.adapters))
+	var artifacts ArtifactConfig
+	if configure != nil {
+		artifacts = configure(f.db)
+	}
+	mux.Handle("/", NewHandlerWithArtifacts(f.db, nil, f.auth, nil, config, artifacts, f.adapters))
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)
