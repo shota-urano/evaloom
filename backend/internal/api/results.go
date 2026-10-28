@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -31,6 +32,21 @@ type resultInput struct {
 	ErrorClass       model.ErrorClass `json:"errorClass"`
 	ErrorMessage     *string          `json:"errorMessage"`
 	Block            *resultBlock     `json:"block"`
+	Usage            *resultUsage     `json:"usage"`
+}
+
+// The result body is not specified in specs 01/04/05. These fields carry step
+// 14's existing measurements without adding an endpoint or schema columns.
+type resultUsage struct {
+	WallTimeMS        *int64              `json:"wallTimeMs"`
+	HarnessWallTimeMS *int64              `json:"harnessWallTimeMs"`
+	HarnessUsage      *resultHarnessUsage `json:"harnessUsage"`
+}
+
+type resultHarnessUsage struct {
+	InputTokens  *int64 `json:"inputTokens"`
+	OutputTokens *int64 `json:"outputTokens"`
+	WallTimeMS   int64  `json:"wallTimeMs"`
 }
 
 type resultBlock struct {
@@ -137,6 +153,26 @@ func runnerResultTarget(status string) bool {
 }
 
 func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
+	if input.Status == "succeeded" {
+		if input.Usage == nil || input.Usage.WallTimeMS == nil {
+			return invalid("usage.wallTimeMs", "required")
+		}
+	} else if input.Usage != nil {
+		return invalid("usage", "only_for_succeeded")
+	}
+	if usage := input.Usage; usage != nil {
+		for _, value := range []*int64{usage.WallTimeMS, usage.HarnessWallTimeMS} {
+			if value != nil && *value < 0 {
+				return invalid("usage", "out_of_range")
+			}
+		}
+		if harness := usage.HarnessUsage; harness != nil {
+			if harness.WallTimeMS < 0 || harness.InputTokens != nil && *harness.InputTokens < 0 ||
+				harness.OutputTokens != nil && *harness.OutputTokens < 0 {
+				return invalid("usage.harnessUsage", "out_of_range")
+			}
+		}
+	}
 	for _, field := range []struct {
 		name string
 		sha  *string
@@ -215,6 +251,21 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 }
 
 func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
+	if usage := input.Usage; usage != nil {
+		record := store.UsageRecord{
+			ID: ulid.Make().String(), ExecutionID: execution.ID, WallTimeMS: *usage.WallTimeMS,
+		}
+		if usage.HarnessUsage != nil {
+			record.InputTokens = usage.HarnessUsage.InputTokens
+			record.OutputTokens = usage.HarnessUsage.OutputTokens
+		}
+		// The existing schema has a single unlabelled duration column. Store
+		// total Execution time; retain both harness measurements at the input
+		// boundary until specs define how to distinguish them in usage_records.
+		if err := store.RecordUsage(r.Context(), tx, record); err != nil {
+			return err
+		}
+	}
 	// Identifiers and column names are fixed in code; values remain parameters.
 	columns := []string{}
 	values := []any{}

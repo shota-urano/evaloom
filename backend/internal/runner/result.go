@@ -20,6 +20,7 @@ type ExecutionResult struct {
 	Status     model.ExecutionStatus `json:"status"`
 	ErrorClass model.ErrorClass      `json:"errorClass,omitempty"`
 	WorktreeID string                `json:"worktreeId,omitempty"`
+	Usage      *ExecutionUsage       `json:"usage,omitempty"`
 }
 
 type ResultReporter interface {
