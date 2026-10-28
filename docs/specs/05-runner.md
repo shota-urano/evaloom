@@ -73,9 +73,20 @@ loop:
 
 - ハーネス・setup・テストの標準出力と標準エラーを行単位で読み、機密情報を除外（3.5）してから次の2か所に出す。
   - `POST /api/executions/{id}/events` に `log` イベントとして送る（管理画面の SSE 表示用）
-  - データディレクトリのログファイルに追記し、終了時に artifacts として登録する
-- 送信が失敗してもログファイルへの書き込みは続ける。送れなかった分は後でまとめて送る（再送の方式は実装時に確定）。
+  - データディレクトリのログファイルに追記し、終了時に `POST /api/executions/{id}/artifacts` で artifacts として登録する
+- 送信が失敗してもログファイルへの書き込みは続ける。送れなかった分は後でまとめて送る。
+- 再送の照合: Runner は `log` イベントごとに Execution 内で一意な `sourceId` を付ける。Control Plane は既存の `execution_events.payload` の `sourceId` で重複を判定する（新しいテーブル・列は作らない）。同じ `sourceId` で同じ内容の再送は保存せず成功を返し、内容が違えば 409 を返す。
 - データディレクトリは Git 管理外に置く（requirements 3.1）。
+
+#### 3.4.1 成果物の登録（`POST /api/executions/{id}/artifacts`）
+
+管理 DB に書くのは Control Plane だけなので（[`01-architecture.md`](./01-architecture.md) 3章）、Runner は成果物ファイルを API で送り、Control Plane が保存と登録を行う。Runner を別マシンに置く将来構成でもこの経路を変えない。
+
+- 要求: 本文はファイルの中身そのもの（`application/octet-stream`）。クエリで `artifactId`（Runner が採番する ID）、`kind`（[`02-data-model.md`](./02-data-model.md) artifacts.kind の値）、`redacted`（`0` / `1`）を渡す。
+- Control Plane は本文をデータディレクトリに保存し、`sha256` と `size_bytes` を自分で計算して artifacts に1行書く。`storage_path` は Control Plane のデータディレクトリ内のパスとする。
+- 冪等性: 同じ Execution・同じ `artifactId` で同じ内容（sha256 が一致）の再送は登録済みとして成功を返す。内容が違えば 409 を返す。
+- 権限: その Execution を claim した Runner だけが登録できる。他の Runner からの要求は 403 とし、監査記録を残す（events と同じ扱い）。
+- 本文サイズの上限は実装時に確定する。
 
 ### 3.5 ログの機密情報除外（requirements 15.2）
 
@@ -123,7 +134,7 @@ requirements 15.3 の承認対象操作（本番デプロイ、PR マージ、�
 
 ## 5. インターフェース
 
-- Runner 用 API: `POST /api/runners/{id}/claim`, `POST /api/runners/{id}/heartbeat`, `POST /api/executions/{id}/events`, `POST /api/executions/{id}/result`, `POST /api/executions/{id}/context`（[`01-architecture.md`](./01-architecture.md) 5.2）
+- Runner 用 API: `POST /api/runners/{id}/claim`, `POST /api/runners/{id}/heartbeat`, `POST /api/executions/{id}/events`, `POST /api/executions/{id}/artifacts`, `POST /api/executions/{id}/result`, `POST /api/executions/{id}/context`（[`01-architecture.md`](./01-architecture.md) 5.2）
 - イベント種別: [`02-data-model.md`](./02-data-model.md) 5.3
 - 本人用の参照: `GET /api/executions/{id}/events`（SSE）, `GET /api/executions/{id}/logs`, `GET /api/runners`
 
@@ -146,6 +157,7 @@ heartbeat の要求と応答（案）:
 | ハーネスの異常終了 | `failed`（`execution_failed`）。HarnessResult の errorClass を優先する |
 | テストコマンド未設定 | Gate 2 で `failed`（`config_error`）。push しない（requirements 8.5） |
 | ログ送信の失敗 | ファイルへの書き込みは続け、後で再送する |
+| 成果物登録の失敗 | ローカルのファイルを残し、同じ `artifactId` で後で再送する |
 | Runner 自身の異常終了 | 再起動後の最初の heartbeat で Control Plane が `interrupted` にする |
 
 ## 7. スコープ外
@@ -179,6 +191,8 @@ heartbeat の要求と応答（案）:
   - 受け入れ基準: ハーネスの出力が SSE で管理画面に届く; Control Plane を止めている間もログファイルに書かれ、再開後に送られる
 - [ ] [Backend] ログの機密情報除外
   - 受け入れ基準: Runner が保持する秘密の値をログに出すテストで、保存されたログと events に値が残らず [REDACTED] になる; artifacts.redacted が 1 になる
+- [ ] [Backend] 成果物の登録 API と Runner からの登録（3.4.1）
+  - 受け入れ基準: Runner のログファイルが終了後に artifacts に登録され、Control Plane のデータディレクトリに保存された内容と sha256 が送った内容と一致する; 同じ artifactId・同じ内容の再送で行が増えない; 内容が違う再送は 409 になる; 別の Runner からの登録は 403 になる; redacted=1 で送ったログの artifacts.redacted が 1 になる
 - [ ] [Backend] タイムアウトとキャンセル（Adapter のキャンセル、強制終了、状態報告）
   - 受け入れ基準: 上限時間を短くしたテストでハーネスが止まり timed_out が報告される; 中止指示で cancelled が報告される; どちらも worktree が残る
 - [ ] [Backend] 使用量の記録

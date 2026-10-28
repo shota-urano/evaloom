@@ -418,7 +418,7 @@ requirements 8.3 の11状態。値は snake_case にする。
 | 値 | 発生元 | payload の主な項目 |
 |---|---|---|
 | `status_changed` | Control Plane | `from`, `to`, `reason` |
-| `log` | Runner | `stream`（`harness` / `setup` / `test` / `runner`）, `text`（機密情報除外済み） |
+| `log` | Runner | `sourceId`（Runner が付ける再送照合用の ID。Execution 内で一意。[`05-runner.md`](./05-runner.md) 3.4）, `stream`（`harness` / `setup` / `test` / `runner`）, `text`（機密情報除外済み） |
 | `worktree_ready` | Runner | `path`, `branch`, `baseSha` |
 | `context_pinned` | Runner | `revisions`（layer, path, hash の配列） |
 | `harness_started` / `harness_finished` | Runner | `sessionId`, `headSha`, `errorClass` |
