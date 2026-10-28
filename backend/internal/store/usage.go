@@ -14,8 +14,8 @@ type UsageRecord struct {
 	CostAmount                *float64
 }
 
-// RecordUsage is a Control Plane storage primitive. A transaction can include
-// it with result persistence once a usage transport is specified. It does not
+// RecordUsage is a Control Plane storage primitive used in the same
+// transaction as result persistence and the succeeded transition. It does not
 // infer token counts, prices, or a second duration's meaning from row order.
 func RecordUsage(ctx context.Context, db interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)

@@ -182,9 +182,13 @@ func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *test
 					t.Fatalf("offline push: error=%v reports=%v", err, reports)
 				}
 			case "allowed":
+				usage := reports[len(reports)-1].Usage
+				if usage == nil || usage.WallTimeMS < 0 {
+					t.Fatalf("successful push omitted usage: %+v", usage)
+				}
 				want := []ExecutionResult{
 					{FromStatus: model.ExecutionClaimed, Status: model.ExecutionPublishing},
-					{FromStatus: model.ExecutionPublishing, Status: model.ExecutionSucceeded},
+					{FromStatus: model.ExecutionPublishing, Status: model.ExecutionSucceeded, Usage: usage},
 				}
 				if err != nil || !reflect.DeepEqual(reports, want) {
 					t.Fatalf("successful push: error=%v reports=%v", err, reports)

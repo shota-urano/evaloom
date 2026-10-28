@@ -69,6 +69,9 @@ func postResult(t *testing.T, f *authFixture, token, id string, input any) (int,
 
 func resultBody(from, to string) map[string]any {
 	input := map[string]any{"fromStatus": from, "status": to}
+	if to == "succeeded" {
+		input["usage"] = map[string]any{"wallTimeMs": 0}
+	}
 	if to == "blocked" {
 		input["block"] = map[string]any{"cause": "git_state", "headSha": strings.Repeat("b", 40), "detail": map[string]any{"reason": "dirty"}}
 	}
@@ -83,6 +86,7 @@ type resultSnapshot struct {
 	Execution, Task, Worktree        string
 	Finished                         sql.NullString
 	Requests, Events, Audits, Blocks int
+	UsageRecords                     int
 }
 
 func readResultSnapshot(t *testing.T, f *authFixture, id string) resultSnapshot {
@@ -92,9 +96,10 @@ func readResultSnapshot(t *testing.T, f *authFixture, id string) resultSnapshot 
 		(SELECT count(*) FROM notification_requests WHERE execution_id = e.id),
 		(SELECT count(*) FROM execution_events WHERE execution_id = e.id),
 		(SELECT count(*) FROM audit_logs WHERE action = 'execution.result' AND target_id = e.id),
-		(SELECT count(*) FROM execution_blocks WHERE execution_id = e.id)
+		(SELECT count(*) FROM execution_blocks WHERE execution_id = e.id),
+		(SELECT count(*) FROM usage_records WHERE execution_id = e.id)
 		FROM executions e JOIN tasks t ON t.id = e.task_id JOIN worktrees w ON w.id = e.worktree_id WHERE e.id = ?`, id).
-		Scan(&s.Execution, &s.Task, &s.Worktree, &s.Finished, &s.Requests, &s.Events, &s.Audits, &s.Blocks)
+		Scan(&s.Execution, &s.Task, &s.Worktree, &s.Finished, &s.Requests, &s.Events, &s.Audits, &s.Blocks, &s.UsageRecords)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +199,13 @@ func TestResultConcurrentAndReplayedStopsRequestNotificationOnce(t *testing.T) {
 				after.Requests != wantRequests || after.Blocks != wantBlocks || after.Events != before.Events+wantEvents || after.Audits != 1 ||
 				after.Finished.Valid != (target != "blocked") {
 				t.Fatalf("saved stop=%+v", after)
+			}
+			wantUsage := 0
+			if target == "succeeded" {
+				wantUsage = 1
+			}
+			if after.UsageRecords != wantUsage {
+				t.Fatalf("usage rows=%d; want %d", after.UsageRecords, wantUsage)
 			}
 			if after.Finished.Valid {
 				if _, err := ParseTimestamp(after.Finished.String); err != nil {

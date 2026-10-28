@@ -1,46 +1,19 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/store"
 )
-
-type usageRecorderFunc func(context.Context, string, ExecutionUsage) error
-
-func (record usageRecorderFunc) RecordUsage(ctx context.Context, id string, usage ExecutionUsage) error {
-	return record(ctx, id, usage)
-}
-
-// Test-only bridge across the unspecified usage transport. Production Runner
-// must not write the management DB. This records total duration in one row;
-// no second row/column convention for harness duration is invented here.
-func testUsageRecorder(t *testing.T, db *sql.DB) UsageRecorder {
-	t.Helper()
-	return usageRecorderFunc(func(ctx context.Context, id string, usage ExecutionUsage) error {
-		var status string
-		if err := db.QueryRowContext(ctx, `SELECT status FROM executions WHERE id = ?`, id).Scan(&status); err != nil {
-			return err
-		}
-		if status != "publishing" {
-			t.Fatalf("usage must be recorded before succeeded: status=%s", status)
-		}
-		if usage.HarnessWallTimeMS == nil || *usage.HarnessWallTimeMS != 100 || usage.HarnessUsage == nil || usage.HarnessUsage.WallTimeMS != 71 {
-			t.Fatalf("lost measured harness time or adapter usage: %+v", usage)
-		}
-		return store.RecordUsage(ctx, db, store.UsageRecord{
-			ID: ulid.Make().String(), ExecutionID: id, WallTimeMS: usage.WallTimeMS,
-			InputTokens: usage.HarnessUsage.InputTokens, OutputTokens: usage.HarnessUsage.OutputTokens,
-		})
-	})
-}
 
 func TestCompletedExecutionsRecordWallTime(t *testing.T) {
 	testCompletedExecutionUsage(t, true)
@@ -71,13 +44,11 @@ func testCompletedExecutionUsage(t *testing.T, tokensAvailable bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	complete, err := NewUsageStage(testUsageRecorder(t, f.db))
-	if err != nil {
-		t.Fatal(err)
-	}
 	clock := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
 	handlers := stubStageHandlers(func(id StageID, _ context.Context, execution *Execution) error {
-		clock = clock.Add(100 * time.Millisecond)
+		if id != StageComplete {
+			clock = clock.Add(100 * time.Millisecond)
+		}
 		if id == StageHarness {
 			result := &adapter.HarnessResult{Usage: adapter.Usage{WallTimeMS: 71}}
 			if tokensAvailable {
@@ -87,9 +58,8 @@ func testCompletedExecutionUsage(t *testing.T, tokensAvailable bool) {
 		}
 		return nil
 	})
-	handlers[StageComplete] = complete
 	control := testExecutionControl()
-	control.Reporter = process // Exercise the unchanged authenticated result API.
+	control.Reporter = process // Use the production authenticated result API and storage path.
 	control.CheckCancellation = process.Heartbeat
 	executor, err := NewExecutorWithControl(handlers, control)
 	if err != nil {
@@ -134,96 +104,155 @@ func testCompletedExecutionUsage(t *testing.T, tokensAvailable bool) {
 	}
 }
 
-func TestUsageRecordFailurePreventsSuccessWithoutRerunningStages(t *testing.T) {
-	failure := errors.New("usage storage unavailable")
-	var records, publishes, successes int
-	complete, err := NewUsageStage(usageRecorderFunc(func(context.Context, string, ExecutionUsage) error {
-		records++
-		return failure
-	}))
+// A real storage failure must roll back completion. Runner retries the same
+// HTTP body, without repeating publishing or measuring the retry delay.
+func TestUsageStorageFailureRetriesResultWithoutRerunningStages(t *testing.T) {
+	f := newLogControlPlane(t)
+	if _, err := f.db.Exec(`UPDATE executions SET status = 'claimed' WHERE id = ?`, logExecution); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`CREATE TRIGGER reject_usage BEFORE INSERT ON usage_records
+		BEGIN SELECT RAISE(ABORT, 'usage storage unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	process, err := New(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handlers := stubStageHandlers(func(id StageID, _ context.Context, _ *Execution) error {
+	process.pollInterval = time.Millisecond
+	clock := time.Now()
+	var attempts, publishes int
+	var firstBody []byte
+	process.client.Transport = usageRetryTransport(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		response, err := http.DefaultTransport.RoundTrip(r)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Contains(body, []byte(`"status":"succeeded"`)) {
+			attempts++
+			if attempts == 1 {
+				firstBody = body
+				var status string
+				var rows int
+				err := f.db.QueryRow(`SELECT status, (SELECT count(*) FROM usage_records) FROM executions WHERE id = ?`, logExecution).Scan(&status, &rows)
+				if err != nil || status != "publishing" || rows != 0 || response.StatusCode != 500 {
+					t.Errorf("failed usage report: status=%s rows=%d HTTP=%d err=%v", status, rows, response.StatusCode, err)
+				}
+				if _, err := f.db.Exec(`DROP TRIGGER reject_usage`); err != nil {
+					t.Error(err)
+				}
+				clock = clock.Add(10 * time.Second)
+			} else if !bytes.Equal(body, firstBody) {
+				t.Error("retry changed usage measurements")
+			}
+		}
+		return response, nil
+	})
+	control := testExecutionControl()
+	control.Reporter = process
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	control.ReportContext = ctx
+	executor, err := NewExecutorWithControl(stubStageHandlers(func(id StageID, _ context.Context, _ *Execution) error {
+		if id != StageComplete {
+			clock = clock.Add(100 * time.Millisecond)
+		}
 		if id == StagePublish {
 			publishes++
 		}
 		return nil
-	})
-	handlers[StageComplete] = complete
-	control := testExecutionControl()
-	control.Reporter = reportFunc(func(_ context.Context, _ string, result ExecutionResult) error {
-		if result.Status == model.ExecutionSucceeded {
-			successes++
-		}
-		return nil
-	})
-	executor, err := NewExecutorWithControl(handlers, control)
+	}), control)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = executor.Execute(context.Background(), Claim{})
-	var stageError *StageError
-	if !errors.Is(err, failure) || !errors.As(err, &stageError) || stageError.Stage.ID != StageComplete || records != 1 || publishes != 1 || successes != 0 {
-		t.Fatalf("usage failure: error=%v records=%d publishes=%d successes=%d", err, records, publishes, successes)
+	executor.now = func() time.Time { return clock }
+	claim := Claim{}
+	claim.Execution.ID = logExecution
+	if err := executor.Execute(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	var wall, rows int
+	if err := f.db.QueryRow(`SELECT count(*), max(wall_time_ms) FROM usage_records WHERE execution_id = ?`, logExecution).Scan(&rows, &wall); err != nil ||
+		rows != 1 || wall != 1300 || attempts != 2 || publishes != 1 {
+		t.Fatalf("retry: rows=%d wall=%d attempts=%d publishes=%d err=%v", rows, wall, attempts, publishes, err)
 	}
 }
 
 func TestUsageNotRecordedWhenExecutionStopsBeforeCompletion(t *testing.T) {
 	for _, failure := range []error{errors.New("failed or blocked"), context.Canceled, context.DeadlineExceeded} {
-		complete, err := NewUsageStage(usageRecorderFunc(func(context.Context, string, ExecutionUsage) error {
-			t.Fatal("stopped execution reached completion usage recorder")
-			return nil
-		}))
+		f := newLogControlPlane(t)
+		if _, err := f.db.Exec(`UPDATE executions SET status = 'claimed' WHERE id = ?`, logExecution); err != nil {
+			t.Fatal(err)
+		}
+		process, err := New(f.config)
 		if err != nil {
 			t.Fatal(err)
 		}
-		handlers := stubStageHandlers(func(id StageID, _ context.Context, _ *Execution) error {
+		control := testExecutionControl()
+		control.Reporter = process
+		executor, err := NewExecutorWithControl(stubStageHandlers(func(id StageID, _ context.Context, _ *Execution) error {
 			if id == StageHarness {
 				return failure
 			}
+			if id == StageComplete {
+				t.Fatal("stopped execution reached completion")
+			}
 			return nil
-		})
-		handlers[StageComplete] = complete
-		executor, err := NewExecutorWithControl(handlers, testExecutionControl())
+		}), control)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := executor.Execute(context.Background(), Claim{}); !errors.Is(err, failure) {
+		claim := Claim{}
+		claim.Execution.ID = logExecution
+		if err := executor.Execute(context.Background(), claim); !errors.Is(err, failure) {
 			t.Fatalf("lost stop error: %v", err)
+		}
+		var rows int
+		if err := f.db.QueryRow(`SELECT count(*) FROM usage_records`).Scan(&rows); err != nil || rows != 0 {
+			t.Fatalf("stopped execution recorded usage: rows=%d err=%v", rows, err)
 		}
 	}
 }
 
 func TestResumedUsageDoesNotInventHarnessMeasurements(t *testing.T) {
 	clock := time.Now()
-	var recorded bool
-	complete, err := NewUsageStage(usageRecorderFunc(func(_ context.Context, _ string, usage ExecutionUsage) error {
-		recorded = true
-		if usage.WallTimeMS != 300 || usage.HarnessWallTimeMS != nil || usage.HarnessUsage != nil {
-			t.Fatalf("resumed usage invented skipped harness measurements: %+v", usage)
+	var reported bool
+	control := testExecutionControl()
+	control.Reporter = reportFunc(func(_ context.Context, _ string, result ExecutionResult) error {
+		if result.Status == model.ExecutionSucceeded {
+			reported = true
+			usage := result.Usage
+			if usage == nil || usage.WallTimeMS != 300 || usage.HarnessWallTimeMS != nil || usage.HarnessUsage != nil {
+				t.Fatalf("resumed usage invented skipped harness measurements: %+v", usage)
+			}
 		}
 		return nil
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	handlers := stubStageHandlers(func(StageID, context.Context, *Execution) error {
-		clock = clock.Add(100 * time.Millisecond)
-		return nil
 	})
-	handlers[StageComplete] = complete
-	executor, err := NewExecutor(handlers)
+	executor, err := NewExecutorWithControl(stubStageHandlers(func(id StageID, _ context.Context, _ *Execution) error {
+		if id != StageComplete {
+			clock = clock.Add(100 * time.Millisecond)
+		}
+		return nil
+	}), control)
 	if err != nil {
 		t.Fatal(err)
 	}
 	executor.now = func() time.Time { return clock }
 	claim := Claim{}
 	claim.Execution.ResumePoint = new("gate2")
-	if err := executor.Execute(context.Background(), claim); err != nil || !recorded {
-		t.Fatalf("resumed usage: recorded=%v err=%v", recorded, err)
+	if err := executor.Execute(context.Background(), claim); err != nil || !reported {
+		t.Fatalf("resumed usage: reported=%v err=%v", reported, err)
 	}
-	if _, err := NewUsageStage(nil); err == nil {
-		t.Fatal("missing usage recorder accepted")
-	}
+}
+
+type usageRetryTransport func(*http.Request) (*http.Response, error)
+
+func (transport usageRetryTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return transport(r)
 }

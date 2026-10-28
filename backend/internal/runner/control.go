@@ -79,8 +79,11 @@ func (execution *Execution) report(status model.ExecutionStatus, class model.Err
 	if status == execution.status {
 		return nil
 	}
-	err := execution.control.Reporter.ReportResult(execution.control.ReportContext, execution.Claim.Execution.ID,
-		ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID})
+	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID}
+	if status == model.ExecutionSucceeded {
+		result.Usage = execution.completedUsage()
+	}
+	err := execution.control.Reporter.ReportResult(execution.control.ReportContext, execution.Claim.Execution.ID, result)
 	if err == nil {
 		execution.status = status
 	}
