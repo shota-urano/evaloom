@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -17,6 +19,43 @@ import (
 type ArtifactConfig struct {
 	Store    *store.ArtifactStore
 	MaxBytes int64
+}
+
+func getArtifact(logger *slog.Logger, config ArtifactConfig) http.HandlerFunc {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, field := range []string{"id", "artifactId"} {
+			if err := ValidateID(field, r.PathValue(field), ULID); err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+		}
+		if config.Store == nil {
+			WriteError(w, logger, fmt.Errorf("artifact storage must be configured"))
+			return
+		}
+		artifact, file, err := config.Store.Open(r.Context(), r.PathValue("id"), r.PathValue("artifactId"))
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: NotFound, Message: "Artifact not found"}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodHead {
+			return
+		}
+		if _, err := io.Copy(w, file); err != nil {
+			// Headers are committed: do not append a JSON error to the file.
+			logger.Error("Artifact response failed", "artifactId", artifact.ID, "error", err)
+		}
+	}
 }
 
 func artifactKind(kind string) bool {

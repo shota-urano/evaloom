@@ -135,3 +135,34 @@ Artifact登録は`backend/launchd/README.md`の「Runnerのログ収集と再送
   既存認証の `Cache-Control: no-store` を維持する。独自のheartbeatやretry値は
   追加しない。初回のDBエラーは共通形式の500、配信開始後のDBエラーはログに
   記録して接続を終了する。HTTP切断やdaemon終了時は読み取りを停止する。
+
+タスク詳細は `GET /api/tasks/{id}` で返す。応答本文の構造は仕様に記載が
+ないため、既存の Tasks 一覧と同じタスク項目、`projectId`、
+`latestExecution`、`prUrl` に `executions` 配列を追加する。
+`executions` はページ分割せずに seq 昇順で返し、各要素は `id`、`seq`、
+`mode`、`status`、`errorClass`、`profileVersion`、`profileCommitSha`、
+`startedAt`、`finishedAt` を持つ。Profile の版と SHA は現在の割り当てではなく、
+Execution に固定した値を返す。未固定の Profile、未記録の開始・終了時刻、
+エラー分類は `null`、Execution がない場合は空配列と
+`latestExecution: null` を返す。開始・終了時刻は UTC の RFC 3339 とし、
+秒未満の精度を保持する。タスクと履歴は1つの SELECT で読み取る。
+タスクの `prUrl` の選択規則も仕様に記載がないため、既存の Tasks 一覧に
+合わせ、`pr_url` が NULL でない Execution のうち seq が最大の値を返す。
+該当する Execution がなければ `null` を返す。
+
+Execution詳細は `GET /api/executions/{id}` で返す。応答本文の構造は仕様に
+記載がないため、タスク詳細のExecutionと同じ項目に `taskId`、`runnerId`、
+`role`、`harnessId`、`profileId`、`prUrl`、`contextRevisions`、`gateResults`
+を追加する。未固定・未記録の値は `null`、記録のない一覧は空配列で返す。
+`prUrl` は対象Execution自身の値を返す。
+
+`contextRevisions` は `id`、`layer`、`kind`、`sourcePath`、`sourceCommitSha`、
+`contentHash` を持つ。仕様13の3.3に従い、本文の `content` は含めない。
+既存のContext読み出しに合わせ、global、harness、project、taskの順に並べ、
+同じ階層ではパス、IDの昇順とする。
+
+`gateResults` は `id`、`gate`、`result`、`baseSha`、`targetSha`、`findings`、
+`createdAt` を持ち、Findingは仕様02の5.5の形で返す。Gate番号、記録時刻、
+IDの昇順で保存済みの結果をすべて返す。同じGateの再検証記録も残し、
+未実行のGateの結果は補わない。Executionと各一覧は同じトランザクションで
+読み取る。Gate結果の書き込み側は本タスクの対象外である。
