@@ -168,6 +168,7 @@ Phase 1 で実装しない 18章のエンドポイント: `/api/webhooks/linear`
 | POST | /api/runners/{id}/claim | 次の仕事を取得。同時実行制御はここで行う | 18章 | 04, 05 |
 | POST | /api/runners/{id}/heartbeat | 生存報告。応答で実行中 Execution の中止指示を返す | 追加案（Q3） | 05 |
 | POST | /api/executions/{id}/events | 実行イベント・ログ断片の報告 | 追加案（Q3） | 05 |
+| POST | /api/executions/{id}/artifacts | 成果物ファイル（ログファイル等）の登録。本文はファイルの中身そのもの | 追加案（evaloom-aor） | 05 |
 | POST | /api/executions/{id}/result | 工程の結果（Gate 結果、検証 SHA、PR URL、エラー分類）の報告 | 追加案（Q3） | 05 |
 | POST | /api/executions/{id}/context | 固定した Project / Harness Context を送り、Execution Context を受け取る | 追加案（Q3） | 07 |
 
