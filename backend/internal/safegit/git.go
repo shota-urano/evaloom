@@ -76,6 +76,44 @@ func Output(ctx context.Context, repo string, args ...string) ([]byte, error) {
 	return output(ctx, env, append(base, command...)...)
 }
 
+// ValidateFetchURL rejects repository settings that could reinterpret an
+// explicit fetch URL as a remote name, rewrite it, or import objects from a
+// separate bundle URI. It does not validate the URL's transport or filesystem
+// containment. The caller must stop sandbox writers through the subsequent
+// fetch, as with Output. Errors never include configuration names or values.
+func ValidateFetchURL(ctx context.Context, repo, repositoryURL string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(repo)
+	if err != nil {
+		return fmt.Errorf("safegit: resolve repository")
+	}
+	// These commands only read config; no hooks or executable settings run.
+	// Use the same include traversal and environment isolation as Output.
+	names, err := configurationNames(ctx, environment(abs, "fetch"), []string{"--no-pager", "-C", abs}, abs)
+	if err != nil {
+		return fmt.Errorf("safegit: read fetch configuration")
+	}
+	for _, name := range bytes.Split(names, []byte{0}) {
+		key := string(name)
+		last := strings.LastIndexByte(key, '.')
+		if last < 0 {
+			continue
+		}
+		base, leaf := key[:last], key[last+1:]
+		section, subsection, _ := strings.Cut(base, ".")
+		// Section and variable names are case-insensitive; remote names
+		// (subsections) are case-sensitive and may themselves contain dots.
+		if (strings.EqualFold(section, "remote") && subsection == repositoryURL) ||
+			(strings.EqualFold(section, "url") && strings.EqualFold(leaf, "insteadOf")) ||
+			strings.EqualFold(key, "fetch.bundleURI") {
+			return fmt.Errorf("safegit: fetch destination overrides are not allowed")
+		}
+	}
+	return nil
+}
+
 func builtin(name string) bool {
 	switch name {
 	case "init", "clone", "rev-parse", "ls-tree", "cat-file", "remote", "check-ref-format",
