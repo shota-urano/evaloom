@@ -7,10 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
+
+	"github.com/shota-urano/evaloom/backend/internal/safegit"
 )
 
 // File is a context snapshot shared by the project and harness readers.
@@ -92,23 +92,12 @@ func Read(ctx context.Context, repo, commitSHA string, include func(string) bool
 }
 
 func git(ctx context.Context, repo string, args ...string) ([]byte, error) {
-	gitArgs := []string{"--no-replace-objects", "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repo}
-	cmd := exec.CommandContext(ctx, "git", append(gitArgs, args...)...)
-	// Follow Registry's practice of ignoring ambient repository overrides.
-	for _, variable := range os.Environ() {
-		if !strings.HasPrefix(variable, "GIT_") {
-			cmd.Env = append(cmd.Env, variable)
-		}
-	}
-	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, err := safegit.Output(ctx, repo, args...)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("git %s: %w", args[0], ctx.Err())
 		}
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return out, nil
 }
