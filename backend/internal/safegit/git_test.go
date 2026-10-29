@@ -1,6 +1,7 @@
 package safegit_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -137,7 +138,44 @@ func TestHooksDisabledAcrossHostOperations(t *testing.T) {
 			f.safe(f.wt, "add", "file.txt")
 			f.safe(f.wt, "commit", "-qm", "safe commit")
 			f.safe(f.wt, "fetch", "origin", "main")
-			f.safe(f.wt, "push", "origin", "HEAD:refs/heads/evaloom/safe")
+			f.rejectLocalPush(f.wt, "push", "origin", "HEAD:refs/heads/evaloom/safe")
+			// Keep exercising a successful push and its sender-side hooks over
+			// smart HTTP, since local receiving processes are now forbidden.
+			f.raw(f.remote, "config", "http.receivepack", "true")
+			gitPath, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				cmd := exec.CommandContext(r.Context(), gitPath, "http-backend")
+				cmd.Env = append(append([]string{}, f.env...), "GIT_PROJECT_ROOT="+f.root, "GIT_HTTP_EXPORT_ALL=1",
+					"REQUEST_METHOD="+r.Method, "PATH_INFO="+r.URL.Path, "QUERY_STRING="+r.URL.RawQuery,
+					"CONTENT_TYPE="+r.Header.Get("Content-Type"))
+				cmd.Stdin = r.Body
+				out, err := cmd.Output()
+				headers, body, ok := bytes.Cut(out, []byte("\r\n\r\n"))
+				if err != nil || !ok {
+					t.Errorf("git http-backend: %v, output %q", err, out)
+					http.Error(w, "git http-backend failed", http.StatusInternalServerError)
+					return
+				}
+				status := http.StatusOK
+				for _, header := range strings.Split(string(headers), "\r\n") {
+					key, value, _ := strings.Cut(header, ":")
+					if key == "Status" {
+						_, _ = fmt.Sscanf(value, "%d", &status)
+					} else {
+						w.Header().Add(key, strings.TrimSpace(value))
+					}
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+			f.safe(f.wt, "push", server.URL+"/remote.git", "HEAD:refs/heads/evaloom/safe")
+			if got, want := f.raw(f.remote, "rev-parse", "refs/heads/evaloom/safe"), f.raw(f.wt, "rev-parse", "HEAD"); got != want {
+				t.Fatalf("safe HTTP push published %q, want %q", got, want)
+			}
 			newWT := filepath.Join(f.root, "new-worktree")
 			f.safe(f.repo, "worktree", "add", "--detach", newWT, "HEAD")
 			for _, marker := range markers {
@@ -153,6 +191,89 @@ func TestHooksDisabledAcrossHostOperations(t *testing.T) {
 				present(t, marker)
 			}
 		})
+	}
+}
+
+func TestLocalPushCannotExecuteReceiverHooks(t *testing.T) {
+	for _, destination := range []string{"absolute", "relative", "file-url", "pushurl", "insteadOf", "pushInsteadOf", "pushurl-insteadOf", "multiple-pushurls"} {
+		for _, custom := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/customHooksPath=%v", destination, custom), func(t *testing.T) {
+				f := newFixture(t)
+				// The sandbox can modify this shared Git directory. A local
+				// receive-pack reads its hooks independently of the sender's -c.
+				gitdir := filepath.Join(f.repo, ".git")
+				hooks := filepath.Join(gitdir, "hooks")
+				if custom {
+					hooks = filepath.Join(f.root, "receiver-hooks")
+					if err := os.Mkdir(hooks, 0700); err != nil {
+						t.Fatal(err)
+					}
+					f.raw(f.wt, "config", "core.hooksPath", hooks)
+				}
+				var markers []string
+				for _, name := range []string{"pre-receive", "update", "post-receive", "post-update", "reference-transaction"} {
+					script, marker := f.payload("receiver-"+name, "exit 0")
+					data, err := os.ReadFile(script)
+					if err != nil {
+						t.Fatal(err)
+					}
+					write(t, filepath.Join(hooks, name), string(data), 0700)
+					markers = append(markers, marker)
+				}
+				// Even an explicit repository opt-in must not bypass the policy.
+				f.raw(f.wt, "config", "protocol.file.allow", "always")
+				target := gitdir
+				alias := "https://example.invalid/publish"
+				switch destination {
+				case "relative":
+					target = "../repo/.git"
+				case "file-url":
+					target = "file://" + gitdir
+				case "pushurl":
+					f.raw(f.wt, "config", "remote.origin.pushurl", gitdir)
+					target = "origin"
+				case "insteadOf", "pushInsteadOf":
+					f.raw(f.wt, "config", "remote.origin.url", alias)
+					f.raw(f.wt, "config", "url."+gitdir+"."+destination, alias)
+					target = "origin"
+				case "pushurl-insteadOf":
+					f.raw(f.wt, "config", "remote.origin.pushurl", alias)
+					f.raw(f.wt, "config", "url."+gitdir+".insteadOf", alias)
+					target = "origin"
+				case "multiple-pushurls":
+					f.raw(f.wt, "config", "--add", "remote.origin.pushurl", f.remote)
+					f.raw(f.wt, "config", "--add", "remote.origin.pushurl", gitdir)
+					target = "origin"
+				}
+				f.rejectLocalPush(f.wt, "push", target, "HEAD:refs/heads/evaloom/published")
+				for _, marker := range markers {
+					absent(t, marker)
+				}
+				if out, err := f.rawResult(f.repo, "show-ref", "--verify", "refs/heads/evaloom/published"); err == nil {
+					t.Fatalf("rejected push updated receiver ref: %s", out)
+				}
+				// Positive control: exactly the same push without the wrapper
+				// succeeds and executes every receiver hook.
+				f.raw(f.wt, "push", target, "HEAD:refs/heads/evaloom/published")
+				for _, marker := range markers {
+					present(t, marker)
+				}
+				if got, want := f.raw(f.repo, "rev-parse", "refs/heads/evaloom/published"), f.raw(f.wt, "rev-parse", "HEAD"); got != want {
+					t.Fatalf("positive control pushed %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func (f *fixture) rejectLocalPush(repo string, args ...string) {
+	f.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := safegit.Output(ctx, repo, args...)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || !strings.Contains(string(exit.Stderr), "transport 'file' not allowed") {
+		f.t.Fatalf("local push must be rejected by transport policy: %v", err)
 	}
 }
 
@@ -434,12 +555,16 @@ func TestRemoteCommandsAndExtProtocolDisabled(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := safegit.Output(ctx, f.wt, args...)
-			if key != "protocol.ext.allow" && err != nil {
-				t.Fatalf("safe transport failed: %v", err)
-			}
-			if key == "protocol.ext.allow" && err == nil {
-				t.Fatal("ext protocol accepted")
+			if key == "remote.origin.receivepack" {
+				f.rejectLocalPush(f.wt, args...)
+			} else {
+				_, err := safegit.Output(ctx, f.wt, args...)
+				if key != "protocol.ext.allow" && err != nil {
+					t.Fatalf("safe transport failed: %v", err)
+				}
+				if key == "protocol.ext.allow" && err == nil {
+					t.Fatal("ext protocol accepted")
+				}
 			}
 			absent(t, marker)
 			_, _ = f.rawResult(f.wt, args...)

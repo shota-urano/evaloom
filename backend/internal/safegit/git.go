@@ -22,6 +22,8 @@ import (
 // *exec.ExitError (including Stderr) and context cancellation for errors.As/Is.
 // No shell, user-supplied global options, aliases or external subcommands are
 // accepted. Network authentication must not depend on repository helpers.
+// Push requires a network transport: local receive-pack processes do not inherit
+// the sender's command-line settings and could execute sandbox-written hooks.
 func Output(ctx context.Context, repo string, args ...string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -39,7 +41,7 @@ func Output(ctx context.Context, repo string, args ...string) ([]byte, error) {
 		return nil, err
 	}
 	defer os.RemoveAll(hooks)
-	env := environment(abs)
+	env := environment(abs, args[0])
 	base := []string{"--no-pager", "--no-replace-objects", "-C", abs}
 	for _, setting := range fixedSettings(hooks) {
 		base = append(base, "-c", setting)
@@ -242,13 +244,21 @@ func namedSettings(config []byte) ([]setting, error) {
 	return settings, nil
 }
 
-func environment(repo string) []string {
+func environment(repo, command string) []string {
 	var env []string
 	for _, variable := range os.Environ() {
 		name, _, _ := strings.Cut(variable, "=")
 		if !strings.HasPrefix(name, "GIT_") && name != "SSH_ASKPASS" {
 			env = append(env, variable)
 		}
+	}
+	protocols := "file:git:http:https:ssh"
+	if command == "push" {
+		// Let Git enforce this after resolving remote pushurls and URL rewrites.
+		// A preflight URL check could miss a second pushurl or a rewritten path.
+		// Local receive-pack clears command configuration before reading its own
+		// repository, so the sender's hooksPath cannot secure that child process.
+		protocols = "git:http:https:ssh"
 	}
 	return append(env,
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
@@ -258,7 +268,7 @@ func environment(repo string) []string {
 		"GIT_PROXY_COMMAND=",
 		// Environment enforcement takes precedence over protocol.*.allow, even
 		// after URL rewriting. In particular ext:: and custom helpers cannot run.
-		"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh", "GIT_NO_LAZY_FETCH=1",
+		"GIT_ALLOW_PROTOCOL="+protocols, "GIT_NO_LAZY_FETCH=1",
 		"GIT_CEILING_DIRECTORIES="+filepath.Dir(repo))
 }
 
