@@ -10,8 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/shota-urano/evaloom/backend/internal/safegit"
 )
 
 // The specifications do not set a Git validation deadline. Bound the complete
@@ -251,26 +252,6 @@ func gitError(ctx context.Context, field, reason string) error {
 // These checks only read Git state. Ignore inherited repository/config overrides
 // so an ambient GIT_DIR or GIT_WORK_TREE cannot validate a different repository.
 func repositoryGit(ctx context.Context, repo string, args ...string) (string, error) {
-	gitArgs := []string{"--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repo}
-	cmd := exec.CommandContext(ctx, "git", append(gitArgs, args...)...)
-	// Git starts transport helpers (for example git-remote-http). Killing only
-	// Git leaves a helper holding stdout open, so Output can outlive the deadline.
-	// Phase 1 runs on macOS; cancel the entire Unix process group.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
-	for _, variable := range os.Environ() {
-		if !strings.HasPrefix(variable, "GIT_") {
-			cmd.Env = append(cmd.Env, variable)
-		}
-	}
-	// Do not mistake a parent repository for the directory being registered.
-	cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_CEILING_DIRECTORIES="+filepath.Dir(repo))
-	out, err := cmd.Output()
+	out, err := safegit.Output(ctx, repo, args...)
 	return string(out), err
 }
