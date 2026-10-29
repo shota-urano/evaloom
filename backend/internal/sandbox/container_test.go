@@ -636,6 +636,127 @@ func TestContainerCaseInsensitiveProtectedMounts(t *testing.T) {
 	}
 }
 
+func TestContainerRejectsOverlappingMountSources(t *testing.T) {
+	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+		for _, pair := range [][2]int{{0, 1}, {0, 2}, {1, 2}} {
+			if kind != Harness && pair[1] == 2 {
+				continue // Test sandboxes cannot mount ConfigDir at all.
+			}
+			for _, relation := range []string{"same", "first-contains-second", "second-contains-first"} {
+				for _, spelling := range []string{"literal", "symlink", "case-alias"} {
+					t.Run(fmt.Sprintf("%s/%d-%d/%s/%s", kind, pair[0], pair[1], relation, spelling), func(t *testing.T) {
+						f := newFixture(t, "normal")
+						f.spec.Kind = kind
+						if kind != Harness {
+							f.spec.ConfigDir = ""
+						}
+						// Common allowed roots ensure rejection comes from the mount
+						// overlap check, not the per-source root or protection checks.
+						f.config.WorktreeRoot, f.config.GitDirRoot, f.config.ConfigDirRoot = f.root, f.root, f.root
+						first := filepath.Join(f.root, "shared")
+						second := first
+						switch relation {
+						case "first-contains-second":
+							second = filepath.Join(first, "nested")
+						case "second-contains-first":
+							first = filepath.Join(second, "nested")
+						}
+						for _, dir := range []string{first, second} {
+							if err := os.MkdirAll(dir, 0700); err != nil {
+								t.Fatal(err)
+							}
+						}
+						switch spelling {
+						case "symlink":
+							alias := filepath.Join(f.root, "alias")
+							if err := os.Symlink(second, alias); err != nil {
+								t.Fatal(err)
+							}
+							second = alias
+						case "case-alias":
+							rel, err := filepath.Rel(f.root, second)
+							if err != nil {
+								t.Fatal(err)
+							}
+							alias := filepath.Join(f.root, strings.ToUpper(rel))
+							original, err := os.Stat(second)
+							if err != nil {
+								t.Fatal(err)
+							}
+							alternate, err := os.Stat(alias)
+							if os.IsNotExist(err) {
+								t.Skip("case-sensitive filesystem: alternate spelling does not name the same directory")
+							}
+							if err != nil || !os.SameFile(original, alternate) {
+								t.Fatalf("case alias must identify the same mount source: %v", err)
+							}
+							second = alias
+						}
+						sources := []*string{&f.spec.Worktree, &f.spec.GitDir, &f.spec.ConfigDir}
+						*sources[pair[0]], *sources[pair[1]] = first, second
+						p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+						if p != nil {
+							_ = waitProcess(t, p)
+						}
+						requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
+						var classified *Error
+						if !errors.As(err, &classified) || classified.Op != "overlapping sandbox mounts" {
+							t.Fatalf("mounts must be rejected specifically for overlap: %v", err)
+						}
+						if p != nil || len(f.calls(t)) != 0 {
+							t.Fatal("overlapping mounts reached runtime")
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestContainerAllowsCaseInsensitiveMountRootAliases(t *testing.T) {
+	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+		for _, field := range []string{"worktree", "git", "config"} {
+			if kind != Harness && field == "config" {
+				continue
+			}
+			t.Run(string(kind)+"/"+field, func(t *testing.T) {
+				f := newFixture(t, "normal")
+				f.spec.Kind = kind
+				if kind != Harness {
+					f.spec.ConfigDir = ""
+				}
+				source := map[string]*string{"worktree": &f.spec.Worktree, "git": &f.spec.GitDir, "config": &f.spec.ConfigDir}[field]
+				// Exercise ancestor identity as well as root identity: only the
+				// root component changes case; the source is a nested directory.
+				original := filepath.Join(*source, "execution")
+				if err := os.Mkdir(original, 0700); err != nil {
+					t.Fatal(err)
+				}
+				alias := filepath.Join(f.root, strings.ToUpper(field), "execution")
+				info, err := os.Stat(original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				alternate, err := os.Stat(alias)
+				if os.IsNotExist(err) {
+					t.Skip("case-sensitive filesystem: alternate spelling does not name the same directory")
+				}
+				if err != nil || !os.SameFile(info, alternate) {
+					t.Fatalf("case alias must identify the allowed mount source: %v", err)
+				}
+				*source = alias
+				p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := waitProcess(t, p); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func TestContainerRequiresExplicitConfiguration(t *testing.T) {
 	for _, edit := range []func(*ContainerConfig){
 		func(c *ContainerConfig) { c.RuntimePath = "" },

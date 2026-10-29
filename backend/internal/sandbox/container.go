@@ -133,12 +133,14 @@ func resolve(path string) (string, error) {
 	return real, err
 }
 
-func contains(parent, child string) bool {
+// Target comparisons concern the Linux container namespace, not host filesystem
+// identities. Keep these lexical checks separate from all host path decisions.
+func containsTarget(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func overlaps(a, b string) bool { return contains(a, b) || contains(b, a) }
+func overlapsTargets(a, b string) bool { return containsTarget(a, b) || containsTarget(b, a) }
 
 // containsOnDisk compares filesystem identities, not path spelling. In
 // particular, EvalSymlinks preserves case aliases on case-insensitive macOS
@@ -166,6 +168,13 @@ func containsOnDisk(parent, child string) (bool, error) {
 		}
 		child = next
 	}
+}
+
+func overlapsOnDisk(a, b string) (bool, error) {
+	if contains, err := containsOnDisk(a, b); err != nil || contains {
+		return contains, err
+	}
+	return containsOnDisk(b, a)
 }
 
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string) ([]string, error) {
@@ -207,8 +216,11 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		real, err := resolve(path)
 		info, statErr := os.Stat(path)
 		if err != nil || statErr != nil || !info.IsDir() || path != filepath.Clean(path) || strings.ContainsAny(real, "\x00,\r\n") ||
-			!contains(c.roots[i], real) ||
-			overlaps(path, privateHome) || contains(path, "/tmp") {
+			overlapsTargets(path, privateHome) || containsTarget(path, "/tmp") {
+			return nil, &Error{Op: "unsafe mount source or target"}
+		}
+		withinRoot, err := containsOnDisk(c.roots[i], real)
+		if err != nil || !withinRoot {
 			return nil, &Error{Op: "unsafe mount source or target"}
 		}
 		// Dedicated managed subtrees of HOME remain allowed, but HOME itself
@@ -223,7 +235,8 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 			}
 		}
 		for j, previous := range sources {
-			if overlaps(real, previous) || overlaps(path, targets[j]) {
+			overlap, err := overlapsOnDisk(real, previous)
+			if err != nil || overlap || overlapsTargets(path, targets[j]) {
 				return nil, &Error{Op: "overlapping sandbox mounts"}
 			}
 		}
