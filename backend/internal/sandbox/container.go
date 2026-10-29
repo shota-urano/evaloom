@@ -1,0 +1,245 @@
+package sandbox
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/oklog/ulid/v2"
+)
+
+const privateHome = "/evaloom-home"
+
+// ContainerConfig is trusted Runner wiring, not a Project Registry/API schema.
+// RuntimePath must explicitly select an absolute Docker-compatible CLI. Image
+// must already be installed, Linux-based, contain /usr/bin/env, and declare no
+// VOLUMEs. No runtime/image/resource values are selected implicitly.
+type ContainerConfig struct {
+	RuntimePath string
+	Image       string
+	// RuntimeEnv configures the host CLI only (e.g. an explicit DOCKER_HOST).
+	// It is never forwarded to the container; os.Environ is never inherited.
+	RuntimeEnv map[string]string
+	AllowEnv   []string
+	// These paths must be supplied so an erroneous broad mount fails closed.
+	HostHome, DataDir, RunnerTokenFile string
+	// Until Q1's macOS VM option is decided, such Projects must be rejected.
+	RequiresMacOS bool
+	// Bounds each runtime control command, including Stop/Kill. This is not
+	// the workload deadline and is also supplied explicitly by the caller.
+	ControlTimeout time.Duration
+	// Writers must be safe for concurrent executions and must not block.
+	// Runner owns redaction/persistence; nil discards that stream.
+	Stdout, Stderr io.Writer
+}
+
+type Container struct {
+	config ContainerConfig
+	allow  map[string]bool
+	env    []string
+	home   string
+	data   string
+	token  string
+}
+
+var _ Sandbox = (*Container)(nil)
+
+func NewContainer(config ContainerConfig) (*Container, error) {
+	if !filepath.IsAbs(config.RuntimePath) || strings.ContainsRune(config.RuntimePath, 0) ||
+		config.Image == "" || strings.HasPrefix(config.Image, "-") || strings.ContainsAny(config.Image, "\x00\r\n\t ") ||
+		config.ControlTimeout <= 0 || config.RequiresMacOS {
+		return nil, &Error{Op: "explicit Linux runtime, image and control timeout required"}
+	}
+	c := &Container{config: config, allow: make(map[string]bool)}
+	var err error
+	if c.home, err = resolve(config.HostHome); err != nil {
+		return nil, &Error{Op: "invalid host HOME protection"}
+	}
+	if c.data, err = resolve(config.DataDir); err != nil {
+		return nil, &Error{Op: "invalid data directory protection"}
+	}
+	if c.token, err = resolve(config.RunnerTokenFile); err != nil {
+		return nil, &Error{Op: "invalid Runner token protection"}
+	}
+	for _, key := range config.AllowEnv {
+		if !envName(key) || key == "HOME" {
+			return nil, &Error{Op: "invalid environment allowlist (HOME is sandbox-owned)"}
+		}
+		c.allow[key] = true
+	}
+	for key, value := range config.RuntimeEnv {
+		if !envName(key) || strings.ContainsRune(value, 0) {
+			return nil, &Error{Op: "invalid runtime environment"}
+		}
+		c.env = append(c.env, key+"="+value)
+	}
+	sort.Strings(c.env)
+	if c.config.Stdout == nil {
+		c.config.Stdout = io.Discard
+	}
+	if c.config.Stderr == nil {
+		c.config.Stderr = io.Discard
+	}
+	return c, nil
+}
+
+func envName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, ch := range name {
+		if ch != '_' && (ch < 'A' || ch > 'Z') && (ch < 'a' || ch > 'z') && (i == 0 || ch < '0' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// resolve also handles protected paths which do not exist yet, resolving their
+// nearest existing parent. Mount sources themselves must exist as directories.
+func resolve(path string) (string, error) {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00,\r\n") {
+		return "", os.ErrInvalid
+	}
+	path = filepath.Clean(path)
+	real, err := filepath.EvalSymlinks(path)
+	if os.IsNotExist(err) && path != filepath.Dir(path) {
+		parent, parentErr := resolve(filepath.Dir(path))
+		if parentErr != nil {
+			return "", parentErr
+		}
+		return filepath.Join(parent, filepath.Base(path)), nil
+	}
+	return real, err
+}
+
+func contains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func overlaps(a, b string) bool { return contains(a, b) || contains(b, a) }
+
+func (c *Container) createArgs(spec SandboxSpec, command []string, name string) ([]string, error) {
+	if spec.Kind != Harness && spec.Kind != TestSetup && spec.Kind != TestRun {
+		return nil, &Error{Op: "unsupported sandbox kind"}
+	}
+	if spec.Network != "" && spec.Network != NetworkNone {
+		return nil, &Error{Op: "network policy is not implemented"}
+	}
+	if spec.Limits.CPU <= 0 || math.IsNaN(spec.Limits.CPU) || math.IsInf(spec.Limits.CPU, 0) ||
+		spec.Limits.MemoryBytes <= 0 || spec.Limits.Time <= 0 {
+		return nil, &Error{Op: "positive CPU, memory and wall-time limits required"}
+	}
+	if len(command) == 0 || command[0] == "" || strings.HasPrefix(command[0], "-") || strings.Contains(command[0], "=") {
+		return nil, &Error{Op: "explicit command required"}
+	}
+	for _, arg := range command {
+		if strings.ContainsRune(arg, 0) {
+			return nil, &Error{Op: "invalid command argument"}
+		}
+	}
+	if spec.Worktree == "" || (spec.Kind == Harness && (spec.GitDir == "" || spec.ConfigDir == "")) ||
+		(spec.Kind != Harness && spec.ConfigDir != "") {
+		return nil, &Error{Op: "missing or inappropriate sandbox directories"}
+	}
+	mem := strconv.FormatInt(spec.Limits.MemoryBytes, 10)
+	args := []string{"container", "create", "--name", name, "--pull", "never",
+		"--network", "none", "--read-only", "--cap-drop", "ALL",
+		"--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private",
+		"--cpus", strconv.FormatFloat(spec.Limits.CPU, 'f', -1, 64), "--memory", mem, "--memory-swap", mem,
+		"--init", "--no-healthcheck", "--restart", "no", "--entrypoint", "/usr/bin/env",
+		"--tmpfs", privateHome + ":rw,nosuid,nodev,noexec", "--tmpfs", "/tmp:rw,nosuid,nodev",
+		"--workdir", spec.Worktree}
+	var sources, targets []string
+	for i, path := range []string{spec.Worktree, spec.GitDir, spec.ConfigDir} {
+		if path == "" {
+			continue
+		}
+		real, err := resolve(path)
+		info, statErr := os.Stat(path)
+		if err != nil || statErr != nil || !info.IsDir() || path != filepath.Clean(path) || strings.ContainsAny(real, "\x00,\r\n") ||
+			contains(real, c.home) || overlaps(real, c.data) || overlaps(real, c.token) ||
+			overlaps(path, privateHome) || contains(path, "/tmp") {
+			return nil, &Error{Op: "unsafe mount source or target"}
+		}
+		for j, previous := range sources {
+			if overlaps(real, previous) || overlaps(path, targets[j]) {
+				return nil, &Error{Op: "overlapping sandbox mounts"}
+			}
+		}
+		sources = append(sources, real)
+		targets = append(targets, path)
+		mount := "type=bind,source=" + real + ",target=" + path
+		if i == 2 || (i == 1 && spec.Kind != Harness) {
+			mount += ",readonly"
+		}
+		args = append(args, "--mount", mount)
+	}
+	// env -i removes image ENV as well as host variables. Override the image's
+	// entrypoint; command arguments are passed literally, never through a shell.
+	args = append(args, c.config.Image, "-i", "HOME="+privateHome)
+	var vars []string
+	for key, value := range spec.Env {
+		if c.allow[key] {
+			if strings.ContainsRune(value, 0) {
+				return nil, &Error{Op: "invalid sandbox environment"}
+			}
+			vars = append(vars, key+"="+value)
+		}
+	}
+	sort.Strings(vars)
+	args = append(args, vars...)
+	return append(args, command...), nil
+}
+
+func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string) (Process, error) {
+	name := "evaloom-" + strings.ToLower(ulid.Make().String())
+	args, err := c.createArgs(spec, command, name)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, spec.Limits.Time)
+	fail := func(op string) (Process, error) {
+		cause := ctx.Err()
+		cancel()
+		return nil, &Error{Op: op, Cause: cause}
+	}
+	// Reject implicit mounts from image VOLUMEs and non-Linux toolchains.
+	image, err := c.output(ctx, "image", "inspect", "--format", "{{json .}}", c.config.Image)
+	var metadata struct {
+		OS     string `json:"Os"`
+		Config *struct{ Volumes map[string]json.RawMessage }
+	}
+	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
+		return fail("Linux image without implicit volumes required")
+	}
+	if _, err = c.output(ctx, args...); err != nil {
+		// create cannot run a workload. Remove any partially created container
+		// by its preassigned name, even if its response was lost or timed out.
+		_ = c.remove(name)
+		return fail("container creation failed")
+	}
+	if ctx.Err() != nil {
+		_ = c.remove(name)
+		return fail("container creation interrupted")
+	}
+	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{})}
+	attachCtx, stopAttach := context.WithCancel(context.Background())
+	attach := c.command(attachCtx, "container", "start", "--attach", name)
+	attach.Stdout, attach.Stderr = c.config.Stdout, c.config.Stderr
+	if err := attach.Start(); err != nil {
+		stopAttach()
+		_ = c.remove(name)
+		return fail("container start failed")
+	}
+	go p.supervise(ctx, cancel, attach, stopAttach)
+	return p, nil
+}
