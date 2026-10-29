@@ -572,6 +572,70 @@ func TestContainerProtectedPathsStillRejectedWithinAllowedRoot(t *testing.T) {
 	}
 }
 
+func TestContainerCaseInsensitiveProtectedMounts(t *testing.T) {
+	for _, field := range []string{"worktree", "git", "config"} {
+		for _, protected := range []string{"home", "home-ancestor", "data", "data-child", "data-ancestor", "token-parent", "missing-token-parent"} {
+			t.Run(field+"/"+protected, func(t *testing.T) {
+				f := newFixture(t, "normal")
+				// A common allowed root must not override filesystem identity
+				// or ancestor checks for protected paths.
+				f.config.WorktreeRoot, f.config.GitDirRoot, f.config.ConfigDirRoot = f.root, f.root, f.root
+				path := f.config.HostHome
+				switch protected {
+				case "home-ancestor":
+					path = filepath.Join(f.root, "personal")
+					f.config.HostHome = filepath.Join(path, "home")
+				case "data":
+					path = f.config.DataDir
+				case "data-child":
+					path = filepath.Join(f.config.DataDir, "logs")
+				case "data-ancestor":
+					path = filepath.Join(f.root, "state")
+					f.config.DataDir = filepath.Join(path, "data")
+				case "token-parent", "missing-token-parent":
+					path = filepath.Join(f.root, "credentials")
+					f.config.RunnerTokenFile = filepath.Join(path, "runner-token")
+				}
+				for _, dir := range []string{path, f.config.HostHome, f.config.DataDir} {
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if protected == "token-parent" {
+					if err := os.WriteFile(f.config.RunnerTokenFile, []byte("secret"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Change every component below the common root, including the
+				// protected ancestor in data-child. EvalSymlinks does not
+				// normalize this spelling on case-insensitive macOS volumes.
+				rel, err := filepath.Rel(f.root, path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				alias := filepath.Join(f.root, strings.ToUpper(rel))
+				original, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				alternate, err := os.Stat(alias)
+				if os.IsNotExist(err) {
+					t.Skip("case-sensitive filesystem: alternate spelling does not name the same directory")
+				}
+				if err != nil || !os.SameFile(original, alternate) {
+					t.Fatalf("case alias must identify the protected directory: %v", err)
+				}
+				*map[string]*string{"worktree": &f.spec.Worktree, "git": &f.spec.GitDir, "config": &f.spec.ConfigDir}[field] = alias
+				p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+				requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
+				if p != nil || len(f.calls(t)) != 0 {
+					t.Fatal("case alias of protected mount reached runtime")
+				}
+			})
+		}
+	}
+}
+
 func TestContainerRequiresExplicitConfiguration(t *testing.T) {
 	for _, edit := range []func(*ContainerConfig){
 		func(c *ContainerConfig) { c.RuntimePath = "" },

@@ -140,6 +140,34 @@ func contains(parent, child string) bool {
 
 func overlaps(a, b string) bool { return contains(a, b) || contains(b, a) }
 
+// containsOnDisk compares filesystem identities, not path spelling. In
+// particular, EvalSymlinks preserves case aliases on case-insensitive macOS
+// volumes. Walk existing ancestors even if a protected path does not exist yet.
+// Both paths have already been resolved by resolve.
+func containsOnDisk(parent, child string) (bool, error) {
+	parentInfo, err := os.Stat(parent)
+	if os.IsNotExist(err) {
+		return false, nil // An absent parent cannot contain an existing mount.
+	}
+	if err != nil {
+		return false, err
+	}
+	for {
+		childInfo, err := os.Stat(child)
+		if err == nil && os.SameFile(parentInfo, childInfo) {
+			return true, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return false, err
+		}
+		next := filepath.Dir(child)
+		if next == child {
+			return false, nil
+		}
+		child = next
+	}
+}
+
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string) ([]string, error) {
 	if spec.Kind != Harness && spec.Kind != TestSetup && spec.Kind != TestRun {
 		return nil, &Error{Op: "unsupported sandbox kind"}
@@ -180,9 +208,19 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		info, statErr := os.Stat(path)
 		if err != nil || statErr != nil || !info.IsDir() || path != filepath.Clean(path) || strings.ContainsAny(real, "\x00,\r\n") ||
 			!contains(c.roots[i], real) ||
-			contains(real, c.home) || overlaps(real, c.data) || overlaps(real, c.token) ||
 			overlaps(path, privateHome) || contains(path, "/tmp") {
 			return nil, &Error{Op: "unsafe mount source or target"}
+		}
+		// Dedicated managed subtrees of HOME remain allowed, but HOME itself
+		// and its ancestors must never be mounted. Data/token protection is
+		// bidirectional and cannot be overridden by a broad allowed root.
+		for _, pair := range [][2]string{
+			{real, c.home}, {real, c.data}, {c.data, real}, {real, c.token}, {c.token, real},
+		} {
+			protected, err := containsOnDisk(pair[0], pair[1])
+			if err != nil || protected {
+				return nil, &Error{Op: "unsafe mount source or target"}
+			}
 		}
 		for j, previous := range sources {
 			if overlaps(real, previous) || overlaps(path, targets[j]) {
