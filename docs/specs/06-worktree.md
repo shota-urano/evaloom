@@ -54,7 +54,7 @@ status: confirmed
 | A. Evaloom の作業用クローン | Project ごとに Worktree Root 配下へ Git Repository URL からクローンを作り、そこから worktree を作る。本人のローカルリポジトリはコピー許可リストの読み取り元としてだけ使う | 推奨。ハーネスが書き込める Git 領域が本人のリポジトリと分かれる |
 | B. 本人のローカルリポジトリ | Local Repository Path から直接 worktree を作る | worktree は `.git` を共有するため、ハーネスが本人のブランチの ref や設定を書き換えられる |
 
-requirements 15.4 は「通常のローカルリポジトリを直接変更せず、専用 worktree を使用する」としている。B では worktree 経由で本人のリポジトリの Git 領域が変更されうるため、A を推奨する。採否は本人が決める（Q27）。
+requirements 15.4 は「通常のローカルリポジトリを直接変更せず、専用 worktree を使用する」としている。B では worktree 経由で本人のリポジトリの Git 領域が変更されうるため、A を推奨した。本人が A に決めた（Q27、2026-10-29）。
 
 #### 3.2.1 ブランチ名
 
