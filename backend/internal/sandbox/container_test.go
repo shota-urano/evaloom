@@ -91,6 +91,51 @@ func TestRuntimeHelper(t *testing.T) {
 		}
 		os.Exit(0)
 	}
+	if args[0] == "volume" {
+		fmt.Print("volume")
+		os.Exit(0)
+	}
+	if args[1] == "exec" {
+		if mode == "network-check-fail" {
+			fail()
+		}
+		fmt.Print("ready")
+		os.Exit(0)
+	}
+	name := args[len(args)-1]
+	if index := slices.Index(args, "--name"); index >= 0 {
+		name = args[index+1]
+	}
+	if strings.HasSuffix(name, "-ingress") || strings.HasSuffix(name, "-egress") {
+		switch args[1] {
+		case "create":
+			if mode == "network-create-fail" {
+				fail()
+			}
+			data, _ := json.Marshal(args)
+			write(name, string(data))
+		case "start":
+			if mode == "network-start-fail" {
+				fail()
+			}
+		case "inspect":
+			if mode == "network-inspect-fail" {
+				fail()
+			}
+			network := "bridge"
+			if strings.HasSuffix(name, "-ingress") {
+				network = "none"
+			}
+			if mode == "network-wrong-namespace" {
+				network = "host"
+			}
+			fmt.Printf(`{"State":{"Running":%t},"HostConfig":{"NetworkMode":%q},"NetworkSettings":{"Networks":{%q:{}}}}`, mode != "network-not-running", network, network)
+		case "rm", "ls":
+		default:
+			fail()
+		}
+		os.Exit(0)
+	}
 	switch args[1] {
 	case "create":
 		if mode == "create-fail" {
