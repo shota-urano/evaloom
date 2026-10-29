@@ -19,11 +19,14 @@ const (
 	TestRun   SandboxKind = "test_run"
 )
 
-// NetworkPolicy's zero value denies all networking. Destination allowlists
-// belong to evaloom-6n2.3; all other policies currently fail closed.
+// NetworkPolicy's zero value denies all networking, for every Kind.
 type NetworkPolicy string
 
-const NetworkNone NetworkPolicy = "none"
+const (
+	NetworkNone    NetworkPolicy = "none"
+	NetworkHarness NetworkPolicy = "harness"
+	NetworkSetup   NetworkPolicy = "setup"
+)
 
 // ResourceLimits are supplied by the trusted caller. There are no Q15 defaults.
 // CPU is a quota in CPUs, MemoryBytes includes swap, and Time is wall time,
@@ -41,7 +44,10 @@ type SandboxSpec struct {
 	ConfigDir string
 	Env       map[string]string
 	Network   NetworkPolicy
-	Limits    ResourceLimits
+	// Exact DNS host:port destinations, supplied by trusted Runner wiring.
+	// This is not a Project Registry or public HTTP API field.
+	AllowedDestinations []string
+	Limits              ResourceLimits
 }
 
 type Sandbox interface {

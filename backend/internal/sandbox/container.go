@@ -7,12 +7,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
 const privateHome = "/evaloom-home"
@@ -24,6 +26,9 @@ const privateHome = "/evaloom-home"
 type ContainerConfig struct {
 	RuntimePath string
 	Image       string
+	// Explicit trusted Linux helper binary and sidecar image, both prebuilt.
+	// Unused for NetworkNone. The binary is mounted into sidecars only.
+	ProxyImage, ProxyBinary string
 	// RuntimeEnv configures the host CLI only (e.g. an explicit DOCKER_HOST).
 	// It is never forwarded to the container; os.Environ is never inherited.
 	RuntimeEnv map[string]string
@@ -181,8 +186,8 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 	if spec.Kind != Harness && spec.Kind != TestSetup && spec.Kind != TestRun {
 		return nil, &Error{Op: "unsupported sandbox kind"}
 	}
-	if spec.Network != "" && spec.Network != NetworkNone {
-		return nil, &Error{Op: "network policy is not implemented"}
+	if err := c.validateNetwork(spec); err != nil {
+		return nil, err
 	}
 	if spec.Limits.CPU <= 0 || math.IsNaN(spec.Limits.CPU) || math.IsInf(spec.Limits.CPU, 0) ||
 		spec.Limits.MemoryBytes <= 0 || spec.Limits.Time <= 0 {
@@ -262,6 +267,13 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 	}
 	sort.Strings(vars)
 	args = append(args, vars...)
+	if spec.Network == NetworkHarness || spec.Network == NetworkSetup {
+		// Sandbox-owned settings override both image ENV and caller values.
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			args = append(args, key+"="+sandboxproxy.URL)
+		}
+		args = append(args, "NO_PROXY=", "no_proxy=")
+	}
 	return append(args, command...), nil
 }
 
@@ -277,6 +289,13 @@ func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string)
 		cancel()
 		return nil, &Error{Op: op, Cause: cause}
 	}
+	var network *networkResources
+	started := false
+	defer func() {
+		if !started && network != nil {
+			network.cleanup()
+		}
+	}()
 	// Reject implicit mounts from image VOLUMEs and non-Linux toolchains.
 	image, err := c.output(ctx, "image", "inspect", "--format", "{{json .}}", c.config.Image)
 	var metadata struct {
@@ -285,6 +304,15 @@ func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string)
 	}
 	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
 		return fail("Linux image without implicit volumes required")
+	}
+	if spec.Network == NetworkHarness || spec.Network == NetworkSetup {
+		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
+		if err := network.prepare(ctx, spec); err != nil {
+			return fail("network isolation unconfirmed")
+		}
+		// createArgs always starts with network none; only this trusted path
+		// may substitute a namespace whose complete proxy path was confirmed.
+		args[slices.Index(args, "--network")+1] = "container:" + network.ingress
 	}
 	if _, err = c.output(ctx, args...); err != nil {
 		// create cannot run a workload. Remove any partially created container
@@ -296,7 +324,7 @@ func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string)
 		_ = c.remove(name)
 		return fail("container creation interrupted")
 	}
-	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{})}
+	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{}), network: network}
 	attachCtx, stopAttach := context.WithCancel(context.Background())
 	attach := c.command(attachCtx, "container", "start", "--attach", name)
 	attach.Stdout, attach.Stderr = c.config.Stdout, c.config.Stderr
@@ -306,5 +334,6 @@ func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string)
 		return fail("container start failed")
 	}
 	go p.supervise(ctx, cancel, attach, stopAttach)
+	started = true
 	return p, nil
 }
