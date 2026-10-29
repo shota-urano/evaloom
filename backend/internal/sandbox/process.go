@@ -58,6 +58,7 @@ type containerProcess struct {
 	err         error // Published by closing done.
 	exitCode    int
 	exitCodeSet bool
+	network     *networkResources
 }
 
 func (p *containerProcess) Wait() error {
@@ -132,6 +133,9 @@ func (s containerState) stopped() bool {
 
 func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelFunc, attach *exec.Cmd, stopAttach context.CancelFunc) {
 	defer close(p.done)
+	if p.network != nil {
+		defer p.network.cleanup()
+	}
 	defer cancel()
 	defer stopAttach()
 	cliDone := make(chan error, 1)
