@@ -115,8 +115,8 @@ type containerState struct {
 	Error     string
 }
 
-func (p *containerProcess) state() (containerState, error) {
-	out, err := p.container.output(context.Background(), "container", "inspect", "--format", "{{json .State}}", p.name)
+func (p *containerProcess) state(ctx context.Context) (containerState, error) {
+	out, err := p.container.output(ctx, "container", "inspect", "--format", "{{json .State}}", p.name)
 	var state containerState
 	if err != nil || json.Unmarshal(out, &state) != nil {
 		return state, &Error{Op: "container state unconfirmed"}
@@ -146,7 +146,10 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 		interrupted = true
 	}
 	if !interrupted {
-		state, err := p.state()
+		// The attach client may exit while the workload is still running.
+		// Inspection must yield at the execution deadline so it cannot delay
+		// the first forced removal until the control-command timeout.
+		state, err := p.state(ctx)
 		switch {
 		case err != nil || !state.stopped():
 			p.err = &Error{Op: "container execution state unconfirmed"}
@@ -170,7 +173,9 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 		if err := p.Kill(); err == nil {
 			break
 		}
-		if state, err := p.state(); err == nil && state.stopped() {
+		// Cleanup needs a fresh control deadline after the execution expires:
+		// Wait must still confirm removal or a terminal container state.
+		if state, err := p.state(context.Background()); err == nil && state.stopped() {
 			p.err = &Error{Op: "stopped container cleanup failed"}
 			break
 		}

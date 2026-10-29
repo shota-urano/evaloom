@@ -105,6 +105,11 @@ func TestRuntimeHelper(t *testing.T) {
 		if mode == "start-fail" {
 			fail()
 		}
+		if mode == "slow-inspect" {
+			// The test owns/reaps a separate running workload. The attach
+			// client exits early without implying the container has stopped.
+			os.Exit(0)
+		}
 		if mode == "sleep" {
 			worker := exec.Command(os.Args[0], "-test.run=^TestRuntimeHelper$", "--", "workload")
 			worker.Env = os.Environ()
@@ -133,6 +138,10 @@ func TestRuntimeHelper(t *testing.T) {
 			write("exited", "yes")
 		}
 	case "inspect":
+		if mode == "slow-inspect" {
+			write("inspecting", "yes")
+			time.Sleep(3 * time.Second)
+		}
 		if mode == "inspect-fail" {
 			fail()
 		}
@@ -216,6 +225,7 @@ func newFixture(t *testing.T, mode string) *fixture {
 	}
 	f.config = ContainerConfig{
 		RuntimePath: wrapper, Image: "test-image:explicit", ControlTimeout: 2 * time.Second,
+		WorktreeRoot: filepath.Join(root, "worktree"), GitDirRoot: filepath.Join(root, "git"), ConfigDirRoot: filepath.Join(root, "config"),
 		HostHome: filepath.Join(root, "home"), DataDir: filepath.Join(root, "data"), RunnerTokenFile: filepath.Join(root, "runner-token"),
 		AllowEnv:   []string{"PATH", "LANG", "CODEX_HOME"},
 		RuntimeEnv: map[string]string{"SANDBOX_FAKE_ROOT": filepath.Join(root, "runtime"), "SANDBOX_FAKE_MODE": mode, "GORACE": "atexit_sleep_ms=0"},
@@ -430,6 +440,138 @@ func TestContainerRejectsUnsafeSpecsBeforeInvokingRuntime(t *testing.T) {
 	}
 }
 
+func TestContainerRejectsMountRootEscapes(t *testing.T) {
+	for _, field := range []string{"worktree", "git", "config"} {
+		for _, escape := range []string{"home-credentials-symlink", "outside-direct", "root-prefix-sibling", "other-root-symlink"} {
+			t.Run(field+"/"+escape, func(t *testing.T) {
+				f := newFixture(t, "normal")
+				source := map[string]*string{"worktree": &f.spec.Worktree, "git": &f.spec.GitDir, "config": &f.spec.ConfigDir}[field]
+				root := *source
+				outside := filepath.Join(f.root, "outside")
+				switch escape {
+				case "home-credentials-symlink":
+					outside = filepath.Join(f.config.HostHome, ".ssh")
+				case "root-prefix-sibling":
+					outside = root + "-sibling"
+				case "other-root-symlink":
+					outside = f.spec.Worktree
+					if field == "worktree" {
+						outside = f.spec.GitDir
+					}
+				}
+				if err := os.MkdirAll(outside, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if strings.HasSuffix(escape, "symlink") {
+					link := filepath.Join(root, "escape")
+					if err := os.Symlink(outside, link); err != nil {
+						t.Fatal(err)
+					}
+					*source = link
+				} else {
+					*source = outside
+				}
+				p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+				requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
+				if p != nil || len(f.calls(t)) != 0 {
+					t.Fatal("mount outside its allowed root reached the runtime")
+				}
+			})
+		}
+	}
+}
+
+func TestContainerAllowsManagedHomeSubtrees(t *testing.T) {
+	for _, aliases := range []bool{false, true} {
+		t.Run(fmt.Sprintf("symlinks=%t", aliases), func(t *testing.T) {
+			f := newFixture(t, "normal")
+			var expected []string
+			for i, pair := range []struct{ root, source *string }{
+				{&f.config.WorktreeRoot, &f.spec.Worktree},
+				{&f.config.GitDirRoot, &f.spec.GitDir},
+				{&f.config.ConfigDirRoot, &f.spec.ConfigDir},
+			} {
+				root := filepath.Join(f.config.HostHome, "evaloom-managed", strconv.Itoa(i))
+				real := filepath.Join(root, "execution")
+				if err := os.MkdirAll(real, 0700); err != nil {
+					t.Fatal(err)
+				}
+				*pair.root, *pair.source = root, real
+				if aliases {
+					// Canonicalize both the allowed root and the mount source,
+					// while preserving the original target spelling for Git.
+					*pair.root = filepath.Join(f.root, fmt.Sprintf("root-alias-%d", i))
+					*pair.source = filepath.Join(f.root, fmt.Sprintf("source-alias-%d", i))
+					if err := os.Symlink(root, *pair.root); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(real, *pair.source); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mount := "type=bind,source=" + real + ",target=" + *pair.source
+				if i == 2 {
+					mount += ",readonly"
+				}
+				expected = append(expected, mount)
+			}
+			p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := waitProcess(t, p); err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range f.calls(t) {
+				if slices.Contains(call.Args, "create") {
+					var mounts []string
+					for i, arg := range call.Args {
+						if arg == "--mount" {
+							mounts = append(mounts, call.Args[i+1])
+						}
+					}
+					if !slices.Equal(mounts, expected) {
+						t.Fatalf("managed HOME mounts=%v; want %v", mounts, expected)
+					}
+					return
+				}
+			}
+			t.Fatal("container was not created")
+		})
+	}
+}
+
+func TestContainerProtectedPathsStillRejectedWithinAllowedRoot(t *testing.T) {
+	for _, field := range []string{"worktree", "git", "config"} {
+		for _, protected := range []string{"home", "home-ancestor", "data-child", "token-parent"} {
+			t.Run(field+"/"+protected, func(t *testing.T) {
+				f := newFixture(t, "normal")
+				// Even a broad caller allowlist cannot override the denylist.
+				f.config.WorktreeRoot, f.config.GitDirRoot, f.config.ConfigDirRoot = f.root, f.root, f.root
+				path := f.config.HostHome
+				switch protected {
+				case "home-ancestor":
+					path = f.root
+				case "data-child":
+					path = filepath.Join(f.config.DataDir, "logs")
+				case "token-parent":
+					path = filepath.Join(f.root, "credentials")
+					f.config.RunnerTokenFile = filepath.Join(path, "runner-token")
+				}
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				*map[string]*string{"worktree": &f.spec.Worktree, "git": &f.spec.GitDir, "config": &f.spec.ConfigDir}[field] = path
+				p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+				requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
+				if p != nil || len(f.calls(t)) != 0 {
+					t.Fatal("protected mount reached runtime despite denylist")
+				}
+			})
+		}
+	}
+}
+
 func TestContainerRequiresExplicitConfiguration(t *testing.T) {
 	for _, edit := range []func(*ContainerConfig){
 		func(c *ContainerConfig) { c.RuntimePath = "" },
@@ -440,6 +582,10 @@ func TestContainerRequiresExplicitConfiguration(t *testing.T) {
 		func(c *ContainerConfig) { c.HostHome = "" },
 		func(c *ContainerConfig) { c.DataDir = "" },
 		func(c *ContainerConfig) { c.RunnerTokenFile = "" },
+		func(c *ContainerConfig) { c.WorktreeRoot = "" },
+		func(c *ContainerConfig) { c.GitDirRoot = "relative" },
+		func(c *ContainerConfig) { c.ConfigDirRoot += "-missing" },
+		func(c *ContainerConfig) { c.WorktreeRoot = c.RuntimePath },
 		func(c *ContainerConfig) { c.RequiresMacOS = true },
 		func(c *ContainerConfig) { c.AllowEnv = []string{"HOME"} },
 		func(c *ContainerConfig) { c.AllowEnv = []string{"BAD=NAME"} },
@@ -586,6 +732,72 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 				t.Fatal("stop/kill after completion failed")
 			}
 		})
+	}
+}
+
+func TestContainerDeadlineWhileInspectBlocks(t *testing.T) {
+	f := newFixture(t, "slow-inspect")
+	f.spec.Limits.Time = time.Second
+	f.config.ControlTimeout = 5 * time.Second
+	// A separate process group stands in for a daemon-owned container. This
+	// test owns the reaper so an early attach exit cannot stop/reap it for us.
+	worker := exec.Command(os.Args[0], "-test.run=^TestRuntimeHelper$", "--", "workload")
+	for key, value := range f.config.RuntimeEnv {
+		worker.Env = append(worker.Env, key+"="+value)
+	}
+	worker.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	workerDone := make(chan error, 1)
+	go func() { workerDone <- worker.Wait() }()
+	t.Cleanup(func() {
+		_ = syscall.Kill(-worker.Process.Pid, syscall.SIGTERM)
+		select {
+		case <-workerDone:
+		case <-time.After(5 * time.Second):
+			_ = syscall.Kill(-worker.Process.Pid, syscall.SIGKILL)
+			<-workerDone
+		}
+	})
+	runtimeDir := filepath.Join(f.root, "runtime")
+	if err := os.WriteFile(filepath.Join(runtimeDir, "workload.pid"), []byte(strconv.Itoa(worker.Process.Pid)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, filepath.Join(runtimeDir, "ready"))
+	leafData, err := os.ReadFile(filepath.Join(runtimeDir, "leaf.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := strconv.Atoi(string(leafData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/untrusted/workload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Kill(); _ = waitProcess(t, p) })
+	waitForFile(t, filepath.Join(runtimeDir, "inspecting"))
+	if syscall.Kill(worker.Process.Pid, 0) != nil || syscall.Kill(leaf, 0) != nil {
+		t.Fatal("workload must be alive while initial inspection blocks")
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.Wait() }()
+	select {
+	case err := <-done:
+		requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) < f.spec.Limits.Time {
+			t.Fatalf("lost wall-time deadline: %v (%v)", time.Since(start), err)
+		}
+	case <-time.After(time.Until(start.Add(2 * time.Second))):
+		t.Fatalf("inspection delayed workload stop beyond 1s limit: elapsed=%v", time.Since(start))
+	}
+	for _, pid := range []int{worker.Process.Pid, leaf} {
+		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+			t.Fatalf("process %d survived deadline during inspection: %v", pid, err)
+		}
 	}
 }
 

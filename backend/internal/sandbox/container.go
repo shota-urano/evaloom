@@ -28,6 +28,10 @@ type ContainerConfig struct {
 	// It is never forwarded to the container; os.Environ is never inherited.
 	RuntimeEnv map[string]string
 	AllowEnv   []string
+	// Trusted, dedicated roots for the corresponding mount sources. Sources
+	// must resolve within these roots; a path supplied in SandboxSpec cannot
+	// authorize its own mount. Roots are canonicalized once at construction.
+	WorktreeRoot, GitDirRoot, ConfigDirRoot string
 	// These paths must be supplied so an erroneous broad mount fails closed.
 	HostHome, DataDir, RunnerTokenFile string
 	// Until Q1's macOS VM option is decided, such Projects must be rejected.
@@ -47,6 +51,7 @@ type Container struct {
 	home   string
 	data   string
 	token  string
+	roots  [3]string
 }
 
 var _ Sandbox = (*Container)(nil)
@@ -67,6 +72,14 @@ func NewContainer(config ContainerConfig) (*Container, error) {
 	}
 	if c.token, err = resolve(config.RunnerTokenFile); err != nil {
 		return nil, &Error{Op: "invalid Runner token protection"}
+	}
+	for i, root := range []string{config.WorktreeRoot, config.GitDirRoot, config.ConfigDirRoot} {
+		real, err := resolve(root)
+		info, statErr := os.Stat(real)
+		if err != nil || statErr != nil || !info.IsDir() {
+			return nil, &Error{Op: "explicit mount roots must be existing absolute directories"}
+		}
+		c.roots[i] = real
 	}
 	for _, key := range config.AllowEnv {
 		if !envName(key) || key == "HOME" {
@@ -166,6 +179,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		real, err := resolve(path)
 		info, statErr := os.Stat(path)
 		if err != nil || statErr != nil || !info.IsDir() || path != filepath.Clean(path) || strings.ContainsAny(real, "\x00,\r\n") ||
+			!contains(c.roots[i], real) ||
 			contains(real, c.home) || overlaps(real, c.data) || overlaps(real, c.token) ||
 			overlaps(path, privateHome) || contains(path, "/tmp") {
 			return nil, &Error{Op: "unsafe mount source or target"}
