@@ -43,6 +43,7 @@ Git の alias、外部サブコマンド、グローバルオプションは受�
 - 引数と PATH は信頼できるアプリケーション側で組み立てる。
 - Sandbox の書き込みプロセスを停止してから呼ぶ。設定の列挙と Git 実行の間に、別のプロセスが設定や include 先を変更する競合は、このラッパーだけでは排除できない。
 - Git 領域へのアクセス制限、パス、remote の宛先、ref と commit の検証は、それぞれの担当処理で行う。
+- 作業用クローンから登録URLへfetchするときは、`ValidateFetchURL`で取得元の変更設定を事前に拒否する。同名remote、`url.*.insteadOf`、`fetch.bundleURI`をincludeや有効なconfig.worktreeも含めて検査する。旧形式のremote定義とパスの検査は呼び出し元が行う。検査からfetch終了までSandboxの書き込みを停止しておく。
 - Git Publisher の認証方式は Q29 の担当範囲で決める。リポジトリ内の credential helper を復活させて認証しない。
 
 ## 検証

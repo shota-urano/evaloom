@@ -92,8 +92,9 @@ func (r Repositories) Prepare(ctx context.Context, projectID, repositoryURL stri
 		if err := validateClone(ctx, root, repository, repositoryURL); err != nil {
 			return "", err
 		}
-		// Supply the registered URL and refspec explicitly. Do not trust a
-		// harness-written remote URL or fetch refspec (which could target heads).
+		// validateClone rejects URL aliases/rewrites before dispatch. A URL
+		// argument alone is insufficient: Git can treat it as a remote name.
+		// Keep the refspec explicit so config cannot redirect updates to heads.
 		_, err = transport.Output(ctx, repository, "fetch", "--no-tags", "--refmap=", "--", repositoryURL,
 			"+refs/heads/*:refs/remotes/origin/*")
 		if err != nil {
@@ -197,6 +198,16 @@ func validateClone(ctx context.Context, root, repository, repositoryURL string) 
 		if _, err := os.Lstat(filepath.Join(repository, ".git", "objects", "info", name)); !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("worktree: shared object stores are not allowed")
 		}
+	}
+	// Git also accepts legacy remote definitions outside config, including
+	// scp-like URL names. Our standalone clones never need these directories.
+	for _, name := range []string{"remotes", "branches"} {
+		if _, err := os.Lstat(filepath.Join(repository, ".git", name)); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("worktree: legacy remote definitions are not allowed")
+		}
+	}
+	if err := safegit.ValidateFetchURL(ctx, repository, repositoryURL); err != nil {
+		return operationError(ctx, "validate fetch destination")
 	}
 	for _, query := range []struct {
 		args []string

@@ -288,6 +288,92 @@ func TestPrepareRejectsChangedOrigin(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsFetchDestinationOverrides(t *testing.T) {
+	for _, source := range []string{"config", "include", "conditional-include", "worktree-config", "url-rewrite", "legacy-remotes", "legacy-branches", "bundle-uri"} {
+		t.Run(source, func(t *testing.T) {
+			f := newRemote(t)
+			transport := &recordingTransport{}
+			r := Repositories{WorktreeRoot: t.TempDir(), Transport: transport}
+			ctx := context.Background()
+			repository, err := r.Prepare(ctx, "project-a", f.url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(repository, ".git", "config")
+			data, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Origin still resolves to the registered URL. A URL argument to
+			// fetch can nevertheless select a remote of that exact name.
+			payload := fmt.Sprintf("\n[ReMoTe %q]\nUrL = %s\n", f.url, f.owner)
+			switch source {
+			case "config":
+				write(t, config, string(data)+payload)
+			case "include", "conditional-include":
+				included := filepath.Join(repository, ".git", "included.config")
+				write(t, included, payload)
+				section := "include"
+				if source == "conditional-include" {
+					section = `includeIf "gitdir:/never-matches/"`
+				}
+				write(t, config, string(data)+"\n["+section+"]\npath = included.config\n")
+			case "worktree-config":
+				write(t, config, string(data)+"\n[extensions]\nworktreeConfig = true\n")
+				write(t, filepath.Join(repository, ".git", "config.worktree"), payload)
+			case "url-rewrite":
+				// get-url only rewrites once: hide the malicious rewrite behind
+				// a second rule that makes origin resolve to the registered URL.
+				git(t, repository, "remote", "set-url", "origin", "https://alias.invalid/repo")
+				data, err = os.ReadFile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(t, config, string(data)+fmt.Sprintf("\n[url %q]\ninsteadOf = https://alias.invalid/repo\n[url %q]\ninsteadOf = %s\n", f.url, f.owner, f.url))
+			case "legacy-remotes", "legacy-branches":
+				kind := strings.TrimPrefix(source, "legacy-")
+				name := filepath.Join(repository, ".git", kind, f.url)
+				if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+					t.Fatal(err)
+				}
+				content := f.owner + "#main\n"
+				if kind == "remotes" {
+					content = "URL: " + f.owner + "\nPull: refs/heads/main:refs/remotes/origin/main\n"
+				}
+				write(t, name, content)
+			case "bundle-uri":
+				write(t, config, string(data)+"\n[fetch]\nbundleURI = "+f.owner+"\n")
+			}
+			if got := git(t, repository, "remote", "get-url", "origin"); got != f.url {
+				t.Fatalf("test setup changed origin resolution: %q", got)
+			}
+			ownerConfig := filepath.Join(f.owner, ".git", "config")
+			ownerData, err := os.ReadFile(ownerConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, ownerConfig, string(ownerData)+"\n[user]\nname = Owner\nemail = owner@example.invalid\n")
+			git(t, f.owner, "commit", "-m", "owner-only commit")
+			ownerSHA := git(t, f.owner, "rev-parse", "HEAD")
+			ownerBefore := snapshot(t, f.owner)
+			cloneBefore := snapshot(t, repository)
+			path, err := r.Prepare(ctx, "project-a", f.url)
+			if err == nil || path != "" || !reflect.DeepEqual(transport.commands, []string{"clone"}) {
+				t.Errorf("destination override accepted: path=%q, err=%v, commands=%v", path, err, transport.commands)
+			}
+			if !reflect.DeepEqual(ownerBefore, snapshot(t, f.owner)) {
+				t.Error("owner repository changed")
+			}
+			if !reflect.DeepEqual(cloneBefore, snapshot(t, repository)) {
+				t.Error("rejected clone changed")
+			}
+			if _, err := safegit.Output(ctx, repository, "cat-file", "-e", ownerSHA); err == nil {
+				t.Error("fetch imported an object from the owner's local repository")
+			}
+		})
+	}
+}
+
 func TestPrepareResolvesWorktreeRootSymlink(t *testing.T) {
 	f := newRemote(t)
 	real := t.TempDir()
