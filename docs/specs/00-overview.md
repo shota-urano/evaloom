@@ -222,7 +222,7 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q26 | worktree のクリーンアップの契機（自動か本人の操作か） | PR がマージ・クローズ済みでタスクが終端状態なら削除してよい案。ブランチは残す | 06 |
 | Q27 | worktree の元を本人のローカルリポジトリにするか、Evaloom の作業用クローンにするか | 決定（2026-10-29）: 作業用クローン（06 の 3.2.2 の A）。worktree は `.git` を共有するため、ハーネスが本人のリポジトリの ref や設定を書き換えられる | 06, 09 |
 | Q28 | setup とテスト実行のネットワークポリシー（パッケージレジストリをどこまで許可するか） | 決定（2026-10-29）: setup はプロジェクトごとに登録した宛先だけ許可、テスト実行は全遮断 | 09 |
-| Q29 | Git Publisher の GitHub 認証方式（fine-grained token / GitHub App） | 対象リポジトリに限った権限。マージの防止は GitHub 側のベースブランチ保護で行う | 11 |
+| Q29 | Git Publisher の GitHub 認証方式（fine-grained token / GitHub App） | 決定（2026-10-30）: GitHub App（evaloom-publisher）。対象リポジトリだけにインストールし、権限は contents と pull_requests の write、metadata の read に限る。マージの防止は GitHub 側のルールセットで行う（11 の 3.5） | 11 |
 | Q30 | 開始点で既存テストの基準値を取るための実行が、requirements 8.5 の「既存テストを別に固定して再実行する仕組みは作らない」に反しないか | 反しないと解釈した（Gate 2 の後の再実行ではないため）。本人の確認が要る | 10 |
 | Q31 | ハーネスが commit を1つも作らなかった場合の扱い | failed（execution_failed、理由「変更なし」）の案 | 05 |
 | Q32 | fresh で再実行するときに前の PR が開いていたら、Evaloom が自動でクローズするか | 自動ではクローズせず Blocked にして本人に整理を求める案 | 11 |

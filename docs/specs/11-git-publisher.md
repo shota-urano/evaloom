@@ -85,13 +85,31 @@ Runner は準備の段階（[`05-runner.md`](./05-runner.md) 工程2）で、前
 
 | 対策 | 内容 | 担当 |
 |---|---|---|
-| 認証情報の範囲 | Git Publisher の認証情報は対象リポジトリに限る。方式（fine-grained token / GitHub App）は実装時に確定（Q29） | 本人 + Backend |
+| 認証情報の範囲 | Git Publisher の認証情報は対象リポジトリに限る。方式は GitHub App とする（Q29、2026-10-30 決定）。App は対象リポジトリだけにインストールし、権限は contents と pull_requests の write、metadata の read だけを与える。administration、statuses、checks は与えない | 本人 + Backend |
 | 認証情報の置き場所 | Git Publisher の中だけで使う。worktree、Sandbox、ログに出さない | Backend |
 | マージをしない | Git Publisher にマージの処理を持たせない | Backend |
-| ベースブランチを更新させない | GitHub のブランチ保護またはルールセットで、ベースブランチの更新とマージを本人だけに許す。push できる認証情報は PR のマージにも使えるため、コードの作りだけに頼らず GitHub 側の権限で拒否する | 本人 |
+| ベースブランチを更新させない | GitHub のルールセットで、ベースブランチの更新とマージを本人だけに許す。push できる認証情報は PR のマージにも使えるため、コードの作りだけに頼らず GitHub 側の権限で拒否する。設定内容は 3.5.1 | 本人 |
 | PR の CI | PR の最新 commit に対して CI を実行し、必須ステータスチェックで最新 commit の成功を求める。この CI には秘密情報・書き込み権限・デプロイ権限を渡さない（requirements 8.5, 15.7） | 本人 |
 
 PR のマージは本人が GitHub 上で行う（requirements 8.5）。
+
+#### 3.5.1 GitHub App とルールセットの設定値（Q29）
+
+| 項目 | 値 |
+|---|---|
+| GitHub App | evaloom-publisher（App ID 5537529） |
+| インストール先 | shota-urano/ital-cafe だけ（Installation ID 176795851） |
+| App の権限 | contents: write、pull_requests: write、metadata: read |
+| 秘密鍵の置き場所 | Runner のホストの `~/.config/evaloom/`（リポジトリに置かない） |
+
+ベースブランチ（`main`）には、次の2つのルールセットを置く。
+
+| ルールセット | 規則 | Bypass list |
+|---|---|---|
+| A: `main: PR 必須・CI 必須・force push と削除の禁止` | PR を必須にする。必須ステータスチェック `ci`（発行元を GitHub Actions に固定）。force push の禁止。削除の禁止 | 空 |
+| B: `main: 更新は Repository admin だけ` | Restrict updates（ベースブランチの更新を禁止） | Repository admin |
+
+A は Bypass list が空なので、本人も PR と CI を経ずには main を更新できない。B により、PR のマージを含む main の更新は Repository admin（本人）だけができる。App は admin ではないため、PR を作れてもマージはできない。必須ステータスチェックの発行元を GitHub Actions に固定するのは、App が同じ名前のステータスを付けて CI を偽装できないようにするためである。
 
 ## 4. 設定値・確定値
 
@@ -111,7 +129,7 @@ PR のマージは本人が GitHub 上で行う（requirements 8.5）。
 
 - 報告: `POST /api/executions/{id}/result`（pushed_sha、pr_number、pr_url）、イベント `pushed` / `pr_created`（[`02-data-model.md`](./02-data-model.md) 5.3）
 - push 直前の中止確認: `POST /api/runners/{id}/heartbeat` の応答を使う（[`05-runner.md`](./05-runner.md) 5章）
-- GitHub: REST API（PR の取得・作成・コメント）。認証方式は Q29
+- GitHub: REST API（PR の取得・作成・コメント）。認証は GitHub App のインストールアクセストークン（Q29、3.5.1）
 
 ## 6. エラー処理
 
