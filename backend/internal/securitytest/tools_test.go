@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +51,81 @@ func TestPrerequisitesAreErrorsRatherThanSkips(t *testing.T) {
 	cancel()
 	if err := (Prerequisites{Sandbox: available{}}).Check(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestNetworkProbesDistinguishConnectionsFromDenials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	f, err := NewFixture(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Host {
+		case "allowed.invalid:443":
+			w.WriteHeader(http.StatusOK)
+		case "forbidden.invalid:443":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	}))
+	defer proxy.Close()
+	host, port, err := net.SplitHostPort(proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyPort, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := closed.Addr().(*net.TCPAddr).Port
+	_ = closed.Close()
+	plan := []map[string]any{
+		{"id": "tcp-allowed", "kind": "tcp", "host": host, "port": proxyPort, "timeoutSec": 1},
+		{"id": "tcp-denied", "kind": "tcp", "host": host, "port": closedPort, "timeoutSec": 1},
+		{"id": "proxy-allowed", "kind": "proxy_connect", "host": "allowed.invalid", "port": 443, "proxyPort": proxyPort, "timeoutSec": 1},
+		{"id": "proxy-denied", "kind": "proxy_connect", "host": "forbidden.invalid", "port": 443, "proxyPort": proxyPort, "timeoutSec": 1},
+	}
+	writePlan := func(items []map[string]any) {
+		t.Helper()
+		data, err := json.Marshal(items)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.Worktree, "harness-plan.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePlan(plan)
+	if out, err := runFixturePython(ctx, f, "probe.py", "harness-plan.json", "harness-results.json"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(f.Worktree, "harness-results.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observations, err := probe.DecodeReport(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{true, false, true, false} {
+		if *observations[i].Succeeded != want {
+			t.Errorf("%s: %+v", plan[i]["id"], observations[i])
+		}
+	}
+	plan[2]["host"] = "broken.invalid"
+	writePlan(plan[2:3])
+	if out, err := runFixturePython(ctx, f, "probe.py", "harness-plan.json", "harness-results.json"); err == nil {
+		t.Fatalf("proxy infrastructure error passed as denied access: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(f.Worktree, "harness-results.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("broken proxy left stale evidence: %v", err)
 	}
 }
 
