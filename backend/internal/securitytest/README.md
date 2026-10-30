@@ -98,3 +98,36 @@ Docker DesktopまたはLinuxのDocker、ホストのGo・Git・Python 3、IPv4�
 `TestBoundaryVerdict` は、各行のアクセス拒否を受理し、アクセス成功・観測欠落・kindの不一致・不正な環境観測を拒否する。結果ファイルが全拒否を申告していても、HTTP・監査・SSHエージェント・偽GitHub記録やリモートrefが変われば拒否する。プロキシ障害や403の証拠が無い観測は実行不能として拒否する。`TestNetworkProbesDistinguishConnectionsFromDenials` は実際のTCP接続とCONNECTの200・403、プロキシの接続拒否、接続・応答タイムアウト、502、不正応答、途中で切れた403応答を試す。障害時の診断記録と、同じ記録を判定関数が実行不能として拒否することまで確かめる。
 
 新たな仕様の未決値は確定していない。キーチェーンは本人用HOME内のダミーファイルで検証するため、macOSの本物のキーチェーンや認証情報には触れない。Q8第二案の実CLIの認証動作と設定分離は3.1の別タスクで扱う。
+
+## 3.3 Test Sandboxの隔離突破テスト
+
+3.2と同じイメージ、プローブ、判定関数、Control Planeの観測用ハンドラを再利用する。イメージが未作成なら上記の`docker build`を実行したうえで、リポジトリのルートから次を実行する。
+
+```sh
+cd backend
+EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
+  GOCACHE=/tmp/evaloom-3n5.3-gocache \
+  go test -tags=security_docker ./internal/securitytest \
+  -run '^TestDockerTestSandboxIsolation$' -count=1 -v
+```
+
+`isolated/setup`はfixtureの`python3 setup.py`を`TestSetup / NetworkSetup`で実行する。続く`isolated/test`は`python3 test.py`を`TestRun / NetworkNone`で実行する。各工程の前後でHTTPアクセス件数と実SQLiteの`audit_logs`件数を照合する。本人用・Runner用APIに対する認証拒否も記録するため、HTTPの401や403を隔離成功とは扱わない。ホストから両APIのIPv4・IPv6接続と記録の作成を先に確認する。結果ファイルの欠落・不正、期待ID・kind・件数の不一致、実行終了コードの異常も失敗になる。
+
+| 仕様14の3.3の行 | setupとテストの観測ID・照合 |
+|---|---|
+| Control APIへの接続 | `control-owner-v4/v6`、`control-runner-v4/v6`。Dockerホスト名・gatewayへの直接接続も試す。setupではループバック・Dockerホスト名・gatewayへのCONNECTも拒否されることを確認する。両工程でHTTPアクセス記録と`audit_logs`が増えないことを照合する |
+| 管理DBの読み書き | `db-read`、`db-write`。破棄可能な実DBの読み取り・追記を試す。`logs`と`artifacts`の読み取りも試す |
+| 秘密情報 | `runner-token`、`publisher`、`publisher-config`、`ssh-key`、`keychain`、`home-canary`、`personal-home`、`project-dotenv`、`worktree-dotenv`、`worktree-dotenv-exists`、`model-config`。すべてテスト用の秘密値を使う。コピー対象外の`.env`は元プロジェクトとworktree内の両パスを試す。Test Sandboxには専用モデル設定も渡さない。`environment`で許可外の変数と既知の秘密値も検出する |
+| Dockerソケット等の管理インターフェース | `management-socket-*`。ホスト上に実在するテスト用Runnerソケットと、Docker・containerd・Docker Desktopの既知のソケットパスの存在を調べる。`SSH_AUTH_SOCK`も環境変数の許可対象外とする |
+| 外部ネットワーク、テスト実行 | `registry-direct`、`external-direct`、`external-ip-direct`でレジストリ・github.com・公開IPへの直接TCP接続を拒否する。`proxy-absent`でローカルプロキシも存在しないことを確かめる |
+| 外部ネットワーク、setup | 同じ3つの直接TCP接続を拒否する。`external-proxy`、`external-ip-proxy`、`registry-wrong-port`はCONNECTの明示的な403を必須とする。`registry-allowed`では許可したレジストリへのCONNECTの200を必須とし、プロキシの故障や全遮断による見かけの成功を防ぐ |
+
+このfixtureでは`registry.npmjs.org:443`だけを`AllowedDestinations`に渡す。製品の許可先や既定値を決めるものではない。外部の到達性が無い状態をアクセス拒否と取り違えないよう、開始前に同じDockerデーモンのbridgeコンテナからレジストリ・github.com・公開IPの443へTCP接続する。これらが利用できない環境では実行不能として失敗し、スキップしない。setupの許可先へのCONNECTが失敗した場合も実行不能として扱う。3.2と同様、プロキシ障害、502、不正応答、403の証拠不足は拒否として受理しない。テスト実行にはプロキシを用意しないため、その工程では`proxy_connect`を使わない。
+
+正の確認としてworktreeの読み書き、setup出力のテスト工程からの読み取り、実際のunittestの2件実行とJUnitの失敗・エラー・skipがゼロであることも確認する。bareリモートのrefも各工程の前後で照合する。
+
+`negative_control_allow_secret_env/setup`と`negative_control_allow_secret_env/test`では本物のContainerの許可リストにダミーの秘密変数だけを追加する。同じplanと判定関数で実際の漏出と`environment`違反を検出し、他の観測や信頼する記録に異常が無いことを確認する。
+
+通常の`make verify`ではDocker試験をビルド対象から外し、`TestIsolationVerdict`で両工程のplanを使って拒否の受理、全項目のアクセス成功や正の確認の失敗、観測の欠落・kind不一致、秘密変数の漏出、プロキシの実行不能、結果が全拒否でもHTTP・監査記録が増える場合の拒否を検証する。3.2の実環境テストと通常テストは変更していない。
+
+仕様の穴は既存Sandboxと同じで、Projectごとの許可レジストリ一覧の保存先とRegistryからの接続方法が未定義である。このテストは既存の内部`AllowedDestinations`境界を使い、公開API・テーブル・列・確定済みの仕様書を追加・変更していない。`.env`のコピー処理自体の検証はworktree担当のテストにあり、この試験は秘密ファイルをworktreeへコピーしないfixtureでの隔離を検証する。
