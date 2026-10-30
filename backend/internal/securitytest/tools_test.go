@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +51,136 @@ func TestPrerequisitesAreErrorsRatherThanSkips(t *testing.T) {
 	cancel()
 	if err := (Prerequisites{Sandbox: available{}}).Check(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestNetworkProbesDistinguishConnectionsFromDenials(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	f, err := NewFixture(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Host {
+		case "allowed.invalid:443":
+			w.WriteHeader(http.StatusOK)
+		case "forbidden.invalid:443":
+			w.WriteHeader(http.StatusForbidden)
+		case "timeout.invalid:443":
+			<-r.Context().Done() // Client must time out while reading the proxy.
+		case "malformed.invalid:443", "truncated.invalid:443":
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer conn.Close()
+			response := "not-http 403 Forbidden\r\n\r\n"
+			if r.Host == "truncated.invalid:443" {
+				response = "HTTP/1.1 403 Forbidden\r\n"
+			}
+			_, _ = io.WriteString(conn, response)
+		default:
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	}))
+	defer proxy.Close()
+	host, port, err := net.SplitHostPort(proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyPort, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := closed.Addr().(*net.TCPAddr).Port
+	_ = closed.Close()
+	plan := []map[string]any{
+		{"id": "tcp-allowed", "kind": "tcp", "host": host, "port": proxyPort, "timeoutSec": 1},
+		{"id": "tcp-denied", "kind": "tcp", "host": host, "port": closedPort, "timeoutSec": 1},
+		{"id": "proxy-allowed", "kind": "proxy_connect", "host": "allowed.invalid", "port": 443, "proxyPort": proxyPort, "timeoutSec": 1},
+		{"id": "proxy-denied", "kind": "proxy_connect", "host": "forbidden.invalid", "port": 443, "proxyPort": proxyPort, "timeoutSec": 1},
+	}
+	writePlan := func(items []map[string]any) {
+		t.Helper()
+		data, err := json.Marshal(items)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(f.Worktree, "harness-plan.json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePlan(plan)
+	if out, err := runFixturePython(ctx, f, "probe.py", "harness-plan.json", "harness-results.json"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	data, err := os.ReadFile(filepath.Join(f.Worktree, "harness-results.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observations, err := probe.DecodeReport(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{true, false, true, false} {
+		if *observations[i].Succeeded != want {
+			t.Errorf("%s: %+v", plan[i]["id"], observations[i])
+		}
+	}
+	// Exercise actual proxy transport/protocol failures as well as a
+	// deterministic connection timeout (a local TCP SYN rarely times out).
+	for _, tc := range []struct {
+		name, host, wantError string
+		port                  int
+		connectTimeout        bool
+	}{
+		{"refused", "forbidden.invalid", "ConnectionRefusedError", closedPort, false},
+		{"connect_timeout", "forbidden.invalid", "TimeoutError", proxyPort, true},
+		{"read_timeout", "timeout.invalid", "TimeoutError", proxyPort, false},
+		{"bad_gateway", "broken.invalid", "RuntimeError", proxyPort, false},
+		{"malformed", "malformed.invalid", "RuntimeError", proxyPort, false},
+		{"truncated_403", "truncated.invalid", "RuntimeError", proxyPort, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := map[string]any{"id": "proxy", "kind": "proxy_connect", "host": tc.host,
+				"port": 443, "proxyPort": tc.port, "timeoutSec": 0.2}
+			writePlan([]map[string]any{item})
+			args := []string{"probe.py", "harness-plan.json", "harness-results.json"}
+			if tc.connectTimeout {
+				args = []string{"-c", `from unittest.mock import patch
+from probe import run
+with patch('probe.socket.create_connection', side_effect=TimeoutError()):
+    run('harness-plan.json', 'harness-results.json')`}
+			}
+			if out, err := runFixturePython(ctx, f, args...); err != nil {
+				t.Fatalf("proxy failure did not produce diagnostic observation: %v\n%s", err, out)
+			}
+			data, err := os.ReadFile(filepath.Join(f.Worktree, "harness-results.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			observations, err := probe.DecodeReport(data)
+			if err != nil || len(observations) != 1 {
+				t.Fatalf("observations=%+v err=%v", observations, err)
+			}
+			detail := observations[0].Detail.(map[string]any)
+			// socket.timeout became a TimeoutError alias in Python 3.10.
+			errorMatches := detail["error"] == tc.wantError || tc.wantError == "TimeoutError" && detail["error"] == "timeout"
+			if *observations[0].Succeeded || detail["unavailable"] != true || !errorMatches {
+				t.Fatalf("proxy outage not distinguished from denial: %+v", observations[0])
+			}
+			snapshot := boundarySnapshot{refs: map[string]string{"refs/heads/main": "base"}}
+			err = boundaryVerdict(data, []boundaryRule{{"proxy", "proxy_connect", false}}, nil, snapshot, snapshot)
+			if err == nil || !strings.Contains(err.Error(), "実行不能") {
+				t.Fatalf("proxy infrastructure failure accepted as isolation: %v", err)
+			}
+		})
 	}
 }
 
