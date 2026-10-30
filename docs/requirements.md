@@ -710,6 +710,7 @@ Local RunnerはControl Planeから仕事を取りに行く（pull、2.3）。
 - 1つのタスクにつき、アクティブなPRは最大1本とする。
 - PRのマージは承認対象とする（15.3）。
 - 承認の仕組みを導入するPhase 2までは、本人がGitHub上でPRをマージする。EvaloomはPRをマージしない。
+- Phase 2以降は、承認ポリシーでPRマージを承認対象から外したProjectに限り、必須の検証をすべて通ったcommitを、Git Publisherがベースブランチへfast-forwardでpushする。このProjectではPRを作らない（15.3）。
 
 ### 再実行時の扱い
 
@@ -1136,6 +1137,8 @@ Evaluation Agent（10.4）はReviewer分野に含める。
 権限と承認状態は、実行開始時だけでなく、副作用のある操作を実際に行う直前にも確認する。
 
 承認の仕組みを導入するPhase 2までは、Evaloomとハーネスは上記の操作を実行しない。これは指示で禁じるのではなく、Runnerの実行権限によって拒否する（15.7）。PRのマージは本人がGitHub上で行う（8.5）。
+
+Phase 2以降、本人はProjectの承認ポリシーで、PRマージを承認対象から外せる。外したProjectでは、8.5の必須の検証（Gate 1〜3）をすべて通ったcommitを、PRを経ずにベースブランチへpushする。既定は承認対象のままとし、外せるのはPRマージだけとする。ほかの承認対象操作は外せない。GitHub側では、外したProjectのリポジトリに限り、Git Publisherの認証情報にベースブランチの更新を許す。
 
 ただし、Phase 1でも本人は、管理画面からProject RegistryやHarness Registryの権限設定（許可操作、承認ポリシー、Tool Permissionsなど）を変更できる。Runnerとハーネスには、権限設定を変更する操作を許可しない。
 
