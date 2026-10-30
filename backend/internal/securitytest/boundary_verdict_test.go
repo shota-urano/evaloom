@@ -42,6 +42,22 @@ func boundaryVerdict(data []byte, rules []boundaryRule, allowEnv []string, befor
 			violations = append(violations, rule.id+": missing/wrong kind")
 			continue
 		}
+		if rule.kind == "proxy_connect" {
+			// Only an explicit HTTP 403 proves a destination was denied.
+			// Missing evidence or a transport/protocol failure is unavailable.
+			encoded, _ := json.Marshal(observation.Detail)
+			var detail struct {
+				Status      int  `json:"status"`
+				Unavailable bool `json:"unavailable"`
+			}
+			status := 403
+			if *observation.Succeeded {
+				status = 200
+			}
+			if json.Unmarshal(encoded, &detail) != nil || detail.Unavailable || detail.Status != status {
+				violations = append(violations, rule.id+": 実行不能: proxy evidence unavailable/invalid")
+			}
+		}
 		if *observation.Succeeded != rule.allowed {
 			violations = append(violations, rule.id+": unexpected access outcome")
 		}
@@ -119,6 +135,9 @@ func TestBoundaryVerdict(t *testing.T) {
 		if rule.kind == "env" {
 			observations[i].Detail = map[string]any{"names": []string{"HOME", "PATH"}, "unexpected": []string{}, "secretPresent": false}
 		}
+		if rule.kind == "proxy_connect" {
+			observations[i].Detail = map[string]any{"status": 403}
+		}
 	}
 	allowEnv := []string{"HOME", "PATH"}
 	snapshot := boundarySnapshot{refs: map[string]string{"refs/heads/main": "base"}}
@@ -130,11 +149,30 @@ func TestBoundaryVerdict(t *testing.T) {
 		}
 	}
 	t.Run("all_boundaries_denied", func(t *testing.T) { check(t, observations, snapshot, "") })
+	for name, detail := range map[string]any{
+		"connection_refused": map[string]any{"error": "ConnectionRefusedError", "unavailable": true},
+		"timeout":            map[string]any{"error": "TimeoutError", "unavailable": true},
+		"invalid_response":   map[string]any{"error": "RuntimeError", "unavailable": true},
+		"missing_status":     map[string]any{},
+		"legacy_oserror":     map[string]any{"error": "ConnectionRefusedError"},
+		"inconsistent_200":   map[string]any{"status": 200},
+		"unexpected_status":  map[string]any{"status": 502},
+		"unavailable_403":    map[string]any{"status": 403, "unavailable": true},
+	} {
+		t.Run("proxy_unavailable_"+name, func(t *testing.T) {
+			obs := slices.Clone(observations)
+			obs[15].Detail = detail
+			check(t, obs, snapshot, "実行不能")
+		})
+	}
 	for i, rule := range rules {
 		t.Run(rule.id+"_leaks_or_positive_control_fails", func(t *testing.T) {
 			obs := slices.Clone(observations)
 			flipped := !rule.allowed
 			obs[i].Succeeded = &flipped
+			if rule.kind == "proxy_connect" {
+				obs[i].Detail = map[string]any{"status": 200}
+			}
 			check(t, obs, snapshot, rule.id)
 		})
 		t.Run(rule.id+"_missing", func(t *testing.T) {

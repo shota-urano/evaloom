@@ -1,3 +1,5 @@
+//go:build security_docker
+
 package securitytest
 
 import (
@@ -167,9 +169,6 @@ func (c *boundaryControl) auditCount(t *testing.T) int {
 // TestDockerPermissionBoundaries covers spec 14 §3.2 through the probe Adapter
 // and real Harness Sandbox, including the destination-filtering sidecars.
 func TestDockerPermissionBoundaries(t *testing.T) {
-	if os.Getenv("EVALOOM_SECURITY_DOCKER_TEST") != "1" {
-		t.Skip("set EVALOOM_SECURITY_DOCKER_TEST=1 to enable real permission-boundary tests")
-	}
 	image := os.Getenv("EVALOOM_SECURITY_TEST_IMAGE")
 	if image == "" {
 		t.Fatal("実行不能: EVALOOM_SECURITY_TEST_IMAGE must name a prebuilt Linux image (see Dockerfile.boundary)")

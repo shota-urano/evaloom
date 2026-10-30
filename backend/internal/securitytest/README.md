@@ -17,7 +17,7 @@ fixtureのコマンドは `python3 setup.py` と `python3 test.py`。後者は�
 | `exists` | `path` | ファイル・ソケット等の存在確認 |
 | `http` | `url`, `timeoutSec` | プロキシ設定を使わないHTTP接続。4xx/5xxでも接続成功として記録する |
 | `tcp` | `host`, `port`, `timeoutSec` | DNS解決を含む直接TCP接続 |
-| `proxy_connect` | `host`, `port`, `timeoutSec` | SandboxのプロキシへのCONNECT。200は接続成功、403は拒否、それ以外の応答は実行不能。単体テストでは `proxyPort` でプロキシのポートを渡せる |
+| `proxy_connect` | `host`, `port`, `timeoutSec` | SandboxのプロキシへのCONNECT。完全なHTTP応答の200は接続成功、403は拒否。プロキシへの接続拒否・タイムアウト・通信障害・不正応答は実行不能。単体テストでは `proxyPort` でプロキシのポートを渡せる |
 | `env` | `allowlist`, `secrets` | 環境変数名、許可外の名前、既知の秘密の値が含まれるかの確認 |
 | `git_push` | `remote`, `refspec`, `timeoutSec` | 明示したリモート・refへのpush |
 | `command` | `argv`, `timeoutSec` | キーチェーンやSSHエージェント等にアクセスするコマンドの実行 |
@@ -34,6 +34,8 @@ fixtureのコマンドは `python3 setup.py` と `python3 test.py`。後者は�
 出力はworktree内の `setup-results.json`、`test-results.json`、`harness-results.json`。`observations` 配列に `id`、`kind`、`succeeded`、`detail` を書く。秘密情報の本文やコマンドの出力本文は書かない。例の宛先、ファイル、タイムアウトはテスト側が用意する値であり、製品の設定値ではない。
 
 アクセスが拒否された場合もスクリプトは正常終了する。`succeeded` はアクセスの成否であり、セキュリティテストの合否ではない。plan不備やコマンドの実体不足は非0終了になり、古い結果ファイルも残さない。Adapterは結果ファイルの欠落・不正を失敗とする。
+
+CONNECTの結果には `detail.status` を記録する。プロキシ自体の障害では `succeeded=false` とともに `detail.unavailable=true` と例外の型を記録し、判定側が「実行不能」として失敗させる。`succeeded=false` だけではプロキシによる拒否の証拠にならず、明示的な403以外を拒否として受理しない。
 
 結果ファイルは改ざんされうる。後続の権限境界テストは、期待する全IDの結果に加えて、Control Planeの `audit_logs`、HTTPアクセス記録、`Fixture.Refs(ctx)` で取得するbareリモートのrefを照合する必要がある。ファイルだけで合格にしてはいけない。`NewCanary()` は設定ファイル等に使う一意の文字列を生成する。
 
@@ -53,21 +55,21 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 
 ## 3.2 権限境界の実環境テスト
 
-リポジトリのルートから、イメージを一度ビルドし、明示的に有効化して実行する。
+リポジトリのルートから、イメージを一度ビルドし、ビルドタグ `security_docker` で受け入れテストを選択して実行する。
 
 ```sh
 docker build -f backend/internal/securitytest/Dockerfile.boundary \
   -t evaloom-security-boundary:local backend/internal/securitytest
 cd backend
-EVALOOM_SECURITY_DOCKER_TEST=1 EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
-  go test ./internal/securitytest -run '^TestDockerPermissionBoundaries$' -count=1 -v
+EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
+  go test -tags=security_docker ./internal/securitytest -run '^TestDockerPermissionBoundaries$' -count=1 -v
 ```
 
 Docker DesktopまたはLinuxのDocker、ホストのGo・Git・Python 3、IPv4・IPv6ループバックが必要である。イメージにはLinux用の `/usr/bin/env`、Python 3の標準ライブラリ、Git、`/bin/busybox` を含め、VOLUMEを宣言しない。Dockerfileはそのテスト専用イメージを作る。イメージ名はテストの明示入力であり、製品の既定値ではない。イメージのビルドにはAlpineのパッケージ取得が必要だが、テスト本体は自動取得せず `--pull never` を使う。
 
 テストはDockerデーモンのCPU種別に合わせてプロキシをビルドする。モデルAPIの許可先には試験用の `example.com:443` を設定するが、モデルも公開APIも呼ばない。プロキシの拒否経路を実行して、`NetworkHarness` の名前空間と宛先制限を確かめる。資源上限とタイムアウトもテスト専用の値である。
 
-`EVALOOM_SECURITY_DOCKER_TEST=1` が無い場合だけスキップする。有効化後のDocker・イメージ・コマンド・IPv6等の不足、プローブの中断、結果ファイルの欠落や不正は失敗になる。通常の `make verify` はDocker不要で、`TestBoundaryVerdict` とプローブの単体テストを実行する。
+タグを指定しない通常の `make verify` は、この実環境テストのファイルをビルド対象に含めず、Docker不要で `TestBoundaryVerdict` とプローブの単体テストを実行する。タグで選択した実環境テストにはスキップ処理が無い。Docker・イメージ・コマンド・IPv6等の不足、プローブの中断、結果ファイルの欠落や不正は失敗になる。旧環境変数 `EVALOOM_SECURITY_DOCKER_TEST` は不要で、設定値によるスキップもしない。
 
 制限環境でホーム配下のキャッシュに書き込めない場合は、ビルド時に `BUILDX_CONFIG=/tmp/evaloom-3n5.2-buildx`、Go実行時に `GOCACHE=/tmp/evaloom-3n5.2-gocache` を指定できる。本人のDocker設定や認証情報は変更しない。
 
@@ -93,6 +95,6 @@ Docker DesktopまたはLinuxのDocker、ホストのGo・Git・Python 3、IPv4�
 
 `TestDockerPermissionBoundaries/negative_control_allow_secret_env` は、本物のContainerの許可リストに `EVALOOM_BOUNDARY_SECRET` を追加し、同じplanと判定関数を実行する。ダミーの秘密値と許可外変数の実際の漏出を確認し、判定関数が `environment` 違反を返すことを合格条件とする。他のプローブ・信頼する記録に違反がある場合は、この試験も失敗する。製品のSandboxに迂回用のAPIやスイッチは追加していない。
 
-`TestBoundaryVerdict` は、各行のアクセス拒否を受理し、アクセス成功・観測欠落・kindの不一致・不正な環境観測を拒否する。結果ファイルが全拒否を申告していても、HTTP・監査・SSHエージェント・偽GitHub記録やリモートrefが変われば拒否する。`TestNetworkProbesDistinguishConnectionsFromDenials` は実際のTCP接続とCONNECTの200・403を試し、壊れたプロキシ応答をアクセス拒否として記録しないことを確かめる。
+`TestBoundaryVerdict` は、各行のアクセス拒否を受理し、アクセス成功・観測欠落・kindの不一致・不正な環境観測を拒否する。結果ファイルが全拒否を申告していても、HTTP・監査・SSHエージェント・偽GitHub記録やリモートrefが変われば拒否する。プロキシ障害や403の証拠が無い観測は実行不能として拒否する。`TestNetworkProbesDistinguishConnectionsFromDenials` は実際のTCP接続とCONNECTの200・403、プロキシの接続拒否、接続・応答タイムアウト、502、不正応答、途中で切れた403応答を試す。障害時の診断記録と、同じ記録を判定関数が実行不能として拒否することまで確かめる。
 
 新たな仕様の未決値は確定していない。キーチェーンは本人用HOME内のダミーファイルで検証するため、macOSの本物のキーチェーンや認証情報には触れない。Q8第二案の実CLIの認証動作と設定分離は3.1の別タスクで扱う。

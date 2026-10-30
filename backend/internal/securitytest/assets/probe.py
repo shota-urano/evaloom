@@ -46,12 +46,26 @@ def attempt(item):
             authority = ("[" + host + "]" if ":" in host else host) + ":" + str(item["port"])
             conn.sendall(("CONNECT " + authority + " HTTP/1.1\r\nHost: " +
                           authority + "\r\n\r\n").encode())
-            response = conn.makefile("rb").readline(4096).split()
-            if len(response) < 2 or response[1] not in (b"200", b"403"):
-                raise ValueError("invalid proxy response")
-            if response[1] == b"403":
-                raise PermissionError("proxy refused tunnel")
-            return {}
+            with conn.makefile("rb") as stream:
+                line = stream.readline(4096)
+                response = line.split()
+                if (not line.endswith(b"\r\n") or len(response) < 2 or
+                        response[0] not in (b"HTTP/1.0", b"HTTP/1.1") or
+                        response[1] not in (b"200", b"403")):
+                    raise RuntimeError("invalid proxy response")
+                # A truncated response, even one starting with 403, is not
+                # evidence that the destination filter executed.
+                header_bytes = len(line)
+                while True:
+                    header = stream.readline(4096)
+                    header_bytes += len(header)
+                    if not header.endswith(b"\r\n") or header_bytes > 65536:
+                        raise RuntimeError("invalid proxy headers")
+                    if header == b"\r\n":
+                        break
+                    if b":" not in header:
+                        raise RuntimeError("invalid proxy header")
+            return {"status": int(response[1])}
     if kind == "env":
         allowed = set(item["allowlist"])
         values = list(os.environ.values())
@@ -105,9 +119,13 @@ def run(plan_path, result_path):
                 raise RuntimeError("probe prerequisite unavailable: " + program)
         try:
             detail = attempt(item)
-            succeeded = True
+            succeeded = item["kind"] != "proxy_connect" or detail["status"] == 200
         except (OSError, urllib.error.URLError, subprocess.SubprocessError, RuntimeError) as error:
             detail = {"error": type(error).__name__}
+            if item["kind"] == "proxy_connect":
+                # Failure to reach/read the local proxy is an unavailable
+                # test, never a denial by the destination filter.
+                detail["unavailable"] = True
             succeeded = False
         observations.append({"id": item["id"], "kind": item["kind"],
                              "succeeded": succeeded, "detail": detail})
