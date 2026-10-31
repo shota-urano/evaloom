@@ -70,19 +70,26 @@ func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
 			copied = e.Claim.Worktree.CopiedFiles
 		}
 		head, clean, err := gate.CheckWorktree(ctx, e.WorktreePath, copied)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil && head == "" {
 			return fmt.Errorf("runner: cannot inspect Gate 3 Git state")
 		}
 		result := GateResult{Gate: 3, Result: "pass", BaseSHA: e.BaseSHA, TargetSHA: head, Findings: []model.Finding{}}
-		if clean && gate.CheckCommit(e.Claim.Execution.ID, head, e.VerifiedSHA, e.VerifyRun) {
+		if err == nil && clean && gate.CheckCommit(e.Claim.Execution.ID, head, e.VerifiedSHA, e.VerifyRun) {
 			e.gateResults = append(e.gateResults, result)
 			return nil
 		}
 		result.Result = "blocked"
-		result.Findings = append(result.Findings, model.Finding{Rule: config.MismatchRule, Message: "HEAD・作業ツリー・検証済みテストのSHAまたは実行数を確認できない"})
+		message := "HEAD・作業ツリー・検証済みテストのSHAまたは実行数を確認できない"
+		if err != nil {
+			// Keep the observed HEAD and flush the pending Gate 2 measurement
+			// even when status fails (for example, with a corrupt Git index).
+			// Git's raw error may contain secrets; report only a safe reason.
+			message = "Gitの作業ツリー状態を取得できない"
+		}
+		result.Findings = append(result.Findings, model.Finding{Rule: config.MismatchRule, Message: message})
 		e.gateResults = append(e.gateResults, result)
 		return errors.Join(ErrGate3Stopped, e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGate3Mismatch, HeadSHA: head}))
 	}, nil

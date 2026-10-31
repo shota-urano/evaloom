@@ -75,7 +75,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 			return nil, err
 		}
 		process := &gate3TestProcess{baselineCommandProcess: &baselineCommandProcess{cmd}}
-		if f.calls == 2 {
+		if f.calls > 1 {
 			process.after = afterTest
 		}
 		return process, nil
@@ -111,7 +111,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 }
 
 func TestGate3HTTPAcceptance(t *testing.T) {
-	for _, name := range []string{"Clean", "CommitAfterTests", "Untracked", "Modified", "Staged", "UnchangedCopies", "ChangedCopy", "ReportNotExcluded", "ZeroExecuted"} {
+	for _, name := range []string{"Clean", "CommitAfterTests", "Untracked", "Modified", "Staged", "UnchangedCopies", "ChangedCopy", "ReportNotExcluded", "ZeroExecuted", "CorruptIndex"} {
 		t.Run(name, func(t *testing.T) {
 			f := newGate3Fixture(t)
 			if name == "UnchangedCopies" || name == "ChangedCopy" {
@@ -155,6 +155,8 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 					}
 				case "ChangedCopy":
 					gate2Write(t, filepath.Join(f.path, "local.conf"), "changed")
+				case "CorruptIndex":
+					gate2Write(t, filepath.Join(f.path, ".git", "index"), "invalid index")
 				}
 			}
 			err = f.executor(t, p, after, nil, nil).Execute(ctx, *claim)
@@ -179,10 +181,127 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 			if status != "blocked" || result != "blocked" || cause != "gate3_mismatch" || blockedHead != target || target != gate2Git(t, f.path, "rev-parse", "HEAD") || name == "CommitAfterTests" && target == tested {
 				t.Fatalf("status=%s result=%s cause=%s head=%s tested=%s", status, result, cause, blockedHead, tested)
 			}
+			if name == "CorruptIndex" {
+				// Gate 2 has not reported its successful measurement before Gate 3.
+				// Inspection failures must flush it together with the Block.
+				var runSHA, gate2SHA, findings string
+				var total, passed, skipped int
+				if err := f.db.QueryRow(`SELECT r.target_sha,r.total,r.passed,r.skipped,g.target_sha
+					FROM test_runs r JOIN gate_results g ON g.execution_id=r.execution_id AND g.gate=2 AND g.result='pass'
+					WHERE r.execution_id=? AND r.kind='verify'`, claim.Execution.ID).Scan(&runSHA, &total, &passed, &skipped, &gate2SHA); err != nil ||
+					runSHA != tested || gate2SHA != tested || tested != target || total != 3 || passed != 2 || skipped != 1 {
+					t.Fatalf("saved Gate 2: run=%s gate=%s tested=%s head=%s total=%d passed=%d skipped=%d err=%v", runSHA, gate2SHA, tested, target, total, passed, skipped, err)
+				}
+				if err := f.db.QueryRow(`SELECT findings FROM gate_results WHERE execution_id=? AND gate=3`, claim.Execution.ID).Scan(&findings); err != nil {
+					t.Fatal(err)
+				}
+				var saved []model.Finding
+				if err := json.Unmarshal([]byte(findings), &saved); err != nil || len(saved) != 1 || saved[0].Rule != "fixture_mismatch" || saved[0].Message == "" {
+					t.Fatalf("inspection failure reason=%s err=%v", findings, err)
+				}
+			}
 			var gates, blocks, notifications int
 			if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM execution_events WHERE type='gate_result'),
 				(SELECT count(*) FROM execution_events WHERE type='blocked'),(SELECT count(*) FROM notification_requests WHERE status='blocked')`).Scan(&gates, &blocks, &notifications); err != nil || gates != 2 || blocks != 1 || notifications != 1 {
 				t.Fatalf("events=%d blocks=%d notifications=%d err=%v", gates, blocks, notifications, err)
+			}
+		})
+	}
+}
+
+func TestGate3HTTPInspectionCancellationAndTimeout(t *testing.T) {
+	for _, name := range []string{"Cancelled", "TimedOut"} {
+		t.Run(name, func(t *testing.T) {
+			f := newGate3Fixture(t)
+			realGit, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			started := filepath.Join(bin, "status-started")
+			// Only the Git status subprocess is held. HEAD, configuration reads,
+			// Gate 2, HTTP reporting and persistence use their real implementations.
+			script := `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = status ]; then
+    printf started > "$EVALOOM_TEST_STATUS_STARTED"
+    exec /bin/sleep 30
+  fi
+done
+exec "$EVALOOM_TEST_REAL_GIT" "$@"
+`
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("EVALOOM_TEST_REAL_GIT", realGit)
+			t.Setenv("EVALOOM_TEST_STATUS_STARTED", started)
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			p, err := New(f.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claim, err := p.claim(ctx)
+			if err != nil || claim == nil {
+				t.Fatalf("claim=%+v err=%v", claim, err)
+			}
+			executor := f.executor(t, p, nil, nil, nil)
+			for i := range executor.stages {
+				if executor.stages[i].ID != StageGate3 {
+					continue
+				}
+				run := executor.stages[i].run
+				executor.stages[i].run = func(ctx context.Context, e *Execution) error {
+					if name == "TimedOut" {
+						ctx, stop := context.WithTimeout(ctx, 2*time.Second)
+						defer stop()
+						return run(ctx, e)
+					}
+					ctx, stop := context.WithCancel(ctx)
+					done := make(chan struct{})
+					defer func() { stop(); <-done }()
+					go func() {
+						defer close(done)
+						ticker := time.NewTicker(time.Millisecond)
+						defer ticker.Stop()
+						for {
+							select {
+							case <-ctx.Done():
+								return
+							case <-ticker.C:
+								if _, err := os.Stat(started); err == nil {
+									stop()
+									return
+								}
+							}
+						}
+					}()
+					return run(ctx, e)
+				}
+			}
+			wantErr, wantStatus, wantClass := context.Canceled, "cancelled", "cancelled"
+			if name == "TimedOut" {
+				wantErr, wantStatus, wantClass = context.DeadlineExceeded, "timed_out", "timeout"
+			}
+			err = executor.Execute(ctx, *claim)
+			if !errors.Is(err, wantErr) || errors.Is(err, ErrGate3Stopped) || f.calls != 2 || f.published != 0 {
+				t.Fatalf("err=%v tests=%d published=%d", err, f.calls, f.published)
+			}
+			if _, err := os.Stat(started); err != nil {
+				t.Fatalf("Git status was not reached: %v", err)
+			}
+			var status, class string
+			var runs, gate2, gate3, blocks, notifications int
+			if err := f.db.QueryRow(`SELECT e.status,e.error_class,
+				(SELECT count(*) FROM test_runs WHERE execution_id=e.id AND kind='verify' AND target_sha=e.verified_sha AND passed=2),
+				(SELECT count(*) FROM gate_results WHERE execution_id=e.id AND gate=2 AND result='pass'),
+				(SELECT count(*) FROM gate_results WHERE execution_id=e.id AND gate=3),
+				(SELECT count(*) FROM execution_blocks WHERE execution_id=e.id),
+				(SELECT count(*) FROM notification_requests WHERE execution_id=e.id AND status='blocked')
+				FROM executions e WHERE e.id=?`, claim.Execution.ID).Scan(&status, &class, &runs, &gate2, &gate3, &blocks, &notifications); err != nil ||
+				status != wantStatus || class != wantClass || runs != 1 || gate2 != 1 || gate3 != 0 || blocks != 0 || notifications != 0 {
+				t.Fatalf("status=%s class=%s runs=%d gates=%d/%d blocks=%d notifications=%d err=%v", status, class, runs, gate2, gate3, blocks, notifications, err)
 			}
 		})
 	}
@@ -198,7 +317,7 @@ func (f *gate3Fixture) queueResume(t *testing.T) {
 }
 
 func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
-	for _, name := range []string{"StillDirty", "Repaired", "Cleaned", "Copies", "MissingVerifiedSHA", "MissingRun"} {
+	for _, name := range []string{"StillDirty", "Repaired", "Cleaned", "Copies", "MissingVerifiedSHA", "MissingRun", "CorruptIndex", "RepairedIndex"} {
 		t.Run(name, func(t *testing.T) {
 			f := newGate3Fixture(t)
 			if name == "Copies" {
@@ -222,11 +341,27 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 			if err != nil || first == nil {
 				t.Fatalf("claim=%+v %v", first, err)
 			}
-			err = f.executor(t, p, func() { gate2Write(t, filepath.Join(f.path, "unexpected"), "x") }, nil, nil).Execute(ctx, *first)
+			var originalIndex []byte
+			indexPath := filepath.Join(f.path, ".git", "index")
+			err = f.executor(t, p, func() {
+				if name == "CorruptIndex" || name == "RepairedIndex" {
+					var err error
+					originalIndex, err = os.ReadFile(indexPath)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					gate2Write(t, indexPath, "invalid index")
+					return
+				}
+				gate2Write(t, filepath.Join(f.path, "unexpected"), "x")
+			}, nil, nil).Execute(ctx, *first)
 			if !errors.Is(err, ErrGate3Stopped) {
 				t.Fatal(err)
 			}
-			if name != "StillDirty" {
+			if name == "RepairedIndex" {
+				gate2Write(t, indexPath, string(originalIndex))
+			} else if name != "StillDirty" && name != "CorruptIndex" {
 				if err := os.Remove(filepath.Join(f.path, "unexpected")); err != nil {
 					t.Fatal(err)
 				}
@@ -273,7 +408,7 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 				}
 			}
 			err = f.executor(t, p, nil, nil, prepare).Execute(ctx, *claim)
-			pass := name == "Repaired" || name == "Cleaned" || name == "Copies"
+			pass := name == "Repaired" || name == "Cleaned" || name == "Copies" || name == "RepairedIndex"
 			if pass && err != nil || !pass && !errors.Is(err, ErrGate3Stopped) || f.calls != 2 || (f.published == 1) != pass || name == "Cleaned" && !restored {
 				t.Fatalf("resume=%v tests=%d published=%d restored=%v", err, f.calls, f.published, restored)
 			}
@@ -286,8 +421,15 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 }
 
 func TestGate3HTTPContinueUsesNewVerificationAfterCleanup(t *testing.T) {
-	for _, cleaned := range []bool{false, true} {
-		t.Run(fmt.Sprint(cleaned), func(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		cleaned, corruptIndex bool
+	}{
+		{"Retained", false, false}, {"Cleaned", true, false},
+		{"CorruptIndex", false, true}, {"CleanedCorruptIndex", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleaned := tc.cleaned
 			f := newGate3Fixture(t)
 			repo := f.path
 			if cleaned {
@@ -336,11 +478,33 @@ func TestGate3HTTPContinueUsesNewVerificationAfterCleanup(t *testing.T) {
 					return err
 				}
 			}
-			if err := f.executor(t, p, nil, prepare, nil).Execute(ctx, *claim); err != nil {
-				t.Fatal(err)
+			var afterTest func()
+			if tc.corruptIndex {
+				// Resolve the actual index for retained and restored linked worktrees.
+				afterTest = func() {
+					indexPath := gate2Git(t, f.path, "rev-parse", "--git-path", "index")
+					if !filepath.IsAbs(indexPath) {
+						indexPath = filepath.Join(f.path, indexPath)
+					}
+					gate2Write(t, indexPath, "invalid index")
+				}
+			}
+			err = f.executor(t, p, afterTest, prepare, nil).Execute(ctx, *claim)
+			if !tc.corruptIndex && err != nil || tc.corruptIndex && !errors.Is(err, ErrGate3Stopped) {
+				t.Fatalf("continued execution: %v", err)
 			}
 			var baseline, verify int
-			if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM test_runs WHERE kind='baseline'),(SELECT count(*) FROM test_runs WHERE kind='verify')`).Scan(&baseline, &verify); err != nil || baseline != 1 || verify != 2 || f.calls != 3 || f.published != 2 {
+			wantPublished := 2
+			if tc.corruptIndex {
+				wantPublished = 1
+				var status, cause, head, tested string
+				if err := f.db.QueryRow(`SELECT e.status,b.cause,b.head_sha,e.verified_sha FROM executions e
+					JOIN execution_blocks b ON b.execution_id=e.id WHERE e.id=?`, id).Scan(&status, &cause, &head, &tested); err != nil ||
+					status != "blocked" || cause != "gate3_mismatch" || head != tested || head != gate2Git(t, f.path, "rev-parse", "HEAD") {
+					t.Fatalf("continue: status=%s cause=%s head=%s tested=%s err=%v", status, cause, head, tested, err)
+				}
+			}
+			if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM test_runs WHERE kind='baseline'),(SELECT count(*) FROM test_runs WHERE kind='verify')`).Scan(&baseline, &verify); err != nil || baseline != 1 || verify != 2 || f.calls != 3 || f.published != wantPublished {
 				t.Fatalf("baseline=%d verify=%d calls=%d published=%d %v", baseline, verify, f.calls, f.published, err)
 			}
 		})
