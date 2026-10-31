@@ -123,7 +123,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			return
 		}
 		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
-			ContextLocation: "AGENTS.md", CopyAllowlist: []string{}, TestFilePatterns: []string{},
+			ContextLocation: "AGENTS.md", CopyAllowlist: []string{},
 			AllowedOperations: map[string]any{}, ApprovalPolicy: map[string]any{}, Timeouts: map[string]int{},
 		}}
 		if !create {
@@ -267,11 +267,6 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 		base := path.Base(name)
 		if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasPrefix(base, "id_") {
 			warnings = append(warnings, name+" may contain secrets; use test-only dummy values")
-		}
-	}
-	for _, pattern := range p.TestFilePatterns {
-		if strings.TrimSpace(pattern) == "" {
-			return nil, invalid("testFilePatterns", "invalid_format")
 		}
 	}
 	return warnings, nil

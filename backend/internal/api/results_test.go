@@ -532,7 +532,7 @@ func TestResultRejectsHistoricalExecutionAndInconsistentTask(t *testing.T) {
 func TestResultAfterOwnerContinuationDoesNotRequestSameStateTwice(t *testing.T) {
 	f, token, id, _ := resultFixture(t, "verifying")
 	input := resultBody("verifying", "blocked")
-	input["block"] = map[string]any{"cause": "gate1_test_change", "headSha": strings.Repeat("b", 40)}
+	input["block"] = map[string]any{"cause": "gate2_missing_tests", "headSha": strings.Repeat("b", 40)}
 	status, body := postResult(t, f, token, id, input)
 	if status != 204 {
 		t.Fatalf("first block=%d %s", status, body)

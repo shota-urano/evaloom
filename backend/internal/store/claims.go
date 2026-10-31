@@ -43,7 +43,6 @@ type ClaimPrevious struct {
 	WorktreePath *string `json:"worktreePath"`
 	BranchName   *string `json:"branchName"`
 	PRNumber     *int    `json:"prNumber"`
-	Gate1BaseSHA *string `json:"gate1BaseSha"`
 }
 
 // Claim contains only execution input, never Runner credentials. Assignment is
@@ -126,10 +125,10 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	}
 	if c.Execution.Seq > 1 && c.Execution.Mode == "continue" {
 		var previous ClaimPrevious
-		err := tx.QueryRowContext(ctx, `SELECT w.path, e.branch_name, e.pr_number, e.gate1_base_sha
+		err := tx.QueryRowContext(ctx, `SELECT w.path, e.branch_name, e.pr_number
 			FROM executions e LEFT JOIN worktrees w ON w.id = e.worktree_id
 			WHERE e.task_id = ? AND e.seq = ?`, c.Execution.TaskID, c.Execution.Seq-1).
-			Scan(&previous.WorktreePath, &previous.BranchName, &previous.PRNumber, &previous.Gate1BaseSHA)
+			Scan(&previous.WorktreePath, &previous.BranchName, &previous.PRNumber)
 		if err != nil {
 			return nil, err
 		}

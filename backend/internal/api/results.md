@@ -19,7 +19,7 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   `pending`への復帰と`blocked`からの操作は本人用API、`interrupted`は
   Control Planeの回収処理に属する。Runnerからは409にする。
   再開点による工程の省略は、既存の遷移関数が許可する場合だけ受け付ける。
-- 任意の結果メタデータは`worktreeId`、`branchName`、`baseSha`、`gate1BaseSha`、
+- 任意の結果メタデータは`worktreeId`、`branchName`、`baseSha`、
   `harnessHeadSha`、`verifiedSha`、`pushedSha`、`prNumber`、`prUrl`、
   `harnessSessionId`、`errorClass`、`errorMessage`とする。
   省略またはnullの任意文字列・数値は既存値を保持する。

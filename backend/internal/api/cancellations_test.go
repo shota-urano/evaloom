@@ -120,7 +120,7 @@ func TestCancelQueuedImmediatelyAndNeverClaimed(t *testing.T) {
 }
 
 func TestCancelBlockedRetainsWorktreeAndBlockEvidence(t *testing.T) {
-	for _, cause := range []string{"gate1_test_change", "gate1_unverifiable", "gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict", "git_state"} {
+	for _, cause := range []string{"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict", "git_state"} {
 		t.Run(cause, func(t *testing.T) {
 			f, token, id, worktree := resultFixture(t, "verifying")
 			input := resultBody("verifying", "blocked")

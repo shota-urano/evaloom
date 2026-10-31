@@ -190,14 +190,6 @@ func TestProbeToolsExecution(t *testing.T) {
 				return fmt.Errorf("probe made no commit")
 			}
 			metadata["harnessHeadSha"] = head
-		case StageGate1:
-			changed, err := fixture.Git(ctx, "diff", "--name-only", fixture.BaseSHA, "HEAD")
-			if err != nil {
-				return err
-			}
-			if changed != "app.py" {
-				return fmt.Errorf("unexpected fixture change: %s", changed)
-			}
 		case StageGate2:
 			if err := runScript(ctx, "test.py"); err != nil {
 				return err

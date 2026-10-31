@@ -30,6 +30,7 @@ abortは既存cancelと同じ結果保存・遷移処理を使い、worktreeを�
   `status_changed`イベントにExecutionの`from`・`to`と
   `reason=block_continue`または`block_abort`を残す。
 
-Gate 1基準SHAの更新方針は仕様10のQ13で未確定のため、今回のAPIでは
-`gate1_base_sha`を変更しない。Runnerによる再開時のHEAD再検証とGate実行は
+continueで再開できる原因は`gate2_missing_tests`・`gate2_unverifiable`・
+`gate3_mismatch`で、どれも`resume_point`を`gate3`にする（Gate 1は廃止済み）。
+Runnerによる再開時のHEAD再検証とGate実行は
 仕様04の3.8手順4および仕様10の別実装単位に属する。

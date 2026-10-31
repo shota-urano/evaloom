@@ -27,7 +27,6 @@ type FormValues = {
   testReportPath: string
   setupCommand: string
   copyAllowlist: string
-  testFilePatterns: string
   allowedOperations: string
   approvalPolicy: string
 } & Record<`timeouts.${TimeoutKey}`, string>
@@ -46,7 +45,6 @@ const FIELDS = [
   'testReportPath',
   'setupCommand',
   'copyAllowlist',
-  'testFilePatterns',
   'allowedOperations',
   'approvalPolicy',
   'timeouts',
@@ -68,7 +66,6 @@ const EMPTY: FormValues = {
   testReportPath: '',
   setupCommand: '',
   copyAllowlist: '',
-  testFilePatterns: '',
   allowedOperations: '{}',
   approvalPolicy: '{}',
   'timeouts.setupSec': '',
@@ -91,7 +88,6 @@ function toValues(project: Project): FormValues {
     testReportPath: project.testReportPath ?? '',
     setupCommand: project.setupCommand ?? '',
     copyAllowlist: project.copyAllowlist.join('\n'),
-    testFilePatterns: project.testFilePatterns.join('\n'),
     allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
     approvalPolicy: JSON.stringify(project.approvalPolicy, null, 2),
     'timeouts.setupSec': timeout('setupSec'),
@@ -153,7 +149,6 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
       testReportPath: optional(values.testReportPath),
       setupCommand: optional(values.setupCommand),
       copyAllowlist: lines(values.copyAllowlist),
-      testFilePatterns: lines(values.testFilePatterns),
       allowedOperations,
       approvalPolicy,
       timeouts,
@@ -308,13 +303,6 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
             spellCheck={false}
             hint="worktree へコピーしてよいファイルを、リポジトリルートからの相対パスで1行に1つ。.. ・絶対パス・ワイルドカードは使えません。秘密情報は載せず、値が必要ならテスト専用のダミー値を使ってください。"
             {...bind('copyAllowlist')}
-          />
-          <TextAreaField
-            label={L.testFilePatterns}
-            rows={3}
-            spellCheck={false}
-            hint="Gate 1 で追加検出するパターンを1行に1つ。"
-            {...bind('testFilePatterns')}
           />
           {TIMEOUT_KEYS.map((key) => (
             <TextField

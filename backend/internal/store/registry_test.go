@@ -85,7 +85,7 @@ func TestRegistryRejectsInvalidForeignKeys(t *testing.T) {
 			`INSERT INTO projects SELECT 'bad', name, '/bad', git_remote_url, 'missing',
 			base_branch, default_role, review_role, context_location, test_command,
 			test_report_format, test_report_path, setup_command, copy_allowlist,
-			test_file_patterns, allowed_operations, approval_policy, timeouts,
+			allowed_operations, approval_policy, timeouts,
 			created_at, updated_at FROM projects WHERE id = 'project-a'`,
 			`UPDATE projects SET runner_id = 'missing' WHERE id = 'project-a'`,
 			`DELETE FROM runners WHERE id = 'mac-mini'`,
@@ -189,16 +189,42 @@ func seedRegistry(t *testing.T, db *sql.DB) {
 	}
 }
 
+const registryProjectColumns = `id, name, local_repo_path, git_remote_url, runner_id, base_branch,
+	default_role, review_role, context_location, test_command, test_report_format,
+	test_report_path, setup_command, copy_allowlist,
+	allowed_operations, approval_policy, timeouts, created_at, updated_at`
+
+// insertRegistryProject also seeds databases migrated only partway, for the
+// upgrade tests. NOT NULL columns that later migrations dropped (JSON lists in
+// the 0001 schema) receive an empty list so the row survives the upgrade.
 func insertRegistryProject(t *testing.T, db *sql.DB, id, path string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO projects
-		(id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-		default_role, review_role, context_location, test_command, test_report_format,
-		test_report_path, setup_command, copy_allowlist, test_file_patterns,
-		allowed_operations, approval_policy, timeouts, created_at, updated_at)
+	known := map[string]bool{}
+	for _, column := range strings.Split(registryProjectColumns, ",") {
+		known[strings.TrimSpace(column)] = true
+	}
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') WHERE "notnull" = 1 AND dflt_value IS NULL`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyColumns, legacyValues string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			t.Fatal(err)
+		}
+		if !known[column] {
+			legacyColumns += ", " + column
+			legacyValues += ", '[]'"
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO projects (`+registryProjectColumns+legacyColumns+`)
 		VALUES (?, 'Project', ?, 'https://example.invalid/project.git', 'mac-mini',
 		'main', 'developer', NULL, 'AGENTS.md', NULL, NULL, NULL, NULL,
-		'[]', '[]', '{}', '{}', '{"setupSec":60,"harnessSec":600,"testSec":120}', ?, ?)`,
+		'[]', '{}', '{}', '{"setupSec":60,"harnessSec":600,"testSec":120}', ?, ?`+legacyValues+`)`,
 		id, path, registryTime, registryTime)
 	if err != nil {
 		t.Fatal(err)

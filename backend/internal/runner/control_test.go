@@ -74,7 +74,7 @@ func TestStageTimeoutsProjectOverridesAndIndependentDeadlines(t *testing.T) {
 			}
 			cancel()
 		}
-		ctx, cancel := execution.stageContext(context.Background(), StageGate1)
+		ctx, cancel := execution.stageContext(context.Background(), StageGate3)
 		if _, limited := ctx.Deadline(); limited || ctx.Err() != nil {
 			t.Fatal("an unconfigured stage inherited a prior stage's deadline")
 		}

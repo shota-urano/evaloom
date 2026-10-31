@@ -123,7 +123,7 @@ func TestProjectsRegisterAndRetrieveTwoRepositories(t *testing.T) {
 			t.Fatalf("registered=%+v input=%v err=%v", p, input, err)
 		}
 		if p.ContextLocation != "AGENTS.md" || p.TestCommand != nil || p.ReviewRole != nil ||
-			p.CopyAllowlist == nil || p.TestFilePatterns == nil || p.AllowedOperations == nil || p.ApprovalPolicy == nil || p.Timeouts == nil {
+			p.CopyAllowlist == nil || p.AllowedOperations == nil || p.ApprovalPolicy == nil || p.Timeouts == nil {
 			t.Fatalf("defaults=%+v", p)
 		}
 		registered[p.ID] = p
@@ -189,7 +189,7 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
 	input["testCommand"], input["setupCommand"] = "go test ./...", "go mod download"
-	input["copyAllowlist"], input["testFilePatterns"] = []string{"fixtures/data.json"}, []string{"*_test.go"}
+	input["copyAllowlist"] = []string{"fixtures/data.json"}
 	input["allowedOperations"], input["approvalPolicy"] = map[string]any{"read": true}, map[string]any{"publish": "ask"}
 	input["timeouts"] = map[string]int{"setupSec": 60, "harnessSec": 600, "testSec": 120}
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
@@ -202,7 +202,7 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.LocalRepoPath != before.LocalRepoPath || after.Name != before.Name ||
 		after.UpdatedAt == before.UpdatedAt || after.SetupCommand != nil || after.TestCommand == nil || *after.TestCommand != "go test -race ./..." ||
 		!reflect.DeepEqual(after.Timeouts, map[string]int{"testSec": 180}) || !reflect.DeepEqual(after.AllowedOperations, map[string]any{"write": true}) ||
-		!reflect.DeepEqual(after.TestFilePatterns, before.TestFilePatterns) {
+		after.ContextLocation != before.ContextLocation {
 		t.Fatalf("before=%+v after=%+v", before, after)
 	}
 	var actor, targetType, targetID, detail string

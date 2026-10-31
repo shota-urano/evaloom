@@ -150,8 +150,6 @@ func (v *ErrorClass) UnmarshalJSON(data []byte) error {
 type BlockCause string
 
 const (
-	BlockGate1TestChange   BlockCause = "gate1_test_change"
-	BlockGate1Unverifiable BlockCause = "gate1_unverifiable"
 	BlockGate2MissingTests BlockCause = "gate2_missing_tests"
 	BlockGate2Unverifiable BlockCause = "gate2_unverifiable"
 	BlockGate3Mismatch     BlockCause = "gate3_mismatch"
@@ -161,7 +159,7 @@ const (
 
 func (v BlockCause) Validate() error {
 	switch v {
-	case BlockGate1TestChange, BlockGate1Unverifiable, BlockGate2MissingTests, BlockGate2Unverifiable, BlockGate3Mismatch, BlockContextConflict, BlockGitState:
+	case BlockGate2MissingTests, BlockGate2Unverifiable, BlockGate3Mismatch, BlockContextConflict, BlockGitState:
 		return nil
 	default:
 		return fmt.Errorf("invalid BlockCause %q", v)

@@ -3,7 +3,7 @@ package runner
 import "github.com/shota-urano/evaloom/backend/internal/adapter"
 
 // ExecutionUsage is sent with the succeeded result. WallTimeMS
-// covers this Execute call through completion of step 14, including preparation,
+// covers this Execute call through completion of step 13, including preparation,
 // verification and publishing. HarnessWallTimeMS measures step 8; HarnessUsage
 // preserves the adapter's own measurements. Nil means the stage/result was
 // unavailable (for example a resume starting at Gate 2), never measured zero.
@@ -13,7 +13,7 @@ type ExecutionUsage struct {
 	HarnessUsage      *adapter.Usage `json:"harnessUsage,omitempty"`
 }
 
-// completedUsage captures step 14's measurements once, before ReportResult's
+// completedUsage captures step 13's measurements once, before ReportResult's
 // transport retries. Only the Control Plane writes the management database.
 func (execution *Execution) completedUsage() *ExecutionUsage {
 	usage := &ExecutionUsage{

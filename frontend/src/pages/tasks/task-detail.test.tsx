@@ -112,11 +112,11 @@ describe('タスク詳細', () => {
         gateResults: [
           {
             id: 'g1',
-            gate: 1,
+            gate: 2,
             result: 'blocked',
             baseSha: '1'.repeat(40),
             targetSha: '2'.repeat(40),
-            findings: [{ rule: 'existing_test_deleted', path: 'src/foo.test.ts', line: 42, message: '既存のテストファイルが削除された' }],
+            findings: [{ rule: 'missing_test', path: 'src/foo.test.ts', line: 42, message: '受け入れ条件に対応するテストがない' }],
             createdAt: '2026-10-28T02:00:00Z',
           },
         ],
@@ -133,10 +133,10 @@ describe('タスク詳細', () => {
     expect(context).toHaveTextContent('project')
     expect(context).toHaveTextContent('AGENTS.md')
     expect(context).toHaveTextContent('f'.repeat(64))
-    const gate = screen.getByRole('listitem', { name: 'Gate 1' })
+    const gate = screen.getByRole('listitem', { name: 'Gate 2' })
     expect(gate).toHaveTextContent('blocked')
     expect(gate).toHaveTextContent('src/foo.test.ts:42')
-    expect(gate).toHaveTextContent('既存のテストファイルが削除された')
+    expect(gate).toHaveTextContent('受け入れ条件に対応するテストがない')
     // Blocked は中止と再実行ができる（04 3.2）。
     expect(screen.getByRole('button', { name: '停止（中止）' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '再実行（継続）' })).toBeInTheDocument()

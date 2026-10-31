@@ -56,7 +56,6 @@ function SettingsCard({ project }: { project: Project }) {
           <Row label={L.testReportPath}>{mono(project.testReportPath)}</Row>
           <Row label={L.setupCommand}>{mono(project.setupCommand)}</Row>
           <Row label={L.copyAllowlist}>{list(project.copyAllowlist)}</Row>
-          <Row label={L.testFilePatterns}>{list(project.testFilePatterns)}</Row>
           {TIMEOUT_KEYS.map((key) => (
             <Row key={key} label={TIMEOUT_LABELS[key]}>
               {project.timeouts[key] === undefined ? <span className="text-muted-foreground">全体の既定値</span> : project.timeouts[key]}

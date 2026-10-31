@@ -16,7 +16,6 @@ type ProjectSettings struct {
 	TestReportPath    *string        `json:"testReportPath"`
 	SetupCommand      *string        `json:"setupCommand"`
 	CopyAllowlist     []string       `json:"copyAllowlist"`
-	TestFilePatterns  []string       `json:"testFilePatterns"`
 	AllowedOperations map[string]any `json:"allowedOperations"`
 	ApprovalPolicy    map[string]any `json:"approvalPolicy"`
 	Timeouts          map[string]int `json:"timeouts"`
