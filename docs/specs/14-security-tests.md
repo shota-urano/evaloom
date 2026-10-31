@@ -80,23 +80,19 @@ fixture プロジェクトのセットアップコマンドとテストスクリ
 ### 3.4 ホスト側 Git 操作の防御テスト（[`09-sandbox.md`](./09-sandbox.md) 3.6）
 
 1. プローブ Adapter で、worktree が参照する Git 領域に、実行されたら印のファイルを作るフック（post-checkout、pre-push、reference-transaction など）と、`core.fsmonitor` などの実行系設定を書き込む。
-2. Runner が Gate 1〜3 と push を進める。
+2. Runner が Gate 2・3 と push を進める。
 3. 印のファイルが作られないことを確かめる。
 4. 作業用クローン案（Q27）を採った場合、本人のローカルリポジトリの ref と設定が変わらないことも確かめる。
 
-### 3.5 Gate の受け入れテスト（条件15, 17, 18）
+### 3.5 Gate の受け入れテスト（条件15, 18）
 
 プローブ Adapter に、決まった変更を commit させて Execution を通す。どのケースでも「テスト用リモートに push されない」ことをリモートの ref で確かめる。
 
 | ケース | 期待する結果 | 条件 |
 |---|---|---|
-| 既存のテストファイルを削除 | blocked（gate1_test_change）、通知が要求される | 17 |
-| 既存のテストの assertion を変更 | blocked（gate1_test_change）、通知 | 17 |
-| 新規テストに `.skip(` を追加 | blocked、通知 | 17 |
-| 新規テストに `describe.only` を追加 | blocked（Gate 1）。Gate 1 を続行で通した場合も Gate 2 で blocked（gate2_missing_tests） | 17, 18 |
-| テストの実行設定（`package.json` の test スクリプト等）を変更 | blocked、通知 | 17 |
-| CI の定義（`.github/workflows`）を変更 | blocked、通知 | 17 |
-| fixture のテスト設定で既存テストの一部を実行対象から外す変更を、Gate 1 のパターンに掛からない形で行う | blocked（gate2_missing_tests） | 18 |
+| 既存のテストファイルを削除 | blocked（gate2_missing_tests）、通知が要求される | 18 |
+| 新規テストに `describe.only` を追加 | blocked（gate2_missing_tests） | 18 |
+| fixture のテスト設定で既存テストの一部を実行対象から外す | blocked（gate2_missing_tests） | 18 |
 | skip 数が増える | blocked（gate2_missing_tests） | 18 |
 | Gate 2 の後に commit を追加する（テスト用のフックで差し込む） | blocked（gate3_mismatch） | 15 |
 | Gate 2 の後に未追跡ファイルを置く | blocked（gate3_mismatch） | 15 |
@@ -143,7 +139,7 @@ fixture プロジェクトのセットアップコマンドとテストスクリ
 - [`01-architecture.md`](./01-architecture.md) 認証と権限境界
 - [`08-harness-adapter.md`](./08-harness-adapter.md) 専用設定環境、ダミー Adapter
 - [`09-sandbox.md`](./09-sandbox.md) 隔離の条件
-- [`10-verification-gates.md`](./10-verification-gates.md) Gate 1〜3
+- [`10-verification-gates.md`](./10-verification-gates.md) Gate 2・3
 - [`11-git-publisher.md`](./11-git-publisher.md) push と PR
 - [`12-notification.md`](./12-notification.md) Blocked の通知
 

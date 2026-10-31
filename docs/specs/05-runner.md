@@ -59,14 +59,13 @@ loop:
 | 7 | 既存テストの基準値を取る（Q11 の採用案による） | `preparing` | [`10-verification-gates.md`](./10-verification-gates.md) 3.3 |
 | 8 | Adapter でハーネスを Harness Sandbox 内で起動し、終了まで監視する | `running` | [`08-harness-adapter.md`](./08-harness-adapter.md), [`09-sandbox.md`](./09-sandbox.md) |
 | 9 | HEAD の SHA を取得して記録する（harness_head_sha） | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) |
-| 10 | Gate 1：変更差分の検査 | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) 3.2 |
-| 11 | Gate 2：テストを Test Sandbox で1回実行し、既存テストを照合する | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) 3.3 |
-| 12 | Gate 3：検証 SHA と HEAD、作業ツリーの確認 | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) 3.4 |
-| 13 | Git Publisher で push し、PR を作成または更新する | `publishing` | [`11-git-publisher.md`](./11-git-publisher.md) |
-| 14 | 使用量を記録し、完了を報告する | `succeeded` | 3.7 |
+| 10 | Gate 2：テストを Test Sandbox で1回実行し、既存テストを照合する | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) 3.3 |
+| 11 | Gate 3：検証 SHA と HEAD、作業ツリーの確認 | `verifying` | [`10-verification-gates.md`](./10-verification-gates.md) 3.4 |
+| 12 | Git Publisher で push し、PR を作成または更新する | `publishing` | [`11-git-publisher.md`](./11-git-publisher.md) |
+| 13 | 使用量を記録し、完了を報告する | `succeeded` | 3.7 |
 
 - どの工程でも失敗したら、以降の工程を行わない。worktree は削除せず保持する（[`06-worktree.md`](./06-worktree.md) 3.6）。
-- 工程 10〜12 で Block 原因を見つけたら `blocked` を報告して止まる。自動で push・PR 作成を行わない（requirements 8.5）。
+- 工程 10〜11 で Block 原因を見つけたら `blocked` を報告して止まる。自動で push・PR 作成を行わない（requirements 8.5）。
 - ハーネスが commit を1つも作らなかった場合の扱いは requirements に記載が無い。`failed`（`execution_failed`、理由「変更なし」）とする案で、実装時に確定する。
 
 ### 3.4 ログ収集
@@ -176,7 +175,7 @@ heartbeat の要求と応答（案）:
 - [`07-context.md`](./07-context.md) 工程4, 5
 - [`08-harness-adapter.md`](./08-harness-adapter.md) 工程8
 - [`09-sandbox.md`](./09-sandbox.md) Sandbox
-- [`10-verification-gates.md`](./10-verification-gates.md) 工程7, 9〜12
+- [`10-verification-gates.md`](./10-verification-gates.md) 工程7, 9〜11
 - [`11-git-publisher.md`](./11-git-publisher.md) 工程2, 13
 
 ## 9. 実装単位
@@ -186,7 +185,7 @@ heartbeat の要求と応答（案）:
 - [ ] [Backend] pull ループと Runner 側の同時実行上限
   - 受け入れ基準: Runner 側で同時に動く Execution が2本を超えない; 仕事が無いときに claim を繰り返しても Execution が作られない
 - [ ] [Backend] Execution の工程実行器（工程表、resume_point からの再開、失敗時の打ち切り）
-  - 受け入れ基準: 各工程をスタブにしたテストで、工程が表の順に呼ばれる; 途中の工程が失敗すると後続が呼ばれない; resume_point=gate2 のとき工程11から始まる
+  - 受け入れ基準: 各工程をスタブにしたテストで、工程が表の順に呼ばれる; 途中の工程が失敗すると後続が呼ばれない; resume_point=gate3 のとき工程11から始まる
 - [ ] [Backend] ログ収集（行単位の読み取り、events 送信、ファイル保存、artifacts 登録、送信失敗時の再送）
   - 受け入れ基準: ハーネスの出力が SSE で管理画面に届く; Control Plane を止めている間もログファイルに書かれ、再開後に送られる
 - [ ] [Backend] ログの機密情報除外

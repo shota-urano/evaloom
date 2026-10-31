@@ -44,7 +44,7 @@ status: confirmed
 |---|---|---|---|
 | Dashboard | Runner 状態、実行中タスク、待機中タスク、Blocked のタスク、エラー状況（失敗・通知失敗） | `GET /api/runners`, `GET /api/tasks` | requirements 16.1 |
 | Projects 一覧 | 登録済みプロジェクト、割り当て中の Harness と版 | `GET /api/projects` | 16.2 |
-| Project 登録・編集 | Project ID、名称、パス、Git URL、Runner、Base Branch、テストコマンド、レポート形式と出力パス、セットアップコマンド、コピー許可リスト、テストファイルの追加パターン、タイムアウト、許可操作、承認ポリシー | `POST /api/projects`, `PATCH /api/projects/{id}` | 16.2 |
+| Project 登録・編集 | Project ID、名称、パス、Git URL、Runner、Base Branch、テストコマンド、レポート形式と出力パス、セットアップコマンド、コピー許可リスト、タイムアウト、許可操作、承認ポリシー | `POST /api/projects`, `PATCH /api/projects/{id}` | 16.2 |
 | Project 詳細 | 上記の表示、役割ごとの Harness Profile 割り当て、Project Context（固定対象の `AGENTS.md` の説明のみ） | `GET /api/projects/{id}`, `POST /api/projects/{id}/harnesses` | 16.2 |
 | Harnesses 一覧 | Harness、Adapter、使用中プロジェクト | `GET /api/harnesses`, `GET /api/projects` | 16.3 |
 | Harness 登録・編集 | ID、名称、専門分野、Adapter、リポジトリ、対応モデル、利用可能ツール、Tool Permissions | `POST /api/harnesses`, `PATCH /api/harnesses/{id}` | 16.3 |
@@ -64,7 +64,7 @@ Phase 1 で作らない画面: Evaluations（16.5）、Improvements（16.6）、
 | Execution 履歴 | 1タスクに複数。seq、mode、状態、Profile の版と commit SHA、開始・終了時刻、エラー分類 |
 | ログ | 選んだ Execution のログを SSE で表示する。実行中は追記し、終了後は保存済みログを表示する。stream（harness / setup / test / runner）で切り替える |
 | 固定した Context | context_revisions の一覧（階層、パス、ハッシュ） |
-| 検証結果 | Gate 1〜3 の結果、Finding、Gate 2 の実行数・skip 数と確認方法（ID による照合か件数による確認か） |
+| 検証結果 | Gate 2・3 の結果、Finding、Gate 2 の実行数・skip 数と確認方法（ID による照合か件数による確認か） |
 | 成果物 | 差分、テストレポートなど |
 | 操作 | 停止（中止）、再実行（継続 / 最初から）。最初からを選ぶときは確認ダイアログを出す |
 
@@ -72,11 +72,10 @@ Phase 1 で作らない画面: Evaluations（16.5）、Improvements（16.6）、
 
 requirements 8.5「止まったタスクは、本人が変更内容を確認し、続行を選んだ場合だけ先へ進む」。
 
-1. Block 原因と Finding（ファイル、行、理由）を表示する。
-2. Gate 1 の Block では、該当ファイルの差分を表示する。
-3. 本人が「続行」か「中止」を選ぶ。送信時に、画面に表示していた HEAD SHA を `headSha` として送る（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8）。
-4. SHA 不一致（422）が返ったら、内容が変わったことを表示して画面を読み直させる。
-5. `context_conflict` と `git_state` の Block では続行ボタンを出さず、中止と再実行だけを出す。
+1. Block 原因と Finding（テスト ID やファイル、理由）を表示する。
+2. 本人が「続行」か「中止」を選ぶ。送信時に、画面に表示していた HEAD SHA を `headSha` として送る（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8）。
+3. SHA 不一致（422）が返ったら、内容が変わったことを表示して画面を読み直させる。
+4. `context_conflict` と `git_state` の Block では続行ボタンを出さず、中止と再実行だけを出す。
 
 ### 3.5 状態の表示
 
@@ -140,6 +139,6 @@ requirements 8.5「止まったタスクは、本人が変更内容を確認し�
 - [ ] [Frontend] タスク詳細（Execution 履歴、SSE ログ、固定した Context、検証結果、成果物、中止・再実行）
   - 受け入れ基準: 実行中のログが逐次表示される; 再接続で欠けなく続きが表示される; 再実行で新しい Execution が履歴に増える
 - [ ] [Frontend] Blocked の確認と続行・中止
-  - 受け入れ基準: Finding と差分が表示される; 続行の送信に表示中の headSha が含まれる; context_conflict では続行ボタンが出ない; 422 で読み直しを促す
+  - 受け入れ基準: Finding が表示される; 続行の送信に表示中の headSha が含まれる; context_conflict では続行ボタンが出ない; 422 で読み直しを促す
 - [ ] [Frontend] Dashboard と Settings
   - 受け入れ基準: Runner の online / offline、実行中・待機中・Blocked の件数が表示される; 同時実行の上限が表示されるが変更できない

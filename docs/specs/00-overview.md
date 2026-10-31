@@ -46,7 +46,7 @@ Phase 1 の前提は次のとおり。
 │ Trusted Runner (Go, launchd 常駐)       → 05-runner.md         │
 │  ├ Worktree 準備                       → 06-worktree.md       │
 │  ├ Harness Adapter (Codex / Claude)    → 08-harness-adapter.md│
-│  ├ 検証 Gate 1〜3                      → 10-verification-gates.md │
+│  ├ 検証 Gate 2・3                      → 10-verification-gates.md │
 │  └ Git Publisher（push / PR 作成）      → 11-git-publisher.md  │
 │                                                                │
 │  ┌ Harness Sandbox ┐  ┌ Test Sandbox ┐  → 09-sandbox.md        │
@@ -73,7 +73,7 @@ requirements 8.2 の16工程のうち、Phase 1 で動かす工程と担当仕�
 | 8 | Collaboration Mode 判定 | Solo 固定 | 04 |
 | 9 | Worktree 準備 | 実施 | 06 |
 | 10 | Harness 実行（commit まで） | 実施 | 08, 09 |
-| 11 | テスト・検証 | Gate 1〜3 | 10 |
+| 11 | テスト・検証 | Gate 2・3（Gate 1 は Q36 で廃止） | 10 |
 | 12 | push・PR 作成 | Git Publisher | 11 |
 | 13 | 評価 | 行わない（Phase 3） | - |
 | 14 | 承認 | 行わない（Phase 2）。PR マージは本人が GitHub で行う | - |
@@ -95,7 +95,7 @@ requirements 8.2 の16工程のうち、Phase 1 で動かす工程と担当仕�
 | 07 | [`07-context.md`](./07-context.md) | 4階層 Context の Phase 1 での扱い、Context Builder、AGENTS.md と設定の固定 | Backend |
 | 08 | [`08-harness-adapter.md`](./08-harness-adapter.md) | 共通契約、Adapter インターフェース、Codex / Claude Code Adapter、ハーネスの専用設定環境 | Backend |
 | 09 | [`09-sandbox.md`](./09-sandbox.md) | Harness Sandbox / Test Sandbox の隔離条件、ネットワークポリシー、秘密情報の扱い | Backend |
-| 10 | [`10-verification-gates.md`](./10-verification-gates.md) | テストの弱体化の検出（Gate 1）、テスト実行と既存テストの照合（Gate 2）、SHA と作業ツリーの検証（Gate 3） | Backend |
+| 10 | [`10-verification-gates.md`](./10-verification-gates.md) | テスト実行と既存テストの照合（Gate 2）、SHA と作業ツリーの検証（Gate 3）。Gate 1 は Q36 で廃止 | Backend |
 | 11 | [`11-git-publisher.md`](./11-git-publisher.md) | 検証済み commit の push と PR 作成、ブランチ命名、再実行時の PR の扱い | Backend |
 | 12 | [`12-notification.md`](./12-notification.md) | macOS 通知（完了・失敗・Blocked・タイムアウト） | Backend |
 | 13 | [`13-management-ui.md`](./13-management-ui.md) | Phase 1 の管理画面（Dashboard / Projects / Harnesses / Tasks / Settings） | Frontend |
@@ -121,7 +121,7 @@ requirements 8.2 の16工程のうち、Phase 1 で動かす工程と担当仕�
 | 14 | ハーネスから Control API・DB・GitHub 書き込み認証情報にアクセスできないことをテストで確認できる | 09, 14 |
 | 15 | テストした commit と同じ commit だけが push される | 10, 11 |
 | 16 | セットアップとテストのコードから管理 DB・Control API・秘密情報にアクセスできないことをテストで確認できる | 09, 14 |
-| 17 | テストの削除・無効化・変更、skip/only 追加、実行設定・CI 定義の変更で push せず止まり、通知される | 10, 12, 14 |
+| 17 | （欠番。Q36 で Gate 1 を廃止した） | - |
 | 18 | 既存テストが欠けて実行された場合に push せず止まる | 10, 14 |
 | 31 | 新しい Adapter・モデルの追加で中央のコードは登録処理以外を変更しない | 08 |
 
@@ -203,10 +203,10 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q7 | Claude Code・Codex の認証方式（サブスクリプション / API キー）と各社規約での自動実行の可否 | 決定（2026-10-29）: サブスクリプション。各社規約での自動実行の可否は本人が確認する | 08, 09 |
 | Q8 | モデル API の認証情報をハーネスから見えないようにする方式（15.6） | 決定（2026-10-29）: Q7 でサブスクリプションを採ったため、認証付与プロキシは使わず、Evaloom 専用で用途を絞った認証情報を渡す。詳細は 09 の 3.5 | 09 |
 | Q9 | ハーネスの専用設定環境の作り方（7.5） | 実行ごとの専用 HOME と各 CLI の設定ディレクトリ指定（提案）。実際に読み込んだ指示を 14 のテストで検証する | 08 |
-| Q10 | テストの弱体化として検出する具体的な判定規則（8.5, 21章） | 10 にパターン案。プロジェクトごとに追加パターンを登録できるようにする | 10 |
+| Q10 | テストの弱体化として検出する具体的な判定規則（8.5, 21章） | Q36 で Gate 1 を廃止したため不要 | 10 |
 | Q11 | 既存テストの ID 一覧・件数をどこから得るか | 開始点 SHA でテストを1回実行して基準値を取る案と、テストランナーの一覧出力を使う案。10 に比較 | 10 |
 | Q12 | テストランナーの結果形式（ID・実行数・skip 数の取り出し方） | Project Registry にレポート形式（JUnit XML 等）と出力パスを登録（提案） | 03, 10 |
-| Q13 | Gate 1 の基準 SHA：再実行で同じブランチに追加 commit するとき、前回本人が確認済みの差分を再び止めるか | 本人が続行を選んだ時点の SHA を記録し、それ以降の差分だけを検査する案 | 10 |
+| Q13 | Gate 1 の基準 SHA：再実行で同じブランチに追加 commit するとき、前回本人が確認済みの差分を再び止めるか | Q36 で Gate 1 を廃止したため不要 | 10 |
 | Q14 | Blocked から続行を選ぶ操作を、どの SHA に結び付けるか | 続行の判断を、その時点の HEAD SHA に結び付け、SHA が変わったら無効（提案） | 04, 10 |
 | Q15 | タイムアウト値（ハーネス実行・setup・テスト） | requirements に値なし。Project Registry と全体設定で持つ | 03, 05 |
 | Q16 | 費用上限（15.2 必須対策）を Phase 1 で実装するか | 15.2 は必須対策に挙げるが Phase 1 の範囲が不明。トークン数・実行時間の記録（usage_records）は Phase 1 で行う案 | 02, 05 |
@@ -228,5 +228,5 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q32 | fresh で再実行するときに前の PR が開いていたら、Evaloom が自動でクローズするか | 自動ではクローズせず Blocked にして本人に整理を求める案 | 11 |
 | Q33 | 実行中にハーネスが `AGENTS.md` 等の指示ファイルを変更した場合に Block するか | 知らせるだけで Block しない案 | 07, 10 |
 | Q34 | ハーネスが Web で調べものをしたいときの接続方法（ハーネス用 Sandbox はモデル API にしかつながらない） | 1. モデル側の Web 検索機能に任せる（検索とページ取得はモデル提供元のサーバー側で行われ、Sandbox の接続先は増えない）を推奨。足りなければ 2. コードも認証情報も持たせず結果を文章で返すだけの調査専用 Sandbox を別に用意する。ハーネス用 Sandbox を Web に開放する案は採らない（プロンプトインジェクションとコード・認証情報の持ち出しのため）。ハーネスを Sandbox で実際に動かすタスクの前に決める | 08, 09 |
-| Q35 | 本人が見ずに main へ入れてよい Project（例: ハーネスのリポジトリ）で、PR を経ずにベースブランチへ push するか | 決定（2026-10-30）: Phase 2 で、承認ポリシーで PR マージを承認対象から外した Project に限り、Gate 1〜3 を通った commit をベースブランチへ fast-forward で push し、PR は作らない（requirements 8.5, 15.3 に追記）。既定は今のまま PR を作り本人がマージする。Phase 1 の仕様と実装は変えない。承認ポリシーの値の形、push 前の確認（3.1 のブランチ名の接頭辞の扱い）、GitHub のルールセットで App を例外にする手順は Phase 2 の仕様で決める | 11 |
-| Q36 | 作業結果の確かめ方のうち、テストの弱体化の検出（Gate 1、受け入れ条件17）を Evaloom 本体に持たせるか | 決定（2026-10-31）: Gate 1 をなくし、開発タスクの確認は Gate 2（登録したテストコマンドをハーネスの外で流し、既存テストの ID がすべて実行され skip が増えないことを照合）と Gate 3（テストした commit と push する commit の一致）、本人の PR レビューとする。理由: 差分のファイル名パターンで弱体化を検出する方式は、テストの道具・設定ファイル・期待値ファイルの種類だけ列挙が要り、codex のレビューを6回受けても影響度大の指摘が残った。Evaloom は将来開発以外のタスクも扱うため、開発に固有の判定は本体に置かない。調査（`docs/research/2026-10-31-ai-coding-verification.md`）でも、差分パターンで検出する製品は無かった。次の改善の候補は、テストを書く回と実装する回に分け、Gate 2 の前に1回目のテストを強制的に戻す方式（SWE-bench と同じ考え方）。requirements 8.5・受け入れ条件17と 10 の書き換えは別途行う。Gate 1 の試作は `feat/pdy.1-gate1-diff` に残す（未マージ） | 10 |
+| Q35 | 本人が見ずに main へ入れてよい Project（例: ハーネスのリポジトリ）で、PR を経ずにベースブランチへ push するか | 決定（2026-10-30）: Phase 2 で、承認ポリシーで PR マージを承認対象から外した Project に限り、Gate 1〜3 を通った commit をベースブランチへ fast-forward で push し（Q36 の後は Gate 2・3）、PR は作らない（requirements 8.5, 15.3 に追記）。既定は今のまま PR を作り本人がマージする。Phase 1 の仕様と実装は変えない。承認ポリシーの値の形、push 前の確認（3.1 のブランチ名の接頭辞の扱い）、GitHub のルールセットで App を例外にする手順は Phase 2 の仕様で決める | 11 |
+| Q36 | 作業結果の確かめ方のうち、テストの弱体化の検出（Gate 1、受け入れ条件17）を Evaloom 本体に持たせるか | 決定（2026-10-31）: Gate 1 をなくし、開発タスクの確認は Gate 2（登録したテストコマンドをハーネスの外で流し、既存テストの ID がすべて実行され skip が増えないことを照合）と Gate 3（テストした commit と push する commit の一致）、本人の PR レビューとする。理由: 差分のファイル名パターンで弱体化を検出する方式は、テストの道具・設定ファイル・期待値ファイルの種類だけ列挙が要り、codex のレビューを6回受けても影響度大の指摘が残った。Evaloom は将来開発以外のタスクも扱うため、開発に固有の判定は本体に置かない。調査（`docs/research/2026-10-31-ai-coding-verification.md`）でも、差分パターンで検出する製品は無かった。次の改善の候補は、テストを書く回と実装する回に分け、Gate 2 の前に1回目のテストを強制的に戻す方式（SWE-bench と同じ考え方）。requirements 8.5・15.3・15.7・21章、受け入れ条件17（欠番にした）、10 と関連する仕様は書き換え済み。Gate 1 の試作は `feat/pdy.1-gate1-diff` に残す（未マージ） | 10 |
