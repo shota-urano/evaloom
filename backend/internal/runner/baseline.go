@@ -138,6 +138,7 @@ func (stage BaselineStage) Run(ctx context.Context, execution *Execution) error 
 					return fmt.Errorf("runner: baseline test IDs were not persisted")
 				}
 				run.TestIDsArtifactID = &id
+				execution.BaselineIDs = append([]string{}, report.TestIDs...)
 			}
 		}
 	}

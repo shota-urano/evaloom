@@ -16,13 +16,31 @@ import (
 // ExecutionResult uses the existing result endpoint's transition contract.
 // Stage-specific metadata reporting remains the responsibility of stage code.
 type ExecutionResult struct {
-	FromStatus model.ExecutionStatus `json:"fromStatus"`
-	Status     model.ExecutionStatus `json:"status"`
-	ErrorClass model.ErrorClass      `json:"errorClass,omitempty"`
-	WorktreeID string                `json:"worktreeId,omitempty"`
-	BaseSHA    string                `json:"baseSha,omitempty"`
-	Baseline   *model.TestRun        `json:"baseline,omitempty"`
-	Usage      *ExecutionUsage       `json:"usage,omitempty"`
+	FromStatus     model.ExecutionStatus `json:"fromStatus"`
+	Status         model.ExecutionStatus `json:"status"`
+	ErrorClass     model.ErrorClass      `json:"errorClass,omitempty"`
+	WorktreeID     string                `json:"worktreeId,omitempty"`
+	BaseSHA        string                `json:"baseSha,omitempty"`
+	Baseline       *model.TestRun        `json:"baseline,omitempty"`
+	Usage          *ExecutionUsage       `json:"usage,omitempty"`
+	HarnessHeadSHA string                `json:"harnessHeadSha,omitempty"`
+	VerifiedSHA    string                `json:"verifiedSha,omitempty"`
+	GateResults    []GateResult          `json:"gateResults,omitempty"`
+	TestRuns       []model.TestRun       `json:"testRuns,omitempty"`
+	Block          *ResultBlock          `json:"block,omitempty"`
+}
+
+type GateResult struct {
+	Gate      int             `json:"gate"`
+	Result    string          `json:"result"`
+	BaseSHA   string          `json:"baseSha"`
+	TargetSHA string          `json:"targetSha"`
+	Findings  []model.Finding `json:"findings"`
+}
+
+type ResultBlock struct {
+	Cause   model.BlockCause `json:"cause"`
+	HeadSHA string           `json:"headSha"`
 }
 
 type ResultReporter interface {
