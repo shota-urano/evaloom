@@ -35,9 +35,18 @@ base_shaを使う。FindingにはHEAD取得不能の理由と参照値の由来�
 キャンセルとタイムアウトの場合はBlockにせず、それぞれの終了状態を報告する。
 
 resume_point=gate3のclaimには、そのExecutionのharness_head_sha、verified_sha、
-元のverify測定を載せる。worktreeには保存済みコピー記録とブランチ名を載せる。
+元のverify測定と、直近のBlockで本人が続行を選んだHEADをresumeHeadShaとして載せる。
+worktreeには保存済みコピー記録とブランチ名を載せる。
 既存claim APIの入力スナップショットを拡張し、新しいAPIやDB列は追加しない。
 再開時はGate 3がこれらを読み戻し、再確認する。テストは再実行しない。
+現在のHEADがresumeHeadShaと異なる場合は、仕様04の3.8.4に従いgit_stateで止める。
+本人が確認したSHAを取得できない場合も公開しない。
+Gate 2からの続行では、本人用resume APIが同じExecutionの元のverify測定から
+verified_shaを記録する。対象SHAがharness_head_shaとBlockのhead_shaに一致し、
+終了コードと失敗数が0、タイムアウトが無く、実行数が正の場合だけ記録する。
+元のGate 2の結果・Finding・test_runsは変更しない。
+基準値を照合できなくても今回の測定値があればGate 3で再確認できる。
+今回の実行数も不明な場合や全件skipの場合はGate 3で再びBlockする。
 新しいmode=continueのExecutionには前のverify測定を引き継がず、
 元のbaselineだけを再利用してGate 2を実行する。
 
@@ -53,8 +62,6 @@ resume_point=gate3のclaimには、そのExecutionのharness_head_sha、verified
   公開しない。復元時のDB更新経路は先行工程と同じ境界に残る。
 - `cmd/evaloom-runner`は先行タスクの時点で全工程の接続待ちである。
   本変更は製品の工程実行器までを接続する。常駐プロセス全体の接続は含めない。
-- Gate 2でBlockedになった測定のverified_shaを続行時にどう扱うかは、
-  後続のevaloom-pdy.6で扱う。本変更は検証SHAが無い場合の自動公開を許可しない。
 
 結合テストでは隔離ランタイムと周辺工程を置き換え、実際のGit、工程実行器、
 HTTP報告、SQLiteの保存を確認する。continueとGate 3の再開はRunnerを作り直し、

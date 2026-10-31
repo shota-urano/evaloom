@@ -32,5 +32,11 @@ abortは既存cancelと同じ結果保存・遷移処理を使い、worktreeを�
 
 continueで再開できる原因は`gate2_missing_tests`・`gate2_unverifiable`・
 `gate3_mismatch`で、どれも`resume_point`を`gate3`にする（Gate 1は廃止済み）。
-Runnerによる再開時のHEAD再検証とGate実行は
-仕様04の3.8手順4および仕様10の別実装単位に属する。
+Gate 2で止まった場合の続行では、同じExecutionのverify測定からverified_shaを記録する。
+測定が1件だけ存在し、そのSHAがharness_head_shaとBlockのhead_shaに一致し、
+終了コードと失敗数が0、タイムアウトが無く、実行数が正であることを条件とする。
+条件を満たさなくても続行判断は保存し、Gate 3の再確認で止める。
+Gate 3からの続行ではverified_shaを作り直さない。
+判断・SHA・状態・監査ログは同じトランザクションで保存する。
+Runnerは再claimで取得した直近の判断済みBlockのhead_shaを再開時に照合し、
+一致しなければgit_stateで再びBlockする。詳細は`../runner/gate3.md`を参照。

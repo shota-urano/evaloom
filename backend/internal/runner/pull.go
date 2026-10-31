@@ -22,6 +22,7 @@ type Claim struct {
 		Seq            int            `json:"seq"`
 		Mode           string         `json:"mode"`
 		ResumePoint    *string        `json:"resumePoint"`
+		ResumeHeadSHA  string         `json:"resumeHeadSha"`
 		HarnessHeadSHA string         `json:"harnessHeadSha"`
 		VerifiedSHA    string         `json:"verifiedSha"`
 		VerifyRun      *model.TestRun `json:"verifyRun"`

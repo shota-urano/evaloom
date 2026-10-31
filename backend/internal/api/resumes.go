@@ -109,6 +109,18 @@ func saveBlockDecision(r *http.Request, db *sql.DB, id string, input resumeInput
 		}
 		to = model.ExecutionPending
 		_, err = tx.ExecContext(ctx, `UPDATE executions SET resume_point = ? WHERE id = ? AND status = 'blocked'`, resumePoint, executionID)
+		if err == nil && blockGate(cause) == 2 {
+			// Owner approval waives Gate 2's comparison, not Gate 3's measured
+			// commit/count check. Bind verification to the original successful
+			// run, never to the submitted SHA alone or to another Execution.
+			_, err = tx.ExecContext(ctx, `UPDATE executions SET verified_sha = (
+				SELECT target_sha FROM test_runs WHERE execution_id = ? AND kind = 'verify'
+				AND target_sha = executions.harness_head_sha AND target_sha = ?
+				AND exit_code = 0 AND failed = 0 AND timed_out = 0
+				AND skipped >= 0 AND total > skipped
+				AND (SELECT count(*) FROM test_runs WHERE execution_id = ? AND kind = 'verify') = 1
+			) WHERE id = ? AND verified_sha IS NULL`, executionID, headSHA, executionID, executionID)
+		}
 	} else {
 		// Share cancellation metadata, finish time and worktree retention effects.
 		err = saveResult(r, tx, execution, resultInput{Status: string(to)})
