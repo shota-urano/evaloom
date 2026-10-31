@@ -111,7 +111,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 }
 
 func TestGate3HTTPAcceptance(t *testing.T) {
-	for _, name := range []string{"Clean", "CommitAfterTests", "Untracked", "Modified", "Staged", "UnchangedCopies", "ChangedCopy", "ReportNotExcluded", "ZeroExecuted", "CorruptIndex"} {
+	for _, name := range []string{"Clean", "CommitAfterTests", "Untracked", "Modified", "Staged", "UnchangedCopies", "ChangedCopy", "ReportNotExcluded", "ZeroExecuted", "CorruptIndex", "CorruptHEAD"} {
 		t.Run(name, func(t *testing.T) {
 			f := newGate3Fixture(t)
 			if name == "UnchangedCopies" || name == "ChangedCopy" {
@@ -157,6 +157,8 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 					gate2Write(t, filepath.Join(f.path, "local.conf"), "changed")
 				case "CorruptIndex":
 					gate2Write(t, filepath.Join(f.path, ".git", "index"), "invalid index")
+				case "CorruptHEAD":
+					gate2Write(t, filepath.Join(f.path, ".git", "HEAD"), "ref: refs/heads/missing\n")
 				}
 			}
 			err = f.executor(t, p, after, nil, nil).Execute(ctx, *claim)
@@ -178,10 +180,21 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 			if err := f.db.QueryRow(`SELECT cause,head_sha FROM execution_blocks WHERE execution_id=? AND gate_result_id IN (SELECT id FROM gate_results WHERE gate=3)`, claim.Execution.ID).Scan(&cause, &blockedHead); err != nil {
 				t.Fatal(err)
 			}
-			if status != "blocked" || result != "blocked" || cause != "gate3_mismatch" || blockedHead != target || target != gate2Git(t, f.path, "rev-parse", "HEAD") || name == "CommitAfterTests" && target == tested {
+			wantHead := tested
+			if name == "CorruptHEAD" {
+				if _, err := exec.Command("git", "-C", f.path, "rev-parse", "--verify", "HEAD^{commit}").Output(); err == nil {
+					t.Fatal("fixture HEAD must be unreadable")
+				}
+				if tested == f.sha {
+					t.Fatal("expected the last observed harness commit, not the base commit")
+				}
+			} else {
+				wantHead = gate2Git(t, f.path, "rev-parse", "HEAD")
+			}
+			if status != "blocked" || result != "blocked" || cause != "gate3_mismatch" || blockedHead != target || target != wantHead || name == "CommitAfterTests" && target == tested {
 				t.Fatalf("status=%s result=%s cause=%s head=%s tested=%s", status, result, cause, blockedHead, tested)
 			}
-			if name == "CorruptIndex" {
+			if name == "CorruptIndex" || name == "CorruptHEAD" {
 				// Gate 2 has not reported its successful measurement before Gate 3.
 				// Inspection failures must flush it together with the Block.
 				var runSHA, gate2SHA, findings string
@@ -199,6 +212,15 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 				if err := json.Unmarshal([]byte(findings), &saved); err != nil || len(saved) != 1 || saved[0].Rule != "fixture_mismatch" || saved[0].Message == "" {
 					t.Fatalf("inspection failure reason=%s err=%v", findings, err)
 				}
+				if name == "CorruptHEAD" && saved[0].Message != "現在のHEADを取得できない。記録したSHAはハーネス終了時に確認したSHAであり、現在のHEADは未確認" {
+					t.Fatalf("last observed SHA must be distinguished from the current HEAD: %s", findings)
+				}
+				var taskStatus, worktreeStatus, harnessSHA string
+				if err := f.db.QueryRow(`SELECT t.status,w.status,e.harness_head_sha FROM executions e
+					JOIN tasks t ON t.id=e.task_id JOIN worktrees w ON w.id=e.worktree_id WHERE e.id=?`, claim.Execution.ID).Scan(&taskStatus, &worktreeStatus, &harnessSHA); err != nil ||
+					taskStatus != "blocked" || worktreeStatus != "retained" || harnessSHA != tested {
+					t.Fatalf("task=%s worktree=%s harness=%s tested=%s err=%v", taskStatus, worktreeStatus, harnessSHA, tested, err)
+				}
 			}
 			var gates, blocks, notifications int
 			if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM execution_events WHERE type='gate_result'),
@@ -210,21 +232,28 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 }
 
 func TestGate3HTTPInspectionCancellationAndTimeout(t *testing.T) {
-	for _, name := range []string{"Cancelled", "TimedOut"} {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, command string
+		timedOut      bool
+	}{
+		{"Cancelled", "status", false}, {"TimedOut", "status", true},
+		{"HEADCancelled", "rev-parse", false}, {"HEADTimedOut", "rev-parse", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := newGate3Fixture(t)
 			realGit, err := exec.LookPath("git")
 			if err != nil {
 				t.Fatal(err)
 			}
 			bin := t.TempDir()
-			started := filepath.Join(bin, "status-started")
-			// Only the Git status subprocess is held. HEAD, configuration reads,
-			// Gate 2, HTTP reporting and persistence use their real implementations.
+			started := filepath.Join(bin, "inspection-started")
+			armed := filepath.Join(bin, "gate3-started")
+			// Hold only the selected Git command during Gate 3. Gate 2, HTTP
+			// reporting and persistence use their real implementations.
 			script := `#!/bin/sh
 for arg in "$@"; do
-  if [ "$arg" = status ]; then
-    printf started > "$EVALOOM_TEST_STATUS_STARTED"
+  if [ "$arg" = "$EVALOOM_TEST_INSPECTION_COMMAND" ] && [ -f "$EVALOOM_TEST_GATE3_STARTED" ]; then
+    printf started > "$EVALOOM_TEST_INSPECTION_STARTED"
     exec /bin/sleep 30
   fi
 done
@@ -234,7 +263,9 @@ exec "$EVALOOM_TEST_REAL_GIT" "$@"
 				t.Fatal(err)
 			}
 			t.Setenv("EVALOOM_TEST_REAL_GIT", realGit)
-			t.Setenv("EVALOOM_TEST_STATUS_STARTED", started)
+			t.Setenv("EVALOOM_TEST_INSPECTION_COMMAND", tc.command)
+			t.Setenv("EVALOOM_TEST_INSPECTION_STARTED", started)
+			t.Setenv("EVALOOM_TEST_GATE3_STARTED", armed)
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -253,7 +284,10 @@ exec "$EVALOOM_TEST_REAL_GIT" "$@"
 				}
 				run := executor.stages[i].run
 				executor.stages[i].run = func(ctx context.Context, e *Execution) error {
-					if name == "TimedOut" {
+					if err := os.WriteFile(armed, []byte("started"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if tc.timedOut {
 						ctx, stop := context.WithTimeout(ctx, 2*time.Second)
 						defer stop()
 						return run(ctx, e)
@@ -281,7 +315,7 @@ exec "$EVALOOM_TEST_REAL_GIT" "$@"
 				}
 			}
 			wantErr, wantStatus, wantClass := context.Canceled, "cancelled", "cancelled"
-			if name == "TimedOut" {
+			if tc.timedOut {
 				wantErr, wantStatus, wantClass = context.DeadlineExceeded, "timed_out", "timeout"
 			}
 			err = executor.Execute(ctx, *claim)
@@ -289,7 +323,7 @@ exec "$EVALOOM_TEST_REAL_GIT" "$@"
 				t.Fatalf("err=%v tests=%d published=%d", err, f.calls, f.published)
 			}
 			if _, err := os.Stat(started); err != nil {
-				t.Fatalf("Git status was not reached: %v", err)
+				t.Fatalf("Git %s was not reached: %v", tc.command, err)
 			}
 			var status, class string
 			var runs, gate2, gate3, blocks, notifications int
@@ -317,7 +351,7 @@ func (f *gate3Fixture) queueResume(t *testing.T) {
 }
 
 func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
-	for _, name := range []string{"StillDirty", "Repaired", "Cleaned", "Copies", "MissingVerifiedSHA", "MissingRun", "CorruptIndex", "RepairedIndex"} {
+	for _, name := range []string{"StillDirty", "Repaired", "Cleaned", "Copies", "MissingVerifiedSHA", "MissingRun", "CorruptIndex", "RepairedIndex", "CorruptHEAD", "RepairedHEAD", "MissingHarnessHeadSHA"} {
 		t.Run(name, func(t *testing.T) {
 			f := newGate3Fixture(t)
 			if name == "Copies" {
@@ -341,17 +375,22 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 			if err != nil || first == nil {
 				t.Fatalf("claim=%+v %v", first, err)
 			}
-			var originalIndex []byte
-			indexPath := filepath.Join(f.path, ".git", "index")
+			indexFailure := name == "CorruptIndex" || name == "RepairedIndex"
+			headFailure := name == "CorruptHEAD" || name == "RepairedHEAD" || name == "MissingHarnessHeadSHA"
+			var originalGitFile []byte
+			gitPath, invalid := filepath.Join(f.path, ".git", "index"), "invalid index"
+			if headFailure {
+				gitPath, invalid = filepath.Join(f.path, ".git", "HEAD"), "ref: refs/heads/missing\n"
+			}
 			err = f.executor(t, p, func() {
-				if name == "CorruptIndex" || name == "RepairedIndex" {
+				if indexFailure || headFailure {
 					var err error
-					originalIndex, err = os.ReadFile(indexPath)
+					originalGitFile, err = os.ReadFile(gitPath)
 					if err != nil {
 						t.Error(err)
 						return
 					}
-					gate2Write(t, indexPath, "invalid index")
+					gate2Write(t, gitPath, invalid)
 					return
 				}
 				gate2Write(t, filepath.Join(f.path, "unexpected"), "x")
@@ -359,9 +398,9 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 			if !errors.Is(err, ErrGate3Stopped) {
 				t.Fatal(err)
 			}
-			if name == "RepairedIndex" {
-				gate2Write(t, indexPath, string(originalIndex))
-			} else if name != "StillDirty" && name != "CorruptIndex" {
+			if name == "RepairedIndex" || name == "RepairedHEAD" {
+				gate2Write(t, gitPath, string(originalGitFile))
+			} else if name != "StillDirty" && !indexFailure && !headFailure {
 				if err := os.Remove(filepath.Join(f.path, "unexpected")); err != nil {
 					t.Fatal(err)
 				}
@@ -379,6 +418,11 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 			}
 			if name == "MissingRun" {
 				if _, err := f.db.Exec(`DELETE FROM test_runs WHERE kind='verify'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if name == "MissingHarnessHeadSHA" {
+				if _, err := f.db.Exec(`UPDATE executions SET harness_head_sha=NULL`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -408,7 +452,7 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 				}
 			}
 			err = f.executor(t, p, nil, nil, prepare).Execute(ctx, *claim)
-			pass := name == "Repaired" || name == "Cleaned" || name == "Copies" || name == "RepairedIndex"
+			pass := name == "Repaired" || name == "Cleaned" || name == "Copies" || name == "RepairedIndex" || name == "RepairedHEAD"
 			if pass && err != nil || !pass && !errors.Is(err, ErrGate3Stopped) || f.calls != 2 || (f.published == 1) != pass || name == "Cleaned" && !restored {
 				t.Fatalf("resume=%v tests=%d published=%d restored=%v", err, f.calls, f.published, restored)
 			}
@@ -416,17 +460,37 @@ func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {
 			if err := f.db.QueryRow(`SELECT count(*) FROM gate_results WHERE gate=3`).Scan(&checks); err != nil || checks != 2 {
 				t.Fatalf("checks=%d %v", checks, err)
 			}
+			if headFailure && !pass {
+				var status, target, blockedHead, findings string
+				if err := f.db.QueryRow(`SELECT e.status,g.target_sha,b.head_sha,g.findings FROM executions e
+					JOIN gate_results g ON g.execution_id=e.id JOIN execution_blocks b ON b.gate_result_id=g.id
+					WHERE e.id=? AND g.gate=3 ORDER BY g.rowid DESC LIMIT 1`, first.Execution.ID).Scan(&status, &target, &blockedHead, &findings); err != nil {
+					t.Fatal(err)
+				}
+				wantSHA := claim.Execution.HarnessHeadSHA
+				wantReason := "現在のHEADを取得できない。記録したSHAはハーネス終了時に確認したSHAであり、現在のHEADは未確認"
+				if name == "MissingHarnessHeadSHA" {
+					wantSHA = f.sha
+					wantReason = "現在のHEADを取得できない。記録したSHAは開始点のSHAであり、現在のHEADは未確認"
+				}
+				var saved []model.Finding
+				if err := json.Unmarshal([]byte(findings), &saved); err != nil || len(saved) != 1 || saved[0].Message != wantReason ||
+					status != "blocked" || target != wantSHA || blockedHead != wantSHA {
+					t.Fatalf("resumed HEAD failure: status=%s target=%s block=%s want=%s findings=%s err=%v", status, target, blockedHead, wantSHA, findings, err)
+				}
+			}
 		})
 	}
 }
 
 func TestGate3HTTPContinueUsesNewVerificationAfterCleanup(t *testing.T) {
 	for _, tc := range []struct {
-		name                  string
-		cleaned, corruptIndex bool
+		name                               string
+		cleaned, corruptIndex, corruptHEAD bool
 	}{
-		{"Retained", false, false}, {"Cleaned", true, false},
-		{"CorruptIndex", false, true}, {"CleanedCorruptIndex", true, true},
+		{"Retained", false, false, false}, {"Cleaned", true, false, false},
+		{"CorruptIndex", false, true, false}, {"CleanedCorruptIndex", true, true, false},
+		{"CorruptHEAD", false, false, true}, {"CleanedCorruptHEAD", true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cleaned := tc.cleaned
@@ -479,28 +543,35 @@ func TestGate3HTTPContinueUsesNewVerificationAfterCleanup(t *testing.T) {
 				}
 			}
 			var afterTest func()
-			if tc.corruptIndex {
-				// Resolve the actual index for retained and restored linked worktrees.
+			var lastHead string
+			inspectionFailure := tc.corruptIndex || tc.corruptHEAD
+			if inspectionFailure {
+				// Resolve Git metadata for retained and restored linked worktrees.
 				afterTest = func() {
-					indexPath := gate2Git(t, f.path, "rev-parse", "--git-path", "index")
-					if !filepath.IsAbs(indexPath) {
-						indexPath = filepath.Join(f.path, indexPath)
+					lastHead = gate2Git(t, f.path, "rev-parse", "HEAD")
+					name, invalid := "index", "invalid index"
+					if tc.corruptHEAD {
+						name, invalid = "HEAD", "ref: refs/heads/missing\n"
 					}
-					gate2Write(t, indexPath, "invalid index")
+					gitPath := gate2Git(t, f.path, "rev-parse", "--git-path", name)
+					if !filepath.IsAbs(gitPath) {
+						gitPath = filepath.Join(f.path, gitPath)
+					}
+					gate2Write(t, gitPath, invalid)
 				}
 			}
 			err = f.executor(t, p, afterTest, prepare, nil).Execute(ctx, *claim)
-			if !tc.corruptIndex && err != nil || tc.corruptIndex && !errors.Is(err, ErrGate3Stopped) {
+			if !inspectionFailure && err != nil || inspectionFailure && !errors.Is(err, ErrGate3Stopped) {
 				t.Fatalf("continued execution: %v", err)
 			}
 			var baseline, verify int
 			wantPublished := 2
-			if tc.corruptIndex {
+			if inspectionFailure {
 				wantPublished = 1
 				var status, cause, head, tested string
 				if err := f.db.QueryRow(`SELECT e.status,b.cause,b.head_sha,e.verified_sha FROM executions e
 					JOIN execution_blocks b ON b.execution_id=e.id WHERE e.id=?`, id).Scan(&status, &cause, &head, &tested); err != nil ||
-					status != "blocked" || cause != "gate3_mismatch" || head != tested || head != gate2Git(t, f.path, "rev-parse", "HEAD") {
+					status != "blocked" || cause != "gate3_mismatch" || head != tested || head != lastHead {
 					t.Fatalf("continue: status=%s cause=%s head=%s tested=%s err=%v", status, cause, head, tested, err)
 				}
 			}

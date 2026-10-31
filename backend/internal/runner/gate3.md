@@ -27,6 +27,11 @@ harness_head_shaとverified_shaを置換せず、Blockのhead_shaと同じSHAを
 状態変更は既存トランザクションで保存する。Blockでは後続工程を実行しない。
 HEAD取得後にGitの状態確認が失敗した場合も、取得済みHEADでBlockを報告し、
 未送信のGate 2の測定結果を保存する。Gitのエラー本文は報告へ含めない。
+HEAD自体を取得できない場合もgate3_mismatchでBlockを報告する。
+既存result APIがSHAを必須とするため、target_shaとBlockのhead_shaには
+最後に確認したharness_head_shaを参照値として保存する。それも無い再開では
+base_shaを使う。FindingにはHEAD取得不能の理由と参照値の由来を明記し、
+現在のHEADが未確認であることを区別する。元の測定SHAは変更しない。
 キャンセルとタイムアウトの場合はBlockにせず、それぞれの終了状態を報告する。
 
 resume_point=gate3のclaimには、そのExecutionのharness_head_sha、verified_sha、
@@ -41,11 +46,11 @@ resume_point=gate3のclaimには、そのExecutionのharness_head_sha、verified
 - Findingのrule一覧は仕様に無いため、`Gate3Config.MismatchRule`を必須とした。
   既定値は追加していない。
 - HEAD自体を取得できない場合のSHAの表現は仕様に無い。
-  既存result APIはGateのtargetShaとBlockのheadShaにcommit SHAを要求するため、
-  SHAを代入せず検査エラーを返す境界を残す。
+  今回の修正指示に従い、既存のSHA欄とFindingで最後の確認済みSHAと取得不能を
+  区別する。API・テーブル・列・Findingのrule既定値は追加しない。
 - cleaned worktreeの復元は仕様06の準備工程に属する。工程3を通らない再開では
   `Gate3Config.PrepareResume`に同じ準備処理を渡す。未接続でworktreeが無ければ
-  検査エラーで止まり、公開しない。復元時のDB更新経路は先行工程と同じ境界に残る。
+  公開しない。復元時のDB更新経路は先行工程と同じ境界に残る。
 - `cmd/evaloom-runner`は先行タスクの時点で全工程の接続待ちである。
   本変更は製品の工程実行器までを接続する。常駐プロセス全体の接続は含めない。
 - Gate 2でBlockedになった測定のverified_shaを続行時にどう扱うかは、

@@ -73,9 +73,6 @@ func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err != nil && head == "" {
-			return fmt.Errorf("runner: cannot inspect Gate 3 Git state")
-		}
 		result := GateResult{Gate: 3, Result: "pass", BaseSHA: e.BaseSHA, TargetSHA: head, Findings: []model.Finding{}}
 		if err == nil && clean && gate.CheckCommit(e.Claim.Execution.ID, head, e.VerifiedSHA, e.VerifyRun) {
 			e.gateResults = append(e.gateResults, result)
@@ -88,9 +85,20 @@ func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
 			// even when status fails (for example, with a corrupt Git index).
 			// Git's raw error may contain secrets; report only a safe reason.
 			message = "Gitの作業ツリー状態を取得できない"
+			if head == "" {
+				// The existing result API requires a SHA. Keep the last known
+				// commit as a reference, explicitly labelled as unconfirmed now;
+				// never replace the original harness or Gate 2 measurements.
+				result.TargetSHA = e.HarnessHeadSHA
+				message = "現在のHEADを取得できない。記録したSHAはハーネス終了時に確認したSHAであり、現在のHEADは未確認"
+				if result.TargetSHA == "" {
+					result.TargetSHA = e.BaseSHA
+					message = "現在のHEADを取得できない。記録したSHAは開始点のSHAであり、現在のHEADは未確認"
+				}
+			}
 		}
 		result.Findings = append(result.Findings, model.Finding{Rule: config.MismatchRule, Message: message})
 		e.gateResults = append(e.gateResults, result)
-		return errors.Join(ErrGate3Stopped, e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGate3Mismatch, HeadSHA: head}))
+		return errors.Join(ErrGate3Stopped, e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGate3Mismatch, HeadSHA: result.TargetSHA}))
 	}, nil
 }
