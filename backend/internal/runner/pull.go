@@ -42,6 +42,14 @@ type Claim struct {
 		BranchName   *string `json:"branchName"`
 		PRNumber     *int    `json:"prNumber"`
 	} `json:"previous"`
+	Worktree *ClaimWorktree `json:"worktree"`
+}
+
+type ClaimWorktree struct {
+	ID       string         `json:"id"`
+	Path     string         `json:"path"`
+	BaseSHA  string         `json:"baseSha"`
+	Baseline *model.TestRun `json:"baseline"`
 }
 
 // Run heartbeats immediately, then claims at most one job per poll when there

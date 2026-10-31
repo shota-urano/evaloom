@@ -44,14 +44,23 @@ func (s BaselineStore) FindBaseline(ctx context.Context, executionID, worktreeID
 // or indexes. Retrying the identical record succeeds; replacing a baseline
 // cannot succeed, even under another Execution of the same worktree.
 func (s BaselineStore) SaveBaseline(ctx context.Context, worktreeID string, run model.TestRun) error {
-	if run.ID == "" || run.Kind != "baseline" || run.Command == "" || run.StartedAt.IsZero() || run.FinishedAt.Before(run.StartedAt) {
-		return fmt.Errorf("store: invalid baseline record")
-	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.SaveBaselineTx(ctx, tx, worktreeID, run); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SaveBaselineTx joins the result handler's transaction, so a failed report
+// cannot leave behind a baseline or partially associated worktree metadata.
+func (s BaselineStore) SaveBaselineTx(ctx context.Context, tx *sql.Tx, worktreeID string, run model.TestRun) error {
+	if run.ID == "" || run.Kind != "baseline" || run.Command == "" || run.StartedAt.IsZero() || run.FinishedAt.IsZero() || run.FinishedAt.Before(run.StartedAt) {
+		return fmt.Errorf("store: invalid baseline record")
+	}
 	base, err := baselineScope(ctx, tx, run.ExecutionID, worktreeID)
 	if err != nil {
 		return err
@@ -89,7 +98,7 @@ func (s BaselineStore) SaveBaseline(ctx context.Context, worktreeID string, run 
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func baselineScope(ctx context.Context, tx *sql.Tx, executionID, worktreeID string) (string, error) {

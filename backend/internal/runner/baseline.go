@@ -18,7 +18,7 @@ import (
 // to open SQLite. FindBaseline returns nil only when this worktree has no run;
 // it must search earlier Executions of the same worktree as well. SaveBaseline
 // must durably acknowledge the immutable record before the harness can start.
-// Spec 05 does not yet define the wire format for either operation.
+// The production implementation uses the claim snapshot and result endpoint.
 type BaselineRepository interface {
 	FindBaseline(context.Context, string, string) (*model.TestRun, error)
 	SaveBaseline(context.Context, string, model.TestRun) error

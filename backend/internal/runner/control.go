@@ -79,7 +79,7 @@ func (execution *Execution) report(status model.ExecutionStatus, class model.Err
 	if status == execution.status {
 		return nil
 	}
-	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID}
+	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID, BaseSHA: execution.BaseSHA}
 	if status == model.ExecutionSucceeded {
 		result.Usage = execution.completedUsage()
 	}

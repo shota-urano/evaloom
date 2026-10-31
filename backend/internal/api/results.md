@@ -15,6 +15,11 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
 - 要求には`fromStatus`と`status`を指定する。成功は本文なしの204を返す。
   `fromStatus`が現在値と違う報告、同じ状態への再送、過去のExecutionへの報告、
   未知の状態、既存の遷移表にない報告は409にする。再送を成功扱いにはしない。
+  ただし基準値の測定報告は、`baseline`にtest_runsのcamelCase表記の測定値を載せ、
+  `fromStatus=preparing`、`status=preparing`、`worktreeId`、`baseSha`で送る。
+  状態を変えず、worktree・開始点SHAの関連付けと`kind=baseline`の保存を同じ
+  トランザクションで行う。同じID・内容の再送は204、既存基準値の置換は409にする。
+  他の工程メタデータやGate結果との同時送信は400にする。
 - Runnerが報告できるのは、claim済みの最新Executionの工程進行と停止だけとする。
   `pending`への復帰と`blocked`からの操作は本人用API、`interrupted`は
   Control Planeの回収処理に属する。Runnerからは409にする。
