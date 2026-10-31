@@ -36,6 +36,7 @@ type resultInput struct {
 	// 2 and 3 run in verifying and a report must change the state.
 	GateResults []resultGateResult `json:"gateResults"`
 	Baseline    *model.TestRun     `json:"baseline"`
+	TestRuns    []model.TestRun    `json:"testRuns"`
 }
 
 type resultGateResult struct {
@@ -237,6 +238,9 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 	if err := validateGateResults(r, tx, execution, input); err != nil {
 		return err
 	}
+	if err := validateVerifyRuns(r, tx, execution, input); err != nil {
+		return err
+	}
 	if input.Status == "failed" && input.ErrorClass == "" {
 		return invalid("errorClass", "required")
 	}
@@ -401,6 +405,11 @@ func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, i
 		}
 	}
 	var blockingGate *string
+	for _, run := range input.TestRuns {
+		if err := store.RecordTestRun(r.Context(), tx, run); err != nil {
+			return err
+		}
+	}
 	for _, gate := range input.GateResults {
 		id := ulid.Make().String()
 		if err := store.RecordGateResult(r.Context(), tx, store.GateResult{

@@ -13,12 +13,7 @@ import (
 
 // Finding is the persisted shape from data-model section 5.5. Gate-specific
 // interpretation of Rule belongs to the gate implementation.
-type Finding struct {
-	Rule    string `json:"rule"`
-	Path    string `json:"path"`
-	Line    int    `json:"line"`
-	Message string `json:"message"`
-}
+type Finding = model.Finding
 
 type GateResult struct {
 	ID, ExecutionID    string
