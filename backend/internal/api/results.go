@@ -35,6 +35,7 @@ type resultInput struct {
 	// Gate results are sent with the next transition report, because Gates
 	// 2 and 3 run in verifying and a report must change the state.
 	GateResults []resultGateResult `json:"gateResults"`
+	Baseline    *model.TestRun     `json:"baseline"`
 }
 
 type resultGateResult struct {
@@ -101,6 +102,20 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 		}
 		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
 			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
+			return
+		}
+		// Stage 7 completes while still preparing. This measurement-only report
+		// is deliberately separate from the state transition contract below.
+		if input.Baseline != nil {
+			err = saveBaselineResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		// Validate the transition before accepting any metadata or side effects.

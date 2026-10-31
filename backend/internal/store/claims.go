@@ -45,6 +45,16 @@ type ClaimPrevious struct {
 	PRNumber     *int    `json:"prNumber"`
 }
 
+// ClaimWorktree carries the original baseline with the worktree it measures.
+// A continue claim gets this from its predecessor; a resumed claim gets its
+// own saved association. A fresh worktree has no previous baseline.
+type ClaimWorktree struct {
+	ID       string         `json:"id"`
+	Path     string         `json:"path"`
+	BaseSHA  string         `json:"baseSha"`
+	Baseline *model.TestRun `json:"baseline"`
+}
+
 // Claim contains only execution input, never Runner credentials. Assignment is
 // internal metadata from the saved pin, or the current assignment on first claim.
 type Claim struct {
@@ -53,6 +63,7 @@ type Claim struct {
 	Project       model.Project        `json:"project"`
 	Profile       ClaimProfile         `json:"profile"`
 	Previous      *ClaimPrevious       `json:"previous"`
+	Worktree      *ClaimWorktree       `json:"worktree"`
 	Assignment    model.ProjectHarness `json:"-"`
 	profilePinned bool
 }
@@ -134,7 +145,46 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 		}
 		c.Previous = &previous
 	}
+	if err := loadClaimWorktree(ctx, tx, &c, runnerID); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID string) error {
+	var worktreeID, base sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT worktree_id, base_sha FROM executions WHERE id = ?`, c.Execution.ID).Scan(&worktreeID, &base)
+	if err != nil {
+		return err
+	}
+	if !worktreeID.Valid && c.Execution.Mode == "continue" && c.Execution.Seq > 1 {
+		err = tx.QueryRowContext(ctx, `SELECT worktree_id, base_sha FROM executions WHERE task_id = ? AND seq = ?`, c.Execution.TaskID, c.Execution.Seq-1).Scan(&worktreeID, &base)
+		if err != nil {
+			return err
+		}
+	}
+	if !worktreeID.Valid {
+		return nil
+	}
+	w := &ClaimWorktree{ID: worktreeID.String}
+	// A cleaned worktree retains its branch and start SHA (spec 06, 3.3.6).
+	// Preparation needs this snapshot to restore it and reuse its baseline.
+	err = tx.QueryRowContext(ctx, `SELECT path, base_sha FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA)
+	if err != nil {
+		return err
+	}
+	if base.Valid && base.String != w.BaseSHA {
+		return ErrBaselineScope
+	}
+	w.Baseline, err = findBaseline(ctx, tx, w.ID)
+	if err != nil {
+		return err
+	}
+	if w.Baseline != nil && w.Baseline.TargetSHA != w.BaseSHA {
+		return ErrBaselineScope
+	}
+	c.Worktree = w
+	return nil
 }
 
 // PinClaim saves Registry values only on first claim, after the guarded pending

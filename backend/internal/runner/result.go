@@ -20,6 +20,8 @@ type ExecutionResult struct {
 	Status     model.ExecutionStatus `json:"status"`
 	ErrorClass model.ErrorClass      `json:"errorClass,omitempty"`
 	WorktreeID string                `json:"worktreeId,omitempty"`
+	BaseSHA    string                `json:"baseSha,omitempty"`
+	Baseline   *model.TestRun        `json:"baseline,omitempty"`
 	Usage      *ExecutionUsage       `json:"usage,omitempty"`
 }
 
@@ -32,8 +34,8 @@ var _ ResultReporter = (*Runner)(nil)
 // ReportResult keeps a failed report pending on the calling execution and
 // retries transport/5xx failures without rerunning its stage. Use a delivery
 // context independent of the cancelled Execution. 4xx responses are returned:
-// the current API rejects duplicate transitions with 409, so a lost success
-// acknowledgement cannot be reconciled through the existing Runner API.
+// transition reports reject duplicates with 409. Baseline measurement reports
+// are idempotent, allowing their lost acknowledgements to be retried safely.
 func (runner *Runner) ReportResult(ctx context.Context, id string, result ExecutionResult) error {
 	if parsed, err := ulid.ParseStrict(id); err != nil || parsed.String() != id {
 		return fmt.Errorf("runner: invalid result execution ID")
