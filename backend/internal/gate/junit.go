@@ -46,7 +46,7 @@ func (report TestReport) Executed() int { return report.Total - report.Skipped }
 // Malformed XML, contradictory counters, and reader errors return no results.
 // The reader's owner handles report paths, sandbox access and file lifetimes.
 func ParseJUnitXML(reader io.Reader, resolver JUnitIDResolver) (TestReport, error) {
-	decoder := xml.NewDecoder(reader)
+	decoder := xml.NewTokenDecoder(junitTokenReader{xml.NewDecoder(reader)})
 	var root *junitSuite
 	for {
 		token, err := decoder.Token()
@@ -97,6 +97,28 @@ func ParseJUnitXML(reader io.Reader, resolver JUnitIDResolver) (TestReport, erro
 	}
 	report.TestIDs, report.IDsAvailable = ids, true
 	return report, nil
+}
+
+// Check every start tag before DecodeElement can overwrite duplicate attributes
+// or skip unknown descendants. Decoder.Token resolves namespace prefixes, so
+// aliases for the same namespace also count as duplicate attribute names.
+type junitTokenReader struct{ decoder *xml.Decoder }
+
+func (reader junitTokenReader) Token() (xml.Token, error) {
+	token, err := reader.decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if start, ok := token.(xml.StartElement); ok {
+		seen := make(map[xml.Name]struct{}, len(start.Attr))
+		for _, attribute := range start.Attr {
+			if _, duplicate := seen[attribute.Name]; duplicate {
+				return nil, fmt.Errorf("duplicate attribute %q on element %q", attribute.Name.Local, start.Name.Local)
+			}
+			seen[attribute.Name] = struct{}{}
+		}
+	}
+	return token, nil
 }
 
 type junitSuite struct {

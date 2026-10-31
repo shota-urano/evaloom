@@ -164,6 +164,40 @@ func TestParseJUnitXMLMalformedXML(t *testing.T) {
 	}
 }
 
+func TestParseJUnitXMLRejectsDuplicateAttributes(t *testing.T) {
+	for _, tc := range []struct{ name, input string }{
+		{"root suite", `<testsuite tests="2" tests="1"><testcase id="a"/></testsuite>`},
+		{"root suites", `<testsuites tests="2" tests="1"><testsuite><testcase id="a"/></testsuite></testsuites>`},
+		{"nested suite", `<testsuites><testsuite tests="2" tests="1"><testcase id="a"/></testsuite></testsuites>`},
+		{"testcase", `<testsuite><testcase id="a" id="b"/></testsuite>`},
+		{"failure", `<testsuite><testcase id="a"><failure message="first" message="last"/></testcase></testsuite>`},
+		{"error", `<testsuite><testcase id="a"><error type="first" type="last"/></testcase></testsuite>`},
+		{"skipped", `<testsuite><testcase id="a"><skipped message="first" message="last"/></testcase></testsuite>`},
+		{"unknown element", `<testsuite><testcase id="a"/><properties name="first" name="last"/></testsuite>`},
+		{"unknown descendant", `<testsuite><testcase id="a"/><properties><property name="first" name="last"/></properties></testsuite>`},
+		{"namespace aliases", `<testsuite xmlns:a="urn:report" xmlns:b="urn:report"><testcase id="a" a:label="first" b:label="last"/></testsuite>`},
+		{"namespace declaration", `<testsuite xmlns:a="urn:first" xmlns:a="urn:last"/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report, err := ParseJUnitXML(strings.NewReader(tc.input), attributeID)
+			if !errors.Is(err, ErrJUnitReport) || !reflect.DeepEqual(report, TestReport{}) {
+				t.Fatalf("report = %+v, err = %v; want zero report and ErrJUnitReport", report, err)
+			}
+		})
+	}
+}
+
+func TestParseJUnitXMLAllowsDistinctAttributeNamespaces(t *testing.T) {
+	input := `<testsuite xmlns:a="urn:first" xmlns:b="urn:second">
+		<testcase id="a" label="plain" a:label="first" b:label="second"/>
+	</testsuite>`
+	report, err := ParseJUnitXML(strings.NewReader(input), attributeID)
+	want := TestReport{Total: 1, Passed: 1, IDsAvailable: true, TestIDs: []string{"a"}}
+	if err != nil || !reflect.DeepEqual(report, want) {
+		t.Fatalf("report = %+v, err = %v; want %+v", report, err, want)
+	}
+}
+
 func TestParseJUnitXMLRejectsContradictoryResults(t *testing.T) {
 	for _, input := range []string{
 		`<testsuite tests="-1"/>`,
