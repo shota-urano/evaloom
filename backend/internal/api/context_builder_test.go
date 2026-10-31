@@ -155,11 +155,11 @@ func TestContextBuilderUsesOnlyExecutionProjectAndTask(t *testing.T) {
 	for _, statement := range []string{
 		`INSERT INTO projects (id, name, local_repo_path, git_remote_url,
 		 runner_id, base_branch, default_role, context_location, copy_allowlist, test_command,
-		 test_report_format, test_report_path, test_file_patterns, setup_command,
+		 test_report_format, test_report_path, setup_command,
 		 allowed_operations, approval_policy, timeouts, created_at, updated_at)
 		 SELECT 'project-b', 'Other Project', '/other-repo', git_remote_url,
 		 runner_id, base_branch, default_role, context_location, copy_allowlist, test_command,
-		 test_report_format, test_report_path, test_file_patterns, setup_command,
+		 test_report_format, test_report_path, setup_command,
 		 allowed_operations, approval_policy, timeouts, created_at, updated_at FROM projects WHERE id = 'project-a'`,
 		`INSERT INTO tasks SELECT 'task-b', 'project-b', 'FOREIGN TASK', 'FOREIGN BODY', acceptance_criteria,
 		 short_name, task_type, collaboration_mode, 'running', 'other-context', created_at, updated_at FROM tasks WHERE id = 'task-001'`,

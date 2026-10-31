@@ -41,7 +41,6 @@ type Claim struct {
 		WorktreePath *string `json:"worktreePath"`
 		BranchName   *string `json:"branchName"`
 		PRNumber     *int    `json:"prNumber"`
-		Gate1BaseSHA *string `json:"gate1BaseSha"`
 	} `json:"previous"`
 }
 

@@ -70,7 +70,7 @@ func requireRetryPending(t *testing.T, f *authFixture, taskID, mode string, want
 		e.runner_id IS NULL AND e.role IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
 		AND e.profile_version IS NULL AND e.profile_commit_sha IS NULL AND e.claimed_at IS NULL
 		AND e.worktree_id IS NULL AND e.branch_name IS NULL AND e.base_sha IS NULL
-		AND e.gate1_base_sha IS NULL AND e.resume_point IS NULL AND e.pr_number IS NULL
+		AND e.resume_point IS NULL AND e.pr_number IS NULL
 		AND e.pr_url IS NULL AND e.cancel_requested_at IS NULL AND e.finished_at IS NULL
 		FROM tasks t JOIN executions e ON e.task_id = t.id
 		WHERE t.id = ? ORDER BY e.seq DESC LIMIT 1`, taskID).

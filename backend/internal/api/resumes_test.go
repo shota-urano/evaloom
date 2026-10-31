@@ -16,7 +16,7 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-var resumeCauses = []string{"gate1_test_change", "gate1_unverifiable", "gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict", "git_state"}
+var resumeCauses = []string{"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict", "git_state"}
 
 func resumeFixture(t *testing.T, cause string) (*authFixture, string, string, resumeInput) {
 	t.Helper()
@@ -110,7 +110,7 @@ func requireSavedDecision(t *testing.T, f *authFixture, input resumeInput) {
 func TestResumeHeadSHAMismatchReturns422WithoutWrites(t *testing.T) {
 	for _, decision := range []string{"continue", "abort"} {
 		t.Run(decision, func(t *testing.T) {
-			f, _, id, input := resumeFixture(t, "gate1_test_change")
+			f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 			input.Decision, input.HeadSHA = decision, strings.Repeat("c", 40)
 			before := resumeState(t, f, id)
 			status, body := requestResume(t, f, executionTaskID(t, f, id), input)
@@ -134,7 +134,6 @@ func TestResumeContextConflictAndGitStateContinueReturn422(t *testing.T) {
 
 func TestResumeContinueReturnsSameExecutionToPendingWithResumePoint(t *testing.T) {
 	for _, tc := range []struct{ cause, point string }{
-		{"gate1_test_change", "gate2"}, {"gate1_unverifiable", "gate2"},
 		{"gate2_missing_tests", "gate3"}, {"gate2_unverifiable", "gate3"}, {"gate3_mismatch", "gate3"},
 	} {
 		t.Run(tc.cause, func(t *testing.T) {
@@ -217,7 +216,7 @@ func TestResumeAbortCancelsTaskAndRetainsWorktree(t *testing.T) {
 func TestResumeDecisionIsRecordedInAuditLogs(t *testing.T) {
 	for _, decision := range []string{"continue", "abort"} {
 		t.Run(decision, func(t *testing.T) {
-			f, _, id, input := resumeFixture(t, "gate1_test_change")
+			f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 			input.Decision = decision
 			taskID := executionTaskID(t, f, id)
 			status, body := requestResume(t, f, taskID, input)
@@ -253,7 +252,7 @@ func TestResumeDecisionIsRecordedInAuditLogs(t *testing.T) {
 }
 
 func TestResumeContinueWaitsForNormalClaimCapacity(t *testing.T) {
-	f, token, id, input := resumeFixture(t, "gate1_test_change")
+	f, token, id, input := resumeFixture(t, "gate2_missing_tests")
 	// A blocked attempt consumes no slot, so another task can run in its Project.
 	otherA := createClaimTask(t, f, "project-a", "resume-capacity-a")
 	status, body := requestClaim(t, f, token)
@@ -273,14 +272,14 @@ func TestResumeContinueWaitsForNormalClaimCapacity(t *testing.T) {
 	status, body = requestClaim(t, f, token)
 	requireResumeSuccess(t, status, body) // Project A is still occupied.
 	var state, point string
-	if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, id).Scan(&state, &point); err != nil || state != "pending" || point != "gate2" {
+	if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, id).Scan(&state, &point); err != nil || state != "pending" || point != "gate3" {
 		t.Fatalf("waiting state=%s point=%s err=%v", state, point, err)
 	}
 	status, body = postResult(t, f, token, claimA.Execution.ID, resultBody("claimed", "cancelled"))
 	requireResumeSuccess(t, status, body)
 	status, body = requestClaim(t, f, token)
 	resumed := requireClaim(t, status, body)
-	if resumed.Execution.ID != id || resumed.Execution.ResumePoint == nil || *resumed.Execution.ResumePoint != "gate2" {
+	if resumed.Execution.ID != id || resumed.Execution.ResumePoint == nil || *resumed.Execution.ResumePoint != "gate3" {
 		t.Fatalf("resumed claim=%+v", resumed.Execution)
 	}
 }
@@ -296,7 +295,7 @@ func TestResumeRollsBackDecisionStateAndRecordsOnStorageFailure(t *testing.T) {
 		}
 		for i, trigger := range triggers {
 			t.Run(fmt.Sprintf("%s/%d", decision, i), func(t *testing.T) {
-				f, _, id, input := resumeFixture(t, "gate1_test_change")
+				f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 				input.Decision = decision
 				before := resumeState(t, f, id)
 				if _, err := f.db.Exec(`CREATE TRIGGER reject_resume ` + trigger + ` BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`); err != nil {
@@ -314,7 +313,7 @@ func TestResumeRollsBackDecisionStateAndRecordsOnStorageFailure(t *testing.T) {
 }
 
 func TestResumeConcurrentDecisionsAreRecordedOnce(t *testing.T) {
-	f, _, id, input := resumeFixture(t, "gate1_test_change")
+	f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 	taskID := executionTaskID(t, f, id)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -354,7 +353,7 @@ func TestResumeConcurrentDecisionsAreRecordedOnce(t *testing.T) {
 		JOIN execution_blocks b ON b.execution_id = e.id WHERE e.id = ?`, id).Scan(&decision, &state, &point); err != nil {
 		t.Fatal(err)
 	}
-	if decision == "continue" && (state != "pending" || after.Task != "queued" || point.String != "gate2") ||
+	if decision == "continue" && (state != "pending" || after.Task != "queued" || point.String != "gate3") ||
 		decision == "abort" && (state != "cancelled" || after.Task != "cancelled" || point.Valid) {
 		t.Fatalf("decision=%s state=%s task=%s point=%v", decision, state, after.Task, point)
 	}
@@ -363,7 +362,7 @@ func TestResumeConcurrentDecisionsAreRecordedOnce(t *testing.T) {
 func TestResumeRejectsForeignMissingStaleAndNonBlockedTargets(t *testing.T) {
 	for _, name := range []string{"missing-task", "missing-block", "foreign-block", "old-execution", "task-state", "execution-state", "decided"} {
 		t.Run(name, func(t *testing.T) {
-			f, _, id, input := resumeFixture(t, "gate1_test_change")
+			f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 			taskID := executionTaskID(t, f, id)
 			want, code := 409, Conflict
 			switch name {
@@ -401,7 +400,7 @@ func TestResumeRejectsForeignMissingStaleAndNonBlockedTargets(t *testing.T) {
 }
 
 func TestResumeValidatesJSONIDsDecisionAndSHA(t *testing.T) {
-	f, _, id, input := resumeFixture(t, "gate1_test_change")
+	f, _, id, input := resumeFixture(t, "gate2_missing_tests")
 	taskID := executionTaskID(t, f, id)
 	valid := `{"blockId":"` + input.BlockID + `","decision":"continue","headSha":"` + input.HeadSHA + `"}`
 	for _, body := range []string{"", "null", "[]", "{}", valid + `{}`, strings.Replace(valid, `"continue"`, `null`, 1),
@@ -420,7 +419,7 @@ func TestResumeValidatesJSONIDsDecisionAndSHA(t *testing.T) {
 }
 
 func TestResumeRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
-	f, token, id, input := resumeFixture(t, "gate1_test_change")
+	f, token, id, input := resumeFixture(t, "gate2_missing_tests")
 	data, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)

@@ -18,7 +18,7 @@ import (
 var expectedStageIDs = []StageID{
 	StageValidateProject, StageCheckPreviousPR, StagePrepareWorktree,
 	StagePinContext, StageReceiveContext, StageSetup, StageTestBaseline,
-	StageHarness, StageHarnessHead, StageGate1, StageGate2, StageGate3,
+	StageHarness, StageHarnessHead, StageGate2, StageGate3,
 	StagePublish, StageComplete,
 }
 
@@ -34,19 +34,19 @@ func stubStageHandlers(run func(StageID, context.Context, *Execution) error) map
 
 func TestExecutionStageTable(t *testing.T) {
 	table := ExecutionStages()
-	if len(table) != 14 {
-		t.Fatalf("got %d stages; want 14", len(table))
+	if len(table) != 13 {
+		t.Fatalf("got %d stages; want 13", len(table))
 	}
 	for i, stage := range table {
 		status := model.ExecutionPreparing
 		switch {
 		case i == 7:
 			status = model.ExecutionRunning
-		case i >= 8 && i <= 11:
+		case i >= 8 && i <= 10:
 			status = model.ExecutionVerifying
-		case i == 12:
+		case i == 11:
 			status = model.ExecutionPublishing
-		case i == 13:
+		case i == 12:
 			status = model.ExecutionSucceeded
 		}
 		want := Stage{Number: i + 1, ID: expectedStageIDs[i], Status: status}
@@ -63,9 +63,8 @@ func TestExecutorOrderAndResume(t *testing.T) {
 		start  int
 	}{
 		{"full", nil, 0},
-		{"gate2_starts_at_11", new("gate2"), 10},
-		{"gate3_starts_at_12", new("gate3"), 11},
-		{"publish_starts_at_13", new("publish"), 12},
+		{"gate3_starts_at_11", new("gate3"), 10},
+		{"publish_starts_at_12", new("publish"), 11},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var called []StageID
@@ -125,7 +124,7 @@ func TestExecutorStopsAtFailingStage(t *testing.T) {
 }
 
 func TestExecutorRejectsInvalidResumeBeforeAnyStage(t *testing.T) {
-	for _, resume := range []string{"", "gate1", "unknown", "Gate2"} {
+	for _, resume := range []string{"", "gate2", "unknown", "Gate3"} {
 		t.Run(resume, func(t *testing.T) {
 			executor, err := NewExecutor(stubStageHandlers(func(StageID, context.Context, *Execution) error {
 				t.Error("invalid resume point invoked a stage")
@@ -145,8 +144,8 @@ func TestExecutorRejectsInvalidResumeBeforeAnyStage(t *testing.T) {
 
 func TestExecutorRequiresAllHandlers(t *testing.T) {
 	for _, change := range []func(map[StageID]StageFunc){
-		func(handlers map[StageID]StageFunc) { delete(handlers, StageGate1) },
-		func(handlers map[StageID]StageFunc) { handlers[StageGate2] = nil },
+		func(handlers map[StageID]StageFunc) { delete(handlers, StageGate2) },
+		func(handlers map[StageID]StageFunc) { handlers[StageGate3] = nil },
 		func(handlers map[StageID]StageFunc) { handlers["unknown"] = handlers[StagePublish] },
 	} {
 		handlers := stubStageHandlers(func(StageID, context.Context, *Execution) error { return nil })
@@ -197,12 +196,12 @@ func TestPullPassesResumePointToExecutor(t *testing.T) {
 			return
 		}
 		if claims.Add(1) == 1 {
-			io.WriteString(w, `{"execution":{"id":"resumed","taskId":"task","resumePoint":"gate2"}}`)
+			io.WriteString(w, `{"execution":{"id":"resumed","taskId":"task","resumePoint":"gate3"}}`)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	called := make(chan StageID, 14)
+	called := make(chan StageID, 13)
 	executor, err := NewExecutor(stubStageHandlers(func(id StageID, _ context.Context, execution *Execution) error {
 		if execution.Claim.Execution.ID != "resumed" {
 			t.Error("executor lost claimed Execution ID")

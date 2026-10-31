@@ -102,8 +102,6 @@ func saveBlockDecision(r *http.Request, db *sql.DB, id string, input resumeInput
 	if input.Decision == "continue" {
 		// Spec 10 section 3.5: Gate 3 must be checked again, never skipped.
 		switch cause {
-		case model.BlockGate1TestChange, model.BlockGate1Unverifiable:
-			resumePoint = "gate2"
 		case model.BlockGate2MissingTests, model.BlockGate2Unverifiable, model.BlockGate3Mismatch:
 			resumePoint = "gate3"
 		default:

@@ -24,12 +24,12 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 		{model.ExecutionFailed, "evaloom: 失敗", "test_failed"},
 		{model.ExecutionInterrupted, "evaloom: 失敗", "test_failed"},
 		{model.ExecutionTimedOut, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionBlocked, "evaloom: 対応が必要", "gate1_test_change"},
+		{model.ExecutionBlocked, "evaloom: 対応が必要", "gate2_missing_tests"},
 	} {
 		t.Run(string(tc.status), func(t *testing.T) {
 			n := Notification{
 				TaskID: "task-001", Title: "件名 $(touch /tmp/should-not-exist)\n引用 \"", Status: tc.status,
-				ErrorClass: model.ErrorTestFailed, BlockCause: model.BlockGate1TestChange,
+				ErrorClass: model.ErrorTestFailed, BlockCause: model.BlockGate2MissingTests,
 				ExecutionID: "PRIVATE-EXECUTION", PRURL: "https://private.example/pr/1",
 				Reason: "PRIVATE-REASON secret-token log context task-body", Stage: "PRIVATE-STAGE",
 			}

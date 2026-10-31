@@ -38,7 +38,7 @@ func TestTaskMigrationUpgradesRegistryAndPersistsData(t *testing.T) {
 		AND runner_id IS NULL AND role IS NULL AND harness_id IS NULL
 		AND profile_id IS NULL AND profile_version IS NULL AND profile_commit_sha IS NULL
 		AND worktree_id IS NULL AND branch_name IS NULL AND base_sha IS NULL
-		AND gate1_base_sha IS NULL AND resume_point IS NULL AND harness_head_sha IS NULL
+		AND resume_point IS NULL AND harness_head_sha IS NULL
 		AND verified_sha IS NULL AND pushed_sha IS NULL AND pr_number IS NULL
 		AND pr_url IS NULL AND harness_session_id IS NULL AND error_class IS NULL
 		AND error_message IS NULL AND cancel_requested_at IS NULL AND claimed_at IS NULL
@@ -52,11 +52,11 @@ func TestTaskMigrationUpgradesRegistryAndPersistsData(t *testing.T) {
 	mustTaskExec(t, db, `UPDATE executions SET runner_id = 'mac-mini', role = 'developer',
 		harness_id = 'codex-developer', profile_id = 'profile-1', profile_version = '1.2.0',
 		profile_commit_sha = ?, worktree_id = 'worktree-1', branch_name = 'evaloom/task-001-change',
-		base_sha = ?, gate1_base_sha = ?, resume_point = 'publish', harness_head_sha = ?,
+		base_sha = ?, resume_point = 'publish', harness_head_sha = ?,
 		verified_sha = ?, pushed_sha = ?, pr_number = 12, pr_url = 'https://example.invalid/pull/12',
 		harness_session_id = 'session-1', error_class = 'publish_failed', error_message = 'push failed',
 		cancel_requested_at = ?, claimed_at = ?, started_at = ?, finished_at = ?, last_heartbeat_at = ?
-		WHERE id = 'execution-1'`, sha, sha, sha, sha, sha, sha,
+		WHERE id = 'execution-1'`, sha, sha, sha, sha, sha,
 		registryTime, registryTime, registryTime, registryTime, registryTime)
 	mustTaskExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
 		VALUES ('execution-1', 'context_pinned', ?, ?)`, `{"revisions":[]}`, registryTime)

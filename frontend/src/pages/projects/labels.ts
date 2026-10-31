@@ -20,7 +20,6 @@ export const PROJECT_LABELS = {
   testReportPath: 'テストレポートの出力パス',
   setupCommand: 'セットアップコマンド',
   copyAllowlist: 'コピー許可リスト',
-  testFilePatterns: 'テストファイルの追加パターン',
   allowedOperations: '許可操作',
   approvalPolicy: '承認ポリシー',
   contextLocation: 'Project Context',

@@ -28,8 +28,8 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 			}
 		}
 		if _, err := db.Exec(`INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-			default_role, context_location, copy_allowlist, test_file_patterns, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-			VALUES (?, ?, ?, '', ?, 'main', 'developer', 'AGENTS.md', '[]', '[]', '{}', '{}', '{}', '', '')`, runner, runner, "/repo/"+runner, runner); err != nil {
+			default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
+			VALUES (?, ?, ?, '', ?, 'main', 'developer', 'AGENTS.md', '[]', '{}', '{}', '{}', '', '')`, runner, runner, "/repo/"+runner, runner); err != nil {
 			t.Fatal(err)
 		}
 		taskID := fmt.Sprintf("task-%03d", i+1)

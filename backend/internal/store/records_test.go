@@ -40,7 +40,7 @@ func TestVerificationMigrationUpgradesAndRoundTripsAllTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9})
 	sha := strings.Repeat("a", 40)
 	for _, test := range []struct {
 		table string
@@ -49,7 +49,7 @@ func TestVerificationMigrationUpgradesAndRoundTripsAllTables(t *testing.T) {
 		{"artifacts", []any{"artifact-1", "execution-1", "test_ids", "artifacts/test-ids.json", strings.Repeat("b", 64), int64(12), int64(1), registryTime}},
 		{"test_runs", []any{"test-1", "execution-1", "verify", sha, "go test ./...", int64(0), int64(4), int64(2), int64(1), int64(1), "artifact-1", int64(0), registryTime, registryTime}},
 		{"gate_results", []any{"gate-1", "execution-1", int64(1), "blocked", sha, sha, `[{"rule":"existing_test_deleted","path":"foo_test.go","line":42,"message":"test deleted"}]`, registryTime}},
-		{"execution_blocks", []any{"block-1", "execution-1", "gate1_test_change", "gate-1", sha, `{"reason":"test deleted"}`, nil, nil, registryTime}},
+		{"execution_blocks", []any{"block-1", "execution-1", "gate2_missing_tests", "gate-1", sha, `{"reason":"test deleted"}`, nil, nil, registryTime}},
 		{"audit_logs", []any{int64(1), "owner", "project.update", "project", "project-a", `{"before":"main","after":"develop"}`, registryTime}},
 		{"usage_records", []any{"usage-1", "execution-1", int64(100), int64(20), int64(1500), float64(0.125), registryTime}},
 	} {
@@ -190,7 +190,7 @@ func TestRecordWritersSerializeJSONBeforeInserting(t *testing.T) {
 	}
 	gate := "gate-1"
 	if err := RecordExecutionBlock(ctx, db, ExecutionBlock{
-		ID: "block-1", ExecutionID: "execution-1", Cause: "gate1_test_change", GateResultID: &gate,
+		ID: "block-1", ExecutionID: "execution-1", Cause: "gate2_missing_tests", GateResultID: &gate,
 		HeadSHA: "target", Detail: map[string]any{"path": "foo_test.go"},
 	}); err != nil {
 		t.Fatal(err)
@@ -243,7 +243,7 @@ func seedVerificationRecords(t *testing.T, db *sql.DB) {
 		VALUES ('gate-1', 'execution-1', 1, 'blocked', ?, ?, ?, ?)`, sha, sha,
 		`[{"rule":"existing_test_deleted","path":"foo_test.go","line":42,"message":"test deleted"}]`, registryTime)
 	mustTaskExec(t, db, `INSERT INTO execution_blocks (id, execution_id, cause, gate_result_id, head_sha, detail, created_at)
-		VALUES ('block-1', 'execution-1', 'gate1_test_change', 'gate-1', ?, '{"reason":"test deleted"}', ?)`, sha, registryTime)
+		VALUES ('block-1', 'execution-1', 'gate2_missing_tests', 'gate-1', ?, '{"reason":"test deleted"}', ?)`, sha, registryTime)
 	mustTaskExec(t, db, `INSERT INTO audit_logs (actor, action, target_type, target_id, detail, created_at)
 		VALUES ('owner', 'project.update', 'project', 'project-a', '{"before":"main","after":"develop"}', ?)`, registryTime)
 	mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)

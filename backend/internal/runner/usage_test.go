@@ -81,8 +81,8 @@ func testCompletedExecutionUsage(t *testing.T, tokensAvailable bool) {
 			Scan(&wall, &input, &output, &cost, &status, &created); err != nil {
 			t.Fatal(err)
 		}
-		if wall != 1300 || status != "succeeded" {
-			t.Fatalf("execution=%s wall_time_ms=%d status=%s; want 1300 succeeded", id, wall, status)
+		if wall != 1200 || status != "succeeded" {
+			t.Fatalf("execution=%s wall_time_ms=%d status=%s; want 1200 succeeded", id, wall, status)
 		}
 		if tokensAvailable {
 			if !input.Valid || input.Int64 != 0 || !output.Valid || output.Int64 != 17 {
@@ -179,7 +179,7 @@ func TestUsageStorageFailureRetriesResultWithoutRerunningStages(t *testing.T) {
 	}
 	var wall, rows int
 	if err := f.db.QueryRow(`SELECT count(*), max(wall_time_ms) FROM usage_records WHERE execution_id = ?`, logExecution).Scan(&rows, &wall); err != nil ||
-		rows != 1 || wall != 1300 || attempts != 2 || publishes != 1 {
+		rows != 1 || wall != 1200 || attempts != 2 || publishes != 1 {
 		t.Fatalf("retry: rows=%d wall=%d attempts=%d publishes=%d err=%v", rows, wall, attempts, publishes, err)
 	}
 }
@@ -228,7 +228,7 @@ func TestResumedUsageDoesNotInventHarnessMeasurements(t *testing.T) {
 		if result.Status == model.ExecutionSucceeded {
 			reported = true
 			usage := result.Usage
-			if usage == nil || usage.WallTimeMS != 300 || usage.HarnessWallTimeMS != nil || usage.HarnessUsage != nil {
+			if usage == nil || usage.WallTimeMS != 200 || usage.HarnessWallTimeMS != nil || usage.HarnessUsage != nil {
 				t.Fatalf("resumed usage invented skipped harness measurements: %+v", usage)
 			}
 		}
@@ -245,7 +245,7 @@ func TestResumedUsageDoesNotInventHarnessMeasurements(t *testing.T) {
 	}
 	executor.now = func() time.Time { return clock }
 	claim := Claim{}
-	claim.Execution.ResumePoint = new("gate2")
+	claim.Execution.ResumePoint = new("gate3")
 	if err := executor.Execute(context.Background(), claim); err != nil || !reported {
 		t.Fatalf("resumed usage: reported=%v err=%v", reported, err)
 	}

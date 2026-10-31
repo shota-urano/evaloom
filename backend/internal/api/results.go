@@ -22,7 +22,6 @@ type resultInput struct {
 	WorktreeID       *string          `json:"worktreeId"`
 	BranchName       *string          `json:"branchName"`
 	BaseSHA          *string          `json:"baseSha"`
-	Gate1BaseSHA     *string          `json:"gate1BaseSha"`
 	HarnessHeadSHA   *string          `json:"harnessHeadSha"`
 	VerifiedSHA      *string          `json:"verifiedSha"`
 	PushedSHA        *string          `json:"pushedSha"`
@@ -176,7 +175,7 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 	for _, field := range []struct {
 		name string
 		sha  *string
-	}{{"baseSha", input.BaseSHA}, {"gate1BaseSha", input.Gate1BaseSHA}, {"harnessHeadSha", input.HarnessHeadSHA}, {"verifiedSha", input.VerifiedSHA}, {"pushedSha", input.PushedSHA}} {
+	}{{"baseSha", input.BaseSHA}, {"harnessHeadSha", input.HarnessHeadSHA}, {"verifiedSha", input.VerifiedSHA}, {"pushedSha", input.PushedSHA}} {
 		if field.sha != nil && !fullCommitSHA(*field.sha) {
 			return invalid(field.name, "invalid_format")
 		}
@@ -273,7 +272,7 @@ func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, i
 		column string
 		value  *string
 	}{{"worktree_id", input.WorktreeID}, {"branch_name", input.BranchName}, {"base_sha", input.BaseSHA},
-		{"gate1_base_sha", input.Gate1BaseSHA}, {"harness_head_sha", input.HarnessHeadSHA}, {"verified_sha", input.VerifiedSHA},
+		{"harness_head_sha", input.HarnessHeadSHA}, {"verified_sha", input.VerifiedSHA},
 		{"pushed_sha", input.PushedSHA}, {"pr_url", input.PRURL}, {"harness_session_id", input.HarnessSessionID}, {"error_message", input.ErrorMessage}} {
 		if field.value != nil {
 			columns = append(columns, field.column+" = ?")

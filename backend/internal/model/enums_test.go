@@ -34,8 +34,8 @@ func TestSpecEnumValues(t *testing.T) {
 			"interrupted", "publish_failed", "sandbox_error",
 		}},
 		{"block", decode[model.BlockCause], []string{
-			"gate1_test_change", "gate1_unverifiable", "gate2_missing_tests", "gate2_unverifiable",
-			"gate3_mismatch", "context_conflict", "git_state",
+			"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict",
+			"git_state",
 		}},
 		{"result", decode[model.ResultStatus], []string{"succeeded", "failed"}},
 	} {

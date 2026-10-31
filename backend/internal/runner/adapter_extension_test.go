@@ -95,7 +95,7 @@ func TestDummyAdapterExecutionExtension(t *testing.T) {
 				wantExecution, wantTask, wantUsage = "running", "running", 0
 			case tc.failGate:
 				assertExtensionStageError(t, err, StageGate2, gateFailure)
-				wantCalls, wantStatuses = expectedStageIDs[:11], wantStatuses[:4]
+				wantCalls, wantStatuses = expectedStageIDs[:10], wantStatuses[:4]
 				wantExecution, wantTask, wantUsage = "verifying", "verifying", 0
 			case err != nil:
 				t.Fatal(err)
@@ -230,8 +230,8 @@ func extensionControlPlane(t *testing.T, adapters *adapter.Registry) (*sql.DB, *
 	// Seed only inputs. Claim and every subsequent state transition must come
 	// from production HTTP handlers; never write a successful execution here.
 	for _, query := range []string{
-		`INSERT INTO projects (id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,test_file_patterns,allowed_operations,approval_policy,timeouts,created_at,updated_at)
-		 VALUES ('project','Project','/repo','','mac-mini','main','developer','AGENTS.md','[]','[]','{}','{}','{}','now','now')`,
+		`INSERT INTO projects (id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,allowed_operations,approval_policy,timeouts,created_at,updated_at)
+		 VALUES ('project','Project','/repo','','mac-mini','main','developer','AGENTS.md','[]','{}','{}','{}','now','now')`,
 		`INSERT INTO harnesses (id,name,specialty,supported_tasks,adapter,repo_path,repo_url,supported_models,available_tools,tool_permissions,contract_version,created_at,updated_at)
 		 VALUES ('harness','Harness','developer','["development"]','dummy','/harness','test://harness','[]','[]','{}','1','now','now')`,
 		`INSERT INTO harness_profiles (id,harness_id,version,commit_sha,tag_name,definition,definition_hash,model_id,operation_status,registered_at)

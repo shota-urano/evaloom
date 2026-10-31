@@ -24,7 +24,6 @@ const (
 	StageTestBaseline    StageID = "test_baseline"
 	StageHarness         StageID = "harness"
 	StageHarnessHead     StageID = "harness_head"
-	StageGate1           StageID = "gate1"
 	StageGate2           StageID = "gate2"
 	StageGate3           StageID = "gate3"
 	StagePublish         StageID = "publish"
@@ -53,11 +52,10 @@ func ExecutionStages() []Stage {
 		{7, StageTestBaseline, model.ExecutionPreparing},
 		{8, StageHarness, model.ExecutionRunning},
 		{9, StageHarnessHead, model.ExecutionVerifying},
-		{10, StageGate1, model.ExecutionVerifying},
-		{11, StageGate2, model.ExecutionVerifying},
-		{12, StageGate3, model.ExecutionVerifying},
-		{13, StagePublish, model.ExecutionPublishing},
-		{14, StageComplete, model.ExecutionSucceeded},
+		{10, StageGate2, model.ExecutionVerifying},
+		{11, StageGate3, model.ExecutionVerifying},
+		{12, StagePublish, model.ExecutionPublishing},
+		{13, StageComplete, model.ExecutionSucceeded},
 	}
 }
 
@@ -144,8 +142,6 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 	start := StageValidateProject
 	if claim.Execution.ResumePoint != nil {
 		switch *claim.Execution.ResumePoint {
-		case "gate2":
-			start = StageGate2
 		case "gate3":
 			start = StageGate3
 		case "publish":

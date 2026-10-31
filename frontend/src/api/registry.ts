@@ -19,7 +19,6 @@ export type ProjectSettings = {
   testReportPath: string | null
   setupCommand: string | null
   copyAllowlist: string[]
-  testFilePatterns: string[]
   allowedOperations: Record<string, unknown>
   approvalPolicy: Record<string, unknown>
   timeouts: Partial<Record<TimeoutKey, number>>

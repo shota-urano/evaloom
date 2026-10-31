@@ -56,5 +56,5 @@ func TestHarnessAdapterMigrationPreservesExistingDataAndForeignKeys(t *testing.T
 	if got, err := GetHarness(context.Background(), db, before.ID); err != nil || got.Adapter != "new_harness" {
 		t.Fatalf("extension name=%+v err=%v", got, err)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9})
 }

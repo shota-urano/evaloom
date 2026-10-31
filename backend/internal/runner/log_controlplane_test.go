@@ -53,8 +53,8 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`INSERT INTO projects (id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,test_file_patterns,allowed_operations,approval_policy,timeouts,created_at,updated_at)
-		VALUES ('project','Project','/repo','','mac-mini','main','developer','AGENTS.md','[]','[]','{}','{}','{}','now','now')`,
+		`INSERT INTO projects (id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,allowed_operations,approval_policy,timeouts,created_at,updated_at)
+		VALUES ('project','Project','/repo','','mac-mini','main','developer','AGENTS.md','[]','{}','{}','{}','now','now')`,
 		`INSERT INTO tasks (id,project_id,title,body,acceptance_criteria,short_name,task_type,collaboration_mode,status,idempotency_key,created_at,updated_at)
 		VALUES ('task-001','project','Title','','logs','logs','development','solo','running','logs','now','now')`,
 		`INSERT INTO executions (id,task_id,seq,mode,status,runner_id,created_at)

@@ -147,7 +147,7 @@ func TestGetTaskMissingReturns404NotFound(t *testing.T) {
 }
 
 func TestGetTaskResumeKeepsSameExecutionAndMode(t *testing.T) {
-	f, _, id, decision := resumeFixture(t, "gate1_test_change")
+	f, _, id, decision := resumeFixture(t, "gate2_missing_tests")
 	taskID := executionTaskID(t, f, id)
 	before := requireTaskDetail(t, f, taskID)["executions"].([]any)[0].(map[string]any)
 	status, body := requestResume(t, f, taskID, decision)

@@ -215,8 +215,13 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 }
 
 func TestClaimResumePreservesPinnedProfile(t *testing.T) {
-	for _, resumePoint := range []string{"gate2", "gate3", "publish"} {
-		t.Run(resumePoint, func(t *testing.T) {
+	for _, tc := range []struct{ name, resumePoint, role string }{
+		{"gate3_role_unchanged", "gate3", "unchanged"},
+		{"gate3_role_changed", "gate3", "assigned"},
+		{"publish_role_missing", "publish", "missing"},
+	} {
+		resumePoint := tc.resumePoint
+		t.Run(tc.name, func(t *testing.T) {
 			f, token, profiles := claimFixture(t)
 			created := createClaimTask(t, f, "project-a", "resume-pin")
 			status, body := requestClaim(t, f, token)
@@ -266,10 +271,10 @@ func TestClaimResumePreservesPinnedProfile(t *testing.T) {
 			if storedAssignment(t, f, "project-a", "developer").ProfileID != profiles[1].ID {
 				t.Fatal("assignment did not change to version B")
 			}
-			if resumePoint != "gate2" {
+			if tc.role != "unchanged" {
 				// A changed or missing current Default Role must not replace the
 				// Execution's original role or prevent its continuation.
-				if resumePoint == "gate3" {
+				if tc.role == "assigned" {
 					status, body = postAssignment(t, f, "project-a", "reviewer", "harness-a", profiles[1].Version)
 					requireAssignment(t, status, body, 201)
 				}
@@ -493,12 +498,12 @@ func TestClaimPreviousExecutionAndResumePoint(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = f.db.Exec(`UPDATE executions SET status = 'failed', worktree_id = ?, branch_name = ?,
-				pr_number = 12, gate1_base_sha = ? WHERE id = ?`, worktreeID, branch, sha, previous.Execution.ID)
+				pr_number = 12 WHERE id = ?`, worktreeID, branch, previous.Execution.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, resume_point, created_at)
-				VALUES (?, ?, 2, ?, 'pending', 'gate2', '2026-10-27T00:00:00Z')`, nextID, created.ID, mode)
+				VALUES (?, ?, 2, ?, 'pending', 'gate3', '2026-10-27T00:00:00Z')`, nextID, created.ID, mode)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -511,7 +516,7 @@ func TestClaimPreviousExecutionAndResumePoint(t *testing.T) {
 			requireAssignment(t, status, body, 200)
 			status, body = requestClaim(t, f, token)
 			claim := requireClaim(t, status, body)
-			if claim.Execution.ID != nextID || claim.Execution.Seq != 2 || claim.Execution.Mode != mode || claim.Execution.ResumePoint == nil || *claim.Execution.ResumePoint != "gate2" {
+			if claim.Execution.ID != nextID || claim.Execution.Seq != 2 || claim.Execution.Mode != mode || claim.Execution.ResumePoint == nil || *claim.Execution.ResumePoint != "gate3" {
 				t.Fatalf("retry claim=%+v", claim)
 			}
 			pin := readExecutionPin(t, f, nextID)
@@ -524,12 +529,11 @@ func TestClaimPreviousExecutionAndResumePoint(t *testing.T) {
 					t.Fatalf("fresh previous=%+v", claim.Previous)
 				}
 			} else if claim.Previous == nil || claim.Previous.WorktreePath == nil || *claim.Previous.WorktreePath != path ||
-				claim.Previous.BranchName == nil || *claim.Previous.BranchName != branch || claim.Previous.PRNumber == nil || *claim.Previous.PRNumber != 12 ||
-				claim.Previous.Gate1BaseSHA == nil || *claim.Previous.Gate1BaseSHA != sha {
+				claim.Previous.BranchName == nil || *claim.Previous.BranchName != branch || claim.Previous.PRNumber == nil || *claim.Previous.PRNumber != 12 {
 				t.Fatalf("previous=%+v", claim.Previous)
 			}
 			var savedStatus, resume string
-			if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, nextID).Scan(&savedStatus, &resume); err != nil || savedStatus != "claimed" || resume != "gate2" {
+			if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, nextID).Scan(&savedStatus, &resume); err != nil || savedStatus != "claimed" || resume != "gate3" {
 				t.Fatalf("saved status=%s resume=%s err=%v", savedStatus, resume, err)
 			}
 		})
