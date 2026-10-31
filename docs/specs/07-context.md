@@ -48,7 +48,7 @@ Runner が worktree 準備の後（[`05-runner.md`](./05-runner.md) 工程4）�
 
 列挙・取得は `backend/internal/projectcontext.Read` が担当する。開始点には完全な commit SHA を指定し、結果をリポジトリ内の相対パス順に返す。内容は Git blob のバイト列を変換せずに取得し、SHA-256 は小文字の16進数で返す。対象ファイルがシンボリックリンクなどの通常ファイル以外である場合や、Git の読み取りに失敗した場合は、途中までの結果を返さずエラーにする。サブモジュールの内部は列挙しない。
 
-ハーネスが実行中に `AGENTS.md` やハーネス固有の指示ファイルを変更した場合、Gate 1 の結果とともに管理画面と PR 本文で知らせる（[`10-verification-gates.md`](./10-verification-gates.md) 3.2 の `instruction_file_changed`）。Block にするかは requirements に記載が無く、Phase 1 では知らせるだけとする案である。
+ハーネスが実行中に `AGENTS.md` やハーネス固有の指示ファイルを変更した場合も、Evaloom は差分を判定しない。PR の差分で本人が確認する（Q36 で Gate 1 を廃止したため）。
 
 再実行（mode=`continue`）でも、固定の基準は worktree の開始点 commit（引き継いだ base_sha）とする（requirements 8.3「Project Context は worktree の開始点の commit に含まれるものを使う」）。
 

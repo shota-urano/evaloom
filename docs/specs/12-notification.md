@@ -10,7 +10,7 @@ status: confirmed
 ## 1. 目的
 
 - 本人の対応が必要なときと、タスクの完了・失敗を知らせる（requirements 8.8）。
-- テストの弱体化などで push せずに止まったとき、本人に通知する（条件17）。
+- Gate 2・3 で既存テストの欠けや SHA の不一致を見つけ、push せずに止まったとき、本人に通知する（条件15, 18）。
 - 将来 Slack やスマートフォンへの通知経路を足せる構成にする（requirements 8.8）。
 
 ## 2. 入出力
@@ -90,7 +90,7 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 | Phase 1 で通知する場面 | タスクの完了と失敗（承認の仕組みが無いため）、本人の対応が必要なとき | requirements 8.8 |
 | Phase 1 の通知先 | macOS 通知 | requirements 8.8 |
 | 将来の通知先 | Slack、スマートフォン（追加できる構成にする） | requirements 8.8 |
-| テストの弱体化で止まったとき | 本人に通知する | 条件17 |
+| Gate 2・3 で止まったとき | 本人に通知する | requirements 8.8、条件15, 18 |
 
 Linear コメントによる通知（requirements 8.8）は、Linear API キーの利用が Phase 2（requirements 6.6）のため Phase 1 では行わない案とする（Q18）。
 

@@ -10,7 +10,7 @@ status: confirmed
 ## 1. 目的
 
 - 本人の通常のローカルリポジトリを直接変更せず、タスク専用の worktree で作業させる（requirements 15.4）。
-- 開始点の commit SHA を記録し、Gate 1 の差分検査と Project Context の固定の基準にする（requirements 7.1, 8.5, 8.6）。
+- 開始点の commit SHA を記録し、Project Context の固定の基準にする（requirements 7.1, 8.5, 8.6）。
 - `.env` などのファイルを無条件にコピーせず、許可リストに載ったものだけを置く（requirements 5.1, 8.6）。
 - セットアップコマンドをホスト上で直接実行せず、Test Sandbox で実行する（requirements 8.6, 15.7）。
 
@@ -41,7 +41,7 @@ status: confirmed
    ```
 4. worktree のパスが Worktree Root の配下にあることを、シンボリックリンクを解決した実パスで確かめる。
 5. コピー許可リストのファイルを置く（3.5）。
-6. worktrees に行を作り（status=`active`）、Execution に base_sha・branch_name・worktree_id を書く。gate1_base_sha も base_sha にする。
+6. worktrees に行を作り（status=`active`）、Execution に base_sha・branch_name・worktree_id を書く。
 7. `worktree_ready` イベントを送る。
 8. セットアップコマンドを実行する（3.4）。
 
@@ -73,7 +73,7 @@ requirements 8.5「原則として、前回のブランチ・worktree・PR を�
 2. `git status --porcelain` で未コミットの変更を確かめる。コピー許可リストで置いたファイル（内容が置いたときと同じもの）は除いて判定する。
 3. HEAD が前回の Execution の最後の既知の SHA（pushed_sha、無ければ harness_head_sha、無ければ base_sha）と一致することを確かめる。
 4. 2 か 3 に当たれば、Execution を `blocked`（cause=`git_state`）にして止める。本人が状態を確認して再実行するか中止する。
-5. 問題が無ければ、base_sha と gate1_base_sha は前回の値を引き継ぎ（gate1_base_sha の扱いは [`10-verification-gates.md`](./10-verification-gates.md) Q13）、worktrees.status を `active` に戻す。
+5. 問題が無ければ、base_sha は前回の値を引き継ぎ、worktrees.status を `active` に戻す。
 6. worktree が削除済み（`cleaned`）でブランチが残っている場合は、そのブランチから worktree を作り直す。開始点 SHA は前回の値を使う。
 
 再利用時はベースブランチの最新を取り込まない（rebase / merge をしない）。取り込みが必要かどうかの判断は requirements に無いため、本人が新しいタスクか `fresh` で対応する。

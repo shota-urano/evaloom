@@ -31,7 +31,7 @@ requirements 15.7 の表を Phase 1 の構成に落としたもの。
 |---|---|---|---|---|
 | Control Plane | `evaloomd`（launchd 常駐） | 本人用 API、Runner 用 API、Registry、Task 管理、通知、SQLite | 本人用 API の検証鍵、Runner トークンの検証鍵 | GitHub の書き込み権限 |
 | Management UI | `evaloomd` が静的ファイルを配信 | 画面表示 | 本人のセッション（ブラウザ） | - |
-| Trusted Runner | `evaloom-runner`（launchd 常駐） | claim、worktree 準備、Sandbox の作成、Gate 1〜3、ログ収集 | Runner トークン、Base Branch の fetch に使う読み取り権限 | 本人用 API の認証情報、管理 DB への直接アクセス |
+| Trusted Runner | `evaloom-runner`（launchd 常駐） | claim、worktree 準備、Sandbox の作成、Gate 2・3、ログ収集 | Runner トークン、Base Branch の fetch に使う読み取り権限 | 本人用 API の認証情報、管理 DB への直接アクセス |
 | Git Publisher | Runner から起動する独立した処理（プロセス分離の形態は実装時に確定） | 検証済み commit の push と PR 作成 | 対象リポジトリに限った GitHub の書き込み権限 | Runner トークン、本人用 API の認証情報 |
 | Harness Sandbox | Runner が作る隔離環境 | AI によるコード変更と commit | モデル API の接続手段のみ（[`09-sandbox.md`](./09-sandbox.md)） | 上記すべて、プロジェクトの秘密情報 |
 | Test Sandbox | Runner が作る隔離環境 | setup・テストの実行 | なし | 上記すべて、プロジェクトの秘密情報 |
@@ -72,7 +72,7 @@ requirements 21章で詳細設計事項とされている。次は提案であ�
 | `internal/worktree` | worktree の作成・再利用・コピー | 06 |
 | `internal/adapter` | Adapter インターフェースと Codex / Claude Code 実装 | 08 |
 | `internal/sandbox` | Sandbox の作成・実行 | 09 |
-| `internal/gate` | Gate 1〜3 | 10 |
+| `internal/gate` | Gate 2・3 | 10 |
 | `internal/publisher` | push・PR 作成 | 11 |
 
 ### 3.4 認証

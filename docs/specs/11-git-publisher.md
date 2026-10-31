@@ -5,7 +5,7 @@ status: confirmed
 
 # 11. Git Publisher 仕様
 
-**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: Gate 1〜3 を通った commit を push し、PR を作る構成要素（requirements 8.5, 15.7）
+**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: Gate 2・3 を通った commit を push し、PR を作る構成要素（requirements 8.5, 15.7）
 
 ## 1. 目的
 
@@ -59,7 +59,6 @@ PR の本文（案）:
 - 実行したハーネスと Profile の版、commit SHA
 - Gate の結果（Gate 2 の実行数・skip 数、ID による照合か件数による確認か）
 - 本人が続行を選んで通した Block があれば、その内容
-- `instruction_file_changed` があれば、変更された指示ファイル
 - 「ハーネスが書いたテストの成功だけを要件充足の証明としない」旨の注記（requirements 8.5）
 
 PR の作成後に pr_number と pr_url を記録し、`pr_created` イベントを送る。

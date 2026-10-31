@@ -81,7 +81,6 @@ requirements 5.1 の保持情報に対応する。
 | test_report_path | TEXT NULL | worktree 内のレポート出力パス（Q12、追加） | - |
 | setup_command | TEXT NULL | worktree 作成後に Test Sandbox で実行 | セットアップコマンド |
 | copy_allowlist | TEXT (JSON 配列) | worktree へコピーしてよいファイルの相対パス | コピー許可リスト |
-| test_file_patterns | TEXT (JSON 配列) | Gate 1 で追加検出するパターン（Q10、追加） | - |
 | allowed_operations | TEXT (JSON) | 許可操作 | 許可操作 |
 | approval_policy | TEXT (JSON) | 承認ポリシー。Phase 1 は保存と表示だけ（Q25） | 承認ポリシー |
 | timeouts | TEXT (JSON) | `{ "setupSec", "harnessSec", "testSec" }`（Q15、追加） | - |
@@ -174,8 +173,7 @@ Harness Version / Prompt Version / Skill Version は harness_profiles 側に持�
 | worktree_id | TEXT NULL FK→worktrees | |
 | branch_name | TEXT NULL | |
 | base_sha | TEXT NULL | 開始点 SHA（requirements 8.6） |
-| gate1_base_sha | TEXT NULL | Gate 1 の差分検査の基準（[`10-verification-gates.md`](./10-verification-gates.md) Q13） |
-| resume_point | TEXT NULL | Blocked から続行したときに再開する工程（`gate2` / `gate3` / `publish`）。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8 |
+| resume_point | TEXT NULL | Blocked から続行したときに再開する工程（`gate3` / `publish`）。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8 |
 | harness_head_sha | TEXT NULL | ハーネス終了後に Runner が記録した HEAD |
 | verified_sha | TEXT NULL | Gate 2 でテストした commit |
 | pushed_sha | TEXT NULL | push した commit。verified_sha と一致しなければならない |
@@ -248,13 +246,13 @@ Execution ごとに固定した Context を保存する（requirements 7.1, 8.3�
 
 #### gate_results（追加）
 
-17章に無い。Gate 1〜3 の判定を構造化して残すために追加する。
+17章に無い。Gate 2・3 の判定を構造化して残すために追加する。
 
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | |
 | execution_id | TEXT FK | |
-| gate | INTEGER | 1 / 2 / 3 |
+| gate | INTEGER | 2 / 3（Gate 1 は Q36 で廃止） |
 | result | TEXT | `pass` / `blocked` / `failed` |
 | base_sha / target_sha | TEXT | 比較した commit |
 | findings | TEXT (JSON 配列) | 5.5 の Finding |
@@ -402,7 +400,7 @@ requirements 8.3 の11状態。値は snake_case にする。
 | `claimed` | Runner が取得し、版を固定した | `running` |
 | `preparing` | worktree 準備・setup 中 | `running` |
 | `running` | ハーネス実行中 | `running` |
-| `verifying` | Gate 1〜3 | `verifying` |
+| `verifying` | Gate 2・3 | `verifying` |
 | `publishing` | push・PR 作成中 | `verifying` |
 | `succeeded` | PR 作成まで完了 | `completed` |
 | `blocked` | 本人の確認待ち | `blocked` |
@@ -448,10 +446,10 @@ requirements 9.5 の5分類に、Phase 1 の Runner 側で必要な分類を足�
 
 ```json
 {
-  "rule": "existing_test_deleted",
+  "rule": "existing_test_not_run",
   "path": "src/foo.test.ts",
-  "line": 42,
-  "message": "既存のテストファイルが削除された"
+  "line": 0,
+  "message": "既存のテスト FooTest.testBar が実行されていない"
 }
 ```
 
@@ -461,8 +459,6 @@ requirements 9.5 の5分類に、Phase 1 の Runner 側で必要な分類を足�
 
 | 値 | 意味 | 出典 |
 |---|---|---|
-| `gate1_test_change` | Gate 1 でテスト・テスト設定・CI の変更を検出 | 8.5 |
-| `gate1_unverifiable` | Gate 1 の差分を取得・解析できない | 8.5 |
 | `gate2_missing_tests` | Gate 2 で既存テストの欠けを検出 | 8.5 |
 | `gate2_unverifiable` | テストの件数・ID が取れず検証できない | 8.5 |
 | `gate3_mismatch` | 検証 SHA と HEAD の不一致、未コミットの変更 | 8.5 |

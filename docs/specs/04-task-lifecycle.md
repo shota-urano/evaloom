@@ -96,10 +96,10 @@ Runner は空きがあるときに claim を呼ぶ。Control Plane は1つの書
   "project": {
     "id": "project-a", "localRepoPath": "...", "gitRemoteUrl": "...", "baseBranch": "develop",
     "setupCommand": "...", "testCommand": "...", "testReportFormat": "junit_xml", "testReportPath": "...",
-    "copyAllowlist": ["..."], "testFilePatterns": ["..."], "timeouts": { "setupSec": 0, "harnessSec": 0, "testSec": 0 }
+    "copyAllowlist": ["..."], "timeouts": { "setupSec": 0, "harnessSec": 0, "testSec": 0 }
   },
   "profile": { "harnessId": "...", "adapter": "claude_code", "version": "1.2.0", "commitSha": "...", "definition": {} },
-  "previous": { "worktreePath": "...", "branchName": "...", "prNumber": 12, "gate1BaseSha": "..." }
+  "previous": { "worktreePath": "...", "branchName": "...", "prNumber": 12 }
 }
 ```
 
@@ -166,8 +166,8 @@ requirements 8.5「止まったタスクは、本人が変更内容を確認し�
 処理:
 
 1. execution_blocks の行が未判断であること、`headSha` が行の head_sha と一致することを確かめる。一致しなければ 422。
-2. `continue` を受け付けるのは、cause が `gate1_test_change` / `gate1_unverifiable` / `gate2_missing_tests` / `gate2_unverifiable` / `gate3_mismatch` のときだけ。`context_conflict` と `git_state` は続行できず、本人が原因を直して再実行する。
-3. `continue` なら判断を記録し、Execution の status を `pending`、resume_point を次の工程（例: Gate 1 で止まったなら `gate2`）にしてタスクを `queued` に戻す。Runner は claim 後に resume_point から続ける。同時実行制御は通常の claim と同じく適用される。
+2. `continue` を受け付けるのは、cause が `gate2_missing_tests` / `gate2_unverifiable` / `gate3_mismatch` のときだけ。`context_conflict` と `git_state` は続行できず、本人が原因を直して再実行する。
+3. `continue` なら判断を記録し、Execution の status を `pending`、resume_point を次の工程（Gate 2・3 で止まったなら `gate3`。[`10-verification-gates.md`](./10-verification-gates.md) 3.5）にしてタスクを `queued` に戻す。Runner は claim 後に resume_point から続ける。同時実行制御は通常の claim と同じく適用される。
 4. Runner は再開時に HEAD が head_sha と一致することを確かめる。一致しなければ `git_state` で再び Blocked にする。
 5. `abort` なら Execution とタスクを `cancelled` にする。worktree は保持する。
 
