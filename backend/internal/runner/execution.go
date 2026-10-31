@@ -78,6 +78,7 @@ type Execution struct {
 	HarnessHeadSHA string
 	VerifiedSHA    string
 	VerifyRun      *model.TestRun
+	CopiedFiles    []model.CopiedFile
 	gateResults    []GateResult
 	testRuns       []model.TestRun
 	// The harness stage supplies the adapter result, including nullable tokens.

@@ -18,6 +18,10 @@
   Profile定義は保存済みのProfile IDから読み、版とSHAはExecutionの列値を返す。
   再claimではRunnerとclaim時刻だけを更新する。初回かどうかはProfile IDが未保存かで判定し、
   新しいExecutionの再実行では現在の割り当てから版を固定する。
+- 再開点がある場合は、同じExecutionの`harnessHeadSha`、`verifiedSha`、
+  `verifyRun`を返す。新しいcontinue Executionには前回の検証を引き継がない。
+  `worktree`には元のbaselineに加え、保存済みの`copiedFiles`と`branchName`を返す。
+  Gate 3はこのスナップショットを使い、再開時も実際のGit状態を確認する。
 - 作成後にDefault Roleの割り当てがなくなった場合も422
   `precondition_failed`、詳細は`projectId/default_harness_missing`とする。
   取得対象を別のExecutionに差し替えず、そのトランザクションを取り消す。

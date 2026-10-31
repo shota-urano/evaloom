@@ -52,6 +52,9 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   `blocked`・`failed`の結果は1回の報告で1件までとする。
   `baseSha`・`targetSha`は既存のSHA形式で検証する。
   `targetSha`は保存済みまたは同じ報告の`harnessHeadSha`と一致しなければならない。
+  ただしGate 3のblocked結果は確認時点のHEADを記録するため、
+  `block.cause=gate3_mismatch`とし、`block.headSha`との一致を確認する。
+  テスト後にHEADが変わっていても、元のハーネスSHAと検証SHAは保持する。
   不一致や未記録は422にする。別のcommitに対する結果を、このExecutionの記録として残させないためである。
   各結果を`gate_results`に保存し、`gate_result`イベント（`gate`・`result`・
   `findingCount`）を記録する。`block.gateResultId`を省略した場合は、
