@@ -347,6 +347,15 @@ func validateGateResults(r *http.Request, tx *sql.Tx, execution store.ContextExe
 		return err
 	}
 	for _, gate := range input.GateResults {
+		// Gate 3 measures the current HEAD. On a mismatch it can differ
+		// from the tested harness head; keep both SHAs instead of rewriting
+		// the Gate 2 record. The Block must identify that same observed HEAD.
+		if gate.Gate == 3 && gate.Result == "blocked" && input.Block != nil && input.Block.Cause == model.BlockGate3Mismatch {
+			if gate.TargetSHA != input.Block.HeadSHA {
+				return &Error{Code: PreconditionFailed, Message: "Gate 3 target SHA must equal the blocked HEAD"}
+			}
+			continue
+		}
 		if head == "" || gate.TargetSHA != head {
 			return &Error{Code: PreconditionFailed, Message: "Gate result target SHA must equal the Execution's harness head SHA"}
 		}

@@ -17,11 +17,14 @@ const maxConcurrentExecutions = 2
 // Claim is the HTTP execution input. The Runner never opens the management DB.
 type Claim struct {
 	Execution struct {
-		ID          string  `json:"id"`
-		TaskID      string  `json:"taskId"`
-		Seq         int     `json:"seq"`
-		Mode        string  `json:"mode"`
-		ResumePoint *string `json:"resumePoint"`
+		ID             string         `json:"id"`
+		TaskID         string         `json:"taskId"`
+		Seq            int            `json:"seq"`
+		Mode           string         `json:"mode"`
+		ResumePoint    *string        `json:"resumePoint"`
+		HarnessHeadSHA string         `json:"harnessHeadSha"`
+		VerifiedSHA    string         `json:"verifiedSha"`
+		VerifyRun      *model.TestRun `json:"verifyRun"`
 	} `json:"execution"`
 	Task struct {
 		Title              string `json:"title"`
@@ -66,10 +69,12 @@ func (c *Claim) UnmarshalJSON(data []byte) error {
 }
 
 type ClaimWorktree struct {
-	ID       string         `json:"id"`
-	Path     string         `json:"path"`
-	BaseSHA  string         `json:"baseSha"`
-	Baseline *model.TestRun `json:"baseline"`
+	ID          string             `json:"id"`
+	Path        string             `json:"path"`
+	BaseSHA     string             `json:"baseSha"`
+	BranchName  string             `json:"branchName"`
+	Baseline    *model.TestRun     `json:"baseline"`
+	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
 }
 
 // Run heartbeats immediately, then claims at most one job per poll when there

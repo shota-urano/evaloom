@@ -17,11 +17,14 @@ const activeExecutionStatuses = `('claimed', 'preparing', 'running', 'verifying'
 var ErrClaimAssignmentMissing = errors.New("Project has no Default Harness assignment")
 
 type ClaimExecution struct {
-	ID          string  `json:"id"`
-	TaskID      string  `json:"taskId"`
-	Seq         int     `json:"seq"`
-	Mode        string  `json:"mode"`
-	ResumePoint *string `json:"resumePoint"`
+	ID             string         `json:"id"`
+	TaskID         string         `json:"taskId"`
+	Seq            int            `json:"seq"`
+	Mode           string         `json:"mode"`
+	ResumePoint    *string        `json:"resumePoint"`
+	HarnessHeadSHA string         `json:"harnessHeadSha"`
+	VerifiedSHA    string         `json:"verifiedSha"`
+	VerifyRun      *model.TestRun `json:"verifyRun"`
 }
 
 type ClaimTask struct {
@@ -49,10 +52,12 @@ type ClaimPrevious struct {
 // A continue claim gets this from its predecessor; a resumed claim gets its
 // own saved association. A fresh worktree has no previous baseline.
 type ClaimWorktree struct {
-	ID       string         `json:"id"`
-	Path     string         `json:"path"`
-	BaseSHA  string         `json:"baseSha"`
-	Baseline *model.TestRun `json:"baseline"`
+	ID          string             `json:"id"`
+	Path        string             `json:"path"`
+	BaseSHA     string             `json:"baseSha"`
+	BranchName  string             `json:"branchName"`
+	Baseline    *model.TestRun     `json:"baseline"`
+	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
 }
 
 // Claim contains only execution input, never Runner credentials. Assignment is
@@ -148,6 +153,16 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	if err := loadClaimWorktree(ctx, tx, &c, runnerID); err != nil {
 		return nil, err
 	}
+	if c.Execution.ResumePoint != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT coalesce(harness_head_sha,''), coalesce(verified_sha,'') FROM executions WHERE id=?`, c.Execution.ID).
+			Scan(&c.Execution.HarnessHeadSHA, &c.Execution.VerifiedSHA); err != nil {
+			return nil, err
+		}
+		c.Execution.VerifyRun, err = findVerifyRun(ctx, tx, c.Execution.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &c, nil
 }
 
@@ -167,10 +182,14 @@ func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID strin
 		return nil
 	}
 	w := &ClaimWorktree{ID: worktreeID.String}
+	var copied string
 	// A cleaned worktree retains its branch and start SHA (spec 06, 3.3.6).
 	// Preparation needs this snapshot to restore it and reuse its baseline.
-	err = tx.QueryRowContext(ctx, `SELECT path, base_sha FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA)
+	err = tx.QueryRowContext(ctx, `SELECT path, base_sha, branch_name, copied_files FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA, &w.BranchName, &copied)
 	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal([]byte(copied), &w.CopiedFiles); err != nil {
 		return err
 	}
 	if base.Valid && base.String != w.BaseSHA {
