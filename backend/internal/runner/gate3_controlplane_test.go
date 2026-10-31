@@ -343,11 +343,7 @@ exec "$EVALOOM_TEST_REAL_GIT" "$@"
 
 func (f *gate3Fixture) queueResume(t *testing.T) {
 	t.Helper()
-	// Owner continuation is covered by API tests. This fixture advances only
-	// the queue, keeping all measured SHAs, copies and test_runs unchanged.
-	if _, err := f.db.Exec(`UPDATE executions SET status='pending',resume_point='gate3'; UPDATE tasks SET status='queued'`); err != nil {
-		t.Fatal(err)
-	}
+	f.continueBlocked(t)
 }
 
 func TestGate3HTTPResumeRechecksSavedVerification(t *testing.T) {

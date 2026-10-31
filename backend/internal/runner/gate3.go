@@ -73,6 +73,12 @@ func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if e.Claim.Execution.ResumePoint != nil && *e.Claim.Execution.ResumePoint == "gate3" && head != "" &&
+			(e.Claim.Execution.ResumeHeadSHA == "" || head != e.Claim.Execution.ResumeHeadSHA) {
+			// Spec 04, 3.8.4: approval is tied to the Block's observed HEAD.
+			// Do not treat today's HEAD as a new approved/tested commit.
+			return errors.Join(ErrGate3Stopped, e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGitState, HeadSHA: head}))
+		}
 		result := GateResult{Gate: 3, Result: "pass", BaseSHA: e.BaseSHA, TargetSHA: head, Findings: []model.Finding{}}
 		if err == nil && clean && gate.CheckCommit(e.Claim.Execution.ID, head, e.VerifiedSHA, e.VerifyRun) {
 			e.gateResults = append(e.gateResults, result)

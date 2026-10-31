@@ -22,6 +22,7 @@ type ClaimExecution struct {
 	Seq            int            `json:"seq"`
 	Mode           string         `json:"mode"`
 	ResumePoint    *string        `json:"resumePoint"`
+	ResumeHeadSHA  string         `json:"resumeHeadSha"`
 	HarnessHeadSHA string         `json:"harnessHeadSha"`
 	VerifiedSHA    string         `json:"verifiedSha"`
 	VerifyRun      *model.TestRun `json:"verifyRun"`
@@ -154,8 +155,11 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 		return nil, err
 	}
 	if c.Execution.ResumePoint != nil {
-		if err := tx.QueryRowContext(ctx, `SELECT coalesce(harness_head_sha,''), coalesce(verified_sha,'') FROM executions WHERE id=?`, c.Execution.ID).
-			Scan(&c.Execution.HarnessHeadSHA, &c.Execution.VerifiedSHA); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT coalesce(harness_head_sha,''), coalesce(verified_sha,''),
+			coalesce((SELECT CASE WHEN decision='continue' THEN head_sha END FROM execution_blocks
+			WHERE execution_id=executions.id ORDER BY rowid DESC LIMIT 1),'')
+			FROM executions WHERE id=?`, c.Execution.ID).
+			Scan(&c.Execution.HarnessHeadSHA, &c.Execution.VerifiedSHA, &c.Execution.ResumeHeadSHA); err != nil {
 			return nil, err
 		}
 		c.Execution.VerifyRun, err = findVerifyRun(ctx, tx, c.Execution.ID)
