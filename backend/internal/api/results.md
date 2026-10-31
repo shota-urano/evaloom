@@ -3,7 +3,7 @@
 正本は`docs/specs/04-task-lifecycle.md`の3.2・3.4・6節、
 `02-data-model.md`のexecutions・execution_blocks・5.2〜5.6節、
 `05-runner.md`の3.3・3.6節、`06-worktree.md`の3.6節、
-`12-notification.md`の3.1・3.4節。
+`10-verification-gates.md`の3〜5節、`12-notification.md`の3.1・3.4節。
 
 `POST /api/executions/{id}/result`を既存の`protectRunner`で保護する。
 本人のCookieでは呼べない。保存するトランザクション内で、認証したRunnerと
@@ -30,7 +30,7 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   不一致時の応答コードは、既存のSHA整合性検証に合わせて422とした。
   保存済みの値を含めて`pushedSha`と`verifiedSha`の一致を確認し、不一致は422にする。
   `worktreeId`は同じTask・Project・Runnerに属し、未削除の既存行だけを参照できる。
-  worktreeの作成やGate結果の生成は、それぞれの工程の実装に属する。
+  worktreeの作成やGate結果の判定は、それぞれの工程の実装に属する。
 - `failed`には既定の分類を創作せず、`errorClass`を必須にする。
   `timed_out`と`cancelled`には仕様05の`timeout`と`cancelled`を保存する。
   それらと異なる分類が指定された場合や、進行・成功・Blockedへのエラー分類は400にする。
@@ -38,6 +38,22 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   原因は既存の列挙値、HEADは既存のSHA検証を使う。
   `gateResultId`を指定した場合は同じExecutionの行だけを参照できる。
   Context Builderと共通の保存関数で未判断のBlockと`blocked`イベントを記録する。
+- Gate 2・3 の結果は`gateResults: [{gate, result, baseSha, targetSha, findings}]`で送る。
+  Gate 2・3 はすべて`verifying`の中で行われ、報告は状態を変える必要があるため、
+  結果は次の遷移（`publishing`・`blocked`・`failed`など）の報告にまとめて載せる。
+  `gate`は2または3とし、廃止したGate 1は400にする。`result`は`pass`・`blocked`・`failed`で、
+  `blocked`と`failed`は報告の`status`と同じときだけ受け付ける。
+  `findings`はデータモデル5.5の形で、`rule`は空でなく、`line`は0以上とする。
+  `blocked`・`failed`の結果は1回の報告で1件までとする。
+  `baseSha`・`targetSha`は既存のSHA形式で検証する。
+  `targetSha`は保存済みまたは同じ報告の`harnessHeadSha`と一致しなければならない。
+  不一致や未記録は422にする。別のcommitに対する結果を、このExecutionの記録として残させないためである。
+  各結果を`gate_results`に保存し、`gate_result`イベント（`gate`・`result`・
+  `findingCount`）を記録する。`block.gateResultId`を省略した場合は、
+  同じ報告で`blocked`になったGateの結果をBlockに結び付ける。
+  Blockの原因（`gate2_*`・`gate3_*`）とGate番号が合わない結果、
+  Gate以外の原因に対するGateの結果、`gateResultId`と同じ報告の`blocked`の結果の併用は400にする。
+  `gateResultId`が原因と違うGateの結果を指す場合は422にする。
 - 通知要求は追加マイグレーション`0005_notification_requests.sql`の
   `notification_requests`に保存する。列は`execution_id`、`status`、`created_at`。
   `execution_id`はexecutionsへの外部キーとし、`(execution_id, status)`を主キーにする。
@@ -60,3 +76,7 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
 イベント・監査記録を、claimと同じ`BEGIN IMMEDIATE`トランザクションに含める。
 どれかの保存に失敗した場合は全体をロールバックする。
 通知の実送信に失敗しても状態を取り消さない処理は、仕様12の送信側で実装する。
+
+仕様にはgateResultsの要求JSON、Findingのrule一覧・文字数上限・件数上限が未定義である。
+要求JSONは`feat/pdy.1-gate1-diff`の形を引き継ぐ。ruleは保存用の文字列として扱い、
+Gate固有の判定はAPIに持ち込まない。元ブランチ独自の文字数・件数上限は取り込まない。
