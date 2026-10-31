@@ -32,6 +32,17 @@ type resultInput struct {
 	ErrorMessage     *string          `json:"errorMessage"`
 	Block            *resultBlock     `json:"block"`
 	Usage            *resultUsage     `json:"usage"`
+	// Gate results are sent with the next transition report, because Gates
+	// 2 and 3 run in verifying and a report must change the state.
+	GateResults []resultGateResult `json:"gateResults"`
+}
+
+type resultGateResult struct {
+	Gate      int             `json:"gate"`
+	Result    string          `json:"result"`
+	BaseSHA   string          `json:"baseSha"`
+	TargetSHA string          `json:"targetSha"`
+	Findings  []store.Finding `json:"findings"`
 }
 
 // The result body is not specified in specs 01/04/05. These fields carry step
@@ -208,6 +219,9 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 	} else if input.Block != nil {
 		return invalid("block", "only_for_blocked")
 	}
+	if err := validateGateResults(r, tx, execution, input); err != nil {
+		return err
+	}
 	if input.Status == "failed" && input.ErrorClass == "" {
 		return invalid("errorClass", "required")
 	}
@@ -244,6 +258,78 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 		}
 		if !own {
 			return &Error{Code: PreconditionFailed, Message: "Gate result does not belong to this Execution"}
+		}
+	}
+	return nil
+}
+
+// blockGate maps a Gate Block cause to its Gate number; 0 for other causes.
+func blockGate(cause model.BlockCause) int {
+	switch cause {
+	case model.BlockGate2MissingTests, model.BlockGate2Unverifiable:
+		return 2
+	case model.BlockGate3Mismatch:
+		return 3
+	}
+	return 0
+}
+
+func validateGateResults(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
+	var stopping *resultGateResult
+	for i, gate := range input.GateResults {
+		if gate.Gate < 2 || gate.Gate > 3 {
+			return invalid("gateResults.gate", "out_of_range")
+		}
+		switch gate.Result {
+		case "pass":
+		case "blocked", "failed":
+			// A blocking or failing Gate must stop the Execution in the same
+			// report, and only one Gate can be the one that stopped it.
+			if input.Status != gate.Result || stopping != nil {
+				return invalid("gateResults.result", "status_mismatch")
+			}
+			stopping = &input.GateResults[i]
+		default:
+			return invalid("gateResults.result", "invalid_value")
+		}
+		if !fullCommitSHA(gate.BaseSHA) || !fullCommitSHA(gate.TargetSHA) {
+			return invalid("gateResults", "invalid_sha")
+		}
+		for _, finding := range gate.Findings {
+			if finding.Rule == "" || finding.Line < 0 {
+				return invalid("gateResults.findings", "invalid_format")
+			}
+		}
+	}
+	if input.Block != nil {
+		cause := blockGate(input.Block.Cause)
+		if stopping != nil && (input.Block.GateResultID != nil || stopping.Gate != cause) {
+			return invalid("block", "gate_mismatch")
+		}
+		if input.Block.GateResultID != nil {
+			var gate int
+			err := tx.QueryRowContext(r.Context(), `SELECT gate FROM gate_results WHERE id = ? AND execution_id = ?`,
+				*input.Block.GateResultID, execution.ID).Scan(&gate)
+			if err == nil && gate != cause {
+				return &Error{Code: PreconditionFailed, Message: "Gate result does not match the block cause"}
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+	}
+	if len(input.GateResults) == 0 {
+		return nil
+	}
+	// Compare the effective harness head, including this report's value.
+	var head string
+	if err := tx.QueryRowContext(r.Context(), `SELECT coalesce(?, harness_head_sha, '')
+		FROM executions WHERE id = ?`, input.HarnessHeadSHA, execution.ID).Scan(&head); err != nil {
+		return err
+	}
+	for _, gate := range input.GateResults {
+		if head == "" || gate.TargetSHA != head {
+			return &Error{Code: PreconditionFailed, Message: "Gate result target SHA must equal the Execution's harness head SHA"}
 		}
 	}
 	return nil
@@ -299,9 +385,31 @@ func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, i
 			return err
 		}
 	}
+	var blockingGate *string
+	for _, gate := range input.GateResults {
+		id := ulid.Make().String()
+		if err := store.RecordGateResult(r.Context(), tx, store.GateResult{
+			ID: id, ExecutionID: execution.ID, Gate: gate.Gate, Result: gate.Result,
+			BaseSHA: gate.BaseSHA, TargetSHA: gate.TargetSHA, Findings: gate.Findings,
+		}); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"gate": gate.Gate, "result": gate.Result, "findingCount": len(gate.Findings)})
+		if _, err := store.AppendExecutionEvent(r.Context(), tx, execution.ID, model.EventGateResult, payload); err != nil {
+			return err
+		}
+		if gate.Result == "blocked" {
+			blockingGate = &id
+		}
+	}
 	if input.Block != nil {
+		reference := input.Block.GateResultID
+		if reference == nil {
+			// Link the Block to the Gate that caused it in this report.
+			reference = blockingGate
+		}
 		return store.SaveExecutionBlockTx(r.Context(), tx, store.ExecutionBlock{
-			ExecutionID: execution.ID, Cause: string(input.Block.Cause), GateResultID: input.Block.GateResultID,
+			ExecutionID: execution.ID, Cause: string(input.Block.Cause), GateResultID: reference,
 			HeadSHA: input.Block.HeadSHA, Detail: input.Block.Detail,
 		})
 	}

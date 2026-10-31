@@ -30,7 +30,9 @@ type GateResult struct {
 
 // RecordGateResult serializes typed findings before writing, so findings is
 // always a JSON array, including when there are no findings.
-func RecordGateResult(ctx context.Context, db *sql.DB, record GateResult) error {
+func RecordGateResult(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, record GateResult) error {
 	if record.Findings == nil {
 		record.Findings = []Finding{}
 	}
