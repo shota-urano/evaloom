@@ -83,9 +83,10 @@ func (r *remoteBaselineRepository) FindBaseline(ctx context.Context, executionID
 		}
 		return w.Baseline, nil
 	}
-	// A continue with no worktree snapshot cannot establish absence. Never
-	// rerun tests because an old/partial claim omitted the required evidence.
-	if r.execution.Claim.Execution.Mode == "continue" && r.execution.Claim.Execution.Seq > 1 {
+	// Explicit null means the predecessor failed before recording a worktree;
+	// preparation can create one and acquire its baseline. Missing information
+	// in an old/partial claim must still never trigger another test run.
+	if r.execution.Claim.Execution.Mode == "continue" && r.execution.Claim.Execution.Seq > 1 && !r.execution.Claim.worktreeSnapshotPresent {
 		return nil, fmt.Errorf("runner: continue claim lacks saved worktree baseline information")
 	}
 	return nil, nil

@@ -43,6 +43,26 @@ type Claim struct {
 		PRNumber     *int    `json:"prNumber"`
 	} `json:"previous"`
 	Worktree *ClaimWorktree `json:"worktree"`
+	// Explicit null confirms that no earlier worktree was recorded. An omitted
+	// field in an older/partial response cannot establish baseline absence.
+	worktreeSnapshotPresent bool
+}
+
+func (c *Claim) UnmarshalJSON(data []byte) error {
+	type claimJSON Claim
+	var decoded claimJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields struct {
+		Worktree json.RawMessage `json:"worktree"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Claim(decoded)
+	c.worktreeSnapshotPresent = fields.Worktree != nil
+	return nil
 }
 
 type ClaimWorktree struct {

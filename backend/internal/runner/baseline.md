@@ -37,8 +37,11 @@ Runnerに管理DBを開かせる実装は追加していない。
   同じトランザクションで保存する。同じID・内容の再送は204、置換は409にする。
 - claim応答の`worktree: {id, path, baseSha, baseline}`で保存済みの基準値を渡す。
   continueでは直前のExecutionと同じworktreeを検索し、元のtest_runsを返す。
-  Runnerを再生成してもこの応答で再取得を防ぐ。continueの応答にworktree情報が
-  無い場合は、未取得とは判断せずエラーにする。新しいエンドポイントは追加しない。
+  Runnerを再生成してもこの応答で再取得を防ぐ。`worktree: null`は前回までに
+  worktreeが記録されていないことを示し、準備工程で新規作成したworktreeでは
+  基準値を取得する。`worktree`項目自体が欠ける応答はエラーにする。
+  `cleaned`のworktreeも元のパス・開始点SHA・基準値を返し、準備工程で
+  ブランチから復元した後に基準値を引き継ぐ。新しいエンドポイントは追加しない。
 - ID一覧はJSON配列にして既存のartifacts APIに`kind=test_ids`で送る。
   送信失敗時は同じID・内容で再送する。基準値のresult報告も再送できる。
   どちらの保存確認も済んでからハーネスへ進む。
@@ -67,3 +70,7 @@ Runnerに管理DBを開かせる実装は追加していない。
 通す。隔離ランタイムだけをテスト用のプロセスに置き換える。
 continueを2回行い、HEADとRegistryが変わっても実行回数と基準値の行数が増えないこと、
 成果物とresultの応答消失後に再送しても重複しないことを確認する。
+worktree作成前に失敗したExecutionからのcontinueでは基準値を初めて保存し、
+claimのworktree項目が欠ける場合には取得しないことも確認する。
+cleanedからのcontinueでは、実際のlinked worktreeの削除とブランチからの復元を
+テストの準備工程で行い、claim成功と保存済み基準値の再利用を確認する。

@@ -1,9 +1,11 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/gate"
+	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -90,6 +93,13 @@ func newBaselineHTTPFixture(t *testing.T) *baselineHTTPFixture {
 }
 
 func (f *baselineHTTPFixture) executor(t *testing.T, process *Runner, calls *int) *Executor {
+	return f.executorWithPrepare(t, process, calls, nil)
+}
+
+// Worktree creation/restoration belongs to the preparation stage, outside the
+// baseline handler. Tests can supply that boundary while retaining all later
+// product stages, HTTP reporting and baseline persistence.
+func (f *baselineHTTPFixture) executorWithPrepare(t *testing.T, process *Runner, calls *int, prepare StageFunc) *Executor {
 	t.Helper()
 	handler, err := process.BaselineHandler(BaselineConfig{
 		Sandbox: baselineRuntimeFunc(func(_ context.Context, spec sandbox.SandboxSpec, argv []string) (sandbox.Process, error) {
@@ -111,8 +121,13 @@ func (f *baselineHTTPFixture) executor(t *testing.T, process *Runner, calls *int
 	if err != nil {
 		t.Fatal(err)
 	}
-	handlers := stubStageHandlers(func(id StageID, _ context.Context, e *Execution) error {
+	handlers := stubStageHandlers(func(id StageID, ctx context.Context, e *Execution) error {
 		if id == StagePrepareWorktree {
+			if prepare != nil {
+				if err := prepare(ctx, e); err != nil {
+					return err
+				}
+			}
 			e.WorktreeID, e.WorktreePath, e.BaseSHA = f.worktreeID, f.path, f.sha
 		}
 		if id == StageHarness {
@@ -133,6 +148,95 @@ func (f *baselineHTTPFixture) executor(t *testing.T, process *Runner, calls *int
 		t.Fatal(err)
 	}
 	return executor
+}
+
+func TestBaselineHTTPContinueAfterFailureBeforeWorktreeAcquiresBaseline(t *testing.T) {
+	for _, omitSnapshot := range []bool{false, true} {
+		name := "explicit null allows first acquisition"
+		if omitSnapshot {
+			name = "omitted snapshot stops acquisition"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newBaselineHTTPFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			process, err := New(f.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := process.claim(ctx)
+			if err != nil || first == nil {
+				t.Fatalf("first claim: %v", err)
+			}
+			calls := 0
+			prepareErr := errors.New("worktree creation failed")
+			err = f.executorWithPrepare(t, process, &calls, func(context.Context, *Execution) error {
+				return prepareErr
+			}).Execute(ctx, *first)
+			if !errors.Is(err, prepareErr) || calls != 0 {
+				t.Fatalf("first preparation: %v calls=%d", err, calls)
+			}
+			if err := process.ReportResult(ctx, first.Execution.ID, ExecutionResult{
+				FromStatus: model.ExecutionPreparing, Status: model.ExecutionFailed, ErrorClass: model.ErrorConfig,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var worktreeID *string
+			if err := f.db.QueryRow(`SELECT worktree_id FROM executions WHERE id=?`, first.Execution.ID).Scan(&worktreeID); err != nil || worktreeID != nil {
+				t.Fatalf("failed preparation recorded a worktree: %v %v", worktreeID, err)
+			}
+			id := ulid.Make().String()
+			if _, err := f.db.Exec(`INSERT INTO executions (id,task_id,seq,mode,status,created_at) VALUES (?,'task-001',2,'continue','pending','now');
+				UPDATE tasks SET status='queued'`, id); err != nil {
+				t.Fatal(err)
+			}
+			process, err = New(f.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if omitSnapshot {
+				process.client.Transport = usageRetryTransport(func(r *http.Request) (*http.Response, error) {
+					response, err := http.DefaultTransport.RoundTrip(r)
+					if err != nil || !strings.HasSuffix(r.URL.Path, "/claim") {
+						return response, err
+					}
+					var body map[string]json.RawMessage
+					err = json.NewDecoder(response.Body).Decode(&body)
+					response.Body.Close()
+					if err != nil {
+						return nil, err
+					}
+					delete(body, "worktree")
+					encoded, err := json.Marshal(body)
+					response.Body = io.NopCloser(bytes.NewReader(encoded))
+					return response, err
+				})
+			}
+			claim, err := process.claim(ctx)
+			if err != nil || claim == nil || claim.Worktree != nil || claim.Execution.ID != id || claim.worktreeSnapshotPresent == omitSnapshot {
+				t.Fatalf("continue snapshot: %+v %v", claim, err)
+			}
+			err = f.executor(t, process, &calls).Execute(ctx, *claim)
+			if omitSnapshot {
+				var stageErr *StageError
+				if !errors.As(err, &stageErr) || stageErr.Stage.ID != StageTestBaseline || !strings.Contains(stageErr.Err.Error(), "lacks saved worktree") || calls != 0 {
+					t.Fatalf("missing snapshot caused acquisition: %v calls=%d", err, calls)
+				}
+				var rows int
+				if err := f.db.QueryRow(`SELECT count(*) FROM test_runs WHERE kind='baseline'`).Scan(&rows); err != nil || rows != 0 {
+					t.Fatalf("missing snapshot saved baseline: rows=%d err=%v", rows, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := (store.BaselineStore{DB: f.db}).FindBaseline(ctx, id, f.worktreeID)
+			if err != nil || run == nil || run.ExecutionID != id || run.Kind != "baseline" || run.TargetSHA != f.sha || run.Total == nil || *run.Total != 3 || calls != 1 {
+				t.Fatalf("continue first baseline: %+v calls=%d err=%v", run, calls, err)
+			}
+		})
+	}
 }
 
 func TestBaselineHTTPPersistsStartSHAReportAndIDArtifact(t *testing.T) {
@@ -223,6 +327,112 @@ func TestBaselineHTTPContinueAfterRunnerRestartDoesNotReacquire(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(f.path, "calls"))
 	if err != nil || string(got) != "x" {
 		t.Fatalf("test command repeated: %q %v", got, err)
+	}
+}
+
+func TestBaselineHTTPContinueRestoresCleanedWorktreeWithoutReacquiring(t *testing.T) {
+	f := newBaselineHTTPFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Use a real linked worktree so cleanup removes its directory but leaves
+	// its branch and measured start commit available for restoration.
+	repository := f.path
+	f.path = filepath.Join(t.TempDir(), "task")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repository, "-c", "core.hooksPath=/dev/null"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("worktree", "add", "-b", "task", f.path, f.sha)
+	if _, err := f.db.Exec(`UPDATE worktrees SET path=? WHERE id=?`, f.path, f.worktreeID); err != nil {
+		t.Fatal(err)
+	}
+	process, err := New(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := process.claim(ctx)
+	if err != nil || first == nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	calls := 0
+	if err := f.executor(t, process, &calls).Execute(ctx, *first); err != nil {
+		t.Fatal(err)
+	}
+	original, err := (store.BaselineStore{DB: f.db}).FindBaseline(ctx, first.Execution.ID, f.worktreeID)
+	if err != nil || original == nil {
+		t.Fatalf("original baseline: %+v %v", original, err)
+	}
+	git("-C", f.path, "add", "--", "report.xml", "calls")
+	git("-C", f.path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "harness-change")
+	head := git("-C", f.path, "rev-parse", "HEAD")
+	git("worktree", "remove", f.path)
+	if _, err := os.Stat(f.path); !os.IsNotExist(err) {
+		t.Fatalf("worktree directory still present: %v", err)
+	}
+	if git("rev-parse", "task") != head || head == f.sha {
+		t.Fatal("cleanup did not preserve the changed branch")
+	}
+	id := ulid.Make().String()
+	for _, stmt := range []struct {
+		query string
+		args  []any
+	}{
+		{`UPDATE worktrees SET status='cleaned', cleaned_at='now' WHERE id=?`, []any{f.worktreeID}},
+		{`UPDATE executions SET branch_name='task', harness_head_sha=? WHERE id=?`, []any{head, first.Execution.ID}},
+		{`INSERT INTO executions (id,task_id,seq,mode,status,created_at) VALUES (?,'task-001',2,'continue','pending','now')`, []any{id}},
+		{`UPDATE tasks SET status='queued'; UPDATE projects SET test_command='must never run'`, nil},
+	} {
+		if _, err := f.db.Exec(stmt.query, stmt.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	process, err = New(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := process.claim(ctx)
+	if err != nil || claim == nil || claim.Execution.ID != id || claim.Worktree == nil {
+		t.Fatalf("cleaned worktree claim: %+v %v", claim, err)
+	}
+	w := claim.Worktree
+	if w.ID != f.worktreeID || w.Path != f.path || w.BaseSHA != f.sha || !reflect.DeepEqual(w.Baseline, original) ||
+		claim.Previous == nil || claim.Previous.BranchName == nil || *claim.Previous.BranchName != "task" ||
+		claim.Previous.WorktreePath == nil || *claim.Previous.WorktreePath != f.path {
+		t.Fatalf("restoration metadata: worktree=%+v previous=%+v", w, claim.Previous)
+	}
+	var status string
+	if err := f.db.QueryRow(`SELECT status FROM executions WHERE id=?`, id).Scan(&status); err != nil || status != "claimed" {
+		t.Fatalf("claim left execution %s: %v", status, err)
+	}
+	prepared := false
+	executor := f.executorWithPrepare(t, process, &calls, func(_ context.Context, e *Execution) error {
+		git("worktree", "add", e.Claim.Worktree.Path, *e.Claim.Previous.BranchName)
+		if git("-C", f.path, "rev-parse", "HEAD") != head {
+			t.Fatal("restoration changed the branch HEAD")
+		}
+		_, err := f.db.Exec(`UPDATE worktrees SET status='active', cleaned_at=NULL WHERE id=?`, e.Claim.Worktree.ID)
+		prepared = err == nil
+		return err
+	})
+	if err := executor.Execute(ctx, *claim); err != nil {
+		t.Fatal(err)
+	}
+	run, err := (store.BaselineStore{DB: f.db}).FindBaseline(ctx, id, f.worktreeID)
+	if err != nil || !reflect.DeepEqual(run, original) || !prepared || calls != 1 {
+		t.Fatalf("restored baseline: %+v prepared=%v calls=%d err=%v", run, prepared, calls, err)
+	}
+	var rows int
+	if err := f.db.QueryRow(`SELECT count(*) FROM test_runs WHERE kind='baseline'`).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("baseline rows=%d err=%v", rows, err)
+	}
+	got, err := os.ReadFile(filepath.Join(f.path, "calls"))
+	if err != nil || string(got) != "x" {
+		t.Fatalf("restoration repeated test command: %q %v", got, err)
 	}
 }
 

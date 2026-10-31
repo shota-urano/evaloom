@@ -167,7 +167,9 @@ func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID strin
 		return nil
 	}
 	w := &ClaimWorktree{ID: worktreeID.String}
-	err = tx.QueryRowContext(ctx, `SELECT path, base_sha FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ? AND status != 'cleaned'`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA)
+	// A cleaned worktree retains its branch and start SHA (spec 06, 3.3.6).
+	// Preparation needs this snapshot to restore it and reuse its baseline.
+	err = tx.QueryRowContext(ctx, `SELECT path, base_sha FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA)
 	if err != nil {
 		return err
 	}
