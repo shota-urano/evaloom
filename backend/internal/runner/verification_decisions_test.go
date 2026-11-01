@@ -88,6 +88,7 @@ func TestBaselineQ39RecordsFailuresAndStopsOnlyWithoutCounts(t *testing.T) {
 		name, command          string
 		failed, exit           int
 		countOnly, unavailable bool
+		prepareFailure         string
 	}{
 		{name: "FailingTestWithZeroExit", command: `printf '%s' '<testsuite><testcase classname="FooTest" name="failed"><failure/></testcase></testsuite>' > report.xml`, failed: 1},
 		{name: "FailingTestWithNonzeroExit", command: `printf '%s' '<testsuite><testcase classname="FooTest" name="failed"><error/></testcase></testsuite>' > report.xml; exit 2`, failed: 1, exit: 2},
@@ -98,6 +99,9 @@ func TestBaselineQ39RecordsFailuresAndStopsOnlyWithoutCounts(t *testing.T) {
 		{name: "NoReportWithNonzeroExit", command: `exit 1`, exit: 1, unavailable: true},
 		{name: "MalformedReport", command: `printf '%s' '<testsuite>' > report.xml`, unavailable: true},
 		{name: "UnreadableReport", command: `ln -s missing report.xml`, unavailable: true},
+		{name: "ReportIsDirectoryBeforeRun", command: `true`, unavailable: true, prepareFailure: "directory"},
+		{name: "ReportParentIsFileBeforeRun", command: `true`, unavailable: true, prepareFailure: "parent-file"},
+		{name: "ReportParentIsSymlinkBeforeRun", command: `true`, unavailable: true, prepareFailure: "parent-symlink"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newBaselineHTTPFixture(t)
@@ -105,8 +109,29 @@ func TestBaselineQ39RecordsFailuresAndStopsOnlyWithoutCounts(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE projects SET test_command=?`, f.command); err != nil {
 				t.Fatal(err)
 			}
-			// A stale report must not rescue an unavailable measurement.
-			gate2Write(t, filepath.Join(f.path, "report.xml"), `<testsuite tests="5"/>`)
+			if tc.prepareFailure == "" {
+				// A stale report must not rescue an unavailable measurement.
+				gate2Write(t, filepath.Join(f.path, "report.xml"), `<testsuite tests="5"/>`)
+			} else {
+				reportPath := "report.xml"
+				switch tc.prepareFailure {
+				case "directory":
+					if err := os.Mkdir(filepath.Join(f.path, reportPath), 0700); err != nil {
+						t.Fatal(err)
+					}
+				case "parent-file":
+					gate2Write(t, filepath.Join(f.path, "reports"), "not a directory")
+					reportPath = "reports/report.xml"
+				case "parent-symlink":
+					if err := os.Symlink(".", filepath.Join(f.path, "reports")); err != nil {
+						t.Fatal(err)
+					}
+					reportPath = "reports/report.xml"
+				}
+				if _, err := f.db.Exec(`UPDATE projects SET test_report_path=?`, reportPath); err != nil {
+					t.Fatal(err)
+				}
+			}
 			p, err := New(f.config)
 			if err != nil {
 				t.Fatal(err)
@@ -130,12 +155,12 @@ func TestBaselineQ39RecordsFailuresAndStopsOnlyWithoutCounts(t *testing.T) {
 				}
 			}
 			err = executor.Execute(ctx, *claim)
-			if tc.unavailable && !errors.Is(err, ErrBaselineUnverifiable) || !tc.unavailable && err != nil || calls != 1 {
-				t.Fatalf("execution=%v sandbox calls=%d", err, calls)
+			wantCalls := 1
+			if tc.prepareFailure != "" {
+				wantCalls = 0
 			}
-			run, err := (store.BaselineStore{DB: f.db}).FindBaseline(ctx, claim.Execution.ID, f.worktreeID)
-			if err != nil || run == nil || run.ExitCode == nil || *run.ExitCode != tc.exit || run.TargetSHA != f.sha || run.Kind != "baseline" {
-				t.Fatalf("saved baseline=%+v err=%v", run, err)
+			if tc.unavailable && !errors.Is(err, ErrBaselineUnverifiable) || !tc.unavailable && err != nil || calls != wantCalls {
+				t.Fatalf("execution=%v sandbox calls=%d", err, calls)
 			}
 			var status, class, reason string
 			var notifications int
@@ -143,8 +168,25 @@ func TestBaselineQ39RecordsFailuresAndStopsOnlyWithoutCounts(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.unavailable {
-				if status != "failed" || class != "config_error" || notifications != 1 || reason != "開始点のテストレポートから基準値の件数を取得できない" || harnessCalls != 0 || run.Total != nil || run.Skipped != nil || run.TestIDsArtifactID != nil {
-					t.Fatalf("status=%s class=%s notifications=%d harness=%d run=%+v", status, class, notifications, harnessCalls, run)
+				if status != "failed" || class != "config_error" || notifications != 1 || reason != "開始点のテストレポートから基準値の件数を取得できない" || harnessCalls != 0 {
+					t.Fatalf("status=%s class=%s reason=%q notifications=%d harness=%d", status, class, reason, notifications, harnessCalls)
+				}
+			}
+			if tc.prepareFailure != "" {
+				// No process ran, so no measured baseline or test IDs may exist.
+				var runs, artifacts int
+				if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM test_runs WHERE execution_id=?),(SELECT count(*) FROM artifacts WHERE execution_id=? AND kind='test_ids')`, claim.Execution.ID, claim.Execution.ID).Scan(&runs, &artifacts); err != nil || runs != 0 || artifacts != 0 {
+					t.Fatalf("unexecuted baseline: runs=%d artifacts=%d err=%v", runs, artifacts, err)
+				}
+				return
+			}
+			run, err := (store.BaselineStore{DB: f.db}).FindBaseline(ctx, claim.Execution.ID, f.worktreeID)
+			if err != nil || run == nil || run.ExitCode == nil || *run.ExitCode != tc.exit || run.TargetSHA != f.sha || run.Kind != "baseline" {
+				t.Fatalf("saved baseline=%+v err=%v", run, err)
+			}
+			if tc.unavailable {
+				if run.Total != nil || run.Skipped != nil || run.TestIDsArtifactID != nil {
+					t.Fatalf("unavailable counts: run=%+v", run)
 				}
 				return
 			}
