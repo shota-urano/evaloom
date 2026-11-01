@@ -191,8 +191,8 @@ EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-gates:local \
 
 fixtureは`node:test`の実行結果をJUnitで出力する。`gate_test.py`は設定から対象ファイルを列挙し、`describe.only`がある場合にNodeの`--test-only`を有効にする。ケース別の固定XMLは生成しない。Nodeの版によって非対象ファイルがJUnitに現れる形式は異なるため、focusケースは件数だけで判定せず、保存されたID一覧から既存2件の欠落と新規テストの実行を確認する。
 
-プローブAdapter、Runnerの工程制御、基準値の取得、Gate 2・3、Publisherの`Publish`と`Push`は実装本体を使う。テスト用フックはGate 2の判定完了後、Gate 3の実行前にだけ変更を差し込む。DBへの直接書き込みはclaim前の入力準備だけに使い、結果は実際のHTTP result/artifacts APIで保存する。保存されたテストID・件数・SHA、ExecutionとTaskの状態、GateとBlockの関連、Block原因、通知要求を照合する。
+プローブAdapter、Runnerの工程制御、基準値の取得、Gate 2・3、Publisherの`Publish`と`Push`は実装本体を使う。テスト用フックはGate 2の判定完了後、Gate 3の実行前にだけ変更を差し込む。DBへの直接書き込みはclaim前の入力準備と、テスト用Recorderによるpush直後の保存に使う。それ以外の結果は実際のHTTP result/artifacts APIで保存する。保存されたテストID・件数・SHA、ExecutionとTaskの状態、GateとBlockの関連、Block原因、通知要求を照合する。
 
 Blockedの6ケースではPublisherの呼び出しがゼロ、偽GitHubへのアクセスがゼロ、bareリモートの全refが実行前後で同じことを確認する。成功ケースでは変更ファイルが実装1つだけであること、リモートの追加ブランチ・保存された`pushed_sha`・`verified_sha`・ハーネスのHEADがすべて同じこと、ベースブランチが変わらないこと、偽GitHubでPRが作成され、そのhead/baseと本文の検証SHAが正しいことを確認する。
 
-GitHubには既存の偽HTTP APIを使い、テスト専用の`PullRequests`実装で接続する。既存の仕様上の穴として、push直後からPR作成前までに`pushed_sha`を永続化するRunner APIが無い。既存の`PublicationRecorder`境界にテストダブルを渡し、最終状態への遷移で既存result APIからpush・PRの情報を保存する。この試験は中間時点の永続化を保証しない。新しい公開API、テーブル、列、製品の設定値は追加していない。
+GitHubには既存の偽HTTP APIを使い、テスト専用の`PullRequests`実装で接続する。既存の仕様上の穴として、push直後からPR作成前までに`pushed_sha`を永続化するRunner APIが無い。既存の`PublicationRecorder`境界に渡すテスト用Recorderは、既存DBの`executions.pushed_sha`と`branch_name`への書き込みを確定してから成功を返す。偽PR APIは作成要求の受信時点でDBを読み直し、状態が`publishing`、ブランチが対象と同じ、`pushed_sha`と`verified_sha`が空でなく一致していることを検証してからPRを作る。この確認が成功ケースで1回行われることも必須とし、最終result APIで初めてSHAを保存する実装では合格しない。最終状態とPR情報は引き続き既存result APIで保存する。新しい公開API、テーブル、列、製品の設定値は追加していない。

@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,9 +124,30 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 	}
 	github := securitytest.NewGitHub("fixture/project", "fixture-token")
 	defer github.Close()
-	publication := &gateAcceptancePublication{}
+	publication := &gateAcceptancePublication{db: httpFixture.db, executionID: claim.Execution.ID}
 	publishCalls, testCalls := 0, 0
 	var harnessHead, afterHead string
+	var checkedPRCreates atomic.Int32
+	// Read committed state at the receiving HTTP boundary, before the fake API
+	// creates a PR and before the final result report can save publication data.
+	githubAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodPost && req.URL.Path == "/repos/fixture/project/pulls" {
+			var status, savedBranch string
+			var verified, pushed sql.NullString
+			err := httpFixture.db.QueryRowContext(req.Context(),
+				`SELECT status,branch_name,verified_sha,pushed_sha FROM executions WHERE id=?`, claim.Execution.ID).
+				Scan(&status, &savedBranch, &verified, &pushed)
+			if err != nil || status != "publishing" || savedBranch != branch || !verified.Valid || verified.String == "" ||
+				!pushed.Valid || pushed.String != verified.String {
+				t.Errorf("PR creation before durable push record: status=%s branch=%s verified=%v pushed=%v err=%v", status, savedBranch, verified, pushed, err)
+				http.Error(w, "push record not committed", http.StatusPreconditionFailed)
+				return
+			}
+			checkedPRCreates.Add(1)
+		}
+		github.Server.Config.Handler.ServeHTTP(w, req)
+	}))
+	defer githubAPI.Close()
 	handlers := stubStageHandlers(func(id StageID, ctx context.Context, e *Execution) error {
 		switch id {
 		case StagePrepareWorktree:
@@ -179,7 +202,7 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 			_, err = publisher.Publish(ctx, publisher.Target{Worktree: f.Worktree, VerifiedSHA: e.VerifiedSHA, BranchName: branch}, publisher.PublishConfig{
 				Push: publisher.PushConfig{RepositoryURL: remoteURL, CheckCancellation: r.Heartbeat,
 					RecordRemoteMismatch: func(context.Context, string, string) error { return fmt.Errorf("unexpected remote mismatch") }},
-				BaseBranch: "main", PullRequests: gateAcceptancePulls{github}, Recorder: publication, ReportContext: ctx,
+				BaseBranch: "main", PullRequests: gateAcceptancePulls{githubAPI}, Recorder: publication, ReportContext: ctx,
 				Report: publisher.Report{ExecutionID: claim.Execution.ID, TaskID: claim.Execution.TaskID, Title: claim.Task.Title,
 					AcceptanceCriteria: claim.Task.AcceptanceCriteria, Summary: e.HarnessResult.Summary,
 					HarnessID: claim.Profile.HarnessID, HarnessVersion: claim.Profile.Version,
@@ -194,7 +217,8 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 	control.Timeouts = Timeouts{Setup: time.Minute, Harness: time.Minute, Test: time.Minute}
 	control.CheckCancellation = r.Heartbeat
 	// The existing result API accepts publication fields on a transition only.
-	// Use that real API for the final write; do not invent an intermediate API.
+	// Retain the real final report as well as the Recorder's earlier DB write;
+	// the fake PR receiver independently checks that the final report is too late.
 	control.Reporter = reportFunc(func(ctx context.Context, id string, result ExecutionResult) error {
 		data, err := json.Marshal(result)
 		if err != nil {
@@ -369,7 +393,7 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 			wantHead, rule = afterHead, "changed_after_test"
 		}
 		if status != "blocked" || taskStatus != "blocked" || savedCause != cause || blockHead != wantHead || !strings.Contains(findings, `"rule":"`+rule+`"`) ||
-			publishCalls != 0 || pushed.Valid || prNumber.Valid || prURL.Valid || !reflect.DeepEqual(refsBefore, refsAfter) || len(github.Accesses()) != 0 {
+			publishCalls != 0 || pushed.Valid || prNumber.Valid || prURL.Valid || !reflect.DeepEqual(refsBefore, refsAfter) || len(github.Accesses()) != 0 || checkedPRCreates.Load() != 0 {
 			t.Fatalf("status=%s task=%s cause=%s block head=%s want=%s findings=%s publish=%d pushed=%v PR=%v/%v refs before=%v after=%v GitHub=%v",
 				status, taskStatus, savedCause, blockHead, wantHead, findings, publishCalls, pushed, prNumber, prURL, refsBefore, refsAfter, github.Accesses())
 		}
@@ -386,6 +410,9 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 			t.Fatalf("status=%s task=%s verified=%v harness=%s pushed=%v PR=%v/%v calls=%d refs=%v", status, taskStatus, verified, harnessHead, pushed, prNumber, prURL, publishCalls, refsAfter)
 		}
 		accesses := github.Accesses()
+		if checkedPRCreates.Load() != 1 {
+			t.Fatalf("PR creates with committed pushed_sha=verified_sha: %d want=1", checkedPRCreates.Load())
+		}
 		if len(accesses) != 2 || accesses[0].Method != "GET" || accesses[1].Method != "POST" || !accesses[0].Authorized || !accesses[1].Authorized {
 			t.Fatalf("GitHub accesses=%+v", accesses)
 		}
@@ -414,13 +441,28 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 }
 
 // Spec 11's existing persistence boundary has no mid-publish result API. This
-// test double retains metadata for the final real result API transition.
+// test Recorder commits pushed_sha directly to the fixture's existing DB before
+// acknowledging success, and retains metadata for the final result transition.
 type gateAcceptancePublication struct {
-	sha string
-	pr  *publisher.PullRequest
+	db          *sql.DB
+	executionID string
+	sha         string
+	pr          *publisher.PullRequest
 }
 
-func (p *gateAcceptancePublication) RecordPushed(_ context.Context, sha, _ string) error {
+func (p *gateAcceptancePublication) RecordPushed(ctx context.Context, sha, branch string) error {
+	// ExecContext outside a transaction returns only after SQLite autocommits.
+	result, err := p.db.ExecContext(ctx, `UPDATE executions SET pushed_sha=?,branch_name=? WHERE id=?`, sha, branch, p.executionID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("push record updated %d executions, want 1", rows)
+	}
 	p.sha = sha
 	return nil
 }
@@ -431,7 +473,7 @@ func (p *gateAcceptancePublication) RecordPR(_ context.Context, pr publisher.Pul
 
 // Fake GitHub's HTTP surface is deliberately local. Production Publish still
 // owns push, lookup/create ordering and PR report construction.
-type gateAcceptancePulls struct{ fake *securitytest.GitHub }
+type gateAcceptancePulls struct{ server *httptest.Server }
 
 func (g gateAcceptancePulls) request(ctx context.Context, method, path string, input, output any) error {
 	var body bytes.Buffer
@@ -440,12 +482,12 @@ func (g gateAcceptancePulls) request(ctx context.Context, method, path string, i
 			return err
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, g.fake.Server.URL+path, &body)
+	req, err := http.NewRequestWithContext(ctx, method, g.server.URL+path, &body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer fixture-token")
-	resp, err := g.fake.Server.Client().Do(req)
+	resp, err := g.server.Client().Do(req)
 	if err != nil {
 		return err
 	}
