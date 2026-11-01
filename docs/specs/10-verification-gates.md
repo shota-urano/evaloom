@@ -42,7 +42,7 @@ Gate 1（変更差分の検査）は Q36 で廃止した。差分のファイル
 
 1. Project Registry のテストコマンドを、Test Sandbox で harness_head_sha に対して1回実行する（requirements 8.5）。ハーネスはテストコマンドを変更できない。
 2. テストコマンドが未設定なら、テストを実行せず `failed`（`config_error`）とする。push しない。
-3. テストランナーのレポート（test_report_format / test_report_path、Q12）から、実行したテストの ID、実行数、skip 数を取り出し、test_runs（kind=`verify`）と artifacts（`test_ids`）に保存する。
+3. テストランナーのレポート（test_report_format / test_report_path、Q12）から、実行したテストの ID、実行数、skip 数を取り出し、test_runs（kind=`verify`）と artifacts（`test_ids`）に保存する。テストの ID の作り方は 3.3.2（Q38）。
 4. 次のどれかに当たれば止める。
 
 | 状況 | 結果 |
@@ -71,6 +71,25 @@ A を推奨する。requirements 8.5 が「作業開始時点の既存テスト�
 
 基準値は worktree ごとに1回取り、mode=`continue` の再実行では引き継ぐ。
 
+基準値を取るための実行で次のことが起きた場合の扱い（Q39、決定 2026-11-01）:
+
+| 状況 | 扱い |
+|---|---|
+| 開始点で既に失敗するテストがある（終了コードが0でない場合を含む） | 基準値として記録し、作業を続ける。照合するのは「実行されたか」であり、成功したかではないため。失敗したテストの ID も既存テストに含める |
+| レポートの ID が取れず、件数だけ取れる | 件数を基準値として記録し、作業を続ける（Gate 2 は件数で確認する） |
+| レポートが無い・解釈できず、件数も取れない | 比べる基準が無いため、作業を始めずに `failed`（`config_error`）とし、理由を保存して通知する |
+
+#### 3.3.2 テストの ID の作り方（Q38、決定 2026-11-01）
+
+基準値と Gate 2 で同じ規則を使う。
+
+| レポート形式 | ID |
+|---|---|
+| JUnit XML | `testcase` の `classname` と `name` を `.` でつないだもの（例: `FooTest.testBar`）。`classname` が無い・空のときは `name` だけ。`name` が無い testcase が1件でもあれば、そのレポートは「ID が取れない」として扱い、件数で確認する |
+
+- skip した testcase は ID の一覧に含めない（実行数にも数えない）。
+- 同じ ID が複数あるときは、その数のまま照合する（基準値に2件あれば、Gate 2 でも2件実行されている必要がある）。
+
 ### 3.4 Gate 3：実行結果と commit の検証
 
 1. 現在の HEAD が verified_sha と一致することを確かめる。
@@ -93,6 +112,21 @@ SHA と作業ツリーの一致で確かめられるのはコードの一致ま�
 
 Gate 3 は続行しても飛ばさない。push する commit がテストした commit と一致することは、本人の判断で置き換えられないためである（条件15）。Gate 3 の Block から抜けるには、本人が worktree を直して再実行する。
 
+### 3.6 Finding の rule（Q37、決定 2026-11-01）
+
+gate_results.findings の各要素の `rule`（[`02-data-model.md`](./02-data-model.md) 5.5）に入れる名前は、次の表のものだけを使う。
+
+| rule | 使う場面 | Gate |
+|---|---|---|
+| `existing_test_not_run` | 基準値にある既存テストが実行されていない。ID が取れない環境で、実行数が基準値より少ない、または skip 数が基準値より多い場合も含む | 2 |
+| `test_report_missing` | テストのレポートが無い・解釈できない、または基準値が無いなどで、照合できない | 2 |
+| `test_failed` | テストが失敗した（終了コードが0でない、または失敗したテストがある） | 2 |
+| `count_only_check` | ID が取れない環境で、件数だけで確認したことの注記。止める理由ではない | 2 |
+| `changed_after_test` | テストした後に中身が変わっている（HEAD が verified_sha と違う、作業ツリーに変更が残っている）、または HEAD・作業ツリーの状態を確かめられない | 3 |
+
+この表に無い場面で新しい名前が要るときは、実装する側（AI を含む）が独断で名前を決めない。候補を4つ出して本人が選び、選んだ名前をこの表に足してから使う。
+rule は Finding の分類で、Block 原因（`gate2_missing_tests` など、[`02-data-model.md`](./02-data-model.md) 5.6）とは別の値である。
+
 ## 4. 設定値・確定値
 
 | 項目 | 値 | 出典 |
@@ -106,6 +140,10 @@ Gate 3 は続行しても飛ばさない。push する commit がテストした
 | 実行数の確認 | 必須 | requirements 8.5 |
 | push する commit | テストした commit と同じもの | requirements 8.5、条件15 |
 | 検証できない場合 | Blocked。自動で push・PR 作成をしない | requirements 8.5 |
+| テストの ID（JUnit XML） | `classname` + `.` + `name`。`classname` が空なら `name` だけ | Q38 |
+| 基準値の取得で既存テストが失敗した場合 | 記録して続ける | Q39 |
+| 基準値の取得でレポートも件数も取れない場合 | `failed`（`config_error`） | Q39 |
+| Finding の rule | 3.6 の表の名前だけ。新しい名前は候補を4つ出して本人が選ぶ | Q37 |
 
 ## 5. インターフェース
 
@@ -121,6 +159,7 @@ Gate 3 は続行しても飛ばさない。push する commit がテストした
 | Test Sandbox を作れない | `failed`（`sandbox_error`） |
 | テストのタイムアウト | `timed_out` |
 | レポートのパスにファイルが無い | 実行数も取れなければ `blocked`（`gate2_unverifiable`） |
+| 基準値の取得でレポートのパスにファイルが無い | 件数も取れなければ `failed`（`config_error`）（Q39） |
 
 ## 7. スコープ外
 
@@ -153,3 +192,5 @@ Gate 3 は続行しても飛ばさない。push する commit がテストした
   - 受け入れ基準: テスト後に commit を追加すると blocked(gate3_mismatch); 未追跡ファイルを置くと blocked; コピー許可リストで置いた未変更のファイルだけなら通る
 - [ ] [Backend] Blocked からの再開（resume_point）
   - 受け入れ基準: Gate 2 で Blocked → 続行で Gate 3 から再開する; Gate 3 の Block は続行しても Gate 3 をもう一度通す
+- [ ] [Backend] Q37〜Q39 の決定をコードに反映する（rule の名前、テストの ID の作り方、基準値の取得の失敗時の扱い）
+  - 受け入れ基準: Finding の rule が 3.6 の表の5つの名前で記録される; JUnit XML の ID が classname.name（classname が空なら name）で保存され、基準値と Gate 2 で同じになる; 開始点で失敗するテストがあっても基準値が記録され作業が続く; 開始点でレポートも件数も取れなければ failed(config_error) になる
