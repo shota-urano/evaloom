@@ -50,9 +50,8 @@ type BaselineTestSandbox interface {
 	RunBaseline(context.Context, *Execution, BaselineTestRequest) (BaselineTestOutput, error)
 }
 
-// BaselineStage implements stage 7. Parsing/ID storage are injected because
-// specs do not define format dispatch, the JUnit ID convention, or artifact
-// encoding. RecordIDs must persist a test_ids artifact owned by executionID.
+// BaselineStage implements stage 7 with parsing and artifact storage boundaries.
+// RecordIDs must persist a test_ids artifact owned by executionID.
 type BaselineStage struct {
 	Repository BaselineRepository
 	Sandbox    BaselineTestSandbox
@@ -60,10 +59,7 @@ type BaselineStage struct {
 	RecordIDs  func(ctx context.Context, executionID string, ids []string) (string, error)
 }
 
-var (
-	ErrBaselineUnverifiable = errors.New("runner: baseline report unavailable or invalid")
-	ErrBaselineTestFailed   = errors.New("runner: baseline tests failed")
-)
+var ErrBaselineUnverifiable = errors.New("runner: baseline report unavailable or invalid")
 
 // Run is installed as handlers[StageTestBaseline]. It reuses a saved record
 // regardless of mode, including after interruption and continue retries. A
@@ -115,14 +111,22 @@ func (stage BaselineStage) Run(ctx context.Context, execution *Execution) error 
 	}
 	// Never label results from a different commit as a baseline. Infrastructure
 	// failures retain their cause and are not mistaken for measured zero tests.
-	if runErr != nil {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
+		return runErr
+	}
+	// A report-open failure after the measured process exited means the report
+	// is unavailable; retain that measurement before applying Q39.
+	if runErr != nil && (output.TargetSHA != run.TargetSHA || output.ExitCode == nil) {
 		return runErr
 	}
 	if output.TargetSHA != run.TargetSHA {
 		return fmt.Errorf("runner: baseline sandbox did not test the start commit")
 	}
 	run.ExitCode = output.ExitCode
-	if output.Report != nil {
+	if runErr == nil && output.Report != nil {
 		report, parseErr := stage.Parse(output.Report)
 		if parseErr == nil {
 			run.Total, run.Passed, run.Failed, run.Skipped = &report.Total, &report.Passed, &report.Failed, &report.Skipped
@@ -150,16 +154,13 @@ func (stage BaselineStage) Run(ctx context.Context, execution *Execution) error 
 	return baselineOutcome(run)
 }
 
-// Baseline stop policy is not specified by Q11. Preserve measured failure and
-// unverifiability as local errors; the caller owns terminal result reporting.
+// Q39 retains failing tests in the baseline. Only unavailable counts prevent
+// work from starting; the controlled handler reports failed(config_error).
 func baselineOutcome(run model.TestRun) error {
 	if run.TimedOut {
 		return context.DeadlineExceeded
 	}
-	if run.ExitCode != nil && *run.ExitCode != 0 || run.Failed != nil && *run.Failed > 0 {
-		return ErrBaselineTestFailed
-	}
-	if run.ExitCode == nil || run.Total == nil || run.Skipped == nil {
+	if run.Total == nil || run.Skipped == nil {
 		return ErrBaselineUnverifiable
 	}
 	return nil

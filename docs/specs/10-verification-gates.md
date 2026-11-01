@@ -90,6 +90,15 @@ A を推奨する。requirements 8.5 が「作業開始時点の既存テスト�
 - skip した testcase は ID の一覧に含めない（実行数にも数えない）。
 - 同じ ID が複数あるときは、その数のまま照合する（基準値に2件あれば、Gate 2 でも2件実行されている必要がある）。
 
+#### 3.3.3 基準値のテスト ID 一覧の保存と読み出し（Q40、決定 2026-11-01）
+
+基準値は worktree ごとに1回だけ取り、後の Execution（mode=`continue` の再実行、Runner の再起動後の claim）に引き継ぐ。引き継いだ Execution の Gate 2 は、保存済みの ID 一覧で照合する。Runner 用 API は増やさず、Runner トークンの権限も広げない。
+
+- **保存の形式**: Runner は ID の一覧を UTF-8 の JSON の文字列配列（例: `["FooTest.testBar","FooTest.testBaz"]`）にし、`POST /api/executions/{id}/artifacts` に kind=`test_ids` で登録する。並びはレポートに出てきた順とし、同じ ID はその数だけ残す。skip した testcase は含めない（3.3.2）。test_runs の test_ids_artifact_id は、同じ Execution の kind=`test_ids` の成果物だけを指せる。
+- **読み出しの経路**: Control Plane は claim の応答の `worktree.baseline.testIds` に、基準値の test_ids 成果物を読んだ一覧を入れて返す（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1）。Runner は成果物取得の API（本人用）を呼ばない。
+- **基準値が ID を持たない場合**: test_ids_artifact_id が null（件数だけの基準値）なら `testIds` も null とする。Gate 2 は件数で確認する（Finding `count_only_check`）。
+- **成果物を読めない場合**: 成果物が無い・読めない・JSON の文字列配列として解釈できないときは、Control Plane は `testIds` を null にして claim を返す。基準値が ID を持つのに一覧が無いので、Gate 2 は件数だけの照合に弱めず `blocked`（`gate2_unverifiable`）とする。一覧の件数が基準値の「実行数 − skip 数」と合わないときも同じ扱いとする。
+
 ### 3.4 Gate 3：実行結果と commit の検証
 
 1. 現在の HEAD が verified_sha と一致することを確かめる。
@@ -144,6 +153,8 @@ rule は Finding の分類で、Block 原因（`gate2_missing_tests` など、[`
 | 基準値の取得で既存テストが失敗した場合 | 記録して続ける | Q39 |
 | 基準値の取得でレポートも件数も取れない場合 | `failed`（`config_error`） | Q39 |
 | Finding の rule | 3.6 の表の名前だけ。新しい名前は候補を4つ出して本人が選ぶ | Q37 |
+| 基準値の ID 一覧の形式 | UTF-8 の JSON の文字列配列。レポートに出てきた順、重複はその数だけ残す。成果物の kind は `test_ids` | Q40 |
+| 基準値の ID 一覧を Runner へ渡す経路 | claim の応答の `worktree.baseline.testIds`。Runner 用 API は増やさない | Q40 |
 
 ## 5. インターフェース
 
@@ -160,6 +171,7 @@ rule は Finding の分類で、Block 原因（`gate2_missing_tests` など、[`
 | テストのタイムアウト | `timed_out` |
 | レポートのパスにファイルが無い | 実行数も取れなければ `blocked`（`gate2_unverifiable`） |
 | 基準値の取得でレポートのパスにファイルが無い | 件数も取れなければ `failed`（`config_error`）（Q39） |
+| 引き継いだ基準値の ID 一覧を読めない（claim の応答の `testIds` が null で、基準値は ID を持つ） | `blocked`（`gate2_unverifiable`）（Q40） |
 
 ## 7. スコープ外
 
@@ -173,7 +185,7 @@ rule は Finding の分類で、Block 原因（`gate2_missing_tests` など、[`
 - [`00-overview.md`](./00-overview.md) 全体仕様
 - [`02-data-model.md`](./02-data-model.md) gate_results / test_runs / execution_blocks / Finding
 - [`03-registry.md`](./03-registry.md) テストコマンド・レポート形式の登録
-- [`04-task-lifecycle.md`](./04-task-lifecycle.md) Blocked からの続行
+- [`04-task-lifecycle.md`](./04-task-lifecycle.md) Blocked からの続行、claim の応答の `worktree`（基準値の引き継ぎ）
 - [`05-runner.md`](./05-runner.md) 工程7, 9〜11
 - [`06-worktree.md`](./06-worktree.md) 開始点 SHA とコピーしたファイル
 - [`09-sandbox.md`](./09-sandbox.md) Test Sandbox と安全な Git 操作
@@ -194,3 +206,5 @@ rule は Finding の分類で、Block 原因（`gate2_missing_tests` など、[`
   - 受け入れ基準: Gate 2 で Blocked → 続行で Gate 3 から再開する; Gate 3 の Block は続行しても Gate 3 をもう一度通す
 - [ ] [Backend] Q37〜Q39 の決定をコードに反映する（rule の名前、テストの ID の作り方、基準値の取得の失敗時の扱い）
   - 受け入れ基準: Finding の rule が 3.6 の表の5つの名前で記録される; JUnit XML の ID が classname.name（classname が空なら name）で保存され、基準値と Gate 2 で同じになる; 開始点で失敗するテストがあっても基準値が記録され作業が続く; 開始点でレポートも件数も取れなければ failed(config_error) になる
+- [ ] [Backend] 基準値のテスト ID 一覧を claim の応答で Runner へ渡す（Q40）
+  - 受け入れ基準: 基準値を引き継ぐ claim の応答の worktree.baseline.testIds に、基準値の test_ids 成果物と同じ一覧（順序と重複を含む）が入る; Runner を作り直した後の Gate 2 が、保存済みの一覧で既存テストを照合し、1件欠けると blocked(gate2_missing_tests) になる; 成果物が読めないと testIds が null になり、Gate 2 が blocked(gate2_unverifiable) になる; 件数だけの基準値では testIds が null で、件数で確認する; Runner 用 API の一覧と Runner トークンで呼べる API は変わらない

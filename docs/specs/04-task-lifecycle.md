@@ -99,9 +99,15 @@ Runner は空きがあるときに claim を呼ぶ。Control Plane は1つの書
     "copyAllowlist": ["..."], "timeouts": { "setupSec": 0, "harnessSec": 0, "testSec": 0 }
   },
   "profile": { "harnessId": "...", "adapter": "claude_code", "version": "1.2.0", "commitSha": "...", "definition": {} },
-  "previous": { "worktreePath": "...", "branchName": "...", "prNumber": 12 }
+  "previous": { "worktreePath": "...", "branchName": "...", "prNumber": 12 },
+  "worktree": {
+    "id": "...", "path": "...", "baseSha": "...", "branchName": "...", "copiedFiles": [],
+    "baseline": { "id": "...", "kind": "baseline", "targetSha": "...", "total": 120, "skipped": 3, "testIdsArtifactId": "...", "testIds": ["FooTest.testBar", "..."] }
+  }
 }
 ```
+
+`worktree` は、この Execution が引き継ぐ worktree と、その worktree で取った基準値（test_runs kind=`baseline`）である。前回までに worktree が記録されていなければ `null` とし、Runner は準備工程で worktree を作って基準値を取る（[`10-verification-gates.md`](./10-verification-gates.md) 3.3.1）。`baseline.testIds` は基準値の test_ids 成果物を Control Plane が読んだ ID の一覧で、基準値が ID を持たない場合と成果物を読めない場合は `null` とする（[`10-verification-gates.md`](./10-verification-gates.md) 3.3.3、Q40）。
 
 `previous` は同じタスクの直前の Execution の情報で、mode=`continue` のときに使う（[`06-worktree.md`](./06-worktree.md), [`11-git-publisher.md`](./11-git-publisher.md)）。
 

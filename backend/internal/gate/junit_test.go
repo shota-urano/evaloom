@@ -9,42 +9,22 @@ import (
 	"testing"
 )
 
-type junitResolverFunc func(JUnitTestID) (string, bool)
-
-func (resolve junitResolverFunc) ResolveJUnitID(id JUnitTestID) (string, bool) {
-	return resolve(id)
-}
-
-// Test-only convention; the product's ID normalization is not specified.
-var attributeID = junitResolverFunc(func(id JUnitTestID) (string, bool) {
-	return id.ID, id.ID != ""
-})
-
 func TestParseJUnitXMLIDsAndCounts(t *testing.T) {
 	file, err := os.Open("testdata/junit.xml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	var attributes []JUnitTestID
-	report, err := ParseJUnitXML(file, junitResolverFunc(func(id JUnitTestID) (string, bool) {
-		attributes = append(attributes, id)
-		return attributeID.ResolveJUnitID(id)
-	}))
+	report, err := ParseJUnitXML(file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := TestReport{
 		Total: 6, Passed: 3, Failed: 2, Skipped: 1,
-		IDsAvailable: true, TestIDs: []string{"case-1", "case-2", "case-3", "case-5", "case-6"},
+		IDsAvailable: true, TestIDs: []string{"shop.Checkout.accepts & saves [カード]", "shop.Checkout.rejects", "shop.Checkout.timeout", "shop.Users.accepts", "shop.Users.rejects"},
 	}
 	if !reflect.DeepEqual(report, want) || report.Executed() != 5 {
 		t.Fatalf("report = %+v (executed %d), want %+v (executed 5)", report, report.Executed(), want)
-	}
-	if len(attributes) != 5 || attributes[0] != (JUnitTestID{
-		ID: "case-1", ClassName: "shop.Checkout", Name: "accepts & saves [カード]",
-	}) {
-		t.Fatalf("resolver attributes = %+v", attributes)
 	}
 }
 
@@ -57,21 +37,14 @@ func TestParseJUnitXMLSingleSuiteWithoutCounters(t *testing.T) {
 		<testcase classname="app.Tests" name="error"><error/></testcase>
 		<testcase classname="app.Tests" name="skip"><skipped message="later"/></testcase>
 	</testsuite>`
-	var names []string
-	report, err := ParseJUnitXML(strings.NewReader(input), junitResolverFunc(func(id JUnitTestID) (string, bool) {
-		if id.ClassName != "app.Tests" || id.ID != "" {
-			t.Fatalf("attributes = %+v", id)
-		}
-		names = append(names, id.Name)
-		return id.Name, true
-	}))
+	report, err := ParseJUnitXML(strings.NewReader(input))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := TestReport{Total: 4, Passed: 1, Failed: 2, Skipped: 1,
-		IDsAvailable: true, TestIDs: []string{"success", "failure", "error"}}
-	if !reflect.DeepEqual(report, want) || !reflect.DeepEqual(names, want.TestIDs) || report.Executed() != 3 {
-		t.Fatalf("report = %+v, resolver names = %v, want %+v", report, names, want)
+		IDsAvailable: true, TestIDs: []string{"app.Tests.success", "app.Tests.failure", "app.Tests.error"}}
+	if !reflect.DeepEqual(report, want) || report.Executed() != 3 {
+		t.Fatalf("report = %+v, want %+v", report, want)
 	}
 }
 
@@ -87,7 +60,7 @@ func TestParseJUnitXMLCountOnly(t *testing.T) {
 			<testsuite><testcase id="known"/></testsuite>
 		</testsuites>`,
 	} {
-		report, err := ParseJUnitXML(strings.NewReader(input), attributeID)
+		report, err := ParseJUnitXML(strings.NewReader(input))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,19 +72,21 @@ func TestParseJUnitXMLCountOnly(t *testing.T) {
 }
 
 func TestParseJUnitXMLUnavailableIDsDoNotReturnPartialList(t *testing.T) {
-	input := `<testsuite><testcase id="first"/><testcase/><testcase id="last"/></testsuite>`
-	for _, resolver := range []JUnitIDResolver{
-		nil,
-		attributeID,
-		junitResolverFunc(func(id JUnitTestID) (string, bool) { return id.ID, true }),
-	} {
-		report, err := ParseJUnitXML(strings.NewReader(input), resolver)
-		if err != nil {
-			t.Fatal(err)
+	for _, missing := range []string{`<testcase/>`, `<testcase name=""/>`, `<testcase id="ignored" classname="Class"/>`, `<testcase><skipped/></testcase>`} {
+		input := `<testsuite><testcase name="first"/>` + missing + `<testcase name="last"/></testsuite>`
+		report, err := ParseJUnitXML(strings.NewReader(input))
+		if err != nil || report.IDsAvailable || report.TestIDs != nil || report.Total != 3 {
+			t.Fatalf("input=%s report=%+v err=%v", input, report, err)
 		}
-		if want := (TestReport{Total: 3, Passed: 3}); !reflect.DeepEqual(report, want) {
-			t.Fatalf("report = %+v, want %+v", report, want)
-		}
+	}
+}
+
+func TestParseJUnitXMLClassnameNameConvention(t *testing.T) {
+	input := `<testsuite><testcase id="ignored" classname="FooTest" name="testBar"/><testcase name="plain"/><testcase classname="" name="emptyClass"/><testcase classname="FooTest" name="testBar"/><testcase name="skip"><skipped/></testcase></testsuite>`
+	report, err := ParseJUnitXML(strings.NewReader(input))
+	want := TestReport{Total: 5, Passed: 4, Skipped: 1, IDsAvailable: true, TestIDs: []string{"FooTest.testBar", "plain", "emptyClass", "FooTest.testBar"}}
+	if err != nil || !reflect.DeepEqual(report, want) {
+		t.Fatalf("report=%+v err=%v want=%+v", report, err, want)
 	}
 }
 
@@ -122,10 +97,10 @@ func TestParseJUnitXMLEmptyAndSkippedSuites(t *testing.T) {
 	}{
 		{`<testsuite/>`, TestReport{IDsAvailable: true, TestIDs: []string{}}},
 		{`<testsuites tests="0"/>`, TestReport{IDsAvailable: true, TestIDs: []string{}}},
-		{`<testsuite tests="1" skipped="1"><testcase><skipped/></testcase></testsuite>`,
+		{`<testsuite tests="1" skipped="1"><testcase name="skip"><skipped/></testcase></testsuite>`,
 			TestReport{Total: 1, Skipped: 1, IDsAvailable: true, TestIDs: []string{}}},
 	} {
-		report, err := ParseJUnitXML(strings.NewReader(tc.input), attributeID)
+		report, err := ParseJUnitXML(strings.NewReader(tc.input))
 		if err != nil || !reflect.DeepEqual(report, tc.want) || report.Executed() != 0 {
 			t.Fatalf("report = %+v, err = %v, want %+v", report, err, tc.want)
 		}
@@ -133,8 +108,8 @@ func TestParseJUnitXMLEmptyAndSkippedSuites(t *testing.T) {
 }
 
 func TestParseJUnitXMLPreservesDuplicateIDs(t *testing.T) {
-	input := `<testsuite><testcase id="same"/><testcase id="same"/></testsuite>`
-	report, err := ParseJUnitXML(strings.NewReader(input), attributeID)
+	input := `<testsuite><testcase name="same"/><testcase name="same"/></testsuite>`
+	report, err := ParseJUnitXML(strings.NewReader(input))
 	if err != nil || report.Total != 2 || !reflect.DeepEqual(report.TestIDs, []string{"same", "same"}) {
 		t.Fatalf("report = %+v, err = %v", report, err)
 	}
@@ -156,7 +131,7 @@ func TestParseJUnitXMLMalformedXML(t *testing.T) {
 		{"counter overflow", `<testsuite tests="999999999999999999999999999999999"/>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			report, err := ParseJUnitXML(strings.NewReader(tc.input), attributeID)
+			report, err := ParseJUnitXML(strings.NewReader(tc.input))
 			if !errors.Is(err, ErrJUnitReport) || !reflect.DeepEqual(report, TestReport{}) {
 				t.Fatalf("report = %+v, err = %v; want zero report and ErrJUnitReport", report, err)
 			}
@@ -179,7 +154,7 @@ func TestParseJUnitXMLRejectsDuplicateAttributes(t *testing.T) {
 		{"namespace declaration", `<testsuite xmlns:a="urn:first" xmlns:a="urn:last"/>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			report, err := ParseJUnitXML(strings.NewReader(tc.input), attributeID)
+			report, err := ParseJUnitXML(strings.NewReader(tc.input))
 			if !errors.Is(err, ErrJUnitReport) || !reflect.DeepEqual(report, TestReport{}) {
 				t.Fatalf("report = %+v, err = %v; want zero report and ErrJUnitReport", report, err)
 			}
@@ -189,9 +164,9 @@ func TestParseJUnitXMLRejectsDuplicateAttributes(t *testing.T) {
 
 func TestParseJUnitXMLAllowsDistinctAttributeNamespaces(t *testing.T) {
 	input := `<testsuite xmlns:a="urn:first" xmlns:b="urn:second">
-		<testcase id="a" label="plain" a:label="first" b:label="second"/>
+		<testcase name="a" label="plain" a:label="first" b:label="second"/>
 	</testsuite>`
-	report, err := ParseJUnitXML(strings.NewReader(input), attributeID)
+	report, err := ParseJUnitXML(strings.NewReader(input))
 	want := TestReport{Total: 1, Passed: 1, IDsAvailable: true, TestIDs: []string{"a"}}
 	if err != nil || !reflect.DeepEqual(report, want) {
 		t.Fatalf("report = %+v, err = %v; want %+v", report, err, want)
@@ -212,7 +187,7 @@ func TestParseJUnitXMLRejectsContradictoryResults(t *testing.T) {
 		`<testsuite><testcase><error/><skipped/></testcase></testsuite>`,
 		`<testsuite><testcase><failure/><error/></testcase></testsuite>`,
 	} {
-		report, err := ParseJUnitXML(strings.NewReader(input), attributeID)
+		report, err := ParseJUnitXML(strings.NewReader(input))
 		if !errors.Is(err, ErrJUnitReport) || !reflect.DeepEqual(report, TestReport{}) {
 			t.Fatalf("input %s: report = %+v, err = %v; want zero report and ErrJUnitReport", input, report, err)
 		}
@@ -227,7 +202,7 @@ func TestParseJUnitXMLReaderErrors(t *testing.T) {
 	wantErr := errors.New("report read failed")
 	for _, prefix := range []string{"", `<testsuite><testcase/>`, `<testsuite/>`} {
 		reader := io.MultiReader(strings.NewReader(prefix), junitErrorReader{wantErr})
-		report, err := ParseJUnitXML(reader, attributeID)
+		report, err := ParseJUnitXML(reader)
 		if !errors.Is(err, wantErr) || !errors.Is(err, ErrJUnitReport) || !reflect.DeepEqual(report, TestReport{}) {
 			t.Fatalf("report = %+v, err = %v; want zero report and reader error", report, err)
 		}
