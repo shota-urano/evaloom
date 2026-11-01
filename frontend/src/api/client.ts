@@ -147,6 +147,12 @@ export class ApiClient {
     return (text === '' ? undefined : JSON.parse(text)) as T
   }
 
+  /** 本文を JSON として解釈せずに文字列で受け取る（成果物の取得など）。 */
+  async text(path: string, options: { signal?: AbortSignal } = {}): Promise<string> {
+    const response = await this.send(path, 'GET', { Accept: '*/*' }, undefined, options.signal)
+    return response.text()
+  }
+
   /**
    * SSE を fetch で開き、本文を読まずに返す（GET /api/executions/{id}/events）。
    * EventSource と違って Last-Event-ID を自分で付けられるので、再接続の契機と続きの位置を呼び出し側で決められる（13 6節）。
