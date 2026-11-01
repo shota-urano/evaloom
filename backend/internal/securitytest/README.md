@@ -162,3 +162,37 @@ EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
 Docker版は通常版と同じ判定を使い、プローブを本物の `sandbox.Container` のHarnessで実行する。Gate 2の基準値・検証テストも本物のTest Sandboxで実行する。決定的なGit設定の書き込みだけを試すためネットワークは `NetworkNone` とし、Harnessにはworktree、作業用クローンのGit領域、専用設定だけを渡す。Test Sandboxにはworktreeだけを渡す。モデル認証情報とプロキシは不要である。イメージ未指定、Docker・コマンドの不足、結果ファイルの欠落・不正は失敗になり、スキップもホスト実行への切り替えも行わない。
 
 通常版のSandbox部分は生成したfixture専用のプロセスダブルであり、隔離の証明には使わない。両版ともホスト側のGit、Gate 2・3、Publisherのpushは実装本体を使う。他の工程にはテスト用の境界実装を渡す。実行系設定全体の列挙と個々の抑止は `safegit` のテストが扱い、この試験はRunnerとPublisherを通す経路を検証する。新たな製品の設定値、公開API、テーブル、列は追加していない。
+
+## 3.5 Gateの受け入れテスト
+
+`runner.TestGateAcceptance`は通常の`make verify`で7ケースを実行する。Python、Node.js、Gitが必要になる。プロセスダブルは生成したfixtureだけを実行する。本物のSandboxを使う試験は、リポジトリのルートから次の手順で実行する。
+
+```sh
+docker build -f backend/internal/securitytest/Dockerfile.gates \
+  -t evaloom-security-gates:local backend/internal/securitytest
+cd backend
+EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-gates:local \
+  GOCACHE=/tmp/evaloom-3n5.5-go-cache \
+  go test -tags=security_docker ./internal/runner \
+  -run '^TestDockerGateAcceptance$' -count=1 -v
+```
+
+`TestDockerGateAcceptance`は同じ7ケースと判定を使う。Harnessにはworktree、fixtureのGit共有領域、専用設定を渡す。基準値の取得とGate 2のTest Sandboxにはworktreeだけを渡す。両方ともネットワークを許可しない。イメージ未指定、Docker・Python・Git・Node.jsの不足、プローブ結果やJUnitの欠落は失敗になる。スキップやホスト実行への切り替えは行わない。
+
+| ケース | 変更と確認 |
+|---|---|
+| `delete_test` | 既存テストファイルを削除してcommitする。残った1件を実行し、`blocked(gate2_missing_tests)`になる |
+| `describe_only` | 新規ファイルに`describe.only`を追加してcommitする。実際の`node:test`で新規テストを実行し、既存2件のIDが欠けることで`blocked(gate2_missing_tests)`になる |
+| `exclude_test` | fixtureのテスト設定から既存ファイルを外してcommitする。残った1件を実行し、同じGate 2のBlockになる |
+| `increase_skip` | 既存テストを`it.skip`に変更してcommitする。skipが0から1に増え、同じGate 2のBlockになる |
+| `commit_after_gate2` | 実装変更をcommitし、Gate 2が成功してからテスト用の工程フックで追加commitする。検証SHAを保持したまま`blocked(gate3_mismatch)`になる |
+| `untracked_after_gate2` | Gate 2が成功してから未追跡ファイルを作る。HEADは検証SHAと同じでも`blocked(gate3_mismatch)`になる |
+| `implementation_only` | 実装ファイルだけを変更する。既存2件が成功し、Gate 2・3を通過してpushとPR作成が成功する |
+
+fixtureは`node:test`の実行結果をJUnitで出力する。`gate_test.py`は設定から対象ファイルを列挙し、`describe.only`がある場合にNodeの`--test-only`を有効にする。ケース別の固定XMLは生成しない。Nodeの版によって非対象ファイルがJUnitに現れる形式は異なるため、focusケースは件数だけで判定せず、保存されたID一覧から既存2件の欠落と新規テストの実行を確認する。
+
+プローブAdapter、Runnerの工程制御、基準値の取得、Gate 2・3、Publisherの`Publish`と`Push`は実装本体を使う。テスト用フックはGate 2の判定完了後、Gate 3の実行前にだけ変更を差し込む。DBへの直接書き込みはclaim前の入力準備だけに使い、結果は実際のHTTP result/artifacts APIで保存する。保存されたテストID・件数・SHA、ExecutionとTaskの状態、GateとBlockの関連、Block原因、通知要求を照合する。
+
+Blockedの6ケースではPublisherの呼び出しがゼロ、偽GitHubへのアクセスがゼロ、bareリモートの全refが実行前後で同じことを確認する。成功ケースでは変更ファイルが実装1つだけであること、リモートの追加ブランチ・保存された`pushed_sha`・`verified_sha`・ハーネスのHEADがすべて同じこと、ベースブランチが変わらないこと、偽GitHubでPRが作成され、そのhead/baseと本文の検証SHAが正しいことを確認する。
+
+GitHubには既存の偽HTTP APIを使い、テスト専用の`PullRequests`実装で接続する。既存の仕様上の穴として、push直後からPR作成前までに`pushed_sha`を永続化するRunner APIが無い。既存の`PublicationRecorder`境界にテストダブルを渡し、最終状態への遷移で既存result APIからpush・PRの情報を保存する。この試験は中間時点の永続化を保証しない。新しい公開API、テーブル、列、製品の設定値は追加していない。
