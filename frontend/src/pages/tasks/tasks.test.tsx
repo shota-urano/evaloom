@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -219,7 +219,8 @@ describe('Tasks 一覧', () => {
     expect(rows()).toHaveLength(1)
     // 終端でない最新 Execution（task-001 の pending）だけを購読する。終端（cancelled・succeeded）は購読しない。
     const url = '/api/executions/e-task-001/events'
-    expect(fake.events.sources.map((s) => s.url)).toEqual([url])
+    // 購読は描画の後の effect で張られるので、張られるのを待ってから確かめる。
+    await waitFor(() => expect(fake.events.sources.map((s) => s.url)).toEqual([url]))
     const [source] = fake.events.open(url)
     const fetches = () => fake.calls.filter((c) => c.url.startsWith('/api/tasks')).length
     const before = fetches()
@@ -235,8 +236,8 @@ describe('Tasks 一覧', () => {
     expect(await screen.findByText('条件に合うタスクはありません。')).toBeVisible()
     expect(fetches()).toBe(before + 1)
     expect(window.location.pathname + window.location.search).toBe('/tasks?status=queued')
-    // 一覧から外れた Execution の購読は閉じる。
-    expect(source.closed).toBe(true)
+    // 一覧から外れた Execution の購読は閉じる（閉じるのは描画の後の effect なので、待ってから確かめる）。
+    await waitFor(() => expect(source.closed).toBe(true))
 
     // 絞り込みを外すと Running で出て、引き続き購読する。
     await userEvent.click(screen.getByRole('button', { name: '絞り込みを解除' }))
@@ -244,6 +245,7 @@ describe('Tasks 一覧', () => {
     const row = running.closest('tr') as HTMLElement
     expect(row).toHaveTextContent('Running')
     expect(row).toHaveTextContent('#1 claimed')
+    await waitFor(() => expect(fake.events.open(url)).toHaveLength(1))
     const [again] = fake.events.open(url)
 
     // PR まで作って完了すると、状態と PR へのリンクが更新され、終端になったので購読を閉じる。
@@ -257,17 +259,19 @@ describe('Tasks 一覧', () => {
     expect(await within(row).findByText('Completed')).toBeVisible()
     expect(row).toHaveTextContent('#1 succeeded')
     expect(within(row).getByRole('link', { name: 'PR を開く' })).toHaveAttribute('href', 'https://example.com/pr/1')
-    expect(again.closed).toBe(true)
-    expect(fake.events.sources.every((s) => s.closed)).toBe(true)
+    await waitFor(() => {
+      expect(again.closed).toBe(true)
+      expect(fake.events.sources.every((s) => s.closed)).toBe(true)
+    })
   })
 
   it('画面を離れると購読を閉じる', async () => {
     const fake = renderAt('/tasks')
     await screen.findByText('件名 task-001')
-    expect(fake.events.open('/api/executions/e-task-001/events')).toHaveLength(1)
+    await waitFor(() => expect(fake.events.open('/api/executions/e-task-001/events')).toHaveLength(1))
     await userEvent.click(screen.getByRole('navigation', { name: '画面' }).querySelector('a[href="/projects"]') as HTMLElement)
     await screen.findByRole('heading', { name: 'Projects' })
-    expect(fake.events.sources.every((s) => s.closed)).toBe(true)
+    await waitFor(() => expect(fake.events.sources.every((s) => s.closed)).toBe(true))
   })
 
   it('タスク状態が running のまま Execution が preparing → running に進むと、最新 Execution の表示が更新される', async () => {
@@ -275,6 +279,8 @@ describe('Tasks 一覧', () => {
     const fake = renderAt('/tasks')
     const row = (await screen.findByText('件名 task-001')).closest('tr') as HTMLElement
     expect(row).toHaveTextContent('#1 preparing')
+    // 購読は描画の後の effect で張られるので、張られるのを待ってから emit する。
+    await waitFor(() => expect(fake.events.open('/api/executions/e-task-001/events')).toHaveLength(1))
     const [source] = fake.events.open('/api/executions/e-task-001/events')
     const fetches = () => fake.calls.filter((c) => c.url.startsWith('/api/tasks')).length
     const before = fetches()
@@ -307,9 +313,11 @@ describe('Tasks 一覧', () => {
       const row = (await screen.findByText('件名 task-001')).closest('tr') as HTMLElement
       expect(row).toHaveTextContent('Queued')
       // Blocked の4件だけを購読し、Queued の Execution は購読していない。
-      const subscribed = fake.events.sources.filter((s) => !s.closed).map((s) => s.url)
-      expect(subscribed).toHaveLength(MAX_TASK_SUBSCRIPTIONS)
-      expect(subscribed).not.toContain('/api/executions/e-task-001/events')
+      await waitFor(() => {
+        const subscribed = fake.events.sources.filter((s) => !s.closed).map((s) => s.url)
+        expect(subscribed).toHaveLength(MAX_TASK_SUBSCRIPTIONS)
+        expect(subscribed).not.toContain('/api/executions/e-task-001/events')
+      })
 
       // 購読していない Execution が claim された。SSE は届かないが、一定間隔の取り直しで拾う。
       TASKS = TASKS.map((t) =>
