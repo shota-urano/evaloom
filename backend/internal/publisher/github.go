@@ -21,6 +21,7 @@ type GitHub struct {
 }
 
 var _ PullRequests = (*GitHub)(nil)
+var _ PreviousPullRequest = (*GitHub)(nil)
 
 func NewGitHub(client *http.Client, installationToken func(context.Context) (string, error)) (*GitHub, error) {
 	if client == nil || installationToken == nil {
@@ -37,6 +38,7 @@ type githubPR struct {
 	Number int    `json:"number"`
 	URL    string `json:"html_url"`
 	State  string `json:"state"`
+	Merged *bool  `json:"merged"`
 	Head   struct {
 		Ref  string `json:"ref"`
 		Repo struct {
@@ -46,6 +48,38 @@ type githubPR struct {
 	Base struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
+}
+
+// State reads the recorded PR by number, including closed/merged PRs. A 404
+// cannot establish absence: it may also mean the App lost repository access.
+func (g *GitHub) State(ctx context.Context, repositoryURL string, number int) (PullRequestState, error) {
+	repo, err := githubRepository(repositoryURL)
+	if err != nil {
+		return "", err
+	}
+	if number <= 0 {
+		return "", ErrRerunConfiguration
+	}
+	var pr githubPR
+	if err := g.request(ctx, http.MethodGet, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), nil, http.StatusOK, &pr); err != nil {
+		return "", err
+	}
+	if pr.Number != number || pr.Merged == nil ||
+		!strings.EqualFold(pr.URL, "https://github.com/"+repo+"/pull/"+strconv.Itoa(number)) {
+		return "", ErrPullRequest
+	}
+	switch pr.State {
+	case "open":
+		if !*pr.Merged {
+			return PROpen, nil
+		}
+	case "closed":
+		if *pr.Merged {
+			return PRMerged, nil
+		}
+		return PRClosed, nil
+	}
+	return "", ErrPullRequest
 }
 
 func (pr githubPR) valid(repo, branch string) bool {
