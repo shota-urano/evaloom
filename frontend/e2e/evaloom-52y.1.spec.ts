@@ -67,9 +67,9 @@ test('一回限りのログイン URL を貼り付けるとログインでき、
   await page.goto('/')
   await page.getByLabel('ログイン URL').fill(loginURL())
   await page.getByRole('button', { name: 'ログイン' }).click()
-  await expect(page.getByRole('heading', { name: 'ログインしました' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
   expect(requests.some((r) => r.url().includes('/auth/login?token='))).toBe(true)
 
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'ログインしました' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
 })

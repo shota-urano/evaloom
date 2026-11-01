@@ -60,6 +60,7 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, artifacts ArtifactConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/tasks", listTasks(db, logger))
+	mux.HandleFunc("GET /api/notification-failures", listNotificationFailures(db, logger))
 	mux.HandleFunc("POST /api/tasks", createTask(db, logger))
 	mux.HandleFunc("GET /api/tasks/{id}", getTask(db, logger))
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", cancelTask(db, logger))

@@ -152,6 +152,7 @@ Q3 の提案（Runner 用）:
 | GET | /api/executions/{id}/logs | 保存済みログの取得 | 追加案 | 05 |
 | GET | /api/executions/{id}/artifacts/{artifactId} | 成果物（差分、テストレポート等）の取得 | 追加案 | 05, 13 |
 | GET | /api/runners | Runner 一覧 | 18章 | 05 |
+| GET | /api/notification-failures | 通知失敗（`notification_failed` イベント）の一覧。全 Execution をまたいで新しい順に返す | 追加案（Q41） | 12, 13 |
 | GET | /api/settings | 全体設定（同時実行上限の表示、タイムアウト等） | 追加案 | 13 |
 | PATCH | /api/settings | 全体設定の更新 | 追加案 | 13 |
 

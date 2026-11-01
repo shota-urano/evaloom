@@ -98,6 +98,35 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
 
 - イベント: `notification_sent`、`notification_failed`（[`02-data-model.md`](./02-data-model.md) 5.3）
 - 通知先の設定: `GET/PATCH /api/settings`（[`01-architecture.md`](./01-architecture.md) 5.1）
+- 通知失敗の一覧: `GET /api/notification-failures`（本人用。[`01-architecture.md`](./01-architecture.md) 5.1、Q41）。Dashboard のエラー状況はこの API で表示する
+
+#### 通知失敗の一覧 API（Q41）
+
+- 対象: `execution_events` のうち `type = notification_failed` の行すべて。Execution・タスクの状態や、再実行の前か後かで絞らない。
+- 並び順: 新しい順（`execution_events.id` の降順）。
+- ページネーション: 01 の 5.3 の共通規約（`?limit=` 既定 50・上限 200、`?cursor=`、応答の `nextCursor`）に従う。
+- 応答:
+
+```json
+{
+  "items": [
+    {
+      "eventId": 123,
+      "executionId": "...",
+      "taskId": "...",
+      "taskTitle": "...",
+      "kind": "failed",
+      "channel": "macos",
+      "reason": "permission_denied",
+      "createdAt": "2026-11-01T00:00:00Z"
+    }
+  ],
+  "nextCursor": null
+}
+```
+
+- `kind`・`channel`・`reason` は イベントの payload の値をそのまま返す（3.4）。エラーの文字列は返さない。
+- 既読や解決済みの印は Phase 1 では持たない（記録は消さず、一覧に出し続ける）。
 
 ## 6. エラー処理
 
@@ -128,3 +157,5 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
   - 受け入れ基準: launchd から起動した evaloomd から、本人のデスクトップに通知が表示される; 通知の本文にタスクの件名・ID・分類以外の内容が入らない
 - [ ] [Backend] 通知失敗の記録
   - 受け入れ基準: Notifier がエラーを返してもタスクの状態が変わらず、失敗が execution_events に残る
+- [ ] [Backend] 通知失敗の一覧 API（Q41）
+  - 受け入れ基準: 複数の Execution に記録した notification_failed がすべて新しい順に返る; notification_failed 以外のイベントは返らない; limit を超える件数は nextCursor で続きを取れ、欠けも重複も無い; 応答に taskId と taskTitle が入り、エラーの文字列は入らない; Runner のトークンでは 403 になる
