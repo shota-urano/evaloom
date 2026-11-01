@@ -24,14 +24,16 @@ func Verify(baseline *model.TestRun, baselineIDs []string, run model.TestRun, re
 		*baseline.Total < *baseline.Skipped || *baseline.Skipped < 0 {
 		return unverifiable
 	}
-	decision := Verification{Result: "pass", CountOnly: baseline.TestIDsArtifactID == nil || !report.IDsAvailable}
-	if baseline.TestIDsArtifactID != nil && report.IDsAvailable {
+	if baseline.TestIDsArtifactID != nil {
 		if baselineIDs == nil {
 			return unverifiable
 		}
 		if len(baselineIDs) != *baseline.Total-*baseline.Skipped {
 			return unverifiable
 		}
+	}
+	decision := Verification{Result: "pass", CountOnly: baseline.TestIDsArtifactID == nil || !report.IDsAvailable}
+	if baseline.TestIDsArtifactID != nil && report.IDsAvailable {
 		// Preserve multiplicity: duplicate IDs must not hide a removed case.
 		remaining := make(map[string]int, len(report.TestIDs))
 		for _, id := range report.TestIDs {

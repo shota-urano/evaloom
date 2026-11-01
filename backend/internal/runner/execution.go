@@ -72,8 +72,8 @@ type Execution struct {
 	BaseSHA      string
 	// Stage 7 retains the original run when a continue execution reuses it.
 	Baseline *model.TestRun
-	// BaselineIDs is populated during fresh acquisition. Continued executions
-	// resolve the original artifact through the trusted Gate 2 ID reader.
+	// BaselineIDs is populated during fresh acquisition or from the saved
+	// worktree baseline in the claim response after a restart/continue.
 	BaselineIDs    []string
 	HarnessHeadSHA string
 	VerifiedSHA    string

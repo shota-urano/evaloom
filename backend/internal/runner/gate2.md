@@ -39,11 +39,12 @@ Findingのruleは仕様10の3.6（Q37）の`existing_test_not_run`、
 
 ## 仕様の穴と接続範囲
 
-- 保存済みtest_idsをRunnerが読む通信経路は仕様に無い。既存GETは本人用なので、
-  Runnerトークンの権限を拡張しない。新規取得時は保存済みIDと同じ一覧をExecution内で保持し、
-  continueでは`Gate2Config.LoadTestIDs`で元の成果物を読む境界を設ける。
-  Reader未接続や読み取り失敗時はgate2_unverifiableとして自動公開を止める。
-  結合テストではControl Plane側の成果物を読むテスト用Readerを注入する。
+- Q40に従い、Control Planeが保存済みのtest_ids成果物を読み、claimの応答の
+  `worktree.baseline.testIds`に入れる。Runnerはこの一覧をExecution内で保持し、
+  continueでも同じIDで照合する。順序と重複を保持し、成果物を取得するAPIは呼ばない。
+  成果物が無い・読めない・JSONの文字列配列でない・件数が基準値と合わない場合は
+  `testIds`をnullとする。IDを持つ基準値の一覧がnullなら、検証レポートが件数だけでも
+  gate2_unverifiableで止める。基準値が件数だけなら件数で確認する。
 - 起動コマンド`cmd/evaloom-runner`は先行実装の時点で全工程の接続待ちである。
   本変更は製品の工程実行器を構築する`NewGate2Executor`までを接続する。
   常駐プロセス全体の起動設定と残りの工程実装は含めない。

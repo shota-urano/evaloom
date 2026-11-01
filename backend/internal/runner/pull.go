@@ -74,8 +74,15 @@ type ClaimWorktree struct {
 	Path        string             `json:"path"`
 	BaseSHA     string             `json:"baseSha"`
 	BranchName  string             `json:"branchName"`
-	Baseline    *model.TestRun     `json:"baseline"`
+	Baseline    *ClaimBaseline     `json:"baseline"`
 	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
+}
+
+// ClaimBaseline carries the saved IDs supplied by the Control Plane (Q40).
+// nil IDs on an ID-bearing run mean unverifiable, not count-only verification.
+type ClaimBaseline struct {
+	model.TestRun
+	TestIDs []string `json:"testIds"`
 }
 
 // Run heartbeats immediately, then claims at most one job per poll when there
@@ -189,13 +196,15 @@ func (runner *Runner) claim(ctx context.Context) (*Claim, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("runner: claim returned HTTP %d", response.StatusCode)
 	}
-	const maxResponseBytes = 1 << 20
-	content, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(content) > maxResponseBytes {
+	// Claims now carry the full saved test ID list. Artifact sizes are governed
+	// by the Control Plane's configured upload limit, not a separate fixed
+	// response cap that could reject an otherwise valid baseline.
+	decoder := json.NewDecoder(response.Body)
+	var reply Claim
+	if err := decoder.Decode(&reply); err != nil || reply.Execution.ID == "" || reply.Execution.TaskID == "" {
 		return nil, fmt.Errorf("runner: invalid claim response")
 	}
-	var reply Claim
-	if err := json.Unmarshal(content, &reply); err != nil || reply.Execution.ID == "" || reply.Execution.TaskID == "" {
+	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, fmt.Errorf("runner: invalid claim response")
 	}
 	return &reply, nil

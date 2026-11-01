@@ -18,10 +18,6 @@ import (
 type Gate2Config struct {
 	// Use the same runtime as stage 7.
 	BaselineConfig
-	// The specs provide no Runner-authorized read endpoint for saved test_ids.
-	// This boundary must read trusted artifact storage, never the worktree.
-	// It is needed only after reusing an ID-bearing baseline (e.g. continue).
-	LoadTestIDs func(context.Context, model.TestRun) ([]string, error)
 }
 
 var ErrGate2Stopped = errors.New("runner: Gate 2 stopped execution")
@@ -132,18 +128,14 @@ func (runner *Runner) Gate2Handler(config Gate2Config) (StageFunc, error) {
 			}
 		}
 		baseline := e.Baseline
-		if baseline == nil && e.Claim.Worktree != nil {
-			baseline = e.Claim.Worktree.Baseline
-		}
 		ids := e.BaselineIDs
+		if baseline == nil && e.Claim.Worktree != nil {
+			if saved := e.Claim.Worktree.Baseline; saved != nil {
+				baseline, ids = &saved.TestRun, saved.TestIDs
+			}
+		}
 		if baseline != nil && baseline.TargetSHA != e.BaseSHA {
 			baseline = nil
-		}
-		if baseline != nil && baseline.TestIDsArtifactID != nil && ids == nil && config.LoadTestIDs != nil && report != nil && report.IDsAvailable && run.ExitCode != nil && *run.ExitCode == 0 && report.Failed == 0 {
-			loaded, err := config.LoadTestIDs(ctx, *baseline)
-			if err == nil {
-				ids = loaded
-			}
 		}
 		if ctx.Err() != nil {
 			run.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)

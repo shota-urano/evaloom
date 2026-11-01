@@ -47,8 +47,10 @@ func TestVerifyCannotReplaceUnreadableIDsWithCounts(t *testing.T) {
 	base := &model.TestRun{Total: new(2), Skipped: new(0), TestIDsArtifactID: new("artifact")}
 	report := &TestReport{Total: 3, Passed: 3, IDsAvailable: true, TestIDs: []string{"a", "b", "c"}}
 	for _, ids := range [][]string{nil, {"a"}} {
-		if got := Verify(base, ids, model.TestRun{ExitCode: new(0)}, report); got.Cause != model.BlockGate2Unverifiable {
-			t.Fatalf("decision=%+v", got)
+		for _, current := range []*TestReport{report, {Total: 3, Passed: 3}} {
+			if got := Verify(base, ids, model.TestRun{ExitCode: new(0)}, current); got.Cause != model.BlockGate2Unverifiable || got.CountOnly {
+				t.Fatalf("decision=%+v", got)
+			}
 		}
 	}
 	base.Total = new(2)
