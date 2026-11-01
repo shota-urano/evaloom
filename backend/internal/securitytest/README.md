@@ -131,3 +131,34 @@ EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
 通常の`make verify`ではDocker試験をビルド対象から外し、`TestIsolationVerdict`で両工程のplanを使って拒否の受理、全項目のアクセス成功や正の確認の失敗、観測の欠落・kind不一致、秘密変数の漏出、プロキシの実行不能、結果が全拒否でもHTTP・監査記録が増える場合の拒否を検証する。3.2の実環境テストと通常テストは変更していない。
 
 仕様の穴は既存Sandboxと同じで、Projectごとの許可レジストリ一覧の保存先とRegistryからの接続方法が未定義である。このテストは既存の内部`AllowedDestinations`境界を使い、公開API・テーブル・列・確定済みの仕様書を追加・変更していない。`.env`のコピー処理自体の検証はworktree担当のテストにあり、この試験は秘密ファイルをworktreeへコピーしないfixtureでの隔離を検証する。
+
+## 3.4 ホスト側Git操作の防御テスト
+
+`runner.TestHostGitDefense` は通常の `make verify` で実行する。プローブAdapterから `git_attack.py` を実行し、作業用クローンのGit領域に次の仕込みを置く。各ケースは独立したfixtureを使う。
+
+| ケース | 仕込みと検証 |
+|---|---|
+| `default-hooks` | 既定のhooksディレクトリに `post-checkout`、`pre-push`、`reference-transaction` を置く |
+| `included-hooks` | include先の `core.hooksPath` で同じ3つのフックを指定する |
+| `worktree-fsmonitor` | 有効な `config.worktree` の `core.fsmonitor` に実行ファイルを指定する |
+| `included-filters` | include先に `filter.Defense.Driver.clean/smudge/required` を設定し、追跡対象の `.gitattributes` で適用する |
+
+仕込みは実行されたらGit共有領域の `defense-marks` に印を作る。プローブは実装ファイルの変更をcommitし、作業用クローンのrefと設定も変更してから、フック・実行系設定を有効にする。Runnerのworktree作成・checkout・fetch、実際のGate 2・3、Git Publisherの `Push` とリモートSHA照合を進め、各段階で印が無いことを確認する。push先には破棄可能なbareリモートをGit daemon経由で使い、外部サービスには送らない。
+
+信頼する側では、HTTP result APIで永続化された `succeeded`、Gate 2・3の `pass`、検証SHAに対する2件のテスト成功を照合する。リモートはpush前に全refが不変で、push後は検証済みSHAのブランチだけが追加されたことを確認する。本人のリポジトリを模した元リポジトリは全refと設定ファイルを前後で比較し、作業用クローンへの変更が及ばないことを確認する。プローブのJSONだけで合格にはしない。
+
+すべての防御確認が済んでから、防御ラッパーを使わないGitで同じ仕込みを実行する。checkout・commit・push、status、worktree作成・addによって各印が実際に作られることも必須とし、仕込みが動作しないために合格するケースを防ぐ。
+
+本物のHarness/Test Sandboxを使う試験は、3.2と同じ既存イメージを指定して実行する。
+
+```sh
+cd backend
+EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
+  GOCACHE=/tmp/evaloom-3n5.4-go-cache \
+  go test -tags=security_docker ./internal/runner \
+  -run '^TestDockerHostGitDefense$' -count=1 -v
+```
+
+Docker版は通常版と同じ判定を使い、プローブを本物の `sandbox.Container` のHarnessで実行する。Gate 2の基準値・検証テストも本物のTest Sandboxで実行する。決定的なGit設定の書き込みだけを試すためネットワークは `NetworkNone` とし、Harnessにはworktree、作業用クローンのGit領域、専用設定だけを渡す。Test Sandboxにはworktreeだけを渡す。モデル認証情報とプロキシは不要である。イメージ未指定、Docker・コマンドの不足、結果ファイルの欠落・不正は失敗になり、スキップもホスト実行への切り替えも行わない。
+
+通常版のSandbox部分は生成したfixture専用のプロセスダブルであり、隔離の証明には使わない。両版ともホスト側のGit、Gate 2・3、Publisherのpushは実装本体を使う。他の工程にはテスト用の境界実装を渡す。実行系設定全体の列挙と個々の抑止は `safegit` のテストが扱い、この試験はRunnerとPublisherを通す経路を検証する。新たな製品の設定値、公開API、テーブル、列は追加していない。
