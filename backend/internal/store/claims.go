@@ -57,8 +57,15 @@ type ClaimWorktree struct {
 	Path        string             `json:"path"`
 	BaseSHA     string             `json:"baseSha"`
 	BranchName  string             `json:"branchName"`
-	Baseline    *model.TestRun     `json:"baseline"`
+	Baseline    *ClaimBaseline     `json:"baseline"`
 	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
+}
+
+// ClaimBaseline adds artifact contents only to the claim snapshot, not to the
+// persisted TestRun or result reporting schema. Unavailable IDs remain null.
+type ClaimBaseline struct {
+	model.TestRun
+	TestIDs []string `json:"testIds"`
 }
 
 // Claim contains only execution input, never Runner credentials. Assignment is
@@ -199,9 +206,12 @@ func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID strin
 	if base.Valid && base.String != w.BaseSHA {
 		return ErrBaselineScope
 	}
-	w.Baseline, err = findBaseline(ctx, tx, w.ID)
+	baseline, err := findBaseline(ctx, tx, w.ID)
 	if err != nil {
 		return err
+	}
+	if baseline != nil {
+		w.Baseline = &ClaimBaseline{TestRun: *baseline}
 	}
 	if w.Baseline != nil && w.Baseline.TargetSHA != w.BaseSHA {
 		return ErrBaselineScope

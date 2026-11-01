@@ -1,19 +1,22 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
-func claimExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
+func claimExecution(db *sql.DB, logger *slog.Logger, artifacts ArtifactConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// protectRunner has already matched this identity to the route's Runner.
 		runner, _ := r.Context().Value(runnerIdentityKey{}).(string)
@@ -70,6 +73,49 @@ func claimExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, err)
 			return
 		}
+		// ArtifactStore.Open uses the DB itself. Read after the claim transaction
+		// has committed, so it does not contend with that transaction. Failure to
+		// read IDs must still deliver the claim with null IDs (Q40).
+		if claim.Worktree != nil && claim.Worktree.Baseline != nil {
+			baseline := claim.Worktree.Baseline
+			baseline.TestIDs = claimBaselineIDs(ctx, artifacts, baseline.TestRun)
+		}
 		writeJSON(w, http.StatusOK, claim)
 	}
+}
+
+func claimBaselineIDs(ctx context.Context, config ArtifactConfig, run model.TestRun) []string {
+	if run.TestIDsArtifactID == nil || config.Store == nil {
+		return nil
+	}
+	artifact, file, err := config.Store.Open(ctx, run.ExecutionID, *run.TestIDsArtifactID)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	if artifact.Kind != "test_ids" {
+		return nil
+	}
+	body, err := io.ReadAll(file)
+	if err != nil || !utf8.Valid(body) {
+		return nil
+	}
+	// []string alone also accepts null elements. Require every JSON element
+	// to be a string, preserving its exact order and multiplicity.
+	var values []any
+	if json.Unmarshal(body, &values) != nil || values == nil {
+		return nil
+	}
+	if run.Total == nil || run.Skipped == nil || *run.Skipped < 0 || *run.Total < *run.Skipped || len(values) != *run.Total-*run.Skipped {
+		return nil
+	}
+	ids := make([]string, len(values))
+	for i, value := range values {
+		id, ok := value.(string)
+		if !ok {
+			return nil
+		}
+		ids[i] = id
+	}
+	return ids
 }

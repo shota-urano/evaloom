@@ -22,6 +22,11 @@
   `verifyRun`を返す。新しいcontinue Executionには前回の検証を引き継がない。
   `worktree`には元のbaselineに加え、保存済みの`copiedFiles`と`branchName`を返す。
   Gate 3はこのスナップショットを使い、再開時も実際のGit状態を確認する。
+- Q40に従い、claimのトランザクションを確定した後にControl Planeの成果物ストアを使い、
+  基準値を記録したExecutionの`test_ids`を読む。`worktree.baseline.testIds`には
+  JSONの文字列配列を順序・重複を保持して返す。成果物が無い・読めない・形式が違う・
+  件数が基準値と合わない場合と、基準値が件数だけの場合はnullにする。
+  成果物の取得に失敗してもclaimは返す。Runner用APIとトークンの権限は変えない。
 - 作成後にDefault Roleの割り当てがなくなった場合も422
   `precondition_failed`、詳細は`projectId/default_harness_missing`とする。
   取得対象を別のExecutionに差し替えず、そのトランザクションを取り消す。

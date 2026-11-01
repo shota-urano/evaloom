@@ -86,7 +86,11 @@ func (r *remoteBaselineRepository) FindBaseline(ctx context.Context, executionID
 		if w.ID != worktreeID {
 			return nil, fmt.Errorf("runner: baseline claim worktree mismatch")
 		}
-		return w.Baseline, nil
+		if w.Baseline == nil {
+			return nil, nil
+		}
+		r.execution.BaselineIDs = w.Baseline.TestIDs
+		return &w.Baseline.TestRun, nil
 	}
 	// Explicit null means the predecessor failed before recording a worktree;
 	// preparation can create one and acquire its baseline. Missing information

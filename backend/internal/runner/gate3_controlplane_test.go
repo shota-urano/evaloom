@@ -103,7 +103,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 	})
 	control := testExecutionControl()
 	control.Reporter, control.CheckCancellation = p, func(context.Context) error { return nil }
-	executor, err := p.NewVerificationExecutor(handlers, control, Gate2Config{BaselineConfig: baseline, LoadTestIDs: f.loadTestIDs}, Gate3Config{PrepareResume: resume})
+	executor, err := p.NewVerificationExecutor(handlers, control, Gate2Config{BaselineConfig: baseline}, Gate3Config{PrepareResume: resume})
 	if err != nil {
 		t.Fatal(err)
 	}
