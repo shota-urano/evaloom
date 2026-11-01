@@ -172,6 +172,45 @@ func TestPublishContinuesOpenPRWithResultComment(t *testing.T) {
 	}
 }
 
+func TestPublishAllowsEmptySummary(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "create"
+		if existing {
+			name = "comment"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newPushFixture(t)
+			config, prs, recorder, steps := publishConfig(f)
+			// Spec 08, 3.3 permits an empty summary when CLI output is unavailable.
+			config.Report.Summary = ""
+			wantPR := publisher.PullRequest{Number: 17, URL: "https://github.com/owner/repo/pull/17"}
+			wantCreated, wantCommented := 1, 0
+			if existing {
+				prs.open = &wantPR
+				wantCreated, wantCommented = 0, 1
+			}
+			publication, err := publisher.Publish(context.Background(), f.target(), config)
+			if err != nil || publication.PushedSHA != f.head || publication.Created != !existing || publication.PR == nil || *publication.PR != wantPR {
+				t.Fatalf("publication=%+v err=%v", publication, err)
+			}
+			if prs.created != wantCreated || prs.commented != wantCommented {
+				t.Fatalf("created=%d commented=%d", prs.created, prs.commented)
+			}
+			if recorder.pushedSHA != f.head || recorder.pr != wantPR || recorder.created != !existing {
+				t.Fatalf("recorded: %+v", recorder)
+			}
+			if !reflect.DeepEqual(*steps, []string{"record_push", "find", name, "record_pr"}) {
+				t.Fatalf("steps=%v", *steps)
+			}
+			for _, want := range []string{"## 作業概要\n\n\n\n## 実行情報", "Gate 2: pass", "実行数: 6", "skip 数: 2", "確認方法: ID による照合"} {
+				if !strings.Contains(prs.body, want) {
+					t.Errorf("body missing %q:\n%s", want, prs.body)
+				}
+			}
+		})
+	}
+}
+
 func TestPublishIncludesApprovedBlockContentsAndCountOnlyFinding(t *testing.T) {
 	f := newPushFixture(t)
 	config, prs, _, _ := publishConfig(f)

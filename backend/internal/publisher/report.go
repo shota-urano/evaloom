@@ -12,7 +12,8 @@ import (
 var ErrPRReport = errors.New("publisher: execution report is incomplete or inconsistent")
 
 // Report is trusted Runner metadata for the spec 11, 3.3 PR body and result
-// comment. Summary comes from HarnessResult.summary. ContinuedBlocks contains
+// comment. Summary comes from HarnessResult.summary and may be empty (spec 08,
+// 3.3). ContinuedBlocks contains
 // the contents of Blocks the owner actually approved, not harness assertions.
 // This is a local boundary, not a new API representation or database schema.
 type Report struct {
@@ -27,7 +28,7 @@ type Report struct {
 }
 
 func (r Report) body(verifiedSHA string) (string, error) {
-	for _, value := range []string{r.ExecutionID, r.TaskID, r.Title, r.AcceptanceCriteria, r.Summary,
+	for _, value := range []string{r.ExecutionID, r.TaskID, r.Title, r.AcceptanceCriteria,
 		r.HarnessID, r.HarnessVersion, r.ProfileVersion, r.ProfileCommitSHA} {
 		if strings.TrimSpace(value) == "" {
 			return "", ErrPRReport
