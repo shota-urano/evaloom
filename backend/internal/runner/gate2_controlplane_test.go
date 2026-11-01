@@ -169,7 +169,7 @@ func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls 
 		}
 		return &baselineCommandProcess{command}, nil
 	}), Limits: sandbox.ResourceLimits{CPU: 1, MemoryBytes: 1 << 20, Time: time.Minute}, Shell: "/bin/sh", JUnitFormat: "junit"}
-	gateConfig := Gate2Config{BaselineConfig: config, LoadTestIDs: f.loadTestIDs}
+	gateConfig := Gate2Config{BaselineConfig: config}
 	handlers := stubStageHandlers(func(id StageID, ctx context.Context, e *Execution) error {
 		switch id {
 		case StagePrepareWorktree:
@@ -202,23 +202,6 @@ func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls 
 		t.Fatal(err)
 	}
 	return executor
-}
-
-// Read the trusted Control Plane artifact through the pre-existing boundary.
-func (f *baselineHTTPFixture) loadTestIDs(ctx context.Context, run model.TestRun) ([]string, error) {
-	// Trusted artifact read is explicitly injected because the specs expose
-	// artifact GET only to the owner, not to the Runner.
-	var path string
-	if err := f.db.QueryRowContext(ctx, `SELECT storage_path FROM artifacts WHERE id=? AND execution_id=? AND kind='test_ids'`, *run.TestIDsArtifactID, run.ExecutionID).Scan(&path); err != nil {
-		return nil, err
-	}
-	body, err := os.ReadFile(filepath.Join(f.dataDir, path))
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	err = json.Unmarshal(body, &ids)
-	return ids, err
 }
 
 func newGate2Fixture(t *testing.T) *baselineHTTPFixture {

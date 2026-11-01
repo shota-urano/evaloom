@@ -308,7 +308,7 @@ func TestBaselineHTTPContinueAfterRunnerRestartDoesNotReacquire(t *testing.T) {
 			t.Fatal(err)
 		}
 		claim, err := process.claim(ctx)
-		if err != nil || claim == nil || claim.Worktree == nil || !reflect.DeepEqual(claim.Worktree.Baseline, original) {
+		if err != nil || claim == nil || claim.Worktree == nil || claim.Worktree.Baseline == nil || !reflect.DeepEqual(&claim.Worktree.Baseline.TestRun, original) {
 			t.Fatalf("continue snapshot: %+v %v", claim, err)
 		}
 		if err := f.executor(t, process, &calls).Execute(ctx, *claim); err != nil {
@@ -395,7 +395,7 @@ func TestBaselineHTTPContinueRestoresCleanedWorktreeWithoutReacquiring(t *testin
 		t.Fatalf("cleaned worktree claim: %+v %v", claim, err)
 	}
 	w := claim.Worktree
-	if w.ID != f.worktreeID || w.Path != f.path || w.BaseSHA != f.sha || !reflect.DeepEqual(w.Baseline, original) ||
+	if w.ID != f.worktreeID || w.Path != f.path || w.BaseSHA != f.sha || w.Baseline == nil || !reflect.DeepEqual(&w.Baseline.TestRun, original) ||
 		claim.Previous == nil || claim.Previous.BranchName == nil || *claim.Previous.BranchName != "task" ||
 		claim.Previous.WorktreePath == nil || *claim.Previous.WorktreePath != f.path {
 		t.Fatalf("restoration metadata: worktree=%+v previous=%+v", w, claim.Previous)

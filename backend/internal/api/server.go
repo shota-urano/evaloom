@@ -41,7 +41,7 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 	mux := http.NewServeMux()
 	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters, artifacts)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
-	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
+	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger, artifacts)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
