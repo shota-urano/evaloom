@@ -125,8 +125,8 @@ func TestGitHubLookupFailsClosedOnAmbiguousOrInvalidResponse(t *testing.T) {
 }
 
 func TestGitHubDoesNotRetryFailedMutationsOrExposeResponses(t *testing.T) {
-	for _, status := range []int{301, 401, 403, 422, 500} {
-		for _, operation := range []string{"find", "create", "comment"} {
+	for _, status := range []int{301, 401, 403, 404, 422, 500} {
+		for _, operation := range []string{"find", "create", "comment", "state"} {
 			t.Run(operation+"/"+http.StatusText(status), func(t *testing.T) {
 				calls := 0
 				client := githubClient(t, func(*http.Request) (*http.Response, error) {
@@ -137,6 +137,8 @@ func TestGitHubDoesNotRetryFailedMutationsOrExposeResponses(t *testing.T) {
 				})
 				var err error
 				switch operation {
+				case "state":
+					_, err = client.State(context.Background(), "https://github.com/owner/repo", 17)
 				case "find":
 					_, err = client.FindOpen(context.Background(), "https://github.com/owner/repo", "evaloom/task-1-short")
 				case "create":
@@ -149,6 +151,85 @@ func TestGitHubDoesNotRetryFailedMutationsOrExposeResponses(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestGitHubPreviousPRState(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, merged string
+		want                publisher.PullRequestState
+	}{
+		{"open", "open", "false", publisher.PROpen},
+		{"closed_unmerged", "closed", "false", publisher.PRClosed},
+		{"merged", "closed", "true", publisher.PRMerged},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			client := githubClient(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/pulls/17" || r.URL.RawQuery != "" || r.Body != nil {
+					t.Fatalf("request=%s %s", r.Method, r.URL)
+				}
+				body := strings.Replace(prJSON, `"state":"open"`, `"state":"`+tc.state+`","merged":`+tc.merged, 1)
+				return reply(http.StatusOK, body), nil
+			})
+			state, err := client.State(context.Background(), "git@github.com:owner/repo.git", 17)
+			if err != nil || state != tc.want || calls != 1 {
+				t.Fatalf("state=%q calls=%d err=%v", state, calls, err)
+			}
+		})
+	}
+}
+
+func TestGitHubPreviousPRStateRejectsInvalidResponses(t *testing.T) {
+	valid := strings.Replace(prJSON, `"state":"open"`, `"state":"closed","merged":false`, 1)
+	for name, body := range map[string]string{
+		"missing_merge_state": prJSON,
+		"null_merge_state":    strings.Replace(valid, `"merged":false`, `"merged":null`, 1),
+		"invalid_merge_state": strings.Replace(valid, `"merged":false`, `"merged":"false"`, 1),
+		"wrong_number":        strings.Replace(valid, `"number":17`, `"number":18`, 1),
+		"wrong_url":           strings.Replace(valid, "https://github.com/owner/repo/pull/17", "https://other.invalid/"+secret, 1),
+		"wrong_state":         strings.Replace(valid, `"state":"closed"`, `"state":"unknown"`, 1),
+		"missing_state":       strings.Replace(valid, `"state":"closed",`, "", 1),
+		"open_but_merged":     strings.Replace(strings.Replace(valid, `"state":"closed"`, `"state":"open"`, 1), `"merged":false`, `"merged":true`, 1),
+		"null":                `null`,
+		"empty":               `{}`,
+		"malformed":           `{`,
+		"trailing":            valid + `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := githubClient(t, func(*http.Request) (*http.Response, error) { return reply(http.StatusOK, body), nil })
+			state, err := client.State(context.Background(), "https://github.com/owner/repo", 17)
+			if state != "" || !errors.Is(err, publisher.ErrPullRequest) || strings.Contains(err.Error(), secret) {
+				t.Fatalf("state=%q err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestGitHubPreviousPRStateRejectsInvalidInputsBeforeAuthentication(t *testing.T) {
+	client, err := publisher.NewGitHub(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid input reached GitHub")
+		return nil, errors.New("unexpected")
+	})}, func(context.Context) (string, error) {
+		t.Fatal("invalid input requested an installation token")
+		return "", errors.New("unexpected")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []int{0, -1} {
+		if _, err := client.State(context.Background(), "https://github.com/owner/repo", number); !errors.Is(err, publisher.ErrRerunConfiguration) {
+			t.Fatalf("err=%v", err)
+		}
+	}
+	if _, err := client.State(context.Background(), "https://other.invalid/owner/repo", 17); !errors.Is(err, publisher.ErrPRConfiguration) {
+		t.Fatalf("err=%v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.State(ctx, "https://github.com/owner/repo", 17); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
 	}
 }
 

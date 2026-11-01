@@ -1,6 +1,6 @@
 # Git Publisher の PR 処理
 
-正本は `docs/specs/11-git-publisher.md` の3.1〜3.3・5〜6節。
+正本は `docs/specs/11-git-publisher.md` の3.1〜3.4・5〜6節。
 `Publish` は既存の `Push` を呼び、リモートの SHA が一致した後に
 `PublicationRecorder.RecordPushed` の保存成功を待って PR 処理へ進む。
 PR 作成に失敗しても、返り値には確認済みの `PushedSHA` が残る。
@@ -27,6 +27,23 @@ Trusted Runner から渡す。App の鍵やトークンを worktree から読み
 API の転送には従わず、応答本文・認証情報・通信エラーの自由文を返さない。
 テストは偽の `PullRequests` と HTTP transport、およびローカルの Git remote を使う。
 
+## 再実行前の PR 確認
+
+`CheckPreviousPR` は Runner の準備工程2で呼ぶ内部境界である。
+mode と前回 PR 番号を受け取り、`PreviousPullRequest.State` で現在の状態を取得する。
+GitHub の実装は PR 番号を指定して取得し、`state` と `merged` の両方を確認する。
+番号が無い場合だけ「まだ無い」と扱う。404、認証失敗、通信失敗、欠けた応答は
+`publish_failed` で停止し、外部エラーの自由文を返さない。
+
+正常時の `RerunPlan.NewBranch` は `fresh` の場合だけ true となる。
+後続の worktree 工程が仕様06に従ってブランチを作成または再利用する。
+停止時の `RerunError` は、報告すべき Execution 状態、error_class、Block 原因、
+仕様にある理由コードを保持する。`ErrorClass` はこの分類を引き継ぐ。
+マージ済みの場合は新しいタスクの作成を案内する。
+停止する場合は worktree 準備やハーネスへ進まず、PR のクローズ・マージ、
+ブランチ削除、push は行わない。テスト名 `TestCheckPreviousPRSpec3_4Table` の
+8ケースが、仕様3.4の各行・各列に対応する。
+
 ## 未定義の接続部分
 
 - 仕様11の3.2は、PR 作成前に `pushed_sha` の保存を求める。既存の
@@ -44,5 +61,17 @@ API の転送には従わず、応答本文・認証情報・通信エラーの�
   既存の `Push` と同じく呼び出し側に属する。
 - GitHub App の鍵からインストールアクセストークンを取得する処理は、
   認証情報の分離の実装単位に属する。ここではトークン提供関数で分離する。
+- 現在の claim 応答は `fresh` で `previous=null` を返すため、前回 PR 番号の
+  有無を判定できない。仕様05の工程2も対象を `continue` と記す一方、仕様11の
+  3.4は `fresh` でも状態確認を求めている。`CheckPreviousPR` はどちらの mode でも
+  前回 PR 番号を渡せる入力境界とし、取得経路は創作しない。呼び出し側はタスクの
+  前回 PR を確認してから番号または nil を渡す。fresh の `previous=null` を
+  そのまま「前回 PR が無い」という根拠にしてはならない。
+  `continue` も直前の Execution の `pr_number` しか返さないため、直前の実行で
+  PR が未記録なら、さらに前の実行で作成した PR の確認経路が不足する。
+- 開いた PR を理由に準備工程2で `blocked(git_state)` とするとき、既存の result API は
+  Block 時点の HEAD を必須とするが、この時点では worktree 準備前であり、claim も
+  fresh の前回 worktree 情報を渡さない。判定は `RerunError` に分離し、報告時の HEAD の
+  取得と工程2への接続は呼び出し側に残す。仮の SHA、API、列は追加しない。
 
-この変更は仕様11の3.4の前回 PR の状態確認や、PR のクローズ・マージを実装しない。
+PR のクローズ・マージは実装しない。
