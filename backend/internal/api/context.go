@@ -221,11 +221,13 @@ func submittedRevisions(input contextInput, execution store.ContextExecution) ([
 				pinError = &contextBuildError{field: layer.name + ".sourceCommitSha", reason: "pin_mismatch", conflict: true}
 			}
 			kind := "harness_config"
-			switch path.Base(file.Path) {
-			case "AGENTS.md":
-				kind = "agents_md"
-			case "CLAUDE.md":
-				kind = "claude_md"
+			if layer.name == "project" {
+				switch path.Base(file.Path) {
+				case "AGENTS.md":
+					kind = "agents_md"
+				case "CLAUDE.md":
+					kind = "claude_md"
+				}
 			}
 			revisions = append(revisions, store.ContextRevision{Layer: layer.name, Kind: kind, SourcePath: file.Path, SourceCommitSHA: file.SourceCommitSHA, ContentHash: file.ContentHash, Content: file.Content})
 		}
