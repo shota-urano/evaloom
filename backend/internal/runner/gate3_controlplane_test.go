@@ -103,7 +103,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 	})
 	control := testExecutionControl()
 	control.Reporter, control.CheckCancellation = p, func(context.Context) error { return nil }
-	executor, err := p.NewVerificationExecutor(handlers, control, Gate2Config{BaselineConfig: baseline, Rules: gate2FixtureRules()}, Gate3Config{MismatchRule: "fixture_mismatch", PrepareResume: resume})
+	executor, err := p.NewVerificationExecutor(handlers, control, Gate2Config{BaselineConfig: baseline, LoadTestIDs: f.loadTestIDs}, Gate3Config{PrepareResume: resume})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +194,14 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 			if status != "blocked" || result != "blocked" || cause != "gate3_mismatch" || blockedHead != target || target != wantHead || name == "CommitAfterTests" && target == tested {
 				t.Fatalf("status=%s result=%s cause=%s head=%s tested=%s", status, result, cause, blockedHead, tested)
 			}
+			var encoded string
+			if err := f.db.QueryRow(`SELECT findings FROM gate_results WHERE execution_id=? AND gate=3`, claim.Execution.ID).Scan(&encoded); err != nil {
+				t.Fatal(err)
+			}
+			var findings []model.Finding
+			if err := json.Unmarshal([]byte(encoded), &findings); err != nil || len(findings) != 1 || findings[0].Rule != "changed_after_test" {
+				t.Fatalf("persisted Gate 3 rule=%s err=%v", encoded, err)
+			}
 			if name == "CorruptIndex" || name == "CorruptHEAD" {
 				// Gate 2 has not reported its successful measurement before Gate 3.
 				// Inspection failures must flush it together with the Block.
@@ -209,7 +217,7 @@ func TestGate3HTTPAcceptance(t *testing.T) {
 					t.Fatal(err)
 				}
 				var saved []model.Finding
-				if err := json.Unmarshal([]byte(findings), &saved); err != nil || len(saved) != 1 || saved[0].Rule != "fixture_mismatch" || saved[0].Message == "" {
+				if err := json.Unmarshal([]byte(findings), &saved); err != nil || len(saved) != 1 || saved[0].Rule != "changed_after_test" || saved[0].Message == "" {
 					t.Fatalf("inspection failure reason=%s err=%v", findings, err)
 				}
 				if name == "CorruptHEAD" && saved[0].Message != "現在のHEADを取得できない。記録したSHAはハーネス終了時に確認したSHAであり、現在のHEADは未確認" {

@@ -10,8 +10,6 @@ import (
 )
 
 type Gate3Config struct {
-	// Spec 10 does not define Finding rule names. Supply policy explicitly.
-	MismatchRule string
 	// Preparation owns restoring a cleaned worktree and copying its files.
 	// Resume skips stage 3, so the same preparation boundary can be used here.
 	PrepareResume StageFunc
@@ -36,9 +34,6 @@ func (runner *Runner) NewVerificationExecutor(handlers map[StageID]StageFunc, co
 }
 
 func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
-	if config.MismatchRule == "" {
-		return nil, fmt.Errorf("runner: Gate 3 finding rule must be supplied explicitly")
-	}
 	return func(ctx context.Context, e *Execution) error {
 		if e == nil || e.control == nil || e.status != model.ExecutionVerifying {
 			return fmt.Errorf("runner: Gate 3 requires a controlled verifying execution")
@@ -103,7 +98,7 @@ func (runner *Runner) Gate3Handler(config Gate3Config) (StageFunc, error) {
 				}
 			}
 		}
-		result.Findings = append(result.Findings, model.Finding{Rule: config.MismatchRule, Message: message})
+		result.Findings = append(result.Findings, model.Finding{Rule: "changed_after_test", Message: message})
 		e.gateResults = append(e.gateResults, result)
 		return errors.Join(ErrGate3Stopped, e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGate3Mismatch, HeadSHA: result.TargetSHA}))
 	}, nil

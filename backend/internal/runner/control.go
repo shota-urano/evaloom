@@ -80,10 +80,15 @@ func (execution *Execution) report(status model.ExecutionStatus, class model.Err
 }
 
 func (execution *Execution) reportBlock(status model.ExecutionStatus, class model.ErrorClass, block *ResultBlock) error {
+	return execution.reportResult(status, class, block, "")
+}
+
+// reportResult uses the existing result API's errorMessage for safe diagnostics.
+func (execution *Execution) reportResult(status model.ExecutionStatus, class model.ErrorClass, block *ResultBlock, message string) error {
 	if status == execution.status {
 		return nil
 	}
-	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID, BaseSHA: execution.BaseSHA}
+	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, ErrorMessage: message, WorktreeID: execution.WorktreeID, BaseSHA: execution.BaseSHA}
 	result.HarnessHeadSHA, result.VerifiedSHA = execution.HarnessHeadSHA, execution.VerifiedSHA
 	result.GateResults, result.TestRuns, result.Block = execution.gateResults, execution.testRuns, block
 	if status == model.ExecutionSucceeded {
