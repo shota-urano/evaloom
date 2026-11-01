@@ -17,7 +17,7 @@ describe('ログイン（01-architecture 3.4）', () => {
   it('ログイン URL をブラウザで開いて Cookie があれば、そのままログイン済みになる', async () => {
     const fake = fakeFetch(() => json(200, { csrfToken: 'session-token' }))
     render(<App api={new ApiClient(fake.fetch)} />)
-    expect(await screen.findByText('ログインしました')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeVisible()
   })
 
   it('貼り付けたログイン URL でログインし、以後の状態変更要求にそのトークンを付ける', async () => {
@@ -30,7 +30,7 @@ describe('ログイン（01-architecture 3.4）', () => {
     render(<App api={api} />)
     await userEvent.type(await screen.findByLabelText('ログイン URL'), 'http://127.0.0.1:8080/auth/login?token=one-time')
     await userEvent.click(screen.getByRole('button', { name: 'ログイン' }))
-    expect(await screen.findByText('ログインしました')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeVisible()
     await api.post('/api/tasks', {})
     expect(fake.calls.at(-1)?.headers[CSRF_HEADER]).toBe('issued')
   })
@@ -62,7 +62,7 @@ describe('ログイン（01-architecture 3.4）', () => {
     const fake = fakeFetch(() => (expired ? apiError(401, 'unauthenticated', 'x') : json(200, { csrfToken: 't' })))
     const api = new ApiClient(fake.fetch)
     render(<App api={api} />)
-    expect(await screen.findByText('ログインしました')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeVisible()
     expired = true
     await api.get('/api/tasks').catch(() => undefined)
     expect(await screen.findByLabelText('ログイン URL')).toBeVisible()

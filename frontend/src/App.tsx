@@ -5,6 +5,7 @@ import type { ApiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Link } from '@/lib/link'
 import { matchPath, useLocation } from '@/lib/router'
+import { DashboardPage } from '@/pages/dashboard/dashboard-page'
 import { LoginPage } from '@/pages/login-page'
 import { HarnessDetailPage } from '@/pages/harnesses/harness-detail-page'
 import { HarnessEditPage, HarnessNewPage } from '@/pages/harnesses/harness-form-page'
@@ -14,16 +15,19 @@ import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
 import { ProjectListPage } from '@/pages/projects/project-list-page'
 import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
+import { SETTINGS_PATH } from '@/pages/settings/labels'
+import { SettingsPage } from '@/pages/settings/settings-page'
 import { TASK_NEW_PATH, TASKS_PATH } from '@/pages/tasks/labels'
 import { TaskNewPage } from '@/pages/tasks/task-form-page'
 import { TaskDetailPage } from '@/pages/tasks/task-detail-page'
 import { TaskListPage } from '@/pages/tasks/task-list-page'
 
 const NAV = [
-  { to: '/', label: 'ホーム' },
+  { to: '/', label: 'Dashboard' },
   { to: '/projects', label: 'Projects' },
   { to: '/harnesses', label: 'Harnesses' },
   { to: TASKS_PATH, label: 'Tasks' },
+  { to: SETTINGS_PATH, label: 'Settings' },
 ]
 
 function Routes({ path, state }: ReturnType<typeof useLocation>) {
@@ -43,14 +47,8 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (path === TASK_NEW_PATH) return <TaskNewPage />
   const task = matchPath('/tasks/:id', path)
   if (task) return <TaskDetailPage key={task.id} id={task.id} />
-  if (path === '/') {
-    return (
-      <div>
-        <h1 className="text-lg font-semibold">ログインしました</h1>
-        <p className="text-muted-foreground mt-1 text-sm">各画面は順に追加されます。</p>
-      </div>
-    )
-  }
+  if (path === SETTINGS_PATH) return <SettingsPage />
+  if (path === '/') return <DashboardPage />
   return (
     <div>
       <h1 className="text-lg font-semibold">ページが見つかりません</h1>

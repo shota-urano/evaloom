@@ -42,7 +42,7 @@ status: confirmed
 
 | 画面 | 主な表示・操作 | 使う API | 出典 |
 |---|---|---|---|
-| Dashboard | Runner 状態、実行中タスク、待機中タスク、Blocked のタスク、エラー状況（失敗・通知失敗） | `GET /api/runners`, `GET /api/tasks` | requirements 16.1 |
+| Dashboard | Runner 状態、実行中タスク、待機中タスク、Blocked のタスク、エラー状況（失敗・通知失敗） | `GET /api/runners`, `GET /api/tasks`, `GET /api/notification-failures` | requirements 16.1 |
 | Projects 一覧 | 登録済みプロジェクト、割り当て中の Harness と版 | `GET /api/projects` | 16.2 |
 | Project 登録・編集 | Project ID、名称、パス、Git URL、Runner、Base Branch、テストコマンド、レポート形式と出力パス、セットアップコマンド、コピー許可リスト、タイムアウト、許可操作、承認ポリシー | `POST /api/projects`, `PATCH /api/projects/{id}` | 16.2 |
 | Project 詳細 | 上記の表示、役割ごとの Harness Profile 割り当て、Project Context（固定対象の `AGENTS.md` の説明のみ） | `GET /api/projects/{id}`, `POST /api/projects/{id}/harnesses` | 16.2 |
