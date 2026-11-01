@@ -52,14 +52,17 @@ Runnerに管理DBを開かせる実装は追加していない。
 - `Prepare / OpenReport`は製品コードの`baseline_prepare.go`に実装した。
   HEADの照合後、前回のレポートだけを除去し、Sandbox終了後に新しい通常ファイルを読む。
   `os.Root`でworktreeの外への参照を拒否し、Git管理領域のパスやsymlinkのレポートも拒否する。
-- JUnitのID規則は先行タスクと同じ`JUnitIDResolver`で注入する。
-  baselineとGate 2で同じ変換器を使う。未指定なら件数だけを保存する。
+- JUnitのIDは仕様10の3.3.2（Q38）に従い、`classname.name`とする。
+  `classname`が空なら`name`だけを使う。baselineとGate 2は同じ解析器を使う。
+  `name`が無いcaseを含む場合は件数だけを保存する。
 
 ## 仕様の穴と担当範囲
 
-- 開始点でのテスト失敗・レポート欠落時の最終状態と分類は、Q11に記載がない。
-  測定済みの結果は保存し、工程からローカルエラーを返す。
-  公開のstatus・error_class・Block原因への変換は追加していない。
+- Q39に従い、開始点で失敗したテストもID・件数・終了コードを保存して作業を続ける。
+  IDが取れず件数だけ取れる場合も続ける。レポートが無い・解釈できず件数も取れない
+  場合は測定記録を保存し、ハーネスを呼ばずに`failed(config_error)`を報告する。
+  既存result APIの`errorMessage`で理由を保存し、既存の通知要求を作る。
+  保存済み基準値を再利用するときも同じ扱いとする。
   未設定コマンドの`failed(config_error)`判定は仕様05どおりGate 2が担当する。
 - Runner起動コマンドは従来どおり工程全体の接続待ちである。
   このタスクの基準値取得・HTTP保存経路は`BaselineHandler`で接続した。

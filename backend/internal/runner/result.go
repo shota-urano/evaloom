@@ -19,6 +19,7 @@ type ExecutionResult struct {
 	FromStatus     model.ExecutionStatus `json:"fromStatus"`
 	Status         model.ExecutionStatus `json:"status"`
 	ErrorClass     model.ErrorClass      `json:"errorClass,omitempty"`
+	ErrorMessage   string                `json:"errorMessage,omitempty"`
 	WorktreeID     string                `json:"worktreeId,omitempty"`
 	BaseSHA        string                `json:"baseSha,omitempty"`
 	Baseline       *model.TestRun        `json:"baseline,omitempty"`

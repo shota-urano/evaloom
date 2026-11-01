@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,13 +17,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
-const gate2BaselineXML = `<testsuite><testcase id="a"/><testcase id="b"/><testcase id="disabled"><skipped/></testcase></testsuite>`
-
-// These rule strings and the ID resolver are fixture policies, not production
-// defaults for specification gaps.
-func gate2FixtureRules() Gate2Rules {
-	return Gate2Rules{"fixture_missing", "fixture_unverifiable", "fixture_failure", "fixture_counts"}
-}
+const gate2BaselineXML = `<testsuite><testcase name="a"/><testcase name="b"/><testcase name="disabled"><skipped/></testcase></testsuite>`
 
 func TestGate2HTTPContinueReusesOriginalBaselineAfterRestartAndCleanup(t *testing.T) {
 	for _, cleaned := range []bool{false, true} {
@@ -52,7 +47,7 @@ func TestGate2HTTPContinueReusesOriginalBaselineAfterRestartAndCleanup(t *testin
 				t.Fatalf("claim=%+v %v", first, err)
 			}
 			calls := 0
-			if err := f.gate2Executor(t, p, &calls, nil, nil, true, nil).Execute(ctx, *first); err != nil {
+			if err := f.gate2Executor(t, p, &calls, nil, nil, nil).Execute(ctx, *first); err != nil {
 				t.Fatal(err)
 			}
 			if cleaned {
@@ -85,9 +80,9 @@ func TestGate2HTTPContinueReusesOriginalBaselineAfterRestartAndCleanup(t *testin
 				}
 			}
 			err = f.gate2Executor(t, p, &calls, func(context.Context, *Execution) error {
-				gate2Write(t, filepath.Join(f.path, "cases.xml"), `<testsuite><testcase id="a"/><testcase id="new"/><testcase><skipped/></testcase></testsuite>`)
+				gate2Write(t, filepath.Join(f.path, "cases.xml"), `<testsuite><testcase name="a"/><testcase name="new"/><testcase name="skip"><skipped/></testcase></testsuite>`)
 				return nil
-			}, prepare, true, nil).Execute(ctx, *claim)
+			}, prepare, nil).Execute(ctx, *claim)
 			if !errors.Is(err, ErrGate2Stopped) || calls != 3 {
 				t.Fatalf("continue result=%v runtime calls=%d", err, calls)
 			}
@@ -114,7 +109,7 @@ func TestGate2ResumePointsDoNotRerunTests(t *testing.T) {
 			config := Gate2Config{BaselineConfig: BaselineConfig{Sandbox: baselineRuntimeFunc(func(context.Context, sandbox.SandboxSpec, []string) (sandbox.Process, error) {
 				t.Fatal("resumed Gate 2 invoked sandbox")
 				return nil, nil
-			}), Limits: sandbox.ResourceLimits{CPU: 1, MemoryBytes: 1 << 20, Time: time.Minute}, Shell: "/bin/sh", JUnitFormat: "junit"}, Rules: gate2FixtureRules()}
+			}), Limits: sandbox.ResourceLimits{CPU: 1, MemoryBytes: 1 << 20, Time: time.Minute}, Shell: "/bin/sh", JUnitFormat: "junit"}}
 			handler, err := p.Gate2Handler(config)
 			if err != nil {
 				t.Fatal(err)
@@ -157,7 +152,7 @@ func gate2Write(t *testing.T, path, body string) {
 	}
 }
 
-func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls *int, harness, prepare StageFunc, resolver bool, runtimeErr error) *Executor {
+func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls *int, harness, prepare StageFunc, runtimeErr error) *Executor {
 	t.Helper()
 	config := BaselineConfig{Sandbox: baselineRuntimeFunc(func(_ context.Context, spec sandbox.SandboxSpec, argv []string) (sandbox.Process, error) {
 		*calls++
@@ -174,24 +169,7 @@ func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls 
 		}
 		return &baselineCommandProcess{command}, nil
 	}), Limits: sandbox.ResourceLimits{CPU: 1, MemoryBytes: 1 << 20, Time: time.Minute}, Shell: "/bin/sh", JUnitFormat: "junit"}
-	if resolver {
-		config.Resolver = reportIDResolver{}
-	}
-	gateConfig := Gate2Config{BaselineConfig: config, Rules: gate2FixtureRules(), LoadTestIDs: func(ctx context.Context, run model.TestRun) ([]string, error) {
-		// Trusted artifact read is explicitly injected because the specs expose
-		// artifact GET only to the owner, not to the Runner.
-		var path string
-		if err := f.db.QueryRowContext(ctx, `SELECT storage_path FROM artifacts WHERE id=? AND execution_id=? AND kind='test_ids'`, *run.TestIDsArtifactID, run.ExecutionID).Scan(&path); err != nil {
-			return nil, err
-		}
-		body, err := os.ReadFile(filepath.Join(f.dataDir, path))
-		if err != nil {
-			return nil, err
-		}
-		var ids []string
-		err = json.Unmarshal(body, &ids)
-		return ids, err
-	}}
+	gateConfig := Gate2Config{BaselineConfig: config, LoadTestIDs: f.loadTestIDs}
 	handlers := stubStageHandlers(func(id StageID, ctx context.Context, e *Execution) error {
 		switch id {
 		case StagePrepareWorktree:
@@ -226,6 +204,23 @@ func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls 
 	return executor
 }
 
+// Read the trusted Control Plane artifact through the pre-existing boundary.
+func (f *baselineHTTPFixture) loadTestIDs(ctx context.Context, run model.TestRun) ([]string, error) {
+	// Trusted artifact read is explicitly injected because the specs expose
+	// artifact GET only to the owner, not to the Runner.
+	var path string
+	if err := f.db.QueryRowContext(ctx, `SELECT storage_path FROM artifacts WHERE id=? AND execution_id=? AND kind='test_ids'`, *run.TestIDsArtifactID, run.ExecutionID).Scan(&path); err != nil {
+		return nil, err
+	}
+	body, err := os.ReadFile(filepath.Join(f.dataDir, path))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	err = json.Unmarshal(body, &ids)
+	return ids, err
+}
+
 func newGate2Fixture(t *testing.T) *baselineHTTPFixture {
 	t.Helper()
 	f := newBaselineHTTPFixture(t)
@@ -239,20 +234,20 @@ func newGate2Fixture(t *testing.T) *baselineHTTPFixture {
 
 func TestGate2HTTPAcceptance(t *testing.T) {
 	for _, tc := range []struct {
-		name, report, status, cause, class         string
-		counts, noCommand, nonzero, sandboxFailure bool
-		runtimeErr                                 error
+		name, report, status, cause, class string
+		noCommand, nonzero, sandboxFailure bool
+		runtimeErr                         error
 	}{
 		{name: "UnsetCommand", noCommand: true, status: "failed", class: "config_error"},
-		{name: "MissingExistingID", report: `<testsuite><testcase id="a"/><testcase id="new"/><testcase id="disabled"><skipped/></testcase></testsuite>`, status: "blocked", cause: "gate2_missing_tests"},
-		{name: "IncreasedSkip", report: `<testsuite><testcase id="a"/><testcase id="b"/><testcase id="n"/><testcase><skipped/></testcase><testcase><skipped/></testcase></testsuite>`, status: "blocked", cause: "gate2_missing_tests"},
-		{name: "AddedTests", report: `<testsuite><testcase id="a"/><testcase id="b"/><testcase id="new"/><testcase><skipped/></testcase></testsuite>`, status: "succeeded"},
+		{name: "MissingExistingID", report: `<testsuite><testcase name="a"/><testcase name="new"/><testcase name="disabled"><skipped/></testcase></testsuite>`, status: "blocked", cause: "gate2_missing_tests"},
+		{name: "IncreasedSkip", report: `<testsuite><testcase name="a"/><testcase name="b"/><testcase name="n"/><testcase name="skip"><skipped/></testcase><testcase name="skip"><skipped/></testcase></testsuite>`, status: "blocked", cause: "gate2_missing_tests"},
+		{name: "AddedTests", report: `<testsuite><testcase name="a"/><testcase name="b"/><testcase name="new"/><testcase name="skip"><skipped/></testcase></testsuite>`, status: "succeeded"},
 		{name: "NoReport", status: "blocked", cause: "gate2_unverifiable"},
 		{name: "MalformedReport", report: `<testsuite>`, status: "blocked", cause: "gate2_unverifiable"},
-		{name: "CountOnlyAddedTests", counts: true, report: `<testsuite tests="5" skipped="1"/>`, status: "succeeded"},
-		{name: "CountOnlyFewerExecuted", counts: true, report: `<testsuite tests="2" skipped="1"/>`, status: "blocked", cause: "gate2_missing_tests"},
-		{name: "CountOnlyMoreSkipped", counts: true, report: `<testsuite tests="5" skipped="2"/>`, status: "blocked", cause: "gate2_missing_tests"},
-		{name: "TestFailure", report: `<testsuite><testcase id="a"><failure/></testcase><testcase id="b"/></testsuite>`, status: "failed", class: "test_failed"},
+		{name: "CountOnlyAddedTests", report: `<testsuite tests="5" skipped="1"/>`, status: "succeeded"},
+		{name: "CountOnlyFewerExecuted", report: `<testsuite tests="2" skipped="1"/>`, status: "blocked", cause: "gate2_missing_tests"},
+		{name: "CountOnlyMoreSkipped", report: `<testsuite tests="5" skipped="2"/>`, status: "blocked", cause: "gate2_missing_tests"},
+		{name: "TestFailure", report: `<testsuite><testcase name="a"><failure/></testcase><testcase name="b"/></testsuite>`, status: "failed", class: "test_failed"},
 		{name: "NonzeroWithoutReport", nonzero: true, status: "failed", class: "test_failed"},
 		{name: "SandboxCreationFailure", sandboxFailure: true, status: "failed", class: "sandbox_error"},
 		{name: "Timeout", runtimeErr: context.DeadlineExceeded, status: "timed_out", class: "timeout"},
@@ -294,7 +289,7 @@ func TestGate2HTTPAcceptance(t *testing.T) {
 				}
 				gate2Git(t, f.path, "commit", "--quiet", "--allow-empty", "-m", "harness")
 				return nil
-			}, nil, !tc.counts, runtimeErr)
+			}, nil, runtimeErr)
 			err = executor.Execute(ctx, *claim)
 			if tc.runtimeErr != nil && !errors.Is(err, tc.runtimeErr) || tc.status == "succeeded" && err != nil || tc.status != "succeeded" && tc.runtimeErr == nil && !errors.Is(err, ErrGate2Stopped) {
 				t.Fatalf("execution error=%v", err)
@@ -305,6 +300,36 @@ func TestGate2HTTPAcceptance(t *testing.T) {
 			}
 			if status != tc.status || class != tc.class || head == f.sha || (status == "succeeded") != (verified == head) {
 				t.Fatalf("status=%s class=%s verified=%s head=%s", status, class, verified, head)
+			}
+			// Assert the persisted product vocabulary (Q37), not injected fixture rules.
+			if tc.runtimeErr == nil && !tc.sandboxFailure && !tc.noCommand {
+				var encoded string
+				if err := f.db.QueryRow(`SELECT findings FROM gate_results WHERE execution_id=? AND gate=2`, claim.Execution.ID).Scan(&encoded); err != nil {
+					t.Fatal(err)
+				}
+				var findings []model.Finding
+				if err := json.Unmarshal([]byte(encoded), &findings); err != nil {
+					t.Fatal(err)
+				}
+				var rules, want []string
+				for _, finding := range findings {
+					rules = append(rules, finding.Rule)
+				}
+				switch tc.name {
+				case "MissingExistingID", "IncreasedSkip":
+					want = []string{"existing_test_not_run"}
+				case "CountOnlyFewerExecuted", "CountOnlyMoreSkipped":
+					want = []string{"count_only_check", "existing_test_not_run"}
+				case "NoReport", "MalformedReport":
+					want = []string{"test_report_missing"}
+				case "TestFailure", "NonzeroWithoutReport":
+					want = []string{"test_failed"}
+				case "CountOnlyAddedTests", "IDReportBecomesCounts":
+					want = []string{"count_only_check"}
+				}
+				if !reflect.DeepEqual(rules, want) {
+					t.Fatalf("persisted rules=%v want=%v findings=%s", rules, want, encoded)
+				}
 			}
 			if tc.cause != "" {
 				if err := f.db.QueryRow(`SELECT cause FROM execution_blocks WHERE execution_id=? AND gate_result_id IN (SELECT id FROM gate_results WHERE gate=2)`, claim.Execution.ID).Scan(&cause); err != nil || cause != tc.cause {
@@ -342,7 +367,7 @@ func TestGate2HTTPAcceptance(t *testing.T) {
 			if runs != wantRuns || gates != wantGates || events != wantGates {
 				t.Fatalf("runs=%d gates=%d events=%d", runs, gates, events)
 			}
-			if (tc.counts || tc.name == "IDReportBecomesCounts") && status == "succeeded" {
+			if (strings.HasPrefix(tc.name, "CountOnly") || tc.name == "IDReportBecomesCounts") && status == "succeeded" {
 				var findings string
 				if err := f.db.QueryRow(`SELECT findings FROM gate_results WHERE execution_id=?`, claim.Execution.ID).Scan(&findings); err != nil || !strings.Contains(findings, "件数による確認") {
 					t.Fatalf("count confirmation=%s %v", findings, err)

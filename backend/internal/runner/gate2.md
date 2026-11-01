@@ -3,7 +3,8 @@
 `Runner.NewGate2Executor`は既存の工程表へ基準値取得、ハーネス終了後のHEAD取得、
 Gate 2を組み込む。残りの工程ハンドラとExecutionControlを呼び出し側から渡す。
 単独で組み込む場合は`Runner.Gate2Handler`を`StageGate2`へ渡す。
-基準値取得とGate 2には同じSandbox設定とJUnitIDResolverを使う。
+基準値取得とGate 2には同じSandbox設定とJUnit解析器を使う。
+IDは仕様10の3.3.2（Q38）の`classname.name`とし、`classname`が空なら`name`を使う。
 
 Gate 2はRegistryのコマンドをTest Sandboxで1回実行する。
 開始前にTrusted RunnerがHEADを照合し、前回のレポートを除去する。
@@ -33,10 +34,11 @@ APIはExecution、Registryコマンド、harness_head_sha、件数、成果物�
 continueでは元のworktreeの基準値を使う。cleanedからの復元は準備工程が担当し、
 基準値は再取得しない。resume_pointがgate3またはpublishなら実行器がGate 2を呼ばない。
 
+Findingのruleは仕様10の3.6（Q37）の`existing_test_not_run`、
+`test_report_missing`、`test_failed`、`count_only_check`を使う。
+
 ## 仕様の穴と接続範囲
 
-- JUnitのID規則は先行タスクから未確定であり、引き続きJUnitIDResolverで注入する。
-- Findingのrule一覧は仕様10に無い。`Gate2Rules`で明示的に注入し、既定値を追加しない。
 - 保存済みtest_idsをRunnerが読む通信経路は仕様に無い。既存GETは本人用なので、
   Runnerトークンの権限を拡張しない。新規取得時は保存済みIDと同じ一覧をExecution内で保持し、
   continueでは`Gate2Config.LoadTestIDs`で元の成果物を読む境界を設ける。

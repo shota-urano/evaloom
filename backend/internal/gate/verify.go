@@ -2,8 +2,8 @@ package gate
 
 import "github.com/shota-urano/evaloom/backend/internal/model"
 
-// Verification is a mechanical decision from spec 10, 3.3. Finding rule names
-// are deliberately supplied by the caller: the specification has no rule enum.
+// Verification is a mechanical decision from spec 10, 3.3. The Runner records
+// the corresponding Finding rules from section 3.6.
 type Verification struct {
 	Result     string
 	Cause      model.BlockCause

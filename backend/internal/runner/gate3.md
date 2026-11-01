@@ -50,13 +50,13 @@ verified_shaを記録する。対象SHAがharness_head_shaとBlockのhead_shaに
 新しいmode=continueのExecutionには前のverify測定を引き継がず、
 元のbaselineだけを再利用してGate 2を実行する。
 
+Findingのruleは仕様10の3.6（Q37）の`changed_after_test`を使う。
+
 ## 未確定の境界
 
-- Findingのrule一覧は仕様に無いため、`Gate3Config.MismatchRule`を必須とした。
-  既定値は追加していない。
 - HEAD自体を取得できない場合のSHAの表現は仕様に無い。
   今回の修正指示に従い、既存のSHA欄とFindingで最後の確認済みSHAと取得不能を
-  区別する。API・テーブル・列・Findingのrule既定値は追加しない。
+  区別する。API・テーブル・列は追加しない。
 - cleaned worktreeの復元は仕様06の準備工程に属する。工程3を通らない再開では
   `Gate3Config.PrepareResume`に同じ準備処理を渡す。未接続でworktreeが無ければ
   公開しない。復元時のDB更新経路は先行工程と同じ境界に残る。

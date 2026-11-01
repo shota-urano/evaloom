@@ -14,15 +14,15 @@ import (
 
 func baselineReportPath(request BaselineTestRequest, format string) (string, error) {
 	if request.ReportFormat == nil || *request.ReportFormat != format || request.ReportPath == nil {
-		return "", fmt.Errorf("runner: baseline requires the configured JUnit report format and path")
+		return "", fmt.Errorf("%w: configured JUnit report format and path are required", ErrBaselineUnverifiable)
 	}
 	path := *request.ReportPath
 	if !filepath.IsLocal(path) || filepath.Clean(path) == "." || strings.ContainsRune(path, 0) {
-		return "", fmt.Errorf("runner: baseline report must be inside the worktree")
+		return "", fmt.Errorf("%w: report must be inside the worktree", ErrBaselineUnverifiable)
 	}
 	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
 		if strings.EqualFold(part, ".git") {
-			return "", fmt.Errorf("runner: baseline report must not reference Git metadata")
+			return "", fmt.Errorf("%w: report must not reference Git metadata", ErrBaselineUnverifiable)
 		}
 	}
 	return path, nil

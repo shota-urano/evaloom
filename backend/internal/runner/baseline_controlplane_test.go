@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	"github.com/shota-urano/evaloom/backend/internal/gate"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -44,10 +43,6 @@ func (p *baselineCommandProcess) ExitCode() (int, bool) {
 	return p.command.ProcessState.ExitCode(), true
 }
 
-type reportIDResolver struct{}
-
-func (reportIDResolver) ResolveJUnitID(id gate.JUnitTestID) (string, bool) { return id.ID, id.ID != "" }
-
 type baselineHTTPFixture struct {
 	*logControlPlane
 	path, sha, worktreeID string
@@ -69,7 +64,7 @@ func newBaselineHTTPFixture(t *testing.T) *baselineHTTPFixture {
 		t.Fatal(err)
 	}
 	f.sha = strings.TrimSpace(string(out))
-	f.command = `test 2 -gt 1 && printf '%s' '<testsuite><testcase id="existing-a"/><testcase id="existing-b"/><testcase id="disabled"><skipped/></testcase></testsuite>' > report.xml && printf x >> calls`
+	f.command = `test 2 -gt 1 && printf '%s' '<testsuite><testcase name="existing-a"/><testcase name="existing-b"/><testcase name="disabled"><skipped/></testcase></testsuite>' > report.xml && printf x >> calls`
 	for _, stmt := range []struct {
 		query string
 		args  []any
@@ -116,7 +111,7 @@ func (f *baselineHTTPFixture) executorWithPrepare(t *testing.T, process *Runner,
 			return &baselineCommandProcess{cmd}, nil
 		}),
 		Limits: sandbox.ResourceLimits{CPU: 1, MemoryBytes: 1 << 20, Time: time.Minute},
-		Shell:  "/bin/sh", JUnitFormat: "junit", Resolver: reportIDResolver{},
+		Shell:  "/bin/sh", JUnitFormat: "junit",
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -13,24 +13,16 @@ import (
 // Gate 2's caller owns error classification and persistence.
 var ErrJUnitReport = errors.New("gate: invalid JUnit XML report")
 
-// JUnitTestID preserves the report's attributes without choosing an ID format.
-type JUnitTestID struct {
-	ID        string `xml:"id,attr"`
+// junitTestID contains the attributes used by spec 10, 3.3.2 (Q38).
+type junitTestID struct {
 	ClassName string `xml:"classname,attr"`
 	Name      string `xml:"name,attr"`
 }
 
-// JUnitIDResolver supplies the runner-specific ID convention, which spec 10
-// does not define. Baseline and verification must use the same resolver.
-// Returning false means an ID cannot be obtained for this executed testcase.
-type JUnitIDResolver interface {
-	ResolveJUnitID(JUnitTestID) (string, bool)
-}
-
 // TestReport contains counts for test_runs (spec 02) and executed test IDs.
 // Total includes skipped cases; failed includes both failures and errors.
-// IDsAvailable is false if the report lacks case details, resolver is nil, or
-// any executed case's ID is unavailable. TestIDs is then nil, never partial.
+// IDsAvailable is false if the report lacks case details or any testcase's
+// name is unavailable, including skipped cases. TestIDs is then nil, never partial.
 type TestReport struct {
 	Total, Passed, Failed, Skipped int
 	TestIDs                        []string
@@ -45,7 +37,7 @@ func (report TestReport) Executed() int { return report.Total - report.Skipped }
 // Nested suite counters are checked, not added to their children's counts.
 // Malformed XML, contradictory counters, and reader errors return no results.
 // The reader's owner handles report paths, sandbox access and file lifetimes.
-func ParseJUnitXML(reader io.Reader, resolver JUnitIDResolver) (TestReport, error) {
+func ParseJUnitXML(reader io.Reader) (TestReport, error) {
 	decoder := xml.NewTokenDecoder(junitTokenReader{xml.NewDecoder(reader)})
 	var root *junitSuite
 	for {
@@ -84,14 +76,14 @@ func ParseJUnitXML(reader io.Reader, resolver JUnitIDResolver) (TestReport, erro
 		Total: counts.total, Failed: counts.failed(), Skipped: counts.skipped,
 		Passed: counts.total - counts.failed() - counts.skipped,
 	}
-	if !complete || resolver == nil {
+	if !complete {
 		return report, nil
 	}
 	ids := make([]string, 0, report.Executed())
 	for _, testcase := range cases {
-		id, ok := resolver.ResolveJUnitID(testcase)
-		if !ok || id == "" {
-			return report, nil
+		id := testcase.Name
+		if testcase.ClassName != "" {
+			id = testcase.ClassName + "." + id
 		}
 		ids = append(ids, id)
 	}
@@ -131,7 +123,7 @@ type junitSuite struct {
 }
 
 type junitCase struct {
-	JUnitTestID
+	junitTestID
 	Skipped *struct{} `xml:"skipped"`
 	Failure *struct{} `xml:"failure"`
 	Error   *struct{} `xml:"error"`
@@ -143,9 +135,9 @@ type junitCounts struct {
 
 func (counts junitCounts) failed() int { return counts.failures + counts.errors }
 
-func (suite junitSuite) results() (junitCounts, []JUnitTestID, bool, error) {
+func (suite junitSuite) results() (junitCounts, []junitTestID, bool, error) {
 	var counts junitCounts
-	var cases []JUnitTestID
+	var cases []junitTestID
 	complete := true
 	for _, testcase := range suite.Cases {
 		counts.total++
@@ -162,8 +154,11 @@ func (suite junitSuite) results() (junitCounts, []JUnitTestID, bool, error) {
 		case testcase.Error != nil:
 			counts.errors++
 		}
+		if testcase.Name == "" {
+			complete = false
+		}
 		if testcase.Skipped == nil {
-			cases = append(cases, testcase.JUnitTestID)
+			cases = append(cases, testcase.junitTestID)
 		}
 	}
 	for _, child := range suite.Suites {
