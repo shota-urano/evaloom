@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="6" failures="1" errors="1" skipped="1">
+  <testsuite name="checkout" tests="4" failures="1" errors="1" skipped="1">
+    <properties><property name="environment" value="test"/></properties>
+    <testcase id="case-1" classname="shop.Checkout" name="accepts &amp; saves [カード]"/>
+    <testcase id="case-2" classname="shop.Checkout" name="rejects"><failure message="mismatch"/></testcase>
+    <testcase id="case-3" classname="shop.Checkout" name="timeout"><error>connection error</error></testcase>
+    <testcase id="case-4" classname="shop.Checkout" name="deferred"><skipped/></testcase>
+    <system-out><![CDATA[<testcase name="not-a-test"/>]]></system-out>
+  </testsuite>
+  <testsuite name="nested" tests="2">
+    <testsuite name="users" tests="2" skipped="0">
+      <testcase id="case-5" classname="shop.Users" name="accepts"/>
+      <testcase id="case-6" classname="shop.Users" name="rejects"/>
+    </testsuite>
+  </testsuite>
+</testsuites>

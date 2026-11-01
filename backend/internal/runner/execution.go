@@ -67,6 +67,20 @@ type Execution struct {
 	// Set by the worktree stage once its existing worktrees row is available.
 	// The next progress/terminal report associates it with this Execution.
 	WorktreeID string
+	// The worktree stage supplies the immutable start SHA and prepared path.
+	WorktreePath string
+	BaseSHA      string
+	// Stage 7 retains the original run when a continue execution reuses it.
+	Baseline *model.TestRun
+	// BaselineIDs is populated during fresh acquisition. Continued executions
+	// resolve the original artifact through the trusted Gate 2 ID reader.
+	BaselineIDs    []string
+	HarnessHeadSHA string
+	VerifiedSHA    string
+	VerifyRun      *model.TestRun
+	CopiedFiles    []model.CopiedFile
+	gateResults    []GateResult
+	testRuns       []model.TestRun
 	// The harness stage supplies the adapter result, including nullable tokens.
 	HarnessResult     *adapter.HarnessResult
 	control           *ExecutionControl

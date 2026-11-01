@@ -17,11 +17,15 @@ const maxConcurrentExecutions = 2
 // Claim is the HTTP execution input. The Runner never opens the management DB.
 type Claim struct {
 	Execution struct {
-		ID          string  `json:"id"`
-		TaskID      string  `json:"taskId"`
-		Seq         int     `json:"seq"`
-		Mode        string  `json:"mode"`
-		ResumePoint *string `json:"resumePoint"`
+		ID             string         `json:"id"`
+		TaskID         string         `json:"taskId"`
+		Seq            int            `json:"seq"`
+		Mode           string         `json:"mode"`
+		ResumePoint    *string        `json:"resumePoint"`
+		ResumeHeadSHA  string         `json:"resumeHeadSha"`
+		HarnessHeadSHA string         `json:"harnessHeadSha"`
+		VerifiedSHA    string         `json:"verifiedSha"`
+		VerifyRun      *model.TestRun `json:"verifyRun"`
 	} `json:"execution"`
 	Task struct {
 		Title              string `json:"title"`
@@ -42,6 +46,36 @@ type Claim struct {
 		BranchName   *string `json:"branchName"`
 		PRNumber     *int    `json:"prNumber"`
 	} `json:"previous"`
+	Worktree *ClaimWorktree `json:"worktree"`
+	// Explicit null confirms that no earlier worktree was recorded. An omitted
+	// field in an older/partial response cannot establish baseline absence.
+	worktreeSnapshotPresent bool
+}
+
+func (c *Claim) UnmarshalJSON(data []byte) error {
+	type claimJSON Claim
+	var decoded claimJSON
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields struct {
+		Worktree json.RawMessage `json:"worktree"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Claim(decoded)
+	c.worktreeSnapshotPresent = fields.Worktree != nil
+	return nil
+}
+
+type ClaimWorktree struct {
+	ID          string             `json:"id"`
+	Path        string             `json:"path"`
+	BaseSHA     string             `json:"baseSha"`
+	BranchName  string             `json:"branchName"`
+	Baseline    *model.TestRun     `json:"baseline"`
+	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
 }
 
 // Run heartbeats immediately, then claims at most one job per poll when there

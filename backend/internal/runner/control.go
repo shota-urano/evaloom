@@ -76,16 +76,23 @@ func (execution *Execution) stageContext(ctx context.Context, stage StageID) (co
 }
 
 func (execution *Execution) report(status model.ExecutionStatus, class model.ErrorClass) error {
+	return execution.reportBlock(status, class, nil)
+}
+
+func (execution *Execution) reportBlock(status model.ExecutionStatus, class model.ErrorClass, block *ResultBlock) error {
 	if status == execution.status {
 		return nil
 	}
-	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID}
+	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, WorktreeID: execution.WorktreeID, BaseSHA: execution.BaseSHA}
+	result.HarnessHeadSHA, result.VerifiedSHA = execution.HarnessHeadSHA, execution.VerifiedSHA
+	result.GateResults, result.TestRuns, result.Block = execution.gateResults, execution.testRuns, block
 	if status == model.ExecutionSucceeded {
 		result.Usage = execution.completedUsage()
 	}
 	err := execution.control.Reporter.ReportResult(execution.control.ReportContext, execution.Claim.Execution.ID, result)
 	if err == nil {
 		execution.status = status
+		execution.gateResults, execution.testRuns = nil, nil
 	}
 	return err
 }
