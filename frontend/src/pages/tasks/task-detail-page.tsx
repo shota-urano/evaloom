@@ -16,17 +16,18 @@ import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Loading, PageTitle } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useExecutionStatusEvents, type StatusChanged } from '@/hooks/use-execution-events'
+import { useExecutionStatusEvents, type BlockedEvent, type StatusChanged } from '@/hooks/use-execution-events'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { cn } from '@/lib/utils'
+import { type ArtifactSource } from './block'
+import { BlockReview } from './block-review'
 import { ExecutionLog } from './execution-log'
 import { CANCELLABLE_TASK_STATUSES, RETRY_MODE_LABELS, RETRYABLE_TASK_STATUSES, TASKS_PATH } from './labels'
 import { TaskStatusBadge } from './task-list-page'
 
 /** 成果物の一覧。成果物（artifacts）の一覧を返す本人用 API は仕様（01 5.1）に無いので、取得元を差し替えられるようにしておく。 */
-export type ArtifactRef = { id: string; kind: string }
-export type ArtifactSource = (execution: ExecutionDetail) => readonly ArtifactRef[] | null
+export type { ArtifactRef, ArtifactSource } from './block'
 const NO_ARTIFACT_LIST: ArtifactSource = () => null
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -268,6 +269,11 @@ function FreshConfirm({ busy, onConfirm, onCancel }: { busy: boolean; onConfirm:
   )
 }
 
+/** タスクも最新の Execution も blocked のとき、確認画面を出す。 */
+function isBlocked(task: TaskDetail | undefined, latest: ExecutionHistoryItem | undefined): boolean {
+  return task?.status === 'blocked' && latest?.status === 'blocked'
+}
+
 type Props = { id: string; artifactSource?: ArtifactSource }
 
 /** タスク詳細（13 3.3）。概要、Execution 履歴、ログ、固定した Context、検証結果、成果物、中止・再実行。 */
@@ -283,6 +289,14 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     (signal) => (selected ? tasks.getExecution(api, selected.id, signal) : Promise.resolve(undefined)),
     `execution:${selected?.id ?? ''}`,
   )
+  // Blocked のときは最新の Execution の Gate 結果から Block の確認画面を作る（13 3.4）。表示中の Execution とは別に読む。
+  const blockedExecution = isBlocked(task.data, latest) ? latest : undefined
+  const blockDetail = useResource(
+    (signal) => (blockedExecution ? tasks.getExecution(api, blockedExecution.id, signal) : Promise.resolve(undefined)),
+    `block:${blockedExecution?.id ?? ''}`,
+  )
+  // Execution ごとの最新の blocked イベント（Block の ID と原因）。
+  const [blockEvents, setBlockEvents] = useState<Record<string, BlockedEvent>>({})
   const project = useResource((signal) => (task.data ? registry.getProject(api, task.data.projectId, signal) : Promise.resolve(undefined)), `project:${task.data?.projectId ?? ''}`)
 
   // 状態が進みうる Execution の status_changed で読み直す（13 3.5）。続けて届いた遷移はまとめて1回にする。
@@ -293,6 +307,7 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     reloadAll.current = () => {
       task.reload()
       execution.reload()
+      blockDetail.reload()
     }
   })
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -304,7 +319,7 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     if (current && (event.to === current.status || event.reason === 'task_created')) return
     clearTimeout(timer.current)
     timer.current = setTimeout(() => reloadAll.current(), 100)
-  })
+  }, (event) => setBlockEvents((previous) => ({ ...previous, [event.executionId]: event })))
 
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<unknown>(null)
@@ -388,6 +403,29 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
       ) : null}
       <ApiErrorAlert error={actionError} onReload={task.reload} />
       {task.error ? <ApiErrorAlert error={task.error} onReload={task.reload} /> : null}
+
+      {blockedExecution ? (
+        blockDetail.data && blockDetail.data.id === blockedExecution.id ? (
+          <BlockReview
+            api={api}
+            taskId={data.id}
+            execution={blockDetail.data}
+            event={blockEvents[blockedExecution.id]}
+            artifactSource={artifactSource}
+            onDecided={(message) => {
+              setActionError(null)
+              setNotice(message)
+              setChosen(null)
+              task.reload()
+            }}
+            onReload={() => reloadAll.current()}
+          />
+        ) : blockDetail.error ? (
+          <ApiErrorAlert error={blockDetail.error} onReload={blockDetail.reload} />
+        ) : (
+          <Loading />
+        )
+      ) : null}
 
       <OverviewCard task={data} projectLink={projectLink} />
 
