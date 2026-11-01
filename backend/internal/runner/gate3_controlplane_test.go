@@ -90,6 +90,7 @@ func (f *gate3Fixture) executor(t *testing.T, p *Runner, afterTest func(), prepa
 			}
 			e.WorktreeID, e.WorktreePath, e.BaseSHA, e.CopiedFiles = f.worktreeID, f.path, f.sha, f.copies
 		case StageHarness:
+			e.HarnessResult = reportedHarnessResult()
 			gate2Git(t, f.path, "commit", "--quiet", "--allow-empty", "-m", "fixture harness")
 		case StagePublish:
 			var passes, runs int

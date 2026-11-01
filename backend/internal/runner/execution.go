@@ -83,6 +83,7 @@ type Execution struct {
 	testRuns       []model.TestRun
 	// The harness stage supplies the adapter result, including nullable tokens.
 	HarnessResult     *adapter.HarnessResult
+	harnessSnapshot   *harnessSnapshot
 	control           *ExecutionControl
 	status            model.ExecutionStatus
 	startedAt         time.Time
