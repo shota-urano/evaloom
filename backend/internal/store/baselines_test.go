@@ -23,12 +23,6 @@ func (f baselineSandboxFunc) RunBaseline(ctx context.Context, e *runner.Executio
 	return f(ctx, e, r)
 }
 
-type baselineIDResolver struct{}
-
-func (baselineIDResolver) ResolveJUnitID(id gate.JUnitTestID) (string, bool) {
-	return id.Name, id.Name != ""
-}
-
 func baselineFixture(t *testing.T) (*sql.DB, runner.BaselineStage, *runner.Execution, *int) {
 	t.Helper()
 	db := openTaskTables(t)
@@ -57,10 +51,8 @@ func baselineFixture(t *testing.T) (*sql.DB, runner.BaselineStage, *runner.Execu
 			return runner.BaselineTestOutput{TargetSHA: sha, ExitCode: new(0), Report: io.NopCloser(strings.NewReader(
 				`<testsuite><testcase name="existing-a"/><testcase name="existing-b"/><testcase name="disabled"><skipped/></testcase></testsuite>`))}, nil
 		}),
-		Parse: func(reader io.Reader) (gate.TestReport, error) {
-			return gate.ParseJUnitXML(reader, baselineIDResolver{})
-		},
-		// JSON and name-based IDs are test-only choices, not product defaults.
+		Parse: gate.ParseJUnitXML,
+		// Use the production JSON test_ids representation.
 		RecordIDs: func(ctx context.Context, executionID string, ids []string) (string, error) {
 			body, err := json.Marshal(ids)
 			if err != nil {
@@ -205,8 +197,10 @@ func TestBaselineCountOnlyAndFailingTestsAreRecorded(t *testing.T) {
 			return runner.BaselineTestOutput{TargetSHA: e.BaseSHA, ExitCode: &exit, Report: io.NopCloser(strings.NewReader(
 				`<testsuite tests="4" failures="1" skipped="1"/>`))}, nil
 		})
-		if err := stage.Run(context.Background(), e); !errors.Is(err, runner.ErrBaselineTestFailed) {
-			t.Fatalf("lost measured failure: %v", err)
+		for range 2 { // Both acquisition and reuse continue after measured failure (Q39).
+			if err := stage.Run(context.Background(), e); err != nil {
+				t.Fatalf("measured baseline failure stopped work: %v", err)
+			}
 		}
 		var total, failed, skipped, gotExit int
 		var ids sql.NullString

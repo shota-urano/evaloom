@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -19,7 +19,6 @@ import (
 // BaselineConfig is trusted runtime wiring, not a new public API or Registry
 // setting. Limits and the shell executable must be supplied explicitly. The
 // shell exists only inside the Test Sandbox; no command runs on the host.
-// Resolver is shared with Gate 2; nil deliberately selects count-only parsing.
 type BaselineConfig struct {
 	Sandbox sandbox.Sandbox
 	Limits  sandbox.ResourceLimits
@@ -27,7 +26,6 @@ type BaselineConfig struct {
 	// Registry spelling for the supported report format is explicit because
 	// spec 03 does not define a report-format enum.
 	JUnitFormat string
-	Resolver    gate.JUnitIDResolver
 }
 
 // BaselineHandler constructs the complete stage-7 path: isolated execution,
@@ -51,12 +49,19 @@ func (runner *Runner) BaselineHandler(config BaselineConfig) (StageFunc, error) 
 		stage := BaselineStage{
 			Repository: &remoteBaselineRepository{runner: runner, execution: execution},
 			Sandbox:    newPreparedBaselineSandbox(config),
-			Parse:      func(reader io.Reader) (gate.TestReport, error) { return gate.ParseJUnitXML(reader, config.Resolver) },
+			Parse:      gate.ParseJUnitXML,
 			RecordIDs: func(_ context.Context, id string, ids []string) (string, error) {
 				return runner.recordBaselineIDs(execution.control.ReportContext, id, ids)
 			},
 		}
-		return stage.Run(ctx, execution)
+		err := stage.Run(ctx, execution)
+		if ctx.Err() != nil {
+			return errors.Join(ctx.Err(), err)
+		}
+		if errors.Is(err, ErrBaselineUnverifiable) {
+			return errors.Join(err, execution.reportResult(model.ExecutionFailed, model.ErrorConfig, nil, "開始点のテストレポートから基準値の件数を取得できない"))
+		}
+		return err
 	}, nil
 }
 
@@ -103,7 +108,7 @@ func (r *remoteBaselineRepository) SaveBaseline(ctx context.Context, worktreeID 
 }
 
 // Use the existing artifact endpoint with the same ID and bytes for retries.
-// JSON arrays preserve ID strings without inventing a test-runner ID rule.
+// JSON arrays preserve ID strings and their multiplicity.
 func (runner *Runner) recordBaselineIDs(ctx context.Context, executionID string, ids []string) (string, error) {
 	if parsed, err := ulid.ParseStrict(executionID); err != nil || parsed.String() != executionID {
 		return "", fmt.Errorf("runner: invalid baseline artifact execution ID")

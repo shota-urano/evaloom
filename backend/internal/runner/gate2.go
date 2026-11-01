@@ -15,14 +15,9 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
-// Gate2Rules supplies the unspecified Finding rule vocabulary without making
-// it a new Registry setting or inventing production rule names.
-type Gate2Rules struct{ MissingTests, Unverifiable, TestFailed, CountOnly string }
-
 type Gate2Config struct {
-	// Use the same runtime and resolver as stage 7.
+	// Use the same runtime as stage 7.
 	BaselineConfig
-	Rules Gate2Rules
 	// The specs provide no Runner-authorized read endpoint for saved test_ids.
 	// This boundary must read trusted artifact storage, never the worktree.
 	// It is needed only after reusing an ID-bearing baseline (e.g. continue).
@@ -33,7 +28,7 @@ var ErrGate2Stopped = errors.New("runner: Gate 2 stopped execution")
 
 // NewGate2Executor connects stages 7, 9 and 10 to the fixed execution table.
 // Other stages, including Gate 3 and publishing, remain required boundaries.
-// Shared configuration guarantees the same ID convention for both test runs.
+// Both test runs use the JUnit ID convention from spec 10, 3.3.2.
 func (runner *Runner) NewGate2Executor(handlers map[StageID]StageFunc, control ExecutionControl, config Gate2Config) (*Executor, error) {
 	baseline, err := runner.BaselineHandler(config.BaselineConfig)
 	if err != nil {
@@ -71,9 +66,6 @@ func (runner *Runner) NewGate2Executor(handlers map[StageID]StageFunc, control E
 func (runner *Runner) Gate2Handler(config Gate2Config) (StageFunc, error) {
 	if _, err := runner.BaselineHandler(config.BaselineConfig); err != nil {
 		return nil, err
-	}
-	if config.Rules.MissingTests == "" || config.Rules.Unverifiable == "" || config.Rules.TestFailed == "" || config.Rules.CountOnly == "" {
-		return nil, fmt.Errorf("runner: Gate 2 finding rules must be supplied explicitly")
 	}
 	return func(ctx context.Context, e *Execution) error {
 		if e == nil || e.control == nil || e.status != model.ExecutionVerifying || e.HarnessHeadSHA == "" || e.BaseSHA == "" || e.WorktreeID == "" || e.WorktreePath == "" {
@@ -127,7 +119,7 @@ func (runner *Runner) Gate2Handler(config Gate2Config) (StageFunc, error) {
 		}
 		var report *gate.TestReport
 		if runErr == nil && output.TargetSHA == run.TargetSHA && output.Report != nil {
-			if parsed, err := gate.ParseJUnitXML(output.Report, config.Resolver); err == nil {
+			if parsed, err := gate.ParseJUnitXML(output.Report); err == nil {
 				report = &parsed
 				run.Total, run.Passed, run.Failed, run.Skipped = &parsed.Total, &parsed.Passed, &parsed.Failed, &parsed.Skipped
 				if parsed.IDsAvailable {
@@ -161,21 +153,21 @@ func (runner *Runner) Gate2Handler(config Gate2Config) (StageFunc, error) {
 		decision := gate.Verify(baseline, ids, run, report)
 		findings := []model.Finding{}
 		if decision.CountOnly {
-			findings = append(findings, model.Finding{Rule: config.Rules.CountOnly, Message: "件数による確認"})
+			findings = append(findings, model.Finding{Rule: "count_only_check", Message: "件数による確認"})
 		}
 		switch decision.Cause {
 		case model.BlockGate2MissingTests:
 			if len(decision.MissingIDs) == 0 {
-				findings = append(findings, model.Finding{Rule: config.Rules.MissingTests, Message: "実行数の減少、またはskip数の増加を検出した"})
+				findings = append(findings, model.Finding{Rule: "existing_test_not_run", Message: "実行数の減少、またはskip数の増加を検出した"})
 			}
 			for _, id := range decision.MissingIDs {
-				findings = append(findings, model.Finding{Rule: config.Rules.MissingTests, Message: fmt.Sprintf("既存のテスト %q が実行されていない", id)})
+				findings = append(findings, model.Finding{Rule: "existing_test_not_run", Message: fmt.Sprintf("既存のテスト %q が実行されていない", id)})
 			}
 		case model.BlockGate2Unverifiable:
-			findings = append(findings, model.Finding{Rule: config.Rules.Unverifiable, Message: "テスト結果または基準値を照合できない"})
+			findings = append(findings, model.Finding{Rule: "test_report_missing", Message: "テスト結果または基準値を照合できない"})
 		}
 		if decision.ErrorClass == model.ErrorTestFailed {
-			findings = append(findings, model.Finding{Rule: config.Rules.TestFailed, Message: "テストが失敗した"})
+			findings = append(findings, model.Finding{Rule: "test_failed", Message: "テストが失敗した"})
 		}
 		e.VerifyRun, e.testRuns = &run, append(e.testRuns, run)
 		e.gateResults = append(e.gateResults, GateResult{Gate: 2, Result: decision.Result, BaseSHA: e.BaseSHA, TargetSHA: run.TargetSHA, Findings: findings})
