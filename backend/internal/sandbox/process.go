@@ -160,7 +160,9 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 		default:
 			p.exitCode, p.exitCodeSet = state.ExitCode, true
 			switch {
-			case state.OOMKilled || state.Error != "" || state.ExitCode >= 128:
+			// A high exit code alone does not prove an infrastructure failure:
+			// the workload may deliberately return it or terminate on a signal.
+			case state.OOMKilled || state.Error != "":
 				p.err = &Error{Op: "container resource limit or runtime failure"}
 			case state.ExitCode != 0:
 				p.err = &ExitError{Code: state.ExitCode}

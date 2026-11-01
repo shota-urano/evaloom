@@ -70,8 +70,8 @@ func TestCodexRuntimeHelper(t *testing.T) {
 		}
 		write(name+".phase", phase)
 	case "start":
-		if string(phase) == "exec" {
-			if mode == "term" || mode == "ignore-term" {
+		if string(phase) == "exec" || mode == "preflight-term" {
+			if mode == "term" || mode == "ignore-term" || mode == "preflight-term" {
 				term := make(chan os.Signal, 1)
 				signal.Notify(term, syscall.SIGTERM)
 				write(name+".pid", strconv.Itoa(os.Getpid()))
@@ -175,7 +175,7 @@ func TestContainerLaunchErrorClassification(t *testing.T) {
 			root := useFakeContainerRuntime(t, f, tc.mode)
 			_, result, _ := runResult(t, f)
 			if result.Status != adapter.ResultFailed || result.ErrorClass == nil || *result.ErrorClass != tc.want {
-				t.Fatalf("result=%+v", result)
+				t.Fatalf("result=%+v, want errorClass=%s", result, tc.want)
 			}
 			var starts int
 			for _, call := range runtimeCalls(t, root) {
@@ -195,12 +195,24 @@ func TestContainerLaunchErrorClassification(t *testing.T) {
 }
 
 func TestContainerLaunchCancellationSequence(t *testing.T) {
-	for _, mode := range []string{"term", "ignore-term", "prepare-cancel"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		mode, trigger string
+	}{
+		{"term", "adapter"}, {"ignore-term", "adapter"}, {"prepare-cancel", "adapter"},
+		{"preflight-term", "adapter"}, {"term", "context"},
+		{"term", "deadline"}, {"ignore-term", "deadline"},
+	} {
+		t.Run(tc.mode+"/"+tc.trigger, func(t *testing.T) {
+			mode := tc.mode
 			f := newFixture(t, "success")
 			root := useFakeContainerRuntime(t, f, mode)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			if tc.trigger == "deadline" {
+				deadlineCtx, deadlineCancel := context.WithTimeout(ctx, time.Second)
+				defer deadlineCancel()
+				ctx = deadlineCtx
+			}
 			id, err := f.h.Start(ctx, f.request, f.env)
 			if err != nil {
 				t.Fatal(err)
@@ -220,11 +232,23 @@ func TestContainerLaunchCancellationSequence(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			cancelledAt := time.Now()
-			if err := f.h.Cancel(id); err != nil {
-				t.Fatal(err)
+			switch tc.trigger {
+			case "adapter":
+				if err := f.h.Cancel(id); err != nil {
+					t.Fatal(err)
+				}
+			case "context":
+				cancel()
+			case "deadline":
+				cancelledAt, _ = ctx.Deadline()
+				<-ctx.Done()
 			}
 			r, err := f.h.Result(id)
-			if err != nil || r.Status != adapter.ResultFailed || r.ErrorClass == nil || *r.ErrorClass != adapter.ErrorCancelled {
+			want := adapter.ErrorCancelled
+			if tc.trigger == "deadline" {
+				want = adapter.ErrorTimeout
+			}
+			if err != nil || r.Status != adapter.ResultFailed || r.ErrorClass == nil || *r.ErrorClass != want {
 				t.Fatalf("result=%+v err=%v", r, err)
 			}
 			calls := runtimeCalls(t, root)

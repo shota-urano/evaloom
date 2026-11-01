@@ -42,6 +42,13 @@ contextの期限と正の`limits.timeoutSec`は`timeout`にする。0は要求�
 追加しない。Runner・Sandbox側の制限は引き続き適用する。
 worktreeの削除は行わない。Sandboxの作成・隔離・終了確認の失敗は既存の
 `sandbox_error`で返し、ホスト実行へ切り替えない。
+終了コードが128以上でも、OOMやruntime障害が確認されなければCLIの異常終了として扱う。
+`login status`の非ゼロ終了は`config_error`、`exec`の非ゼロ終了は`execution_failed`になる。
+
+`ContainerLaunch`は内部の`Container.RunControlled`で準備中の中止に対応する。
+起動後の中止はAdapterがTERM、`CancelGrace`の待機、Sandbox全体の強制終了の順に行う。
+Sandbox独自の実行時間上限は、準備の開始から引き続き適用する。
+既存の`Container.Run`を使う他の処理では、contextによる即時停止を維持する。
 
 ## 既存実装との接続
 
@@ -66,6 +73,10 @@ worktreeの削除は行わない。Sandboxの作成・隔離・終了確認の�
 偽CLIのcommitから、既存Runnerのdiff保存までを検証する。
 `TestContainerLaunchUsesPreparedHarnessSandbox`はContainerの実際の起動引数と
 マウント・専用HOME・CODEX_HOMEの受け渡しを偽runtimeで検証する。
+`TestContainerLaunchErrorClassification`はpreflightが0、execが130で終了する場合と、
+preflightの異常終了、OOM、runtime障害を検証する。
+`TestContainerLaunchCancellationSequence`は準備中・preflight実行中・exec実行中の中止、
+呼び出し元contextの中止と期限切れ、TERMへの応答、猶予後の強制終了を検証する。
 
 ## 仕様の穴と接続範囲
 

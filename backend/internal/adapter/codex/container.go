@@ -34,6 +34,6 @@ func ContainerLaunch(config sandbox.ContainerConfig, resolve func(adapter.Sandbo
 		if err != nil {
 			return nil, err
 		}
-		return container.Run(ctx, spec, args)
+		return container.RunControlled(ctx, spec, args)
 	}
 }

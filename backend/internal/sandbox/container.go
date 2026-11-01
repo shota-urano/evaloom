@@ -278,12 +278,25 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 }
 
 func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string) (Process, error) {
+	return c.run(ctx, spec, command, false)
+}
+
+// RunControlled honors ctx during preparation. After start, the caller owns
+// cancellation through Process.Stop/Kill and must Wait before releasing resources.
+// The sandbox's independent wall-time limit still bounds the entire operation.
+// Run retains immediate context-driven removal for other Sandbox callers.
+func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command []string) (Process, error) {
+	return c.run(ctx, spec, command, true)
+}
+
+func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
 	name := "evaloom-" + strings.ToLower(ulid.Make().String())
 	args, err := c.createArgs(spec, command, name)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, spec.Limits.Time)
+	limit := time.Now().Add(spec.Limits.Time)
+	ctx, cancel := context.WithDeadline(ctx, limit)
 	fail := func(op string) (Process, error) {
 		cause := ctx.Err()
 		cancel()
@@ -332,6 +345,14 @@ func (c *Container) Run(ctx context.Context, spec SandboxSpec, command []string)
 		stopAttach()
 		_ = c.remove(name)
 		return fail("container start failed")
+	}
+	if controlled {
+		// Transfer ownership at the start boundary, before supervision begins.
+		// Cancellation racing with start is handled by the caller's Stop/Kill,
+		// rather than a competing forced removal from the preparation context.
+		processCtx, processCancel := context.WithDeadline(context.WithoutCancel(ctx), limit)
+		cancel()
+		ctx, cancel = processCtx, processCancel
 	}
 	go p.supervise(ctx, cancel, attach, stopAttach)
 	started = true
