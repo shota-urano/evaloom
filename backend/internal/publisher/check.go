@@ -31,9 +31,11 @@ var (
 	ErrGit                     = errors.New("publisher: git inspection failed")
 )
 
-// ErrorClass maps a CheckBeforePush error to the Execution error class.
+// ErrorClass maps publisher errors to the Execution error class. A rerun Block
+// has no error class; its RerunError carries the blocked status and cause.
 // Cancellation is reported by the executor as cancelled.
 func ErrorClass(err error) model.ErrorClass {
+	var rerun *RerunError
 	switch {
 	case err == nil:
 		return ""
@@ -41,6 +43,10 @@ func ErrorClass(err error) model.ErrorClass {
 		return model.ErrorCancelled
 	case errors.Is(err, context.DeadlineExceeded):
 		return model.ErrorTimeout
+	case errors.As(err, &rerun):
+		return rerun.Class
+	case errors.Is(err, ErrRerunConfiguration):
+		return model.ErrorConfig
 	default:
 		return model.ErrorPublishFailed
 	}

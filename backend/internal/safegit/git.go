@@ -82,6 +82,32 @@ func Output(ctx context.Context, repo string, args ...string) ([]byte, error) {
 // containment. The caller must stop sandbox writers through the subsequent
 // fetch, as with Output. Errors never include configuration names or values.
 func ValidateFetchURL(ctx context.Context, repo, repositoryURL string) error {
+	return validateURL(ctx, repo, repositoryURL, false)
+}
+
+// ValidatePushURL requires an explicit destination without remote-name or URL
+// rewrite overrides. Push and ls-remote must address the same repository, even
+// when sandbox-written configuration contains pushurl or pushInsteadOf values.
+// As with Output, callers must stop sandbox writers until both operations end.
+func ValidatePushURL(ctx context.Context, repo, repositoryURL string) error {
+	if err := validateURL(ctx, repo, repositoryURL, true); err != nil {
+		return err
+	}
+	// Legacy remote files can reinterpret even an explicit URL, independently
+	// of remote.* settings. Check the common Git area of linked worktrees too.
+	for _, name := range []string{"remotes", "branches"} {
+		out, err := Output(ctx, repo, "rev-parse", "--path-format=absolute", "--git-path", name)
+		if err != nil {
+			return fmt.Errorf("safegit: resolve push configuration")
+		}
+		if _, err := os.Lstat(strings.TrimSuffix(string(out), "\n")); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("safegit: legacy remote definitions are not allowed")
+		}
+	}
+	return nil
+}
+
+func validateURL(ctx context.Context, repo, repositoryURL string, push bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -93,7 +119,7 @@ func ValidateFetchURL(ctx context.Context, repo, repositoryURL string) error {
 	// Use the same include traversal and environment isolation as Output.
 	names, err := configurationNames(ctx, environment(abs, "fetch"), []string{"--no-pager", "-C", abs}, abs)
 	if err != nil {
-		return fmt.Errorf("safegit: read fetch configuration")
+		return fmt.Errorf("safegit: read destination configuration")
 	}
 	for _, name := range bytes.Split(names, []byte{0}) {
 		key := string(name)
@@ -107,8 +133,9 @@ func ValidateFetchURL(ctx context.Context, repo, repositoryURL string) error {
 		// (subsections) are case-sensitive and may themselves contain dots.
 		if (strings.EqualFold(section, "remote") && subsection == repositoryURL) ||
 			(strings.EqualFold(section, "url") && strings.EqualFold(leaf, "insteadOf")) ||
+			(push && strings.EqualFold(section, "url") && strings.EqualFold(leaf, "pushInsteadOf")) ||
 			strings.EqualFold(key, "fetch.bundleURI") {
-			return fmt.Errorf("safegit: fetch destination overrides are not allowed")
+			return fmt.Errorf("safegit: destination overrides are not allowed")
 		}
 	}
 	return nil
