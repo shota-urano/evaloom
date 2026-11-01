@@ -1,0 +1,3 @@
+# Test-only image for spec 14, 3.5. No model or npm dependencies are needed.
+FROM alpine:3.20
+RUN apk add --no-cache python3 git nodejs
