@@ -31,7 +31,7 @@ var (
 	ErrGit                     = errors.New("publisher: git inspection failed")
 )
 
-// ErrorClass maps a CheckBeforePush error to the Execution error class.
+// ErrorClass maps a CheckBeforePush or Push error to the Execution error class.
 // Cancellation is reported by the executor as cancelled.
 func ErrorClass(err error) model.ErrorClass {
 	switch {
