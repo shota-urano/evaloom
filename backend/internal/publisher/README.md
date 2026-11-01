@@ -27,6 +27,37 @@ Trusted Runner から渡す。App の鍵やトークンを worktree から読み
 API の転送には従わず、応答本文・認証情報・通信エラーの自由文を返さない。
 テストは偽の `PullRequests` と HTTP transport、およびローカルの Git remote を使う。
 
+## 認証情報の分離
+
+`NewGitHubApp` はホスト側から秘密鍵を受け取り、RS256 の JWT を署名して、
+Q29 の App ID / Installation ID でインストールアクセストークンを取得する。
+取得時は対象リポジトリ1件と contents: write、pull_requests: write、metadata: read
+を指定する。応答の対象・権限・期限も確認する。JWT の時刻条件は
+[GitHub のプロトコル](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+に従う。鍵・JWT・トークンを保存、ログ出力、親プロセスの環境変数へ設定しない。
+REST と Git のどちらも、別のリポジトリには認証情報を渡さない。
+
+呼び出し側は同じ `GitHub` を `PublishConfig.PullRequests` と `PushConfig.Git` に渡す。
+`PrepareGit` で認証を済ませてから、既存の中止・HEAD・作業ツリーの最終確認を行う。
+GitHub への push はこの境界を必須とする。匿名のテスト用 remote には従来の
+`git://` を使える。SSH 形式の Project URL は保存せず HTTPS へ変換する。
+
+認証付き Git は `safegit.HTTPSOutput` を使う。一時的な bare リポジトリから
+元のオブジェクト領域だけを読み、worktree の config、include、HTTP 設定、
+credential helper、フックを参照しない。トークンは Git 子プロセスだけの環境変数から
+HTTP 認証ヘッダーへ渡す。URL・引数・ファイルには書かない。ホストの HOME、
+SSH agent、プロキシ、Git/curl のトレース設定は継承せず、TLS 証明書を検証する。
+リダイレクトに従わず、失敗時は Git の標準出力・標準エラーを返さない。
+
+`TestPublisherCredentialsNeverReachWorktreeSandboxLogsOrDB` は、偽の App 鍵と
+固有の偽トークンを使う。REST は偽 transport、Git はローカル TLS + 実際の
+`git http-backend` に接続し、push された SHA と SQLite の保存結果を確認する。
+正常な PR 作成・コメント、鍵取得失敗、認証拒否、push 拒否、Git のリダイレクト、
+REST 通信失敗、中止を通す。鍵・JWT・トークン・Basic 認証値について、worktree と
+共有 `.git` の全ファイル、Sandbox 呼び出しの引数と環境、ログ、SQLite の全テーブルと
+DB/WAL/SHM ファイルを検索する。Sandbox は既存 Container の偽 runtime を使い、
+Harness / setup / test の呼び出しを観測する。実 OS の隔離突破試験は仕様14の別タスク。
+
 ## 再実行前の PR 確認
 
 `CheckPreviousPR` は Runner の準備工程2で呼ぶ内部境界である。
@@ -59,8 +90,10 @@ GitHub の実装は PR 番号を指定して取得し、`state` と `merged` の
   Block の全内容が揃っていない。これらは `Report` の入力として受け取り、
   取得方法を創作しない。現時点の Runner の工程組み立て・実行ループへの接続は
   既存の `Push` と同じく呼び出し側に属する。
-- GitHub App の鍵からインストールアクセストークンを取得する処理は、
-  認証情報の分離の実装単位に属する。ここではトークン提供関数で分離する。
+- 秘密鍵の配置ディレクトリは仕様11で `~/.config/evaloom/` と確定しているが、
+  ファイル名、ホスト設定からの指定方法、Runner の起動時の組み立ては未定義。
+  `NewGitHubApp` の鍵取得関数で分離し、設定フィールドや既定のファイル名は追加しない。
+  鍵取得関数はホスト側で実装し、Sandbox のマウントから読まないこと。
 - 現在の claim 応答は `fresh` で `previous=null` を返すため、前回 PR 番号の
   有無を判定できない。仕様05の工程2も対象を `continue` と記す一方、仕様11の
   3.4は `fresh` でも状態確認を求めている。`CheckPreviousPR` はどちらの mode でも

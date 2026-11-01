@@ -18,6 +18,8 @@ import (
 type GitHub struct {
 	client *http.Client
 	token  func(context.Context) (string, error)
+	// Nonempty for App authentication, bound to the configured Project.
+	repo string
 }
 
 var _ PullRequests = (*GitHub)(nil)
@@ -28,6 +30,7 @@ func NewGitHub(client *http.Client, installationToken func(context.Context) (str
 		return nil, ErrPRConfiguration
 	}
 	copy := *client
+	copy.Jar = nil
 	// Do not forward an installation token to an API redirect target, including
 	// redirects to another path on the same host. The Project must be corrected.
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -53,7 +56,7 @@ type githubPR struct {
 // State reads the recorded PR by number, including closed/merged PRs. A 404
 // cannot establish absence: it may also mean the App lost repository access.
 func (g *GitHub) State(ctx context.Context, repositoryURL string, number int) (PullRequestState, error) {
-	repo, err := githubRepository(repositoryURL)
+	repo, err := g.repository(repositoryURL)
 	if err != nil {
 		return "", err
 	}
@@ -89,7 +92,7 @@ func (pr githubPR) valid(repo, branch string) bool {
 }
 
 func (g *GitHub) FindOpen(ctx context.Context, repositoryURL, branch string) (*PullRequest, error) {
-	repo, err := githubRepository(repositoryURL)
+	repo, err := g.repository(repositoryURL)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +119,7 @@ func (g *GitHub) FindOpen(ctx context.Context, repositoryURL, branch string) (*P
 }
 
 func (g *GitHub) Create(ctx context.Context, repositoryURL, head, base, title, body string) (PullRequest, error) {
-	repo, err := githubRepository(repositoryURL)
+	repo, err := g.repository(repositoryURL)
 	if err != nil {
 		return PullRequest{}, err
 	}
@@ -137,7 +140,7 @@ func (g *GitHub) Create(ctx context.Context, repositoryURL, head, base, title, b
 }
 
 func (g *GitHub) Comment(ctx context.Context, repositoryURL string, number int, body string) error {
-	repo, err := githubRepository(repositoryURL)
+	repo, err := g.repository(repositoryURL)
 	if err != nil {
 		return err
 	}
@@ -167,7 +170,7 @@ func (g *GitHub) request(ctx context.Context, method, path string, input any, st
 		body = bytes.NewReader(data)
 	}
 	token, err := g.token(ctx)
-	if err != nil || strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") {
+	if err != nil || !validToken(token) {
 		return prError(ctx, ErrPullRequest)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, body)
@@ -197,6 +200,18 @@ func (g *GitHub) request(ctx context.Context, method, path string, input any, st
 		}
 	}
 	return nil
+}
+
+func (g *GitHub) repository(repositoryURL string) (string, error) {
+	repo, err := githubRepository(repositoryURL)
+	if err != nil || g == nil || (g.repo != "" && !strings.EqualFold(repo, g.repo)) {
+		return "", ErrPRConfiguration
+	}
+	return repo, nil
+}
+
+func validToken(token string) bool {
+	return strings.TrimSpace(token) != "" && !strings.ContainsAny(token, "\x00\r\n")
 }
 
 var repositoryPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
