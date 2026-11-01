@@ -11,7 +11,6 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/gate"
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/safegit"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
@@ -39,20 +38,7 @@ func (runner *Runner) NewGate2Executor(handlers map[StageID]StageFunc, control E
 		wired[id] = handler
 	}
 	wired[StageTestBaseline], wired[StageGate2] = baseline, verify
-	wired[StageHarnessHead] = func(ctx context.Context, e *Execution) error {
-		if e.WorktreePath == "" {
-			return fmt.Errorf("runner: harness head requires prepared worktree")
-		}
-		body, err := safegit.Output(ctx, e.WorktreePath, "rev-parse", "--verify", "HEAD^{commit}")
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("runner: cannot read harness head")
-		}
-		e.HarnessHeadSHA = strings.TrimSpace(string(body))
-		return nil
-	}
+	wired[StageHarnessHead] = runner.HarnessResultHandler()
 	return NewExecutorWithControl(wired, control)
 }
 
