@@ -90,7 +90,12 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 				// Leave time for a competing context-triggered rm to be observed.
 				time.Sleep(120 * time.Millisecond)
 			}
-			fmt.Println(`{"type":"result","subtype":"success","is_error":false}`)
+			if mode == "multiple-results" {
+				fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result_index":0,"result":"intermediate","usage":{"input_tokens":7,"output_tokens":4}}`)
+				fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result_index":1,"result":"final summary","usage":{"input_tokens":17,"output_tokens":9}}`)
+			} else {
+				fmt.Println(`{"type":"result","subtype":"success","is_error":false}`)
+			}
 		}
 		write(name+".exited", "yes")
 	case "inspect":
@@ -195,6 +200,16 @@ func TestContainerLaunchErrorClassification(t *testing.T) {
 				t.Fatalf("started %d commands, want %d", starts, want)
 			}
 		})
+	}
+}
+
+func TestContainerLaunchMultipleResults(t *testing.T) {
+	f := newFixture(t, "success")
+	useFakeContainerRuntime(t, f, "multiple-results")
+	_, result, logs := runResult(t, f)
+	if result.Status != adapter.ResultSucceeded || result.ErrorClass != nil || result.Summary != "final summary" ||
+		result.Usage.InputTokens == nil || *result.Usage.InputTokens != 17 || result.Usage.OutputTokens == nil || *result.Usage.OutputTokens != 9 {
+		t.Fatalf("result=%+v logs=%+v", result, logs)
 	}
 }
 

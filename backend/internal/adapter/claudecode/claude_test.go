@@ -123,11 +123,26 @@ func TestClaudeCodeCLIHelper(t *testing.T) {
 	fmt.Fprintln(os.Stderr, "stderr without newline")
 	fmt.Println(`{"type":"system","subtype":"init","session_id":"native-session"}`)
 	fmt.Println(`{"type":"future.event","extra":"forward compatible"}`)
+	multiple := strings.HasPrefix(mode, "multiple-results") || mode == "duplicate-result-index"
+	if multiple {
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result_index":0,"result":"intermediate summary","usage":{"input_tokens":7,"output_tokens":4}}`)
+		fmt.Println(`{"type":"assistant","message":{"content":[{"type":"text","text":"background work completed"}]}}`)
+	}
 	result := map[string]any{"type": "result", "subtype": "success", "is_error": false}
-	if mode != "no-summary" {
+	if multiple {
+		result["result_index"] = 1
+		if mode == "duplicate-result-index" {
+			result["result_index"] = 0
+		}
+	}
+	if mode == "multiple-results-failed" {
+		result["subtype"], result["is_error"] = "error_during_execution", true
+		result["errors"] = []string{"background work failed"}
+	}
+	if mode != "no-summary" && mode != "multiple-results-no-fields" && mode != "multiple-results-failed" {
 		result["result"] = "final summary"
 	}
-	if mode != "no-usage" {
+	if mode != "no-usage" && mode != "multiple-results-no-fields" && mode != "multiple-results-failed" {
 		result["usage"] = map[string]int{"input_tokens": 17, "cache_read_input_tokens": 5, "output_tokens": 9}
 	}
 	data, _ := json.Marshal(result)

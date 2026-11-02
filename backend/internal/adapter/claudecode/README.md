@@ -30,7 +30,14 @@ Evaloom専用のサブスクリプション認証を専用設定環境へ用意�
 プロンプトには固定済みExecution Context、JSONで区切ったTask、commitまで行う指示を渡す。
 
 構造化出力の最終`result`イベントからsummaryとusageを取る。summaryが無ければ空文字、
-usageが無ければnullにする。途中のassistantメッセージのusageやキャッシュ使用量は加算しない。
+usageが無ければnullにする。途中のresultの値は残さず、usageも加算しない。
+途中のassistantメッセージのusageやキャッシュ使用量も加算しない。
+`claude -p`はバックグラウンド処理の完了後に追加ターンを実行できる
+（[公式CLI資料](https://code.claude.com/docs/en/headless#background-tasks-at-exit)）。
+[`SDKResultMessage`の公式定義](https://code.claude.com/docs/en/agent-sdk/typescript#sdkresultmessage)では、
+`result_index`はプロセスが出力するresultの順序を0から数える番号で、書き込み失敗でも番号を消費する。
+このため、番号が増加する複数resultを受け付け、欠番も許容する。
+番号がない旧形式は1件だけ受け付ける。同じ番号・逆順・複数resultでの番号欠落は不正出力とする。
 非ゼロ終了、不正JSON、終了イベントの欠落・重複、`is_error=true`、失敗subtypeは
 `execution_failed`にする。未知のイベントは許容し、Adapterで`test_failed`は付けない。
 stdout・stderrは行単位で`Logs`へ渡す。分割された書き込み、長い行、改行のない最終行も保持する。
@@ -66,6 +73,11 @@ CLIの終了コードが128以上でも、Sandbox障害が確認されなけれ�
 
 - `claude_test.go`の`TestClaudeCodeNonInteractiveCommit`が、偽CLIの実引数・環境と
   linked worktreeへのcommitを検証する。
+- `output_test.go`の`TestClaudeCodeMultipleResults`が複数resultと重複・不正出力を区別し、
+  `TestClaudeCodeMultipleResultsFromCLI`が偽CLIの複数ターンから最終summary・usageを取得する。
+  最終resultで省略された値が途中のresultから残らないことと、最終ターンの失敗も検証する。
+- `container_test.go`の`TestContainerLaunchMultipleResults`がContainerLaunch経由でも
+  正常な複数resultを成功とし、最終summary・usageを返すことを検証する。
 - `container_test.go`の`TestContainerLaunchErrorClassification`がContainerLaunch経由で
   実行終了128・130・137・255、preflightの130、OOM、runtime障害を区別する。
 - 同ファイルの`TestContainerLaunchCancellationSequence`が準備中・preflight中・実行中の中止、

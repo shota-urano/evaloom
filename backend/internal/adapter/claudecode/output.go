@@ -58,19 +58,22 @@ func (w *lineWriter) line(data []byte) {
 
 type events struct {
 	completed, failed, invalid bool
+	resultIndex                *int64
 	summary                    string
 	input, output              *int64
 }
 
-// Only the terminal result owns summary and usage. Assistant messages may be
-// intermediate or belong to subagents; they cannot establish a successful run.
+// Only the latest result owns summary and usage. Background work can start more
+// turns after a result; result_index distinguishes them from duplicate output.
+// Assistant messages cannot establish a successful run.
 func (e *events) read(line []byte) {
 	var event struct {
-		Type    string  `json:"type"`
-		Subtype string  `json:"subtype"`
-		IsError *bool   `json:"is_error"`
-		Result  *string `json:"result"`
-		Usage   *struct {
+		Type        string  `json:"type"`
+		Subtype     string  `json:"subtype"`
+		IsError     *bool   `json:"is_error"`
+		Result      *string `json:"result"`
+		ResultIndex *int64  `json:"result_index"`
+		Usage       *struct {
 			Input  *int64 `json:"input_tokens"`
 			Output *int64 `json:"output_tokens"`
 		} `json:"usage"`
@@ -81,13 +84,20 @@ func (e *events) read(line []byte) {
 	}
 	switch event.Type {
 	case "result":
-		if e.completed || event.Subtype == "" || event.IsError == nil {
+		// Older CLIs omit the index: accept one such result. Multiple results
+		// need explicit, increasing indices. Gaps are allowed because failed
+		// writes still consume an index in Claude Code's delivery order.
+		if event.Subtype == "" || event.IsError == nil ||
+			(event.ResultIndex != nil && *event.ResultIndex < 0) ||
+			(e.completed && (e.resultIndex == nil || event.ResultIndex == nil || *event.ResultIndex <= *e.resultIndex)) {
 			e.invalid = true
 		}
 		e.completed = true
+		e.resultIndex = event.ResultIndex
 		if event.Subtype != "success" || event.IsError == nil || *event.IsError {
 			e.failed = true
 		}
+		e.summary, e.input, e.output = "", nil, nil
 		if event.Result != nil {
 			e.summary = *event.Result
 		}
