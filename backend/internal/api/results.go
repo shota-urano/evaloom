@@ -119,6 +119,18 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if input.BaseSHA != nil && input.FromStatus == input.Status {
+			err = saveBaseResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		// Validate the transition before accepting any metadata or side effects.
 		var resume sql.NullString
 		err = tx.QueryRowContext(ctx, `SELECT resume_point FROM executions WHERE id = ?`, id).Scan(&resume)
