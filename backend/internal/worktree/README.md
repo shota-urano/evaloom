@@ -25,7 +25,7 @@ fetch前に`safegit.ValidateFetchURL`で、登録URLと同名のremote設定、
 有効なconfig.worktreeも検査する。旧形式の`.git/remotes`と`.git/branches`も拒否する。
 これらはハーネスが取得元を変更するために使えるため、未使用の設定も拒否する。
 Base Branchの取得と開始点SHAの記録は下記の関数を使う。
-タスクのworktree作成は後続タスクが担当する。
+タスクのworktree作成は後述の`CreateWorktree`を使う。
 
 ## Base Branchの取得と記録
 
@@ -55,7 +55,8 @@ Context固定より前に保存するため、`preparing`から`preparing`への
 
 `BaseFetcher`は取得処理の内部境界で、実装には`Repositories`を渡す。
 `continue`で以前のworktreeがある場合はこの関数を呼ばず、再利用処理で保存済みSHAを引き継ぐ。
-worktreeの作成、ブランチ命名、`worktrees.base_sha`を含む行の作成は後続タスクが担当する。
+worktreeの作成とブランチ命名は次節の関数が担当する。
+`worktrees.base_sha`を含む行の作成は、コピー処理後の記録処理が担当する。
 読み取り用認証は引き続き`ReadTransport`の境界に残し、供給方式の仮定は追加していない。
 
 Projectごとのファイルロックで、複数の準備処理による二重cloneを防ぐ。
@@ -63,10 +64,52 @@ Projectごとのファイルロックで、複数の準備処理による二重c
 ロックはSandboxの書き込みを停止する機能を持たない。
 既存の不正なディレクトリや登録URLと異なるoriginを検出した場合は、変更せずにエラーを返す。
 
+## 新規worktreeの作成
+
+`RecordRemoteBase`で開始点SHAを保存した後に呼ぶ。
+
+```go
+// 通常作成ではfreshNumber=0。freshではタスク内のfresh通し番号を渡す。
+if err := execution.CreateWorktree(ctx, repositories, freshNumber, pathAuditor); err != nil {
+    return err
+}
+// execution.WorktreePathとBranchNameを、コピーと記録の工程へ渡す。
+```
+
+`Repositories.Create`は作業用クローンを再検証し、Projectごとのロックを取る。
+通常は`evaloom/<task-id>-<shortName>`と`<Worktree Root>/<task-id>`を使う。
+freshでは両方に`-r<n>`を付ける。保存済みBaseSHAのcommitから、
+`safegit.Output`を通した`worktree add --no-track -b`で作成する。
+本人のローカルリポジトリは入力にも変更対象にも含めない。
+
+同名のローカルブランチと、登録URLへの`ls-remote`で見つかるリモートブランチを拒否する。
+追跡refがまだ無いリモートブランチも対象にする。既存のrefを更新・削除しない。
+取得先や作成に失敗した場合は、Runnerが既存の結果APIへ`failed/config_error`を報告する。
+選んだ`branchName`は、既存の結果APIの同名フィールドで次の状態遷移時に保存する。
+
+Worktree Rootを実パスへ解決してから、タスク用ディレクトリを排他的に作る。
+既存の空ディレクトリも再利用しない。作成前後で実パスの包含を確認し、
+シンボリックリンクなどによるパスの安全性違反は`ErrWorktreePath`で返す。
+Runnerは`WorktreePathAuditor`へ拒否の記録を要求してから失敗を報告する。
+失敗時に作成済みのディレクトリやブランチを自動削除しない。
+呼び出し元はWorktree Rootを書き換えるプロセスも停止しておく。
+
+仕様の未確定部分と接続境界は次のとおり。
+
+- freshの命名はQ22の案を採用した仮置きである。`n`は1からのfresh通し番号として外から渡す。
+  `executions.seq`にはcontinueも含まれるため、代用しない。claimに番号や実行履歴が無く、
+  正確な採番の取得経路は未定義なので、この実装では採番しない。
+- パス拒否をRunnerから`audit_logs`へ送る要求形式は未定義である。
+  必須の`WorktreePathAuditor`を内部境界とし、HTTP APIや列を追加していない。
+  実際の監査送信は呼び出し元の実装が必要である。監査失敗も成功として扱わない。
+- このタスクは仕様06の3.2の手順3〜4を担当する。コピー、worktrees行の作成、
+  worktree_ready、setup、continueでの再利用は後続の工程で行う。
+  worktrees行をRunnerから登録する要求形式も未定義であり、ここではAPIを追加しない。
+
 ## 読み取り用認証の境界
 
 仕様06の3.2はTrusted Runnerの読み取り用認証を要求するが、渡し方は定めていない。
-cloneとfetchだけを`ReadTransport`に分け、後続の認証実装を差し込めるようにした。
+clone、fetch、ls-remoteを`ReadTransport`に分け、後続の認証実装を差し込めるようにした。
 既定の実装は`safegit.Output`を使い、追加の認証情報を渡さない。
 認証が必要なHTTPSリポジトリへの独自の認証供給は、このタスクでは実装していない。
 SSHではsafegitが許可する信頼済みSSH設定やagentを引き続き利用する。
@@ -84,3 +127,8 @@ Gitのエラー本文やstderrは認証情報を含む可能性があるため�
 作業ツリー・index・ref・config・オブジェクトの不変を確認する。
 パスのシンボリックリンク、共有オブジェクト、originの変更、fetch先の変更設定、失敗後の再試行、
 並行準備とロック待ちのキャンセルも確認する。
+`create_test.go`は通常とfreshのブランチ名、実パス、同名のloose/packedブランチと
+fetch後に作られたリモートブランチの拒否、既存SHAの不変、並行作成、
+既存パスとシンボリックリンクの拒否、checkout時のフック無効化を実gitで確認する。
+Runnerの`worktree_test.go`は、既存HTTP APIを通した`failed/config_error`の保存と
+`branchName`の保存も確認する。未定義の監査送信だけはテスト用の実装を渡す。

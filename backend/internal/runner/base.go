@@ -25,9 +25,7 @@ func (e *Execution) RecordRemoteBase(ctx context.Context, fetcher BaseFetcher) e
 	if e == nil || e.control == nil || e.status != model.ExecutionPreparing || fetcher == nil {
 		return fmt.Errorf("runner: controlled preparing execution and Base Branch fetcher are required")
 	}
-	if e.Claim.Execution.Mode != "fresh" && e.Claim.Execution.Mode != "continue" ||
-		e.Claim.Execution.Mode == "continue" && (e.Claim.Worktree != nil ||
-			e.Claim.Execution.Seq > 1 && !e.Claim.worktreeSnapshotPresent) {
+	if !e.newWorktreeRequired() {
 		return fmt.Errorf("runner: new worktree path is required for Base Branch fetch")
 	}
 	if e.BaseSHA != "" {
