@@ -24,7 +24,39 @@ fetch前に`safegit.ValidateFetchURL`で、登録URLと同名のremote設定、
 `url.*.insteadOf`、`fetch.bundleURI`を拒否する。include、条件不成立のincludeIf、
 有効なconfig.worktreeも検査する。旧形式の`.git/remotes`と`.git/branches`も拒否する。
 これらはハーネスが取得元を変更するために使えるため、未使用の設定も拒否する。
-Base Branchの選択や開始点SHAの記録、タスクのworktree作成は後続タスクが担当する。
+Base Branchの取得と開始点SHAの記録は下記の関数を使う。
+タスクのworktree作成は後続タスクが担当する。
+
+## Base Branchの取得と記録
+
+新規worktreeを準備する工程3で、`Prepare`の成功後に呼ぶ。
+
+```go
+if err := execution.RecordRemoteBase(ctx, repositories); err != nil {
+    return err
+}
+// execution.BaseSHAを開始点として、後続のworktree作成処理へ渡す。
+```
+
+`Repositories.FetchBase`はProjectごとのロックを取り、既存クローンのパスと
+登録済みURLを再検証する。登録済みBase Branchだけを明示したrefspecでfetchし、
+`refs/remotes/origin/<Base Branch>`をcommitに解決する。
+ローカルのHEADやFETCH_HEADは開始点として使わない。
+リモートでブランチが削除済みなら、古い追跡refが残っていてもエラーにする。
+fetch失敗はRunnerから`failed/config_error`として報告し、Gitのエラー本文は返さない。
+
+`Execution.RecordRemoteBase`は既存の結果報告APIへ`baseSha`を送り、
+Control Planeが`executions.base_sha`へ保存した応答を受けてから`Execution.BaseSHA`を設定する。
+Context固定より前に保存するため、`preparing`から`preparing`へのSHAだけの報告を
+既存のbaseline測定報告と同じ方式で受け付ける。同じSHAの再送は成功し、
+記録済みSHAの変更は既存の`precondition_failed`（422）で拒否する。状態遷移、イベントや通知は発生させない。
+結果報告の本文と工程内の報告時点は仕様で未定義のため、既存のフィールドと
+エンドポイントの範囲でこの方式にした。新しいHTTP API、テーブルや列は追加していない。
+
+`BaseFetcher`は取得処理の内部境界で、実装には`Repositories`を渡す。
+`continue`で以前のworktreeがある場合はこの関数を呼ばず、再利用処理で保存済みSHAを引き継ぐ。
+worktreeの作成、ブランチ命名、`worktrees.base_sha`を含む行の作成は後続タスクが担当する。
+読み取り用認証は引き続き`ReadTransport`の境界に残し、供給方式の仮定は追加していない。
 
 Projectごとのファイルロックで、複数の準備処理による二重cloneを防ぐ。
 呼び出し元は、同じProjectのSandboxの書き込みプロセスを停止してから準備する。

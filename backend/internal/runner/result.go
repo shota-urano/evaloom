@@ -53,8 +53,8 @@ var _ ResultReporter = (*Runner)(nil)
 // ReportResult keeps a failed report pending on the calling execution and
 // retries transport/5xx failures without rerunning its stage. Use a delivery
 // context independent of the cancelled Execution. 4xx responses are returned:
-// transition reports reject duplicates with 409. Baseline measurement reports
-// are idempotent, allowing their lost acknowledgements to be retried safely.
+// transition reports reject duplicates with 409. Start SHA and baseline
+// measurement reports are idempotent, so lost acknowledgements can be retried.
 func (runner *Runner) ReportResult(ctx context.Context, id string, result ExecutionResult) error {
 	if parsed, err := ulid.ParseStrict(id); err != nil || parsed.String() != id {
 		return fmt.Errorf("runner: invalid result execution ID")
