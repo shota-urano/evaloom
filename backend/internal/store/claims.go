@@ -57,6 +57,7 @@ type ClaimWorktree struct {
 	Path        string             `json:"path"`
 	BaseSHA     string             `json:"baseSha"`
 	BranchName  string             `json:"branchName"`
+	SetupStatus string             `json:"setupStatus"`
 	Baseline    *ClaimBaseline     `json:"baseline"`
 	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
 }
@@ -196,7 +197,7 @@ func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID strin
 	var copied string
 	// A cleaned worktree retains its branch and start SHA (spec 06, 3.3.6).
 	// Preparation needs this snapshot to restore it and reuse its baseline.
-	err = tx.QueryRowContext(ctx, `SELECT path, base_sha, branch_name, copied_files FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA, &w.BranchName, &copied)
+	err = tx.QueryRowContext(ctx, `SELECT path, base_sha, branch_name, copied_files, setup_status FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA, &w.BranchName, &copied, &w.SetupStatus)
 	if err != nil {
 		return err
 	}

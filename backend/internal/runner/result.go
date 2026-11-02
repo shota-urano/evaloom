@@ -29,6 +29,7 @@ type ExecutionResult struct {
 	VerifiedSHA    string                `json:"verifiedSha,omitempty"`
 	GateResults    []GateResult          `json:"gateResults,omitempty"`
 	TestRuns       []model.TestRun       `json:"testRuns,omitempty"`
+	SetupStatus    string                `json:"setupStatus,omitempty"`
 	Block          *ResultBlock          `json:"block,omitempty"`
 }
 
