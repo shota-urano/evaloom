@@ -69,6 +69,7 @@ type Execution struct {
 	WorktreeID string
 	// The worktree stage supplies the immutable start SHA and prepared path.
 	WorktreePath string
+	BranchName   string
 	BaseSHA      string
 	// Stage 7 retains the original run when a continue execution reuses it.
 	Baseline *model.TestRun

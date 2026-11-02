@@ -21,7 +21,8 @@ const repositoryDirectory = ".evaloom-repositories"
 
 var projectSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// ReadTransport is the Trusted Runner's read-only network Git boundary. A nil
+// ReadTransport is the Trusted Runner's read-only network Git boundary for
+// clone, fetch and ls-remote. A nil
 // transport uses safegit.Output without additional credentials. Implementations
 // must retain safegit's protections and supply credentials outside repositories,
 // without enabling credential helpers or persisting secrets in Git config/URLs.
