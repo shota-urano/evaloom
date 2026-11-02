@@ -112,34 +112,25 @@ func TestCopyFilesSkipsFileAndDirectorySymlinks(t *testing.T) {
 	}
 }
 
-func TestCopyFilesRejectsDestinationSymlinksAndExistingFiles(t *testing.T) {
-	for _, kind := range []string{"file-internal", "file-external", "dir-internal", "dir-external", "regular", "hardlink"} {
+func TestCopyFilesRejectsDestinationSymlinks(t *testing.T) {
+	for _, kind := range []string{"file-internal", "file-external", "dir-internal", "dir-external"} {
 		t.Run(kind, func(t *testing.T) {
 			r, source, destination := copyFixture(t)
 			outside := t.TempDir()
 			copyWrite(t, filepath.Join(outside, "file"), "original")
 			copyWrite(t, filepath.Join(destination, "internal", "file"), "original")
 			name, target := "copy", filepath.Join(outside, "file")
-			switch kind {
-			case "regular":
-				copyWrite(t, filepath.Join(destination, name), "original")
-			case "hardlink":
-				if err := os.Link(target, filepath.Join(destination, name)); err != nil {
-					t.Fatal(err)
-				}
-			default:
-				if kind == "file-internal" {
-					target = "internal/file"
-				}
-				if kind == "dir-internal" {
-					target = "internal"
-				}
-				if kind == "dir-external" {
-					target = outside
-				}
-				if err := os.Symlink(target, filepath.Join(destination, name)); err != nil {
-					t.Fatal(err)
-				}
+			if kind == "file-internal" {
+				target = "internal/file"
+			}
+			if kind == "dir-internal" {
+				target = "internal"
+			}
+			if kind == "dir-external" {
+				target = outside
+			}
+			if err := os.Symlink(target, filepath.Join(destination, name)); err != nil {
+				t.Fatal(err)
 			}
 			if kind == "dir-internal" || kind == "dir-external" {
 				name += "/file"
@@ -153,6 +144,56 @@ func TestCopyFilesRejectsDestinationSymlinksAndExistingFiles(t *testing.T) {
 				body, err := os.ReadFile(path)
 				if err != nil || string(body) != "original" {
 					t.Fatalf("existing target changed %s: %q %v", path, body, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCopyFilesReplacesExistingRegularFiles(t *testing.T) {
+	for _, kind := range []string{"regular", "empty", "read-only", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			r, source, destination := copyFixture(t)
+			outside := filepath.Join(t.TempDir(), "file")
+			copyWrite(t, outside, "original outside worktree")
+			name := "config/file"
+			target := filepath.Join(destination, name)
+			copyWrite(t, target, "original destination longer than replacement")
+			if kind == "read-only" {
+				if err := os.Chmod(target, 0400); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "hardlink" {
+				// Use a separate leaf so no fixture file needs to be removed.
+				name, target = "config/link", filepath.Join(destination, "config", "link")
+				if err := os.Link(outside, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			contents := "replacement"
+			if kind == "empty" {
+				contents = ""
+			}
+			copyWrite(t, filepath.Join(source, name), contents)
+			copied, err := r.CopyFiles(context.Background(), source, destination, []string{name}, noMissingCopy(t))
+			body, readErr := os.ReadFile(target)
+			want := []model.CopiedFile{{Path: name, SHA256: fmt.Sprintf("%x", sha256.Sum256(body))}}
+			if err != nil || readErr != nil || string(body) != contents || !reflect.DeepEqual(copied, want) {
+				t.Fatalf("copied=%+v body=%q err=%v read=%v", copied, body, err, readErr)
+			}
+			for path, expected := range map[string]string{outside: "original outside worktree", filepath.Join(source, name): contents} {
+				if body, err := os.ReadFile(path); err != nil || string(body) != expected {
+					t.Fatalf("copy changed source or external file: %q err=%v", body, err)
+				}
+			}
+			entries, err := os.ReadDir(filepath.Dir(target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.Name() != "file" && entry.Name() != "link" {
+					t.Fatalf("copy left a staging file: %s", entry.Name())
 				}
 			}
 		})

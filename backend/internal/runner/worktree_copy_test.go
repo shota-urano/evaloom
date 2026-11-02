@@ -131,25 +131,43 @@ func TestCopyWorktreeFilesSkipsSymlinksAndPersistsEmptyArray(t *testing.T) {
 	}
 }
 
-func TestCopyWorktreeFilesCollisionFailsWithoutRecording(t *testing.T) {
-	f, e, r, _ := newCopyExecution(t)
+func TestCopyWorktreeFilesReplacesTrackedFileAndPersistsSHA256(t *testing.T) {
+	f, e, r, source := newCopyExecution(t)
 	// "source" is tracked in the fetched Base Branch and in the owner checkout.
+	path := filepath.Join(e.WorktreePath, "source")
+	if body, err := os.ReadFile(path); err != nil || string(body) != "initial" {
+		t.Fatalf("tracked Base Branch file: %q err=%v", body, err)
+	}
+	gate2Write(t, filepath.Join(source, "source"), "local")
+	before := gate2Git(t, source, "status", "--porcelain")
 	e.Claim.Project.CopyAllowlist = []string{"source"}
-	err := e.CopyWorktreeFiles(context.Background(), r, store.WorktreeCopyStore{DB: f.db})
-	if err == nil || e.WorktreeID != "" || len(e.CopiedFiles) != 0 {
-		t.Fatalf("collision err=%v id=%s copied=%v", err, e.WorktreeID, e.CopiedFiles)
+	if err := e.CopyWorktreeFiles(context.Background(), r, store.WorktreeCopyStore{DB: f.db}); err != nil {
+		t.Fatal(err)
 	}
-	var count int
-	if err := f.db.QueryRow(`SELECT COUNT(*) FROM worktrees`).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("recorded failed copy count=%d err=%v", count, err)
+	body, err := os.ReadFile(path)
+	if err != nil || string(body) != "local" {
+		t.Fatalf("tracked destination not replaced: %q err=%v", body, err)
 	}
-	var status, class string
-	if err := f.db.QueryRow(`SELECT status,error_class FROM executions WHERE id=?`, logExecution).Scan(&status, &class); err != nil || status != "failed" || class != "config_error" {
-		t.Fatalf("status=%s class=%s err=%v", status, class, err)
+	var manifest, status string
+	if err := f.db.QueryRow(`SELECT w.copied_files,e.status FROM worktrees w
+		JOIN executions e ON e.worktree_id=w.id WHERE e.id=? AND w.id=?`, logExecution, e.WorktreeID).
+		Scan(&manifest, &status); err != nil || status != "preparing" {
+		t.Fatalf("manifest=%s status=%s err=%v", manifest, status, err)
 	}
-	body, err := os.ReadFile(filepath.Join(e.WorktreePath, "source"))
-	if err != nil || string(body) != "initial" {
-		t.Fatalf("tracked destination changed: %q err=%v", body, err)
+	var saved []model.CopiedFile
+	if err := json.Unmarshal([]byte(manifest), &saved); err != nil {
+		t.Fatal(err)
+	}
+	want := []model.CopiedFile{{Path: "source", SHA256: fmt.Sprintf("%x", sha256.Sum256(body))}}
+	if !reflect.DeepEqual(saved, want) || !reflect.DeepEqual(e.CopiedFiles, want) {
+		t.Fatalf("saved=%+v execution=%+v want=%+v", saved, e.CopiedFiles, want)
+	}
+	if body, err := os.ReadFile(filepath.Join(source, "source")); err != nil || string(body) != "local" ||
+		before != gate2Git(t, source, "status", "--porcelain") {
+		t.Fatalf("owner checkout changed: %q err=%v", body, err)
+	}
+	if _, clean, err := gate.CheckWorktree(context.Background(), e.WorktreePath, saved); err != nil || !clean {
+		t.Fatalf("tracked copy exemption: clean=%v err=%v", clean, err)
 	}
 }
 

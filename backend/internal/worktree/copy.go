@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,7 +19,7 @@ import (
 // CopyFiles is the new-worktree copy stage (spec 06, 3.5). Missing sources are
 // reported synchronously before proceeding; the callback must emit a log warning.
 // Sandbox writers must remain stopped until copying and recording have finished.
-// Existing destination entries are retained and rejected, never overwritten.
+// Existing regular files are replaced; destination symlinks are never followed.
 func (r Repositories) CopyFiles(ctx context.Context, source, destination string, allowlist []string, warnMissing func(context.Context, string) error) ([]model.CopiedFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -173,16 +174,32 @@ func copyFile(ctx context.Context, src, dst *os.File, name string) (string, erro
 		return "", fmt.Errorf("worktree: create copy parent")
 	}
 	defer targetParent.Close()
-	fd, err = unix.Openat(int(targetParent.Fd()), leaf, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(info.Mode().Perm()))
+	targetFD := int(targetParent.Fd())
+	if err := unix.Fstatat(targetFD, leaf, &stat, unix.AT_SYMLINK_NOFOLLOW); err == nil {
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return "", fmt.Errorf("worktree: copy destination must be a regular file")
+		}
+	} else if !errors.Is(err, unix.ENOENT) {
+		return "", fmt.Errorf("worktree: inspect copy destination")
+	}
+	// Publish a complete file by renaming within the pinned parent directory.
+	// Never truncate an existing inode: it may have a hard link outside the
+	// worktree. Rename also cannot follow a destination symlink swapped in later.
+	staging := ".evaloom-copy-" + rand.Text()
+	fd, err = unix.Openat(targetFD, staging, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(info.Mode().Perm()))
 	if err != nil {
 		return "", fmt.Errorf("worktree: create copy destination")
 	}
-	output := os.NewFile(uintptr(fd), leaf)
+	defer unix.Unlinkat(targetFD, staging, 0)
+	output := os.NewFile(uintptr(fd), staging)
 	hash := sha256.New()
 	_, copyErr := io.Copy(io.MultiWriter(output, hash), copyReader{ctx, input})
 	err = errors.Join(copyErr, output.Close())
 	if err != nil {
 		return "", fmt.Errorf("worktree: write copy destination")
+	}
+	if err := unix.Renameat(targetFD, staging, targetFD, leaf); err != nil {
+		return "", fmt.Errorf("worktree: replace copy destination")
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
