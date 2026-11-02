@@ -16,13 +16,18 @@ var _ ArtifactRegistrar = (*Runner)(nil)
 // with the same ID and retains the file, including when an acknowledgement is
 // lost after the Control Plane has committed the artifact.
 func (runner *Runner) RegisterLogArtifact(ctx context.Context, artifact LogArtifact) error {
+	if artifact.Kind != "harness_log" && artifact.Kind != "setup_log" && artifact.Kind != "test_log" {
+		return fmt.Errorf("runner: invalid log artifact kind")
+	}
+	return runner.registerArtifact(ctx, artifact)
+}
+
+// registerArtifact also serves Runner-generated diffs through the existing API.
+func (runner *Runner) registerArtifact(ctx context.Context, artifact LogArtifact) error {
 	for _, value := range []string{artifact.ID, artifact.ExecutionID} {
 		if id, err := ulid.ParseStrict(value); err != nil || id.String() != value {
 			return fmt.Errorf("runner: invalid artifact identity")
 		}
-	}
-	if artifact.Kind != "harness_log" && artifact.Kind != "setup_log" && artifact.Kind != "test_log" {
-		return fmt.Errorf("runner: invalid log artifact kind")
 	}
 	endpoint, err := url.JoinPath(runner.controlPlaneURL, "api", "executions", artifact.ExecutionID, "artifacts")
 	if err != nil {

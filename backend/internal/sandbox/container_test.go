@@ -843,9 +843,13 @@ func TestContainerFailureClassificationAndNoFallback(t *testing.T) {
 			if err == nil {
 				err = p.Wait()
 			}
-			if mode == "exit-7" {
+			if mode == "exit-7" || mode == "signal" {
+				want := 7
+				if mode == "signal" {
+					want = 137
+				}
 				var exit *ExitError
-				if !errors.As(err, &exit) || exit.Code != 7 {
+				if !errors.As(err, &exit) || exit.Code != want {
 					t.Fatalf("ordinary command failure=%v", err)
 				}
 			} else {
@@ -891,16 +895,21 @@ func waitProcess(t *testing.T, p Process) error {
 }
 
 func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
-	for _, action := range []string{"deadline", "cancel", "stop", "kill"} {
+	for _, action := range []string{"deadline", "controlled-deadline", "cancel", "stop", "kill"} {
 		t.Run(action, func(t *testing.T) {
 			f := newFixture(t, "sleep")
-			if action == "deadline" {
+			deadline := action == "deadline" || action == "controlled-deadline"
+			if deadline {
 				f.spec.Limits.Time = time.Second
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			start := time.Now()
-			p, err := f.sandbox(t).Run(ctx, f.spec, []string{"/untrusted/workload"})
+			run := f.sandbox(t).Run
+			if action == "controlled-deadline" {
+				run = f.sandbox(t).RunControlled
+			}
+			p, err := run(ctx, f.spec, []string{"/untrusted/workload"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -938,7 +947,7 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 				}
 			}
 			err = waitProcess(t, p)
-			if action == "deadline" {
+			if deadline {
 				requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
 				if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) < f.spec.Limits.Time || time.Since(start) > 5*time.Second {
 					t.Fatalf("wall time not enforced promptly: %v (%v)", time.Since(start), err)

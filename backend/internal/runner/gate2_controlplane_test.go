@@ -180,6 +180,7 @@ func (f *baselineHTTPFixture) gate2Executor(t *testing.T, runner *Runner, calls 
 			}
 			e.WorktreeID, e.WorktreePath, e.BaseSHA = f.worktreeID, f.path, f.sha
 		case StageHarness:
+			e.HarnessResult = reportedHarnessResult()
 			if harness != nil {
 				return harness(ctx, e)
 			}
