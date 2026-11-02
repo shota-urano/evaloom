@@ -5,7 +5,6 @@ worktreeの登録が終わり、`worktree_ready`を送った後、工程6に登�
 
 ```go
 handlers[StageSetup] = (SetupStage{
-    Repository: setupRepository,
     NewLog: func(id string) (*Log, error) {
         return runner.NewLog(id, "setup", nil, knownSecrets...)
     },
@@ -38,8 +37,25 @@ setup_log成果物として既存APIへ送る。Sandboxが停止して両方の�
 ログを閉じる。送信失敗の再試行はログの収集と並行して行い、コマンドを再実行しない。
 保存失敗やログ失敗は呼び出し元へ返し、後続工程を開始させない。
 
-`store.SetupStore`はControl Plane側の実装で、Runnerから直接DBを開かない。
-test_runsの挿入とworktrees.setup_statusの更新を同じトランザクションで行う。
+`Repository`を省略すると、RunnerはExecutionControlの認証付き結果送信を使う。
+既存の`POST /api/executions/{id}/result`へ、次の内容を送る。
+
+```json
+{
+  "fromStatus": "preparing",
+  "status": "preparing",
+  "worktreeId": "<記録済みのworktree ID>",
+  "setupStatus": "succeeded または failed",
+  "testRuns": [{"kind": "setup", "...": "既存のTestRunの各項目"}]
+}
+```
+
+Control Planeは`store.SetupStore.SaveSetupTx`を呼び、test_runsの挿入と
+worktrees.setup_statusの更新を同じトランザクションで行う。
+測定値を保存した後、失敗時は既存の状態遷移報告でExecutionを終了する。
+Runnerから直接DBを開かない。再利用時の成否は、Control Planeがclaimの
+`worktree.setupStatus`で渡す。値が欠けている場合やworktreeが一致しない場合は
+実行せずエラーにする。
 worktreeの所属、開始点SHA、登録済みコマンドを検証する。
 同じExecutionでは1回の測定を保存し、同じ記録の再送は成功、差し替えは拒否する。
 前のExecutionが失敗した場合、新しいExecutionで同じworktreeのsetupを再実行できる。
@@ -47,9 +63,13 @@ worktreeの所属、開始点SHA、登録済みコマンドを検証する。
 
 仕様の穴と仮置きは次のとおり。
 
-- setupの測定値とsetup_statusをRunnerから送受信する要求形式が未定義である。
-  `SetupRepository`で境界を分け、公開HTTP APIや要求フィールドを追加していない。
-  実際の送信実装は仕様の確定後に接続する。保存の再試行は送信実装が同じ記録で行う。
+- 仕様06の工程結果報告と仕様02のsetup_statusに基づき、結果本文へ
+  `setupStatus`、claimのworktreeへ`setupStatus`を追加した。
+  仕様にはJSONの詳細が無いため、これを最小限の送受信形式とした。
+  終了コード0でもSandboxの後処理が失敗する場合があるので、成否は別に送る。
+  測定値は既存の`testRuns`を使い、新しいエンドポイント・テーブル・列は作らない。
+  同じ本文で通信障害を再試行し、最新Executionでは終端状態になった後も
+  保存済みの同一測定値だけ再送を受け付ける。
 - 文字列コマンドの解釈方式、イメージ、CPU・メモリの上限、環境変数の具体値、
   Projectごとの許可レジストリ一覧の取得経路は既存Sandboxと同じく外から渡す。
   `Prepare`がargvへ変換し、シェルや数値の既定値は追加していない。
@@ -64,3 +84,6 @@ worktreeの所属、開始点SHA、登録済みコマンドを検証する。
 ホストにファイルが無いことを確認する。失敗時のExecution、setup測定、
 setup_status、機密情報除外済みの成果物とイベントをDBから読み戻す。
 時間超過・中止時の強制停止、成功済みの再利用、保存の原子性と再送も検証する。
+保存後の応答だけ失う場合も、測定値の再送は同じ本文となり、Sandboxを再実行しない。
+APIのテストでは、Runner認証、所属・SHA・登録コマンド・成否の検証と、
+setup_statusの更新失敗時にtest_runsの挿入も取り消すことを確認する。

@@ -37,6 +37,7 @@ type resultInput struct {
 	GateResults []resultGateResult `json:"gateResults"`
 	Baseline    *model.TestRun     `json:"baseline"`
 	TestRuns    []model.TestRun    `json:"testRuns"`
+	SetupStatus *string            `json:"setupStatus"`
 }
 
 type resultGateResult struct {
@@ -99,6 +100,18 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 		if runner == "" || execution.RunnerID != runner {
 			tx.Rollback() // Release the connection before recording the denial.
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
+			return
+		}
+		if hasSetupResult(input) {
+			err = saveSetupResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {

@@ -15,8 +15,7 @@ import (
 
 // SetupRepository is a Control Plane boundary, never a Runner DB connection.
 // SaveSetup must atomically save test_runs and worktrees.setup_status, and ACK
-// identical retries without inserting another measurement. The wire contract
-// for setup records/status lookup is not defined by spec 06.
+// identical retries without inserting another measurement.
 type SetupRepository interface {
 	SetupSucceeded(context.Context, string, string) (bool, error)
 	SaveSetup(context.Context, string, model.TestRun, bool) error
@@ -48,8 +47,11 @@ func (stage SetupStage) Run(ctx context.Context, e *Execution) error {
 	if command == nil || strings.TrimSpace(*command) == "" {
 		return nil
 	}
-	if stage.Repository == nil || e.WorktreeID == "" || e.WorktreePath == "" || e.BaseSHA == "" {
+	if e.WorktreeID == "" || e.WorktreePath == "" || e.BaseSHA == "" {
 		return fmt.Errorf("runner: setup repository and recorded worktree are required")
+	}
+	if stage.Repository == nil {
+		stage.Repository = remoteSetupRepository{execution: e}
 	}
 	succeeded, err := stage.Repository.SetupSucceeded(ctx, e.Claim.Execution.ID, e.WorktreeID)
 	if err != nil {
@@ -144,6 +146,50 @@ func (stage SetupStage) Run(ctx context.Context, e *Execution) error {
 		return fmt.Errorf("runner: setup failed")
 	}
 	return nil
+}
+
+// The claim supplies the saved status; writes use the authenticated result
+// reporter, including its transport retry policy. No Runner DB is required.
+type remoteSetupRepository struct{ execution *Execution }
+
+func (r remoteSetupRepository) SetupSucceeded(ctx context.Context, executionID, worktreeID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	e := r.execution
+	if executionID != e.Claim.Execution.ID || worktreeID != e.WorktreeID {
+		return false, fmt.Errorf("runner: invalid setup lookup scope")
+	}
+	if e.newWorktreeRequired() {
+		return false, nil
+	}
+	w := e.Claim.Worktree
+	if w == nil || w.ID != worktreeID || w.Path != e.WorktreePath || w.BaseSHA != e.BaseSHA {
+		return false, fmt.Errorf("runner: missing or mismatched setup snapshot")
+	}
+	switch w.SetupStatus {
+	case "succeeded":
+		return true, nil
+	case "pending", "failed":
+		return false, nil
+	default:
+		return false, fmt.Errorf("runner: missing or invalid setup status")
+	}
+}
+
+func (r remoteSetupRepository) SaveSetup(ctx context.Context, worktreeID string, run model.TestRun, succeeded bool) error {
+	e := r.execution
+	if worktreeID != e.WorktreeID || run.ExecutionID != e.Claim.Execution.ID {
+		return fmt.Errorf("runner: invalid setup save scope")
+	}
+	status := "failed"
+	if succeeded {
+		status = "succeeded"
+	}
+	return e.control.Reporter.ReportResult(ctx, run.ExecutionID, ExecutionResult{
+		FromStatus: model.ExecutionPreparing, Status: model.ExecutionPreparing,
+		WorktreeID: worktreeID, SetupStatus: status, TestRuns: []model.TestRun{run},
+	})
 }
 
 func setupOutcome(ctx context.Context, err error, code *int) (model.ExecutionStatus, model.ErrorClass) {

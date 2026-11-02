@@ -2,9 +2,11 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -47,8 +49,8 @@ func (p *setupProcess) ExitCode() (int, bool) {
 	return 0, false
 }
 
-// Only the unspecified setup-record delivery is bridged in-process. Worktree
-// creation/copy, logs/artifact HTTP, result HTTP and SQLite use production code.
+// Setup measurement/status delivery, terminal reports and logs use authenticated
+// HTTP and SQLite. Only the Sandbox launch boundary is replaced in setup tests.
 func newSetupExecution(t *testing.T) (*logControlPlane, *Execution, *Runner) {
 	t.Helper()
 	f, e, r, _ := newCopyExecution(t)
@@ -59,6 +61,8 @@ func newSetupExecution(t *testing.T) (*logControlPlane, *Execution, *Runner) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.pollInterval = time.Millisecond
+	e.control.Reporter = p
 	return f, e, p
 }
 
@@ -70,8 +74,8 @@ func setupCommand(t *testing.T, f *logControlPlane, e *Execution, command string
 	}
 }
 
-func setupStage(f *logControlPlane, p *Runner) SetupStage {
-	return SetupStage{Repository: store.SetupStore{DB: f.db}, NewLog: func(id string) (*Log, error) {
+func setupStage(p *Runner) SetupStage {
+	return SetupStage{NewLog: func(id string) (*Log, error) {
 		log, err := p.NewLog(id, "setup", nil)
 		if log != nil {
 			log.retryInterval = time.Millisecond
@@ -122,7 +126,42 @@ func TestSetupUsesOnlyTestSandboxAndPersistsFailedRunAndLog(t *testing.T) {
 	canary := filepath.Join(t.TempDir(), "host-executed")
 	command := fmt.Sprintf("printf host > %q", canary)
 	setupCommand(t, f, e, command)
-	stage := setupStage(f, p)
+	stage := setupStage(p)
+	var reports atomic.Int32
+	var firstBody []byte
+	p.client.Transport = usageRetryTransport(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/result") {
+			return http.DefaultTransport.RoundTrip(r)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+p.token {
+			t.Error("setup result lacks Runner authentication")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		var result ExecutionResult
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, err
+		}
+		response, err := http.DefaultTransport.RoundTrip(r)
+		if result.SetupStatus != "" {
+			attempt := reports.Add(1)
+			if attempt == 1 {
+				firstBody = body
+				if err != nil || response.StatusCode != 204 {
+					t.Errorf("initial setup report: %v %v", response, err)
+				} else {
+					response.Body.Close()
+					return nil, errors.New("lost setup ACK after commit")
+				}
+			} else if attempt == 2 && string(firstBody) != string(body) {
+				t.Error("setup retry changed the measurement")
+			}
+		}
+		return response, err
+	})
 	calls := 0
 	process := &setupProcess{code: new(23)}
 	stage.Prepare = func(_ context.Context, request SetupRequest, stdout, stderr io.Writer) (sandbox.Sandbox, sandbox.SandboxSpec, []string, error) {
@@ -143,8 +182,8 @@ func TestSetupUsesOnlyTestSandboxAndPersistsFailedRunAndLog(t *testing.T) {
 			return process, nil
 		}), sandbox.SandboxSpec{Kind: sandbox.TestSetup, Worktree: e.WorktreePath, Network: sandbox.NetworkSetup, AllowedDestinations: []string{"registry.example:443"}}, []string{"/bin/sh", "-c", request.Command}, nil
 	}
-	if err := stage.Run(context.Background(), e); err == nil || calls != 1 || !process.waited.Load() {
-		t.Fatalf("err=%v calls=%d waited=%v", err, calls, process.waited.Load())
+	if err := stage.Run(context.Background(), e); err == nil || calls != 1 || !process.waited.Load() || reports.Load() != 2 {
+		t.Fatalf("err=%v calls=%d waited=%v reports=%d", err, calls, process.waited.Load(), reports.Load())
 	}
 	if _, err := os.Stat(canary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("setup executed on host: %v", err)
@@ -168,7 +207,7 @@ func TestSetupUsesOnlyTestSandboxAndPersistsFailedRunAndLog(t *testing.T) {
 		t.Fatalf("log events=%d err=%v", events, err)
 	}
 	// The same measurement can be resent after a lost ACK, even after failure.
-	repository := store.SetupStore{DB: f.db}
+	repository := remoteSetupRepository{execution: e}
 	if err := repository.SaveSetup(context.Background(), e.WorktreeID, run, false); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +227,7 @@ func TestSetupSandboxFailureNeverFallsBackToHost(t *testing.T) {
 			f, e, p := newSetupExecution(t)
 			canary := filepath.Join(t.TempDir(), "host-executed")
 			setupCommand(t, f, e, fmt.Sprintf("printf host > %q", canary))
-			stage := setupStage(f, p)
+			stage := setupStage(p)
 			calls := 0
 			stage.Prepare = func(_ context.Context, request SetupRequest, _, _ io.Writer) (sandbox.Sandbox, sandbox.SandboxSpec, []string, error) {
 				spec := sandbox.SandboxSpec{Kind: sandbox.TestSetup, Worktree: request.WorktreePath}
@@ -246,7 +285,7 @@ func TestSetupTimeoutAndCancellationSaveRunAfterSandboxStops(t *testing.T) {
 			e.control.CancelGrace = time.Millisecond
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			stage := setupStage(f, p)
+			stage := setupStage(p)
 			stopped := make(chan struct{})
 			var kills atomic.Int32
 			stage.Prepare = func(_ context.Context, r SetupRequest, stdout, _ io.Writer) (sandbox.Sandbox, sandbox.SandboxSpec, []string, error) {
@@ -287,7 +326,7 @@ func TestSetupSuccessReuseAndRetryPolicy(t *testing.T) {
 			previous := "pending"
 			if strings.HasPrefix(mode, "reuse-") {
 				previous = strings.TrimPrefix(mode, "reuse-")
-				e.Claim.Worktree = &ClaimWorktree{ID: e.WorktreeID}
+				e.Claim.Worktree = &ClaimWorktree{ID: e.WorktreeID, Path: e.WorktreePath, BaseSHA: e.BaseSHA, SetupStatus: previous}
 			}
 			if mode == "fresh-succeeded" {
 				previous = "succeeded"
@@ -302,7 +341,7 @@ func TestSetupSuccessReuseAndRetryPolicy(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE worktrees SET setup_status=?`, previous); err != nil {
 				t.Fatal(err)
 			}
-			stage := setupStage(f, p)
+			stage := setupStage(p)
 			calls := 0
 			stage.Prepare = func(_ context.Context, r SetupRequest, _, _ io.Writer) (sandbox.Sandbox, sandbox.SandboxSpec, []string, error) {
 				return baselineRuntimeFunc(func(context.Context, sandbox.SandboxSpec, []string) (sandbox.Process, error) {
@@ -331,10 +370,10 @@ func TestSetupSuccessReuseAndRetryPolicy(t *testing.T) {
 	}
 }
 
-func TestSetupStoreScopeImmutabilityAndAtomicity(t *testing.T) {
+func TestSetupHTTPScopeImmutabilityAndAtomicity(t *testing.T) {
 	f, e, _ := newSetupExecution(t)
 	setupCommand(t, f, e, "fixture setup")
-	repository := store.SetupStore{DB: f.db}
+	repository := remoteSetupRepository{execution: e}
 	now := time.Now().UTC()
 	run := model.TestRun{ID: ulid.Make().String(), ExecutionID: e.Claim.Execution.ID, Kind: "setup", TargetSHA: e.BaseSHA, Command: *e.Claim.Project.SetupCommand, ExitCode: new(0), StartedAt: now, FinishedAt: now}
 	for _, change := range []func(*model.TestRun){
@@ -355,7 +394,9 @@ func TestSetupStoreScopeImmutabilityAndAtomicity(t *testing.T) {
 	if _, err := f.db.Exec(`CREATE TRIGGER reject_setup BEFORE UPDATE OF setup_status ON worktrees BEGIN SELECT RAISE(ABORT, 'reject setup'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.SaveSetup(context.Background(), e.WorktreeID, run, true); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := repository.SaveSetup(ctx, e.WorktreeID, run, true); err == nil {
 		t.Fatal("save unexpectedly succeeded")
 	}
 	var count int

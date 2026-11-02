@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"reflect"
 	"time"
 
@@ -12,9 +11,13 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
-// SetupStore belongs to the Control Plane. Runner delivery is an interface
-// until the setup measurement/status wire contract is defined by the specs.
+// SetupStore belongs to the Control Plane; Runner writes use the result API.
 type SetupStore struct{ DB *sql.DB }
+
+var (
+	ErrInvalidSetup = errors.New("store: invalid setup measurement")
+	ErrSetupExists  = errors.New("store: setup measurement is immutable")
+)
 
 func (s SetupStore) SetupSucceeded(ctx context.Context, executionID, worktreeID string) (bool, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -37,25 +40,33 @@ func (s SetupStore) SetupSucceeded(ctx context.Context, executionID, worktreeID 
 // succeeded is separate because a runtime failure can have an exit code of 0
 // (e.g. isolation/cleanup failure), which must not mark setup successful.
 func (s SetupStore) SaveSetup(ctx context.Context, worktreeID string, run model.TestRun, succeeded bool) error {
-	if id, err := ulid.ParseStrict(run.ID); err != nil || id.String() != run.ID {
-		return fmt.Errorf("store: invalid setup ID")
-	}
-	if run.Kind != "setup" || run.Command == "" || run.StartedAt.IsZero() || run.FinishedAt.IsZero() ||
-		run.FinishedAt.Before(run.StartedAt) || run.Total != nil || run.Passed != nil || run.Failed != nil || run.Skipped != nil ||
-		run.TestIDsArtifactID != nil || succeeded && (run.TimedOut || run.ExitCode == nil || *run.ExitCode != 0) {
-		return fmt.Errorf("store: invalid setup record")
-	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.SaveSetupTx(ctx, tx, worktreeID, run, succeeded); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SaveSetupTx joins the authenticated result handler's transaction.
+func (s SetupStore) SaveSetupTx(ctx context.Context, tx *sql.Tx, worktreeID string, run model.TestRun, succeeded bool) error {
+	if id, err := ulid.ParseStrict(run.ID); err != nil || id.String() != run.ID {
+		return ErrInvalidSetup
+	}
+	if run.Kind != "setup" || run.Command == "" || run.StartedAt.IsZero() || run.FinishedAt.IsZero() ||
+		run.FinishedAt.Before(run.StartedAt) || run.Total != nil || run.Passed != nil || run.Failed != nil || run.Skipped != nil ||
+		run.TestIDsArtifactID != nil || succeeded && (run.TimedOut || run.ExitCode == nil || *run.ExitCode != 0) {
+		return ErrInvalidSetup
+	}
 	base, err := baselineScope(ctx, tx, run.ExecutionID, worktreeID)
 	if err != nil {
 		return err
 	}
 	if run.TargetSHA != base {
-		return fmt.Errorf("store: setup target differs from start SHA")
+		return ErrBaselineScope
 	}
 	status := "failed"
 	if succeeded {
@@ -77,9 +88,9 @@ func (s SetupStore) SaveSetup(ctx context.Context, worktreeID string, run model.
 			return err
 		}
 		if !reflect.DeepEqual(run, previous) || savedStatus != status {
-			return fmt.Errorf("store: setup measurement is immutable")
+			return ErrSetupExists
 		}
-		return tx.Commit()
+		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -87,10 +98,13 @@ func (s SetupStore) SaveSetup(ctx context.Context, worktreeID string, run model.
 	var command sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT p.setup_command FROM projects p JOIN tasks t ON t.project_id=p.id
 		JOIN executions e ON e.task_id=t.id WHERE e.id=? AND e.status='preparing'`, run.ExecutionID).Scan(&command); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidSetup
+		}
 		return err
 	}
 	if !command.Valid || command.String != run.Command {
-		return fmt.Errorf("store: setup command differs from Registry")
+		return ErrInvalidSetup
 	}
 	if err := RecordTestRun(ctx, tx, run); err != nil {
 		return err
@@ -98,5 +112,5 @@ func (s SetupStore) SaveSetup(ctx context.Context, worktreeID string, run model.
 	if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET setup_status=? WHERE id=?`, status, worktreeID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }

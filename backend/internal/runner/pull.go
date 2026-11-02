@@ -74,6 +74,7 @@ type ClaimWorktree struct {
 	Path        string             `json:"path"`
 	BaseSHA     string             `json:"baseSha"`
 	BranchName  string             `json:"branchName"`
+	SetupStatus string             `json:"setupStatus"`
 	Baseline    *ClaimBaseline     `json:"baseline"`
 	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
 }
