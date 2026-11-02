@@ -73,7 +73,7 @@ Projectごとのファイルロックで、複数の準備処理による二重c
 if err := execution.CreateWorktree(ctx, repositories, freshNumber, pathAuditor); err != nil {
     return err
 }
-// execution.WorktreePathとBranchNameを、コピーと記録の工程へ渡す。
+// execution.WorktreePathとBranchNameを、後述のCopyWorktreeFilesへ渡す。
 ```
 
 `Repositories.Create`は作業用クローンを再検証し、Projectごとのロックを取る。
@@ -105,6 +105,62 @@ Runnerは`WorktreePathAuditor`へ拒否の記録を要求してから失敗を�
 - このタスクは仕様06の3.2の手順3〜4を担当する。コピー、worktrees行の作成、
   worktree_ready、setup、continueでの再利用は後続の工程で行う。
   worktrees行をRunnerから登録する要求形式も未定義であり、ここではAPIを追加しない。
+
+## コピー許可リストとハッシュ記録
+
+`RecordRemoteBase`と`CreateWorktree`の成功後、同じ工程3で呼ぶ。
+
+```go
+if err := execution.CopyWorktreeFiles(ctx, repositories, copyRecorder); err != nil {
+    return err
+}
+// 保存の応答後にExecution.WorktreeIDとCopiedFilesが設定される。
+// 呼び出し元は続いてworktree_readyを送り、後続の工程へ進む。
+```
+
+`Repositories.CopyFiles`はLocal Repository Pathを読み取り元とし、許可リストに
+列挙された通常ファイルだけを同じ相対パスへ置く。ディレクトリの再帰コピーや
+ワイルドカード展開はしない。許可リスト外の`.env`は読まない。
+許可リストに明示された`.env`は仕様03の3.3に従ってコピー対象になるため、
+テストではダミー値だけを使う。
+
+コピー元とコピー先の各パス要素を`openat`の`O_NOFOLLOW`で開く。
+コピー元のリンクは内部・外部・リンク切れを問わずスキップし、
+親ディレクトリのリンクもたどらない。通常ファイル以外もスキップする。
+コピー元が無ければ`WorktreeCopyRecorder.WarnMissingCopy`の成功を待って続ける。
+警告を保存できなければ成功にしない。相対パスは正規化して重複を除き、
+コピー先へ書いた内容のSHA-256を`model.CopiedFile`へ記録する。
+SandboxとWorktree Rootを書き換えるプロセスは、保存が終わるまで停止しておく。
+
+コピー先に通常ファイルがある場合も、追跡の有無を問わずコピー元の内容で置き換える。
+同じ親ディレクトリ内の一時ファイルへ書き終えてから`renameat`で置き換え、
+既存のシンボリックリンクやディレクトリはエラーにする。
+親ディレクトリのリンクをたどらず、ハードリンク先のファイルも変更しない。
+途中で失敗した場合、置き換え前のファイルと、それまでにコピーしたファイルは保持する。
+その場合は完成したコピー一覧として保存しない。
+
+`store.WorktreeCopyStore`はControl Plane側の保存処理である。
+`worktrees`の行と`copied_files`、Executionへの関連付けを同じトランザクションで保存する。
+空の一覧は`[]`として保存する。同じ記録の再送は成功し、内容の差し替えは拒否する。
+`WarnMissingCopy`は既存の`execution_events`へ`log`警告を保存する。
+RunnerからこのStoreを直接使わず、`WorktreeCopyRecorder`の送信実装を外から渡す。
+
+仕様の穴と仮置きは次のとおり。
+
+- worktree登録の要求本文が未定義のため、HTTPの要求形式は追加していない。
+  保存と警告の送信は内部インターフェースで区切った。実際の送信実装は仕様の確定後に接続する。
+- 仕様06に分類の無いコピーI/Oエラーと警告保存失敗は、仮に`failed/config_error`として報告する。
+  記録の送信失敗では先のコピーを繰り返さず、成功したように後続工程へ進めない。
+- 仕様03の相対パス検証案に従い、`..`、絶対パス、ワイルドカードを拒否する。
+  `.git`を含むパスもGit管理領域への書き込みを防ぐため拒否する。
+  新しいディレクトリは既存の準備処理と同じ`0700`、ファイルはコピー元の通常権限を使う。
+
+`copy_test.go`は実ファイルを使って除外、リンク拒否、既存の通常ファイルの置き換えを検証する。
+Runnerの`TestCopyWorktreeFilesPersistsPathsAndActualSHA256`は実際にfetch・作成・コピーを行い、
+SQLiteに保存した相対パスとSHA-256を実ファイルと照合する。
+同じ記録をGate 3へ渡し、コピー直後は除外され、変更後は除外されないことも確認する。
+`TestCopyWorktreeFilesReplacesTrackedFileAndPersistsSHA256`ではBase Branchの追跡済みファイルを
+本人のローカルの内容で置き換え、保存したSHA-256とGate 3の除外を確認する。
 
 ## 読み取り用認証の境界
 
