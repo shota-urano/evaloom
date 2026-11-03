@@ -37,6 +37,7 @@ type resultInput struct {
 	GateResults []resultGateResult `json:"gateResults"`
 	Baseline    *model.TestRun     `json:"baseline"`
 	TestRuns    []model.TestRun    `json:"testRuns"`
+	SetupStatus *string            `json:"setupStatus"`
 }
 
 type resultGateResult struct {
@@ -101,6 +102,18 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
 			return
 		}
+		if hasSetupResult(input) {
+			err = saveSetupResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
 			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
 			return
@@ -109,6 +122,18 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 		// is deliberately separate from the state transition contract below.
 		if input.Baseline != nil {
 			err = saveBaselineResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if input.BaseSHA != nil && input.FromStatus == input.Status {
+			err = saveBaseResult(r, tx, execution, input)
 			if err == nil {
 				err = tx.Commit()
 			}

@@ -89,6 +89,7 @@ func (execution *Execution) reportResult(status model.ExecutionStatus, class mod
 		return nil
 	}
 	result := ExecutionResult{FromStatus: execution.status, Status: status, ErrorClass: class, ErrorMessage: message, WorktreeID: execution.WorktreeID, BaseSHA: execution.BaseSHA}
+	result.BranchName = execution.BranchName
 	result.HarnessHeadSHA, result.VerifiedSHA = execution.HarnessHeadSHA, execution.VerifiedSHA
 	result.GateResults, result.TestRuns, result.Block = execution.gateResults, execution.testRuns, block
 	if status == model.ExecutionSucceeded {

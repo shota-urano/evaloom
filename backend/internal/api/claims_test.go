@@ -532,6 +532,9 @@ func TestClaimPreviousExecutionAndResumePoint(t *testing.T) {
 				claim.Previous.BranchName == nil || *claim.Previous.BranchName != branch || claim.Previous.PRNumber == nil || *claim.Previous.PRNumber != 12 {
 				t.Fatalf("previous=%+v", claim.Previous)
 			}
+			if mode == "continue" && (claim.Worktree == nil || claim.Worktree.SetupStatus != "succeeded") {
+				t.Fatalf("missing setup status snapshot: %+v", claim.Worktree)
+			}
 			var savedStatus, resume string
 			if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, nextID).Scan(&savedStatus, &resume); err != nil || savedStatus != "claimed" || resume != "gate3" {
 				t.Fatalf("saved status=%s resume=%s err=%v", savedStatus, resume, err)
