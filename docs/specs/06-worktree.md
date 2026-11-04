@@ -72,9 +72,17 @@ requirements 8.5「原則として、前回のブランチ・worktree・PR を�
 1. worktrees の行と実ディレクトリがあること、チェックアウト中のブランチが branch_name と一致することを確かめる。
 2. `git status --porcelain` で未コミットの変更を確かめる。コピー許可リストで置いたファイル（内容が置いたときと同じもの）は除いて判定する。
 3. HEAD が前回の Execution の最後の既知の SHA（pushed_sha、無ければ harness_head_sha、無ければ base_sha）と一致することを確かめる。
-4. 2 か 3 に当たれば、Execution を `blocked`（cause=`git_state`）にして止める。本人が状態を確認して再実行するか中止する。
+4. 次のどれかに当たれば、Execution を `blocked`（cause=`git_state`）にして止める。本人が状態を確認して再実行するか中止する。
+   - 1 で行・ディレクトリ・ブランチが合わない（6 の場合を除く）
+   - 2 で未コミットの変更がある
+   - 3 で HEAD が一致しない
+   - 前回の worktree の準備（作り直し、コピー許可リストの配置、セットアップ）が最後まで終わった記録が無い
 5. 問題が無ければ、base_sha は前回の値を引き継ぎ、worktrees.status を `active` に戻す。
 6. worktree が削除済み（`cleaned`）でブランチが残っている場合は、そのブランチから worktree を作り直す。開始点 SHA は前回の値を使う。
+
+再利用の確認では、判断に迷う状態を自動で直さない。上の 4 に挙げたものに限らず、前回の状態と食い違う点があれば `blocked`（cause=`git_state`）にして本人に確認を求める。
+
+`blocked`・`cancelled`・`failed` で終わった Execution にも、前回の worktree との関連付けと 3 の最後の既知の SHA を引き継いで記録する。本人が状態を直して再実行したとき、正しい worktree と SHA で照合できるようにするためである。
 
 再利用時はベースブランチの最新を取り込まない（rebase / merge をしない）。取り込みが必要かどうかの判断は requirements に無いため、本人が新しいタスクか `fresh` で対応する。
 
