@@ -20,6 +20,8 @@ import (
 // reported synchronously before proceeding; the callback must emit a log warning.
 // Sandbox writers must remain stopped until copying and recording have finished.
 // Existing regular files are replaced; destination symlinks are never followed.
+// On failure the returned manifest contains every file already published. The
+// caller can checkpoint this prefix before reporting cancellation or failure.
 func (r Repositories) CopyFiles(ctx context.Context, source, destination string, allowlist []string, warnMissing func(context.Context, string) error) ([]model.CopiedFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -63,20 +65,20 @@ func (r Repositories) CopyFiles(ctx context.Context, source, destination string,
 	copied := make([]model.CopiedFile, 0, len(paths))
 	for _, name := range paths {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return copied, err
 		}
 		digest, err := copyFile(ctx, src, dst, name)
 		if errors.Is(err, os.ErrNotExist) {
 			if err := warnMissing(ctx, filepath.ToSlash(name)); err != nil {
-				return nil, fmt.Errorf("worktree: missing copy warning failed")
+				return copied, fmt.Errorf("worktree: missing copy warning failed")
 			}
 			continue
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return copied, ctx.Err()
 			}
-			return nil, fmt.Errorf("worktree: copy failed")
+			return copied, fmt.Errorf("worktree: copy failed")
 		}
 		if digest != "" {
 			copied = append(copied, model.CopiedFile{Path: filepath.ToSlash(name), SHA256: digest})

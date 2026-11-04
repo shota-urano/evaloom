@@ -162,6 +162,65 @@ SQLiteに保存した相対パスとSHA-256を実ファイルと照合する。
 `TestCopyWorktreeFilesReplacesTrackedFileAndPersistsSHA256`ではBase Branchの追跡済みファイルを
 本人のローカルの内容で置き換え、保存したSHA-256とGate 3の除外を確認する。
 
+## continueでの再利用
+
+claimに`worktree`がある通常のcontinueでは、工程3で新規作成の代わりに呼ぶ。
+
+```go
+if err := execution.ReuseWorktree(ctx, repositories, reuseRepository, pathAuditor); err != nil {
+    return err
+}
+// 成功の応答後、呼び出し元がworktree_readyを送り、Context固定とsetupへ進む。
+```
+
+`Repositories.Reuse`は作業用クローンとworktreeの実パス、`.git`の参照先を検証する。
+チェックアウト中のブランチ、未コミットの変更、前回の既知のSHAとの一致を確認する。
+コピーしたファイルの除外はGate 3と同じ`gate.CheckWorktree`を使う。
+記録した内容と一致する未追跡ファイルと未ステージのコピーだけを除外し、
+変更済みのコピー、ステージ済みの変更、削除、renameは除外しない。
+
+未コミットの変更、ブランチやHEADの不一致は、既存の認証付きresult APIで
+`blocked/git_state`として記録する。Gitの状態を読めない場合も安全側で停止する。
+現在のHEADを読めない場合は前回の既知のSHAを参照値として送り、現在のHEADは
+未確認とerrorMessageに明記する。パス拒否は既存の監査境界を呼び、
+`failed/config_error`とする。Gitや認証情報を含みうる生のエラー本文は送らない。
+
+ディレクトリが無い場合は、残っているローカルブランチのSHAを確認してから
+同じパスにworktreeを作り直す。手動削除でGitの登録だけが残った場合は、
+その存在しないパスの登録だけを`worktree remove`で解除する。
+全体のpruneや`--force`は使わず、ブランチが別のworktreeで使われていれば失敗する。
+再利用ではfetch、rebase、mergeを行わず、ブランチのSHAと開始点SHAを変えない。
+再作成した場合だけ既存のコピー処理を呼び、コピー一覧を保存してsetupをpendingに戻す。
+普通の再利用ではコピー元を読み直さず、成功済みのsetupを引き継ぐ。
+
+成功時は既存のresult APIへ、preparingのまま`worktreeId`、`branchName`、`baseSha`を送る。
+Control Planeは直前のExecutionの所属、ブランチ、開始点との一致を確認し、
+関連付けとworktrees.status=active、cleaned_atの解除を同じトランザクションで保存する。
+同じ報告の再送は成功し、別のworktreeや開始点への差し替えは拒否する。
+新しいHTTPエンドポイント、要求フィールド、テーブル、列は追加していない。
+
+仕様の穴と仮置きは次のとおり。
+
+- claimには前回のpushed_sha、harness_head_sha、worktreeのstatusが含まれていない。
+  `WorktreeReuseRepository.LoadWorktreeReuse`を内部の取得境界にした。
+  Control Plane側の`store.WorktreeReuseStore`が、直前のExecutionから
+  pushed_sha、harness_head_sha、base_shaの順で参照値を選ぶ。
+  Runnerからの取得形式が確定するまでは送信実装を外から渡す必要があり、
+  取得できない場合は準備を進めない。Runnerは管理DBを開かない。
+- 再作成時のコピー一覧の送信形式も未定義なので、既存の新規コピー登録と同じく
+  内部境界`RecordRestoredCopies`で区切った。Control Plane側の実装は保存済みの
+  worktreeにコピー一覧とsetup_status=pendingを保存する。
+- 再利用の工程内報告は、既存の開始点報告と同じpreparingからpreparingへの
+  測定報告として扱う。仕様はresult本文の詳細を定めていない。
+- ブランチの不一致・消失、Git状態の読み取り失敗の分類は表に明記されていないため、
+  仮にgit_stateとして停止する。再作成やコピーのI/O失敗は既存作成処理に合わせて
+  failed/config_errorとする。監査の送信形式は引き続き既存の内部境界に残す。
+
+`runner/worktree_reuse_test.go`は実Gitでworktreeを作り、認証付きHTTPで報告して
+SQLiteから結果を読み戻す。未コミット変更の停止、コピーの除外、削除後の復元、
+前回の追加commitと開始点SHAの保持、SHAの優先順、ブランチの不一致、
+不正な結果報告の拒否、パス拒否、取得・保存失敗時の停止を確認する。
+
 ## 読み取り用認証の境界
 
 仕様06の3.2はTrusted Runnerの読み取り用認証を要求するが、渡し方は定めていない。
