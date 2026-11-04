@@ -115,7 +115,7 @@ if err := execution.CopyWorktreeFiles(ctx, repositories, copyRecorder); err != n
     return err
 }
 // 保存の応答後にExecution.WorktreeIDとCopiedFilesが設定される。
-// 呼び出し元は続いてworktree_readyを送り、後続の工程へ進む。
+// 保存処理がworktree_readyを記録した後、後続の工程へ進む。
 ```
 
 `Repositories.CopyFiles`はLocal Repository Pathを読み取り元とし、許可リストに
@@ -141,7 +141,8 @@ SandboxとWorktree Rootを書き換えるプロセスは、保存が終わるま
 
 `store.WorktreeCopyStore`はControl Plane側の保存処理である。
 `worktrees`の行と`copied_files`、Executionへの関連付けを同じトランザクションで保存する。
-空の一覧は`[]`として保存する。同じ記録の再送は成功し、内容の差し替えは拒否する。
+空の一覧は`[]`として保存する。`worktree_ready`も同じトランザクションで記録する。
+同じ記録の再送は成功し、内容の差し替えは拒否する。
 `WarnMissingCopy`は既存の`execution_events`へ`log`警告を保存する。
 RunnerからこのStoreを直接使わず、`WorktreeCopyRecorder`の送信実装を外から渡す。
 
@@ -161,6 +162,95 @@ SQLiteに保存した相対パスとSHA-256を実ファイルと照合する。
 同じ記録をGate 3へ渡し、コピー直後は除外され、変更後は除外されないことも確認する。
 `TestCopyWorktreeFilesReplacesTrackedFileAndPersistsSHA256`ではBase Branchの追跡済みファイルを
 本人のローカルの内容で置き換え、保存したSHA-256とGate 3の除外を確認する。
+
+## continueでの再利用
+
+claimに`worktree`がある通常のcontinueでは、工程3で新規作成の代わりに呼ぶ。
+
+```go
+if err := execution.ReuseWorktree(ctx, repositories, reuseRepository, pathAuditor); err != nil {
+    return err
+}
+// 成功の応答後、Context固定とsetupへ進む。
+```
+
+`Repositories.Reuse`は作業用クローンとworktreeの実パス、`.git`の参照先を検証する。
+チェックアウト中のブランチ、未コミットの変更、前回の既知のSHAとの一致を確認する。
+コピーしたファイルの除外はGate 3と同じ`gate.CheckWorktree`を使う。
+記録した内容と一致する未追跡ファイルと未ステージのコピーだけを除外し、
+変更済みのコピー、ステージ済みの変更、削除、renameは除外しない。
+
+未コミットの変更、ブランチやHEADの不一致は、既存の認証付きresult APIで
+`blocked/git_state`として記録する。Gitの状態を読めない場合も安全側で停止する。
+現在のHEADを読めない場合は前回の既知のSHAを参照値として送り、現在のHEADは
+未確認とerrorMessageに明記する。パス拒否は既存の監査境界を呼び、
+`failed/config_error`とする。Gitや認証情報を含みうる生のエラー本文は送らない。
+
+ディレクトリが無い場合は、残っているローカルブランチのSHAを確認してから
+同じパスにworktreeを作り直す。手動削除でGitの登録だけが残った場合は、
+その存在しないパスの登録だけを`worktree remove`で解除する。
+全体のpruneや`--force`は使わず、ブランチが別のworktreeで使われていれば失敗する。
+再利用ではfetch、rebase、mergeを行わず、ブランチのSHAと開始点SHAを変えない。
+Gitがディレクトリを作り直す前に、`BeginWorktreeRestore`が復元開始の`log`イベントを
+記録し、以前のコピー一覧を空にしてsetupをpendingに戻す。復元開始は既存の
+`sourceId=worktree-restore/<worktree-id>`、`stream=runner`、`text`で表す。
+再作成した場合だけ既存のコピー処理を呼び、コピーがすべて終わったときに限り、
+コピー一覧と`worktree_ready`を同じトランザクションで保存する。途中でキャンセル・
+失敗した場合は、完了した一覧として保存しない。
+普通の再利用ではコピー元を読み直さず、成功済みのsetupを引き継ぐ。
+
+再利用前に、最後の復元開始より後の`worktree_ready`とsetupの完了を確かめる。
+イベントのパス・ブランチ・開始点SHAと所属が保存済みworktreeに一致し、
+`setup_status=succeeded`である場合だけ準備完了とする。setupが未設定で
+`setup_status=pending`なら、その準備時点の実行不要を示す`log`イベントも確認する。
+この記録は`worktree_ready`と同じトランザクションで保存し、sourceIdを
+`worktree-setup-not-required/<worktree-id>`とする。現在のコマンドが空になったことだけでは、
+前回のセットアップを完了扱いにしない。
+古いExecutionの遅延イベントでは、後のExecutionで始まった復元を完了扱いにしない。
+準備完了の証拠が無い場合、またはcleanedの行に実ディレクトリが残っている場合は、
+コピー・setup・復元を自動で繰り返さず`blocked/git_state`で停止する。
+
+`continue`のHTTP retryは、新しいpending Executionの作成時に、前回のworktree_id・
+base_sha・branch_nameと最後の既知SHAを引き継ぐ。最後の既知SHAは、pushed_sha、
+harness_head_sha、base_shaの順に選び、新しいExecutionのharness_head_shaへ保存する。
+verified_shaとpushed_shaは引き継がず、新しい実行の測定結果と混同しない。
+Runnerも再利用の照合前に同じ関連付けとSHAを保持し、blocked・cancelled・failedの
+どの結果にも付ける。想定外のHEADはBlockのhead_shaへ記録し、既知SHAは変更しない。
+このため、準備前の中止でも、次のretryがworktreeを新規作成しようとすることはない。
+
+成功時は既存のresult APIへ、preparingのまま`worktreeId`、`branchName`、`baseSha`を送る。
+Control Planeは直前のExecutionの所属、ブランチ、開始点との一致を確認し、
+コピー完了のイベントも検証し、関連付けとworktrees.status=active、
+cleaned_atの解除を同じトランザクションで保存する。
+同じ報告の再送は成功し、別のworktreeや開始点への差し替えは拒否する。
+新しいHTTPエンドポイント、要求フィールド、テーブル、列は追加していない。
+
+仕様の穴と仮置きは次のとおり。
+
+- claimには前回のpushed_sha、harness_head_sha、worktreeのstatusが含まれていない。
+  `WorktreeReuseRepository.LoadWorktreeReuse`を内部の取得境界にした。
+  Control Plane側の`store.WorktreeReuseStore`が、直前のExecutionから
+  pushed_sha、harness_head_sha、base_shaの順で参照値を選ぶ。
+  Runnerからの取得形式が確定するまでは送信実装を外から渡す必要があり、
+  取得できない場合は準備を進めない。Runnerは管理DBを開かない。
+- 再作成時のコピー一覧の送信形式も未定義なので、既存の新規コピー登録と同じく
+  内部境界`RecordRestoredCopies`で区切った。Control Plane側の実装は保存済みの
+  worktreeにコピー一覧とsetup_status=pending、worktree_readyを保存する。
+  復元開始の送信形式も未定義であり、`BeginWorktreeRestore`の内部境界に残す。
+  準備記録は既存のexecution_eventsとsetup_statusで表し、列は追加しない。
+- 再利用の工程内報告は、既存の開始点報告と同じpreparingからpreparingへの
+  測定報告として扱う。仕様はresult本文の詳細を定めていない。
+- ブランチの不一致・消失、Git状態の読み取り失敗の分類は表に明記されていないため、
+  仮にgit_stateとして停止する。再作成やコピーのI/O失敗は既存作成処理に合わせて
+  failed/config_errorとする。監査の送信形式は引き続き既存の内部境界に残す。
+
+`runner/worktree_reuse_test.go`は実Gitでworktreeを作り、認証付きHTTPで報告して
+SQLiteから結果を読み戻す。未コミット変更の停止、コピーの除外、削除後の復元、
+前回の追加commitと開始点SHAの保持、SHAの優先順、ブランチの不一致、
+不正な結果報告の拒否、パス拒否、取得・保存失敗時の停止を確認する。
+復元開始直後、復元後、コピー後、部分コピー中のキャンセルからHTTP retryとclaimを行い、
+関連付けと追加commitのSHAを保持したままblockedになることも確認する。
+ファイル内容、保存したSHA-256、setup_status、準備記録の欠落と古い遅延イベントを検証する。
 
 ## 読み取り用認証の境界
 
