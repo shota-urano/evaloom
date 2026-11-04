@@ -252,6 +252,68 @@ SQLiteから結果を読み戻す。未コミット変更の停止、コピー�
 関連付けと追加commitのSHAを保持したままblockedになることも確認する。
 ファイル内容、保存したSHA-256、setup_status、準備記録の欠落と古い遅延イベントを検証する。
 
+## 保持状態とクリーンアップ
+
+仕様06の3.6と仕様04の3.5、3.6、3.8に従い、既存の
+`task.recordTransitionEffects`が失敗・中断・タイムアウト・中止・Blockedへの
+遷移と同じトランザクションで、activeのworktreeをretainedにする。
+cleanedの行はretainedに戻さない。PR作成完了だけでは削除せず、activeのまま残す。
+
+クリーンアップを呼ぶ側は`runner.CleanupWorktree`へ、Runner ID、worktree ID、
+`WorktreeCleanupRepository`の送信実装、`Repositories`、既存の
+`publisher.PreviousPullRequest`、`WorktreePathAuditor`を渡す。
+実行完了時の自動削除には接続していない。
+
+Control Plane側の`store.WorktreeCleanupStore.WithWorktreeCleanup`は、対象の所有者、
+タスクと最新Executionの終端状態、同じProjectの実行停止を確認する。
+対応するworktree・ブランチの最後のPR番号を使い、RunnerがGitHubで
+closedまたはmergedと確認できた場合だけ削除する。PR未記録、open、不明、取得失敗、
+queuedやBlockedのタスクは保持する。completedのタスクもPRがopenなら保持する。
+
+実行条件の確認から削除・cleanedの記録までBEGIN IMMEDIATEを保持する。
+再実行・claim・resumeなどの書き込みは、この間は進められない。
+コールバック内から同じDBへ再入しない。送信実装も、キャンセル時を含め、
+Runnerの削除処理が終わるまで排他を維持する必要がある。
+パス拒否の監査はトランザクションを解放した後に既存の監査境界へ送る。
+呼び出し側はProjectのSandboxとWorktree Rootを書き換えるプロセスを停止しておく。
+
+`Repositories.Remove`は既存の作成・再利用と同じProjectロックと安全なGitラッパーを使う。
+専用クローン、worktreeの実パス、Git領域への参照先、登録済みのパスとブランチを確認し、
+`git worktree remove -- <path>`で対象だけを削除する。ブランチのrefは変更・削除しない。
+`--force`、`reset`、`clean`、全体の`prune`は使わない。
+未コミット変更、未追跡ファイル、ロックがあれば削除を失敗させ、保持する。
+コピー許可リストのファイルも、クリーンアップでは削除のために自動で除去しない。
+
+Gitの削除が成功した後だけstatus=cleanedとcleaned_atを保存する。
+setup_status、copied_files、Executionの関連付けとSHAは保持する。
+これにより仕様06の3.3の既存の復元処理が、残したブランチからディレクトリを作り直し、
+コピーとsetupの準備記録を更新してactiveに戻せる。
+cleanedへの同じ要求の再送では削除を繰り返さず、cleaned_atも変えない。
+
+ファイル削除はDBと一緒にはロールバックできない。削除後のDB保存が失敗したら、
+成功として返さず、行は元の状態を保つ。再送ではディレクトリの消失を許容し、
+残存ブランチのrefを確認してcleanedを記録できる。手動削除で残った登録の除去も
+対象パスだけに限定する。ブランチ自体が無い、別のブランチやパスに替わっている場合は
+自動修復せず、エラーを返す。
+
+仕様の穴と実装上の判断は次のとおり。
+
+- Q26の契機とRunnerへのクリーンアップ要求形式は未定義である。
+  `WorktreeCleanupRepository`を内部境界とし、公開API・テーブル・列は追加していない。
+  呼び出し契機と送信実装は仕様の確定後に接続する。
+- PRが閉じていてタスクが終端状態という3.6の条件を削除の上限にした。
+  PRが無い失敗タスクを削除する運用は追加していない。
+- dirty、ロック、Git操作失敗、保存失敗の分類と通知は未定義である。
+  内部呼び出しのエラーとして返し、終了済みExecutionの結果は書き換えない。
+  Git・DB・通信の生エラーはRunnerから返さない。
+- DBの排他を保ったままPR確認とGit操作を行うため、その間は他の書き込みも待つ。
+  分散した削除要求の排他・タイムアウト方式は送信形式と併せて確定する必要がある。
+
+`runner/worktree_cleanup_test.go`は実GitとSQLite、既存の認証付きresult APIを使い、
+失敗・中断の両回収経路・タイムアウト・中止・Blocked後のretained、未コミット内容の保持、
+削除後のブランチrefと追加commitの残存、既存continueによる復元を確認する。
+削除条件の拒否、DB失敗後の再送、別DB接続との排他も検証する。
+
 ## 読み取り用認証の境界
 
 仕様06の3.2はTrusted Runnerの読み取り用認証を要求するが、渡し方は定めていない。
