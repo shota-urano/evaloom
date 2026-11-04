@@ -133,7 +133,11 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			return
 		}
 		if input.BaseSHA != nil && input.FromStatus == input.Status {
-			err = saveBaseResult(r, tx, execution, input)
+			if input.WorktreeID != nil {
+				err = saveWorktreeReuseResult(r, tx, execution, input)
+			} else {
+				err = saveBaseResult(r, tx, execution, input)
+			}
 			if err == nil {
 				err = tx.Commit()
 			}
@@ -286,6 +290,16 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 			*input.WorktreeID, execution.TaskID, execution.RunnerID).Scan(&own)
 		if err != nil {
 			return err
+		}
+		// A failed/blocked/cancelled continue must retain its predecessor association
+		// even if restoration of a cleaned directory could not finish. This
+		// does not activate the cleaned row or permit it in normal progress.
+		if !own && input.FromStatus == "preparing" && (input.Status == "failed" || input.Status == "cancelled" ||
+			input.Status == "blocked" && input.Block != nil && input.Block.Cause == model.BlockGitState) {
+			own, err = ownsPredecessorWorktree(r, tx, execution.ID, input)
+			if err != nil {
+				return err
+			}
 		}
 		if !own {
 			return &Error{Code: PreconditionFailed, Message: "Worktree does not belong to this Execution's Task and Runner"}

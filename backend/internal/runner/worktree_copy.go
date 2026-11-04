@@ -14,7 +14,8 @@ type WorktreeCopier interface {
 }
 
 // WorktreeCopyRecorder is the Control Plane boundary. Implementations must save
-// worktrees.copied_files and associate the row with the Execution before ACK.
+// worktrees.copied_files, associate the row with the Execution and record
+// worktree_ready atomically before ACK.
 // Missing sources require a log warning. No HTTP shape for worktree registration
 // exists in the specs; Runner must not open the management DB to implement this.
 type WorktreeCopyRecorder interface {
@@ -23,8 +24,8 @@ type WorktreeCopyRecorder interface {
 }
 
 // CopyWorktreeFiles follows RecordRemoteBase and CreateWorktree in stage 3.
-// Resume/reuse and setup are separate stages. The caller emits worktree_ready
-// only after this call succeeds; no readiness is announced for partial copies.
+// Resume/reuse and setup are separate stages. The recorder emits worktree_ready
+// with the complete manifest; no readiness is announced for partial copies.
 func (e *Execution) CopyWorktreeFiles(ctx context.Context, copier WorktreeCopier, recorder WorktreeCopyRecorder) error {
 	if err := ctx.Err(); err != nil {
 		return err
