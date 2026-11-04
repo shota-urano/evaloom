@@ -2,10 +2,8 @@ package runner
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,6 +29,18 @@ type cancellingWorktreeReuser struct {
 }
 
 func (r *cancellingWorktreeReuser) Reuse(ctx context.Context, request worktree.ReuseRequest) (worktree.Reused, error) {
+	if r.phase == "begin" {
+		before := request.BeforeRecreate
+		request.BeforeRecreate = func(ctx context.Context) error {
+			if err := before(ctx); err != nil {
+				return err
+			}
+			r.called = true
+			r.cancel()
+			return ctx.Err()
+		}
+		return r.Repositories.Reuse(ctx, request)
+	}
 	result, err := r.Repositories.Reuse(ctx, request)
 	if err != nil || !result.Recreated {
 		r.t.Fatalf("real restoration did not finish: %+v %v", result, err)
@@ -71,7 +81,7 @@ func (r *cancellingWorktreeReuser) CopyFiles(ctx context.Context, source, destin
 
 func TestContinueWorktreeCancellationDuringRestoreRetainsAssociationForRetryHTTP(t *testing.T) {
 	for _, removal := range []string{"cleaned", "manually-deleted"} {
-		for _, phase := range []string{"restore", "copy", "partial-copy"} {
+		for _, phase := range []string{"begin", "restore", "copy", "partial-copy"} {
 			t.Run(removal+"/"+phase, func(t *testing.T) {
 				f, previous, repositories, source := newContinueExecution(t)
 				w := previous.Claim.Worktree
@@ -168,46 +178,43 @@ func TestContinueWorktreeCancellationDuringRestoreRetainsAssociationForRetryHTTP
 				control := testExecutionControl()
 				control.Reporter = process
 				next := &Execution{Claim: *claim, control: &control, status: model.ExecutionPreparing}
-				if err := next.ReuseWorktree(context.Background(), repositories, history, reuseAudit(t)); err != nil {
-					t.Fatalf("retry could not reuse restored branch: %v", err)
+				// Missing preparation evidence blocks BEFORE Git or copying. The
+				// owner source changes again; retry must not overwrite files.
+				before, readErr := os.ReadFile(filepath.Join(w.Path, "dummy config"))
+				gate2Write(t, filepath.Join(source, "dummy config"), "must not be copied on retry")
+				if err := next.ReuseWorktree(context.Background(), repositories, history, reuseAudit(t)); !errors.Is(err, worktree.ErrGitState) {
+					t.Fatalf("unfinished preparation did not block: %v", err)
 				}
-				assertReusedWorktree(t, f, next, "pending")
-				body, err := os.ReadFile(filepath.Join(w.Path, "dummy config"))
-				if err != nil || string(body) != content || next.Claim.Worktree.SetupStatus != "pending" {
-					t.Fatalf("restored copy/setup missing: body=%q setup=%s err=%v", body, next.Claim.Worktree.SetupStatus, err)
+				var cause, checkpoint, setup, manifest string
+				if err := f.db.QueryRow(`SELECT b.cause,e.harness_head_sha,w.setup_status,w.copied_files
+                    FROM executions e JOIN execution_blocks b ON b.execution_id=e.id
+                    JOIN worktrees w ON w.id=e.worktree_id WHERE e.id=?`, claim.Execution.ID).
+					Scan(&cause, &checkpoint, &setup, &manifest); err != nil ||
+					cause != "git_state" || checkpoint != head || setup != "pending" || manifest != "[]" {
+					t.Fatalf("unfinished restore snapshot: cause=%s head=%s setup=%s manifest=%s err=%v", cause, checkpoint, setup, manifest, err)
 				}
-				wantHash := fmt.Sprintf("%x", sha256.Sum256(body))
-				var manifest string
-				if err := f.db.QueryRow(`SELECT copied_files FROM worktrees WHERE id=?`, w.ID).Scan(&manifest); err != nil {
-					t.Fatal(err)
+				after, afterErr := os.ReadFile(filepath.Join(w.Path, "dummy config"))
+				if string(before) != string(after) || errors.Is(readErr, os.ErrNotExist) != errors.Is(afterErr, os.ErrNotExist) {
+					t.Fatalf("retry modified incomplete files: before=%q after=%q errors=%v/%v", before, after, readErr, afterErr)
 				}
-				var savedCopies []model.CopiedFile
-				wantCopies := 1
-				if phase == "partial-copy" {
-					wantCopies = 2
-					body, err := os.ReadFile(filepath.Join(w.Path, "second config"))
-					if err != nil || string(body) != "second dummy value" {
-						t.Fatalf("retry skipped remaining copy: %q %v", body, err)
+				if phase == "begin" || phase == "restore" {
+					if !errors.Is(afterErr, os.ErrNotExist) {
+						t.Fatalf("copy ran too early: %q %v", after, afterErr)
 					}
+				} else if afterErr != nil || string(after) != content {
+					t.Fatalf("completed copy prefix lost: %q %v", after, afterErr)
 				}
-				if err := json.Unmarshal([]byte(manifest), &savedCopies); err != nil || len(savedCopies) != wantCopies ||
-					savedCopies[0].Path != "dummy config" || savedCopies[0].SHA256 != wantHash ||
-					len(next.CopiedFiles) != wantCopies || next.CopiedFiles[0] != savedCopies[0] {
-					t.Fatalf("restored hash missing: saved=%s runner=%+v err=%v", manifest, next.CopiedFiles, err)
-				}
-				for i, file := range savedCopies {
-					body, err := os.ReadFile(filepath.Join(w.Path, file.Path))
-					if err != nil || file.SHA256 != fmt.Sprintf("%x", sha256.Sum256(body)) ||
-						file != next.CopiedFiles[i] || file != next.Claim.Worktree.CopiedFiles[i] {
-						t.Fatalf("restored copy snapshot disagrees with file: %+v err=%v", file, err)
+				if phase == "begin" {
+					if _, err := os.Lstat(w.Path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("retry recreated incomplete worktree: %v", err)
 					}
-				}
-				if succeeded, err := (remoteSetupRepository{execution: next}).SetupSucceeded(context.Background(), claim.Execution.ID, w.ID); err != nil || succeeded {
-					t.Fatalf("setup would be skipped after restoration: succeeded=%v err=%v", succeeded, err)
-				}
-				if got := gate2Git(t, w.Path, "rev-parse", "HEAD"); got != head || gate2Git(t, w.Path, "rev-parse", "refs/heads/"+w.BranchName) != head {
+				} else if got := gate2Git(t, w.Path, "rev-parse", "HEAD"); got != head || gate2Git(t, w.Path, "rev-parse", "refs/heads/"+w.BranchName) != head {
 					t.Fatalf("retry moved branch: head=%s want=%s", got, head)
 				}
+				if next.WorktreePath != "" {
+					t.Fatal("blocked worktree was made available to later stages")
+				}
+
 			})
 		}
 	}

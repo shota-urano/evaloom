@@ -87,6 +87,9 @@ func (s WorktreeCopyStore) RecordCopiedWorktree(ctx context.Context, executionID
 	if _, err := tx.ExecContext(ctx, `UPDATE executions SET worktree_id=?,branch_name=? WHERE id=?`, id, prepared.BranchName, executionID); err != nil {
 		return "", err
 	}
+	if err := recordWorktreeReady(ctx, tx, executionID, prepared); err != nil {
+		return "", err
+	}
 	return id, tx.Commit()
 }
 

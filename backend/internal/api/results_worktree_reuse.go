@@ -38,6 +38,13 @@ func saveWorktreeReuseResult(r *http.Request, tx *sql.Tx, execution store.Contex
 	if !own {
 		return &Error{Code: PreconditionFailed, Message: "Reused worktree must match the predecessor's Task, Runner, branch and start SHA"}
 	}
+	ready, err := store.WorktreeFilesReady(r.Context(), tx, *input.WorktreeID)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return &Error{Code: PreconditionFailed, Message: "Worktree preparation has no completed copy record"}
+	}
 	if err := saveResult(r, tx, execution, input); err != nil {
 		return err
 	}

@@ -19,8 +19,9 @@ var ErrGitState = errors.New("worktree: Git state requires review")
 type ReuseRequest struct {
 	ProjectID, RepositoryURL, Path, BranchName, BaseSHA, ExpectedHeadSHA string
 	CopiedFiles                                                          []model.CopiedFile
-	// BeforeRecreate must durably mark the missing directory as cleaned and
-	// invalidate its old setup/copy snapshot before Git creates a new one.
+	// BeforeRecreate must durably record restore start, mark the missing
+	// directory cleaned and invalidate its old setup/copy snapshot BEFORE Git
+	// creates a new one. An unfinished generation must block the next continue.
 	BeforeRecreate func(context.Context) error
 }
 

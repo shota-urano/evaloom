@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,19 +127,17 @@ func TestContinueWorktreeOnlyUntrackedCopiesAreExemptHTTP(t *testing.T) {
 	}
 }
 
-func TestContinueWorktreeCleanedRowWithRestoredDirectoryRequiresSetupHTTP(t *testing.T) {
+func TestContinueWorktreeCleanedRowWithExistingDirectoryBlocksHTTP(t *testing.T) {
 	f, e, r, _ := newContinueExecution(t)
-	// The directory was already restored before the stage was entered, but
-	// activation is still pending (for example after a lost acknowledgement).
 	if _, err := f.db.Exec(`UPDATE worktrees SET status='cleaned',cleaned_at='now'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t)); err != nil {
-		t.Fatal(err)
+	if err := e.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t)); !errors.Is(err, worktree.ErrGitState) {
+		t.Fatalf("inconsistent cleaned row did not block: %v", err)
 	}
-	assertReusedWorktree(t, f, e, "pending")
-	if e.Claim.Worktree.SetupStatus != "pending" {
-		t.Fatal("setup would be skipped using the stale succeeded claim")
+	var untouched bool
+	if err := f.db.QueryRow(`SELECT status='cleaned' AND cleaned_at='now' AND setup_status='succeeded' FROM worktrees`).Scan(&untouched); err != nil || !untouched {
+		t.Fatalf("inconsistent worktree was changed: %v %v", untouched, err)
 	}
 }
 
@@ -157,8 +157,14 @@ func assertReusedWorktree(t *testing.T, f *logControlPlane, e *Execution, setup 
 	if err := json.Unmarshal([]byte(manifest), &copied); err != nil || len(copied) != len(e.CopiedFiles) {
 		t.Fatalf("manifest=%s memory=%+v err=%v", manifest, e.CopiedFiles, err)
 	}
+	for _, file := range copied {
+		body, err := os.ReadFile(filepath.Join(w.Path, file.Path))
+		if err != nil || file.SHA256 != fmt.Sprintf("%x", sha256.Sum256(body)) {
+			t.Fatalf("saved copy hash disagrees with file: %+v %v", file, err)
+		}
+	}
 	var blocks, rows int
-	if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM execution_blocks),(SELECT count(*) FROM worktrees)`).Scan(&blocks, &rows); err != nil || blocks != 0 || rows != 1 {
+	if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM execution_blocks WHERE execution_id=?),(SELECT count(*) FROM worktrees)`, e.Claim.Execution.ID).Scan(&blocks, &rows); err != nil || blocks != 0 || rows != 1 {
 		t.Fatalf("blocks=%d worktrees=%d err=%v", blocks, rows, err)
 	}
 }
@@ -168,6 +174,8 @@ func TestContinueWorktreeRecreatesDeletedDirectoryWithoutMovingBranchHTTP(t *tes
 		t.Run(removal, func(t *testing.T) {
 			f, e, r, source := newContinueExecution(t)
 			w := e.Claim.Worktree
+			const newCopy = "new dummy copy after cleanup\n"
+			gate2Write(t, filepath.Join(source, "dummy config"), newCopy)
 			// Previous work is ahead of base_sha. Recreating from base instead
 			// of from the branch would lose this commit and fail this test.
 			gate2Write(t, filepath.Join(w.Path, "source"), "previous harness commit")
@@ -198,6 +206,20 @@ func TestContinueWorktreeRecreatesDeletedDirectoryWithoutMovingBranchHTTP(t *tes
 				t.Fatal(err)
 			}
 			assertReusedWorktree(t, f, e, "pending")
+			history := store.WorktreeReuseStore{DB: f.db}
+			// Lost/duplicated deliveries cannot clear saved copies or reset
+			// an already acknowledged generation.
+			if err := history.BeginWorktreeRestore(context.Background(), e.Claim.Execution.ID, w.ID); err != nil {
+				t.Fatal(err)
+			}
+			prepared := model.PreparedWorktree{Path: w.Path, BranchName: w.BranchName, BaseSHA: w.BaseSHA, CopiedFiles: e.CopiedFiles}
+			if err := history.RecordRestoredCopies(context.Background(), e.Claim.Execution.ID, w.ID, prepared); err != nil {
+				t.Fatal(err)
+			}
+			assertReusedWorktree(t, f, e, "pending")
+			if succeeded, err := (remoteSetupRepository{execution: e}).SetupSucceeded(context.Background(), e.Claim.Execution.ID, w.ID); err != nil || succeeded {
+				t.Fatalf("restored setup would be skipped: %v %v", succeeded, err)
+			}
 			if got := gate2Git(t, w.Path, "rev-parse", "HEAD"); got != head || gate2Git(t, w.Path, "rev-parse", "refs/heads/"+w.BranchName) != head ||
 				gate2Git(t, w.Path, "symbolic-ref", "HEAD") != "refs/heads/"+w.BranchName {
 				t.Fatalf("restoration moved previous branch: got=%s want=%s", got, head)
@@ -207,7 +229,7 @@ func TestContinueWorktreeRecreatesDeletedDirectoryWithoutMovingBranchHTTP(t *tes
 				t.Fatalf("previous committed work lost: %s %v", body, err)
 			}
 			body, err = os.ReadFile(filepath.Join(w.Path, "dummy config"))
-			if err != nil || string(body) != "dummy test value\n" || e.Claim.Worktree.SetupStatus != "pending" {
+			if err != nil || string(body) != newCopy || e.Claim.Worktree.SetupStatus != "pending" {
 				t.Fatalf("copy/setup not restored: %s %v", body, err)
 			}
 		})
@@ -360,9 +382,203 @@ func TestContinueWorktreeRequiresHistoryAndResultAcknowledgement(t *testing.T) {
 				cancel()
 			}
 			err := e.ReuseWorktree(ctx, r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t))
-			if err == nil || e.WorktreePath != "" || e.WorktreeID != "" || e.BaseSHA != "" ||
+			if err == nil || e.WorktreePath != "" ||
+				failure != "ack" && (e.WorktreeID != "" || e.BaseSHA != "") ||
 				failure == "cancelled" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("reuse proceeded without state/ACK: err=%v id=%s path=%s base=%s", err, e.WorktreeID, e.WorktreePath, e.BaseSHA)
+			}
+		})
+	}
+}
+
+// Reporting a new observed HEAD must never replace the last accepted checkpoint.
+// Exercise owner retry and authenticated claim rather than manufacturing seq 3.
+func TestContinueBlockedOrFailedKeepsAdvancedCheckpointForRetryHTTP(t *testing.T) {
+	for _, stop := range []string{"blocked", "failed"} {
+		for _, known := range []string{"harness", "pushed"} {
+			t.Run(stop+"/"+known, func(t *testing.T) {
+				f, e, r, _ := newContinueExecution(t)
+				w := e.Claim.Worktree
+				gate2Write(t, filepath.Join(w.Path, "source"), "previous harness commit")
+				gate2Git(t, w.Path, "add", "source")
+				gate2Git(t, w.Path, "commit", "-m", "previous work")
+				head := gate2Git(t, w.Path, "rev-parse", "HEAD")
+				if head == w.BaseSHA {
+					t.Fatal("test requires an advanced checkpoint")
+				}
+				if _, err := f.db.Exec(`UPDATE executions SET harness_head_sha=? WHERE id=?`, head, logExecution); err != nil {
+					t.Fatal(err)
+				}
+				if known == "pushed" {
+					if _, err := f.db.Exec(`UPDATE executions SET harness_head_sha=base_sha,verified_sha=?,pushed_sha=? WHERE id=?`, head, head, logExecution); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var reuser WorktreeReuser = r
+				if stop == "blocked" {
+					gate2Write(t, filepath.Join(w.Path, "source"), "uncommitted change")
+				} else {
+					reuser = failingWorktreeReuser{Repositories: r}
+				}
+				err := e.ReuseWorktree(context.Background(), reuser, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t))
+				if err == nil || stop == "blocked" && !errors.Is(err, worktree.ErrGitState) {
+					t.Fatalf("expected %s: %v", stop, err)
+				}
+				var status, checkpoint, base, id string
+				if err := f.db.QueryRow(`SELECT status,harness_head_sha,base_sha,worktree_id FROM executions WHERE id=?`, e.Claim.Execution.ID).
+					Scan(&status, &checkpoint, &base, &id); err != nil || status != stop || checkpoint != head || base != w.BaseSHA || id != w.ID {
+					t.Fatalf("stop lost checkpoint: status=%s checkpoint=%s base=%s id=%s err=%v", status, checkpoint, base, id, err)
+				}
+				if stop == "blocked" {
+					gate2Git(t, w.Path, "restore", "source")
+				}
+				claim, process := retryContinueWorktreeHTTP(t, f)
+				// Inheritance is already durable while pending/claimed, before
+				// preparation can fail or receive another cancellation.
+				if err := f.db.QueryRow(`SELECT harness_head_sha,base_sha,worktree_id FROM executions WHERE id=?`, claim.Execution.ID).
+					Scan(&checkpoint, &base, &id); err != nil || checkpoint != head || base != w.BaseSHA || id != w.ID {
+					t.Fatalf("retry lost checkpoint: %s %s %s %v", checkpoint, base, id, err)
+				}
+				if err := process.ReportResult(context.Background(), claim.Execution.ID, ExecutionResult{FromStatus: model.ExecutionClaimed, Status: model.ExecutionPreparing}); err != nil {
+					t.Fatal(err)
+				}
+				control := testExecutionControl()
+				control.Reporter = process
+				next := &Execution{Claim: *claim, control: &control, status: model.ExecutionPreparing}
+				if err := next.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t)); err != nil {
+					t.Fatalf("retry rejected the accepted checkpoint: %v", err)
+				}
+				assertReusedWorktree(t, f, next, "succeeded")
+				if next.HarnessHeadSHA != head || gate2Git(t, w.Path, "rev-parse", "HEAD") != head {
+					t.Fatal("retry changed checkpoint")
+				}
+			})
+		}
+	}
+}
+
+type failingWorktreeReuser struct{ worktree.Repositories }
+
+func (r failingWorktreeReuser) Reuse(context.Context, worktree.ReuseRequest) (worktree.Reused, error) {
+	return worktree.Reused{}, errors.New("injected Git I/O failure")
+}
+
+func TestContinueRequiresPreparationEvidenceHTTP(t *testing.T) {
+	for _, evidence := range []string{"missing-ready", "wrong-ready-path", "setup-pending", "setup-failed", "setup-not-configured", "missing-setup-skip", "incomplete-restore", "late-old-ready"} {
+		t.Run(evidence, func(t *testing.T) {
+			f, e, r, _ := newContinueExecution(t)
+			w := e.Claim.Worktree
+			switch evidence {
+			case "missing-ready":
+				if _, err := f.db.Exec(`DELETE FROM execution_events WHERE type='worktree_ready'`); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong-ready-path":
+				if _, err := f.db.Exec(`UPDATE execution_events SET payload=json_set(payload,'$.path','/different') WHERE type='worktree_ready'`); err != nil {
+					t.Fatal(err)
+				}
+			case "setup-pending":
+				if _, err := f.db.Exec(`UPDATE projects SET setup_command='test setup'; UPDATE worktrees SET setup_status='pending'`); err != nil {
+					t.Fatal(err)
+				}
+			case "setup-failed":
+				if _, err := f.db.Exec(`UPDATE worktrees SET setup_status='failed'`); err != nil {
+					t.Fatal(err)
+				}
+			case "missing-setup-skip":
+				if _, err := f.db.Exec(`UPDATE worktrees SET setup_status='pending'; DELETE FROM execution_events WHERE type='log' AND json_extract(payload,'$.sourceId') LIKE 'worktree-setup-not-required/%'`); err != nil {
+					t.Fatal(err)
+				}
+			case "setup-not-configured":
+				if _, err := f.db.Exec(`UPDATE projects SET setup_command=NULL; UPDATE worktrees SET setup_status='pending'`); err != nil {
+					t.Fatal(err)
+				}
+			case "incomplete-restore", "late-old-ready":
+				history := store.WorktreeReuseStore{DB: f.db}
+				if err := history.BeginWorktreeRestore(context.Background(), e.Claim.Execution.ID, w.ID); err != nil {
+					t.Fatal(err)
+				}
+				// A stale succeeded flag alone is insufficient for completion.
+				if _, err := f.db.Exec(`UPDATE worktrees SET setup_status='succeeded'`); err != nil {
+					t.Fatal(err)
+				}
+				if evidence == "late-old-ready" {
+					payload, _ := json.Marshal(map[string]string{"path": w.Path, "branch": w.BranchName, "baseSha": w.BaseSHA})
+					if _, err := store.AppendExecutionEvent(context.Background(), f.db, logExecution, model.EventWorktreeReady, payload); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := e.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t))
+			if evidence == "setup-not-configured" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertReusedWorktree(t, f, e, "pending")
+				return
+			}
+			if !errors.Is(err, worktree.ErrGitState) || e.WorktreePath != "" {
+				t.Fatalf("missing preparation evidence accepted: %v", err)
+			}
+			var cause string
+			if err := f.db.QueryRow(`SELECT cause FROM execution_blocks WHERE execution_id=?`, e.Claim.Execution.ID).Scan(&cause); err != nil || cause != "git_state" {
+				t.Fatalf("cause=%s err=%v", cause, err)
+			}
+		})
+	}
+}
+
+func TestContinueInterruptedSetupCannotBeSkippedByRemovingCommandHTTP(t *testing.T) {
+	for _, outcome := range []string{"cancelled", "failed"} {
+		t.Run(outcome, func(t *testing.T) {
+			f, e, r, source := newContinueExecution(t)
+			w := e.Claim.Worktree
+			if _, err := f.db.Exec(`UPDATE projects SET setup_command='test setup',local_repo_path=?`, source); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(w.Path); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t)); err != nil {
+				t.Fatal(err)
+			}
+			assertReusedWorktree(t, f, e, "pending")
+			// Simulate an interruption after copy/activation, before setup can
+			// record success. Removing today's command must not fabricate proof
+			// that the previous generation finished preparation.
+			class := model.ErrorCancelled
+			status := model.ExecutionCancelled
+			if outcome == "failed" {
+				class = model.ErrorConfig
+				status = model.ExecutionFailed
+			}
+			if err := e.report(status, class); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`UPDATE projects SET setup_command=NULL`); err != nil {
+				t.Fatal(err)
+			}
+			claim, process := retryContinueWorktreeHTTP(t, f)
+			if err := process.ReportResult(context.Background(), claim.Execution.ID, ExecutionResult{FromStatus: model.ExecutionClaimed, Status: model.ExecutionPreparing}); err != nil {
+				t.Fatal(err)
+			}
+			control := testExecutionControl()
+			control.Reporter = process
+			next := &Execution{Claim: *claim, control: &control, status: model.ExecutionPreparing}
+			if err := next.ReuseWorktree(context.Background(), r, store.WorktreeReuseStore{DB: f.db}, reuseAudit(t)); !errors.Is(err, worktree.ErrGitState) {
+				t.Fatalf("unfinished setup was accepted: %v", err)
+			}
+			var setup, manifest string
+			if err := f.db.QueryRow(`SELECT setup_status,copied_files FROM worktrees WHERE id=?`, w.ID).Scan(&setup, &manifest); err != nil || setup != "pending" {
+				t.Fatalf("setup state changed: %s %v", setup, err)
+			}
+			var copies []model.CopiedFile
+			if err := json.Unmarshal([]byte(manifest), &copies); err != nil || len(copies) != 1 {
+				t.Fatalf("copy manifest lost: %s %v", manifest, err)
+			}
+			body, err := os.ReadFile(filepath.Join(w.Path, copies[0].Path))
+			if err != nil || string(body) != "dummy test value\n" || copies[0].SHA256 != fmt.Sprintf("%x", sha256.Sum256(body)) {
+				t.Fatalf("saved restored content/hash differs: %s %+v %v", body, copies, err)
 			}
 		})
 	}

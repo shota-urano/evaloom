@@ -47,29 +47,23 @@ func (e *Execution) ReuseWorktree(ctx context.Context, reuser WorktreeReuser, hi
 		}
 		return fmt.Errorf("runner: previous worktree state unavailable")
 	}
-	// Even an unfinished restore must keep the predecessor checkpoint. The
-	// Executor reports cancellation after this method returns, with a separate
-	// delivery context. Leave WorktreePath unset until preparation is ACKed.
-	defer func() {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			e.WorktreeID, e.BaseSHA, e.BranchName = w.ID, w.BaseSHA, w.BranchName
-			// Preserve the last known commit too, so the next continue does not
-			// compare an advanced branch against its original start commit.
-			e.HarnessHeadSHA = state.ExpectedHeadSHA
-		}
-	}()
-	restoring := state.Status == "cleaned"
-	savedCopies := w.CopiedFiles
+	// Keep the predecessor checkpoint for EVERY outcome, including Git-state
+	// blocks, operational failures and cancellation. The observed HEAD of an
+	// unexpected checkout is only a Block measurement, never the checkpoint.
+	// Leave WorktreePath unset until preparation is ACKed.
+	e.WorktreeID, e.BaseSHA, e.BranchName = w.ID, w.BaseSHA, w.BranchName
+	e.HarnessHeadSHA = state.ExpectedHeadSHA
+	if !state.PreparationComplete {
+		return errors.Join(worktree.ErrGitState, e.reportResult(model.ExecutionBlocked, "",
+			&ResultBlock{Cause: model.BlockGitState, HeadSHA: state.ExpectedHeadSHA},
+			"前回のworktreeの準備完了を確認できない。記録したSHAは前回の既知のSHAであり、現在のHEADは未確認"))
+	}
 	result, err := reuser.Reuse(ctx, worktree.ReuseRequest{
 		ProjectID: e.Claim.Project.ID, RepositoryURL: e.Claim.Project.GitRemoteURL,
 		Path: w.Path, BranchName: w.BranchName, BaseSHA: w.BaseSHA,
 		ExpectedHeadSHA: state.ExpectedHeadSHA, CopiedFiles: w.CopiedFiles,
 		BeforeRecreate: func(ctx context.Context) error {
-			if err := history.BeginWorktreeRestore(ctx, e.Claim.Execution.ID, w.ID); err != nil {
-				return err
-			}
-			restoring, savedCopies = true, nil
-			return nil
+			return history.BeginWorktreeRestore(ctx, e.Claim.Execution.ID, w.ID)
 		},
 	})
 	var auditFailure error
@@ -82,7 +76,6 @@ func (e *Execution) ReuseWorktree(ctx context.Context, reuser WorktreeReuser, hi
 		return errors.Join(ctx.Err(), auditFailure)
 	}
 	if err != nil {
-		e.WorktreeID, e.BaseSHA, e.BranchName = w.ID, w.BaseSHA, w.BranchName
 		if errors.Is(err, worktree.ErrGitState) {
 			if result.HeadSHA == "" {
 				// A missing branch has no current HEAD. Label the reference SHA
@@ -97,40 +90,30 @@ func (e *Execution) ReuseWorktree(ctx context.Context, reuser WorktreeReuser, hi
 		return errors.Join(fmt.Errorf("runner: reuse worktree failed"), auditFailure,
 			e.reportResult(model.ExecutionFailed, model.ErrorConfig, nil, "worktreeを再利用できない"))
 	}
-	copied := savedCopies
-	if restoring {
+	copied := w.CopiedFiles
+	if state.Status == "cleaned" && !result.Recreated {
+		return errors.Join(worktree.ErrGitState, e.reportResult(model.ExecutionBlocked, "",
+			&ResultBlock{Cause: model.BlockGitState, HeadSHA: result.HeadSHA},
+			"削除済みの記録とworktreeの実ディレクトリが一致しない"))
+	}
+	if result.Recreated {
 		copied, err = reuser.CopyFiles(ctx, e.Claim.Project.LocalRepoPath, w.Path, e.Claim.Project.CopyAllowlist,
 			func(ctx context.Context, path string) error {
 				return history.WarnMissingCopy(ctx, e.Claim.Execution.ID, path)
 			})
-		// CopyFiles publishes files atomically and returns the completed prefix
-		// even on cancellation. Save those hashes using the delivery context so
-		// retry can check Git against the bytes actually placed, not old copies.
-		checkpoint := copied
-		if err != nil || ctx.Err() != nil {
-			checkpoint = append([]model.CopiedFile(nil), savedCopies...)
-			for _, file := range copied {
-				for i, previous := range checkpoint {
-					if previous.Path == file.Path {
-						checkpoint = append(checkpoint[:i], checkpoint[i+1:]...)
-						break
-					}
-				}
-				checkpoint = append(checkpoint, file)
-			}
-		}
-		if saveErr := history.RecordRestoredCopies(e.control.ReportContext, e.Claim.Execution.ID, w.ID, model.PreparedWorktree{
-			Path: w.Path, BranchName: w.BranchName, BaseSHA: w.BaseSHA, CopiedFiles: checkpoint,
-		}); saveErr != nil {
-			return errors.Join(ctx.Err(), fmt.Errorf("runner: record restored copies failed"))
-		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err != nil {
-			e.WorktreeID, e.BaseSHA, e.BranchName = w.ID, w.BaseSHA, w.BranchName
 			return errors.Join(fmt.Errorf("runner: restored worktree copy failed"),
 				e.reportResult(model.ExecutionFailed, model.ErrorConfig, nil, "コピー許可リストのファイルを配置できない"))
+		}
+		// Only a complete copy pass may produce a readiness record. An
+		// interrupted pass keeps the restore-start checkpoint and blocks retry.
+		if saveErr := history.RecordRestoredCopies(e.control.ReportContext, e.Claim.Execution.ID, w.ID, model.PreparedWorktree{
+			Path: w.Path, BranchName: w.BranchName, BaseSHA: w.BaseSHA, CopiedFiles: copied,
+		}); saveErr != nil {
+			return errors.Join(ctx.Err(), fmt.Errorf("runner: record restored copies failed"))
 		}
 	}
 	if err := e.control.Reporter.ReportResult(e.control.ReportContext, e.Claim.Execution.ID, ExecutionResult{
@@ -143,7 +126,7 @@ func (e *Execution) ReuseWorktree(ctx context.Context, reuser WorktreeReuser, hi
 	e.CopiedFiles = copied
 	// SetupStage consumes this snapshot and must rerun setup for a new
 	// directory even when setup had succeeded in the removed one.
-	if restoring {
+	if result.Recreated {
 		updated := *w
 		updated.CopiedFiles, updated.SetupStatus = copied, "pending"
 		e.Claim.Worktree = &updated
