@@ -196,3 +196,130 @@ fixtureは`node:test`の実行結果をJUnitで出力する。`gate_test.py`は�
 Blockedの6ケースではPublisherの呼び出しがゼロ、偽GitHubへのアクセスがゼロ、bareリモートの全refが実行前後で同じことを確認する。成功ケースでは変更ファイルが実装1つだけであること、リモートの追加ブランチ・保存された`pushed_sha`・`verified_sha`・ハーネスのHEADがすべて同じこと、ベースブランチが変わらないこと、偽GitHubでPRが作成され、そのhead/baseと本文の検証SHAが正しいことを確認する。
 
 GitHubには既存の偽HTTP APIを使い、テスト専用の`PullRequests`実装で接続する。既存の仕様上の穴として、push直後からPR作成前までに`pushed_sha`を永続化するRunner APIが無い。既存の`PublicationRecorder`境界に渡すテスト用Recorderは、既存DBの`executions.pushed_sha`と`branch_name`への書き込みを確定してから成功を返す。偽PR APIは作成要求の受信時点でDBを読み直し、状態が`publishing`、ブランチが対象と同じ、`pushed_sha`と`verified_sha`が空でなく一致していることを検証してからPRを作る。この確認が成功ケースで1回行われることも必須とし、最終result APIで初めてSHAを保存する実装では合格しない。最終状態とPR情報は引き続き既存result APIで保存する。新しい公開API、テーブル、列、製品の設定値は追加していない。
+
+## 3.1 実CLIによる設定環境の分離テスト
+
+`TestModelConfigurationIsolation`は`security_model`タグを付けたときだけ実行する。
+通常の`make verify`には含めない。認証情報を用意したMac miniで、CLIの更新時と
+Sandbox設定の変更時に実行する。タグを付けて実行した場合は、前提の不足を
+「実行不能」として失敗させる。`t.Skip`や偽CLIへの切り替えは使わない。
+
+### 準備と実行
+
+両CLI、Python 3、Git、`/usr/bin/env`を含むLinuxイメージを先に用意する。
+`Dockerfile.model`を使う場合はCLIの版を明示する。既存Adapterの採用対象は
+Codex 0.163.0、Claude Code 2.1.316である。更新後も版を指定してビルドし、
+テストの`real CLI version`行を実行記録に残す。実行中のイメージ取得は行わない。
+
+```sh
+# リポジトリのルートで実行する。版は検証対象に置き換える。
+docker build -f backend/internal/securitytest/Dockerfile.model \
+  --build-arg CODEX_VERSION=0.163.0 --build-arg CLAUDE_VERSION=2.1.316 \
+  -t evaloom-security-model:local backend/internal/securitytest
+docker build -f backend/internal/securitytest/Dockerfile.boundary \
+  -t evaloom-security-proxy:local backend/internal/securitytest
+
+# DockerサーバのCPU種別に合わせ、製品のプロキシをビルドする。
+model_test_tmp=$(mktemp -d /tmp/evaloom-model.XXXXXX)
+model_test_arch=$(docker version --format '{{.Server.Arch}}')
+cd backend
+GOOS=linux GOARCH="$model_test_arch" CGO_ENABLED=0 \
+  GOCACHE="$model_test_tmp/go-cache" \
+  go build -o "$model_test_tmp/proxy" ./cmd/evaloom-sandbox-proxy
+
+export EVALOOM_SECURITY_MODEL_IMAGE=evaloom-security-model:local
+export EVALOOM_SECURITY_MODEL_PROXY_IMAGE=evaloom-security-proxy:local
+export EVALOOM_SECURITY_MODEL_PROXY_BINARY="$model_test_tmp/proxy"
+
+# 次の6変数は、実行環境の秘密管理と採用CLIの設定に合わせて指定する。
+# AUTH_JSONには本人が普段使う認証ではなく、Evaloom専用の認証JSONを渡す。
+export EVALOOM_SECURITY_CODEX_MODEL='<正式なモデルID>'
+export EVALOOM_SECURITY_CODEX_AUTH_JSON='<専用auth.jsonの内容>'
+export EVALOOM_SECURITY_CODEX_DESTINATIONS='<認証・モデル接続先host:portのカンマ区切り>'
+export EVALOOM_SECURITY_CLAUDE_MODEL='<正式なモデルID>'
+export EVALOOM_SECURITY_CLAUDE_AUTH_JSON='<専用.credentials.jsonの内容>'
+export EVALOOM_SECURITY_CLAUDE_DESTINATIONS='<認証・モデル接続先host:portのカンマ区切り>'
+
+GOCACHE="$model_test_tmp/go-cache" go test -tags=security_model \
+  ./internal/securitytest -run '^TestModelConfigurationIsolation$' \
+  -count=1 -timeout=16m -v
+```
+
+認証値をイメージやProfileのGit履歴には入れない。テストは明示したJSONだけを
+`harnessenv.Create`へ渡し、`auth.json`または`.credentials.json`として専用環境に
+配置する。認証JSONの形式と有効性は製品Adapterのpreflightと実モデル呼び出しが
+検査する。未設定・空オブジェクト・不正JSON、認証失敗、モデルへの接続失敗は
+合格にならない。JSON形式が正しいだけでは認証済みとは扱わない。
+
+Dockerの呼び出しにも一時HOMEと空の`DOCKER_CONFIG`を使う。通常のDockerソケットを
+使えない環境では`DOCKER_HOST`に接続先を明示する。本人のDocker context、
+`DOCKER_CONFIG`、CLI認証ファイルは引き継がない。本人の実HOMEを探したり、
+設定ファイルを読み書きしたりしない。許可先、モデルID、認証の既定値も推測しない。
+CLIが別の認証形式を要求する場合は、そのまま実行不能とする。
+
+実モデルを呼ばずにタグ付きソースの型検査を行う場合は、次を実行する。
+
+```sh
+GOCACHE=/tmp/evaloom-model-go-cache go vet -tags=security_model ./...
+```
+
+### 製品を通す経路と判定
+
+テストは両CLIに対して、独立したfixtureと一意のカナリアA・Bを作る。
+仮の本人HOMEには`.codex/AGENTS.md`、`.codex/AGENTS.override.md`、
+`.claude/CLAUDE.md`へAの出力指示を置く。テストプロセスの`HOME`、`CODEX_HOME`、
+`CLAUDE_CONFIG_DIR`もこの仮HOMEへ向け、環境変数の誤継承を検出できるようにする。
+
+Bの指示は別のProfileリポジトリの`AGENTS.md`または`CLAUDE.md`にcommitする。
+`registry.ReadProfile`で固定したSHAと`contextFiles`を使い、`harnesscontext.Read`、
+`harnessenv.Create`の順に製品実装を通す。Profileの作業ツリーを変更してから
+読み取るため、固定SHA以外の内容を誤って使う場合も検出する。
+BはTaskやExecution Contextのプロンプトには埋め込まない。
+
+実行には製品の`runner.Executor`のハーネス工程と登録表を使い、
+Codex Adapter / Claude Code Adapterの`ContainerLaunch`から本物の
+Harness Sandboxでpreflightと実CLIを起動する。Execution IDとHarnessResultを
+共通契約で渡す。ハーネス以外の工程はfixture用の処理であり、HTTPのclaim、
+Gate、push、PR作成の検証はこの試験の範囲に含めない。
+専用設定の読み取り専用マウント、空の専用HOME、環境変数の許可リスト、
+宛先制限付きプロキシは既存Containerの実装を使う。ホスト起動は行わない。
+
+CLIの成功と、最終応答にBがあることを必須とする。Aは最終応答・stdout・stderrの
+すべてで禁止し、JSONでエスケープされた文字列も調べる。Bがツール呼び出しや
+設定の表示だけに現れても合格にはしない。fixtureのファイル作成とcommit、
+実行後の専用設定の全ファイル・ハッシュが変わらないことも確認する。
+認証情報が出力される可能性があるため、生のCLIログは失敗時にも表示しない。
+失敗した段階、終了コード、errorClass、カナリアの違反種別を報告する。
+
+仮HOMEの不可視性は、モデルの自己申告に頼らず、実行の前後にPythonでディレクトリの
+列挙と各指示ファイルの読み取りを試す。同一の`ContainerConfig`と`SandboxSpec`を
+使う別コンテナで確認するため、CLIプロセス内からの観測とは区別する。
+パス不存在・アクセス拒否を受理し、専用指示ファイルを読めることも必須とする。
+結果欠落、不正JSON、予期しないOSエラー、PythonやSandboxの障害は失敗になる。
+
+### 確認範囲と仕様の未定義部分
+
+既存Adapterの構造化出力には、実際に読んだ全設定ファイルの一覧を取得する
+共通機能が無い。Claudeの`--setting-sources`は指定するソースの範囲であり、
+実際の読込ファイル一覧ではない。CLIのログや最終応答に仮HOMEのパスが現れた場合は
+拒否するため、出力された設定パスに仮HOMEが混じる場合も検出する。
+`harnessenv.Files`も配置済みファイルの一覧なので、
+これらを「CLIが報告した読込一覧」とは扱わない。この条件の完全な照合は未検証である。
+採用CLIの版で完全な一覧を取得できるようになった場合は、その出力を検証に追加する。
+現状はカナリアと同一Sandbox設定でのアクセス試行を記録する。
+
+HarnessのTool PermissionsとProfileの`toolConfiguration`からCLI設定への変換、
+認証情報の準備・更新は、既存Adapterと同じ内部境界に残る。このfixtureでは
+shellまたはBashを許可する固定の設定変換を`Configure`に渡し、CLI設定の生成を
+一般化しない。モデルIDは既存Profileの`modelId`を使う。
+読み取り専用の専用設定に対してCLIが認証更新や状態保存の書き込みを要求した場合も、
+マウントを緩めずに失敗させる。実運用の認証更新方法はこの試験では確定しない。
+公開API・テーブル・列・製品既定値・確定済み仕様書・Makefileは変更していない。
+
+通常の`make verify`では`TestConfigurationCanaryPlacement`が実Profileの固定SHAから
+専用環境への配置、仮HOMEの指示、カナリアを含まない要求を照合する。
+`TestConfigurationVerdict`はAの漏出、Bの欠落、出力への単なるBの表示、
+CLI失敗を拒否する。`TestConfigurationAccessVerdict`と
+`TestConfigurationAccessScript`は結果欠落と正の確認の失敗を拒否し、
+実際に読める一時HOMEを隔離成功と扱わないことを確認する。
+通常検証の成功を、実CLIによる受け入れ条件の達成とは扱わない。
