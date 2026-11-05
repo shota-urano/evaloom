@@ -106,7 +106,14 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		Status: adapter.ResultFailed, Commits: []string{}, LogArtifactIDs: []string{}, ArtifactIDs: []string{}}
 	class := adapter.ErrorConfig
 	var working *harnessenv.Environment
+	var closeConfiguration func() error
 	defer func() {
+		if closeConfiguration != nil {
+			if err := closeConfiguration(); err != nil {
+				class = adapter.ErrorSandbox
+				result.Status = adapter.ResultFailed
+			}
+		}
 		if working != nil {
 			if err := working.Close(); err != nil {
 				class = adapter.ErrorSandbox
@@ -176,7 +183,8 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	// Compare the entire copy to the recorded selection immediately before any
 	// CLI (including login status) can run. CLI state written afterwards is
 	// deliberately neither re-pinned nor persisted in context_revisions.
-	if _, err := working.Files(ctx); err != nil {
+	ctx, closeConfiguration, err = sandbox.WithWorkingConfiguration(ctx, working)
+	if err != nil {
 		return
 	}
 	class, err = h.command(ctx, env, preflight, preflightOut, stderr, adapter.ErrorConfig)

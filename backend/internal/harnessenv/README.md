@@ -43,8 +43,14 @@ HOMEは既存のContainerが実行ごとに作る空の`/evaloom-home` tmpfsを�
 Codex Adapterには`Config.ResolveConfig`で元の`Environment`を渡す。
 Adapterは`Environment.WorkingCopy`で同じ許可ルート内に独立したコピーを作り、
 起動前に`Files`で記録済みの全パス・ハッシュと照合する。
-コピーのみを`ConfigWritable=true`でマウントし、`CODEX_HOME`をそのコピーへ向ける。
-元設定はマウントしない。CLIが書いた状態は記録に追加せず、停止確認後にコピーを削除する。
+`sandbox.WithWorkingConfiguration`で照合済みの内容を保持し、Execution専用のDocker
+volumeへ転送する。`ConfigWritable=true`はそのvolumeだけを書き込み可能にし、
+`CODEX_HOME`を同じコンテナ内のパスへ向ける。ホストのコピーと元設定はマウントしない。
+認証確認と本実行は同じvolumeを使う。CLIが書いた状態は記録に追加せず、停止確認後に
+volumeとホストのコピーを削除する。名前と保持したディレクトリの実体が違う場合、
+`Files`は`config_error`を返す。`Close`は保持したハンドルで生成物の内容を消し、
+専用ルート内で移動された実体も削除する。無関係な置換先を削除したり、symlinkを
+たどって元設定を削除したりしない。
 Claude Codeは従来どおり元設定を読み取り専用で使い、Test Sandboxには設定を渡さない。
 
 ## 仕様で未定義の部分と検証範囲

@@ -182,7 +182,7 @@ func overlapsOnDisk(a, b string) (bool, error) {
 	return containsOnDisk(b, a)
 }
 
-func (c *Container) createArgs(spec SandboxSpec, command []string, name string) ([]string, error) {
+func (c *Container) createArgs(spec SandboxSpec, command []string, name string, configVolume ...string) ([]string, error) {
 	if spec.Kind != Harness && spec.Kind != TestSetup && spec.Kind != TestRun {
 		return nil, &Error{Op: "unsupported sandbox kind"}
 	}
@@ -248,6 +248,12 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		sources = append(sources, real)
 		targets = append(targets, path)
 		mount := "type=bind,source=" + real + ",target=" + path
+		if i == 2 && spec.ConfigWritable {
+			if len(configVolume) != 1 || configVolume[0] == "" {
+				return nil, &Error{Op: "verified configuration capability required"}
+			}
+			mount = "type=volume,source=" + configVolume[0] + ",target=" + path + ",volume-nocopy"
+		}
 		if (i == 2 && !spec.ConfigWritable) || (i == 1 && spec.Kind != Harness) {
 			mount += ",readonly"
 		}
@@ -291,8 +297,27 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
 	name := "evaloom-" + strings.ToLower(ulid.Make().String())
-	args, err := c.createArgs(spec, command, name)
+	var volumes []string
+	var working *workingConfiguration
+	if spec.ConfigWritable {
+		working, _ = ctx.Value(configurationKey{}).(*workingConfiguration)
+		if working == nil {
+			return nil, &Error{Op: "verified configuration capability required"}
+		}
+		working.mu.Lock()
+		defer working.mu.Unlock()
+		if err := working.verify(ctx, spec); err != nil {
+			return nil, err
+		}
+		volumes = []string{working.volume}
+	}
+	args, err := c.createArgs(spec, command, name, volumes...)
 	if err != nil {
+		if working != nil {
+			if configErr := working.verify(ctx, spec); configErr != nil {
+				return nil, configErr
+			}
+		}
 		return nil, err
 	}
 	limit := time.Now().Add(spec.Limits.Time)
@@ -327,6 +352,16 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		// may substitute a namespace whose complete proxy path was confirmed.
 		args[slices.Index(args, "--network")+1] = "container:" + network.ingress
 	}
+	if working != nil {
+		if err := working.verify(ctx, spec); err != nil {
+			cancel()
+			return nil, err
+		}
+		if err := working.prepare(ctx, c); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 	if _, err = c.output(ctx, args...); err != nil {
 		// create cannot run a workload. Remove any partially created container
 		// by its preassigned name, even if its response was lost or timed out.
@@ -336,6 +371,18 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	if ctx.Err() != nil {
 		_ = c.remove(name)
 		return fail("container creation interrupted")
+	}
+	if working != nil {
+		if err := working.seed(ctx, c, name); err != nil {
+			_ = c.remove(name)
+			cancel()
+			return nil, err
+		}
+		if err := working.verify(ctx, spec); err != nil {
+			_ = c.remove(name)
+			cancel()
+			return nil, err
+		}
 	}
 	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{}), network: network}
 	attachCtx, stopAttach := context.WithCancel(context.Background())

@@ -17,9 +17,10 @@ import (
 )
 
 func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
-	for _, mode := range []string{"changed", "extra", "missing", "symlink", "missing_resolver", "resolver_error", "wrong_source", "source_changed"} {
+	for _, mode := range []string{"changed", "extra", "missing", "symlink", "directory_replacement", "original_symlink", "missing_resolver", "resolver_error", "wrong_source", "source_changed"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newFixture(t, "success")
+			var displaced string
 			launched := false
 			f.config.Launch = func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error) {
 				launched = true
@@ -52,6 +53,19 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 						dir := filepath.Join(filepath.Dir(f.settings.ConfigDir()), entry.Name())
 						name := filepath.Join(dir, "auth.json")
 						switch mode {
+						case "directory_replacement", "original_symlink":
+							displaced = dir + "-displaced"
+							if err = os.Rename(dir, displaced); err != nil {
+								return nil, err
+							}
+							if mode == "original_symlink" {
+								err = os.Symlink(f.settings.ConfigDir(), dir)
+							} else {
+								err = os.Mkdir(dir, 0700)
+								if err == nil {
+									err = os.WriteFile(name, []byte("unrecorded replacement"), 0600)
+								}
+							}
 						case "changed":
 							err = os.WriteFile(name, []byte("changed"), 0600)
 						case "extra":
@@ -71,9 +85,19 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 				}
 			}
 			f.h = New(f.config)
-			_, result, _ := runResult(t, f)
+			_, result, _ := runResultAllowReplacement(t, f)
 			if launched || result.ErrorClass == nil || *result.ErrorClass != adapter.ErrorConfig {
 				t.Fatalf("launched=%t result=%+v", launched, result)
+			}
+			if displaced != "" {
+				if _, err := os.Lstat(displaced); !os.IsNotExist(err) {
+					t.Fatalf("displaced generated copy survived Result: %v", err)
+				}
+				if _, err := f.settings.Files(context.Background()); err != nil {
+					t.Fatal("original changed:", err)
+				}
+			} else {
+				assertWorkingCopiesRemoved(t, f)
 			}
 		})
 	}

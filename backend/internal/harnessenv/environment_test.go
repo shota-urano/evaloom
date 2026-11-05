@@ -240,3 +240,66 @@ func TestWorkingCopyRejectsChangedSourceWithoutLeavingCopy(t *testing.T) {
 		t.Fatalf("failed copy was retained: %v %v %v", copy, entries, readErr)
 	}
 }
+
+func TestEnvironmentRejectsReplacementAndCleansMovedIdentity(t *testing.T) {
+	for _, replacement := range []string{"directory", "symlink", "missing"} {
+		t.Run(replacement, func(t *testing.T) {
+			cfg := config(t)
+			original, err := harnessenv.Create(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := original.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			copy, err := original.WorkingCopy(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := copy.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			nested := filepath.Join(cfg.Root, "moved")
+			if err := os.Mkdir(nested, 0700); err != nil {
+				t.Fatal(err)
+			}
+			displaced := filepath.Join(nested, "copy")
+			if err := os.Rename(copy.ConfigDir(), displaced); err != nil {
+				t.Fatal(err)
+			}
+			switch replacement {
+			case "directory":
+				if err := os.Mkdir(copy.ConfigDir(), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(copy.ConfigDir(), "unrelated"), []byte("retain"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(original.ConfigDir(), copy.ConfigDir()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = copy.Files(context.Background())
+			requireConfigError(t, err)
+			if err := copy.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(displaced); !os.IsNotExist(err) {
+				t.Fatalf("generated inode retained after rename: %v", err)
+			}
+			if replacement == "directory" {
+				if data, err := os.ReadFile(filepath.Join(copy.ConfigDir(), "unrelated")); err != nil || string(data) != "retain" {
+					t.Fatalf("deleted unrelated replacement: %s %v", data, err)
+				}
+			}
+			if _, err := original.Files(context.Background()); err != nil {
+				t.Fatal("cleanup followed symlink or changed original:", err)
+			}
+		})
+	}
+}

@@ -64,8 +64,18 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
   認証確認の直前に全ファイルを照合し、改変・余分・欠落があればCLIを起動せず
   `config_error`にする。解決関数が無い場合も起動しない。
   コピーの`CODEX_HOME`だけを差し替え、`ContainerLaunch`が`ConfigWritable=true`にする。
+  `WithWorkingConfiguration`で照合済みの内容を保持し、Containerはその内容だけを
+  標準入力のtarとしてExecution専用のDocker volumeへ転送する。ホストの設定パスを
+  書き込み可能なbind mountには使わない。認証確認と本実行は同じvolumeを使う。
+  CLIの初回起動前にvolumeから全ファイルを読み戻し、記録済みのパス・ハッシュと照合する。
+  元設定はマウントしない。既存のマウント安全検査は設定コピーのパスにも適用する。
+  設定パスの実体・全ファイルは起動準備中にも再確認し、ディレクトリ差し替えや
+  symlinkへの変更は`config_error`にする。最終確認後にホストのパスが変わっても、
+  Dockerが使うのは転送済みの内容であり、差し替え先を再解決してマウントしない。
   認証確認後のCLIの書き込みは本実行へ引き継ぐが、context_revisionsへ追加しない。
-  成功・失敗・中止・起動失敗のいずれでも、Sandbox停止後にコピーを削除する。
+  成功・失敗・中止・起動失敗のいずれでも、Sandbox停止後にvolumeとホストのコピーを
+  削除する。移動された生成ディレクトリは保持したハンドルで内容を消し、専用ルート内で
+  同じ実体を探して削除する。元の名前に置かれた無関係なファイルは削除しない。
 - `ContainerLaunch`に既存の`ContainerConfig`と、Executionに対応する`SandboxSpec`の
   解決関数を渡す。GitDir、ネットワークの許可先、資源制限は信頼されたRunnerが与える。
   `CODEX_HOME`を環境変数の許可リストに含める。HOMEの隔離は既存Containerが行う。
@@ -86,6 +96,12 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
 preflightの異常終了、OOM、runtime障害を検証する。
 `TestContainerLaunchCancellationSequence`は準備中・preflight実行中・exec実行中の中止、
 呼び出し元contextの中止と期限切れ、TERMへの応答、猶予後の強制終了を検証する。
+`TestContainerRejectsConfigurationReplacementAfterAdapterVerification`はイメージ確認・
+コンテナ作成・設定転送の各段階に差し替え、symlink、内容改変を挿入し、CLI未起動の
+`config_error`と移動されたコピー・volumeの削除を確認する。
+`TestContainerWorkingVolumeLifetime`は成功・CLI失敗・volume作成失敗・転送失敗・
+コンテナ作成失敗で後始末を確認する。Dockerへの設定転送には、停止中のコンテナへの
+[標準入力からのtar転送](https://docs.docker.com/reference/cli/docker/container/cp/)を使う。
 
 ## 仕様の穴と接続範囲
 

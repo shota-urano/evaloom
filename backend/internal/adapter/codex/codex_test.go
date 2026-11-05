@@ -261,6 +261,15 @@ func newFixture(t *testing.T, mode string) *fixture {
 
 func runResult(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResult, []adapter.LogLine) {
 	t.Helper()
+	id, result, logs := runResultAllowReplacement(t, f)
+	assertWorkingCopiesRemoved(t, f)
+	return id, result, logs
+}
+
+// Replacement tests assert cleanup by inode/path themselves: an unrelated
+// object inserted at the old name must not be deleted by Environment.Close.
+func runResultAllowReplacement(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResult, []adapter.LogLine) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	id, err := f.h.Start(ctx, f.request, f.env)
@@ -282,7 +291,6 @@ func runResult(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResu
 	if err := r.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	assertWorkingCopiesRemoved(t, f)
 	return id, r, logs
 }
 
