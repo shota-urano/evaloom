@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,12 +47,92 @@ func TestCodexRuntimeHelper(t *testing.T) {
 	}
 	_, _ = log.Write(append(data, '\n'))
 	_ = log.Close()
+	attack := func(boundary string) {
+		parts := strings.Split(mode, "/")
+		if len(parts) != 3 || parts[0] != "attack" || parts[1] != boundary {
+			return
+		}
+		parent := filepath.Dir(root)
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			os.Exit(103)
+		}
+		for _, entry := range entries {
+			dir := filepath.Join(parent, entry.Name())
+			if !strings.HasPrefix(entry.Name(), "harness-") || dir == os.Getenv("CODEX_ORIGINAL_CONFIG") {
+				continue
+			}
+			if parts[2] == "change" {
+				err = os.WriteFile(filepath.Join(dir, "auth.json"), []byte("unrecorded"), 0600)
+			} else {
+				err = os.Rename(dir, dir+"-displaced")
+				if err == nil {
+					if parts[2] == "symlink" {
+						err = os.Symlink(os.Getenv("CODEX_ORIGINAL_CONFIG"), dir)
+					} else {
+						err = os.Mkdir(dir, 0700)
+						if err == nil {
+							err = os.WriteFile(filepath.Join(dir, "auth.json"), []byte("unrecorded"), 0600)
+						}
+					}
+				}
+			}
+			if err != nil {
+				os.Exit(104)
+			}
+			write("attacked", dir)
+			return
+		}
+		os.Exit(105)
+	}
 	if args[0] == "image" {
+		attack("image")
 		if mode == "prepare-cancel" {
 			write("preparing", "yes")
 			time.Sleep(time.Hour)
 		}
 		fmt.Println(`{"Os":"linux","Config":{}}`)
+		os.Exit(0)
+	}
+	if args[0] == "volume" {
+		name := args[len(args)-1]
+		switch args[1] {
+		case "create":
+			if mode == "volume-failure" {
+				os.Exit(95)
+			}
+			write(name+".volume", "created")
+		case "rm":
+			_ = os.Remove(filepath.Join(root, name+".volume"))
+		default:
+			os.Exit(96)
+		}
+		os.Exit(0)
+	}
+	if args[1] == "cp" {
+		if args[2] != "-" {
+			if mode == "readback-corrupt" {
+				os.Exit(0)
+			}
+			if mode == "readback-failure" {
+				os.Exit(107)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
+			if err != nil {
+				os.Exit(106)
+			}
+			_, _ = os.Stdout.Write(data)
+			os.Exit(0)
+		}
+		attack("copy")
+		if mode == "copy-failure" {
+			os.Exit(97)
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(98)
+		}
+		write("configuration.tar", string(data))
 		os.Exit(0)
 	}
 	name := args[len(args)-1]
@@ -64,12 +146,30 @@ func TestCodexRuntimeHelper(t *testing.T) {
 	}
 	switch args[1] {
 	case "create":
+		attack("create")
+		if mode == "create-failure" {
+			os.Exit(99)
+		}
 		phase := "exec"
 		if slices.Contains(args, "login") {
 			phase = "preflight"
 		}
 		write(name+".phase", phase)
 	case "start":
+		// Inspect a transferred pinned file, independently of the host copy.
+		archive, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
+		if err != nil {
+			os.Exit(100)
+		}
+		tr := tar.NewReader(bytes.NewReader(archive))
+		header, err := tr.Next()
+		if err != nil || header.Name != "auth.json" || header.Mode != 0600 {
+			os.Exit(101)
+		}
+		auth, err := io.ReadAll(tr)
+		if err != nil || string(auth) != `{"fake":true}` {
+			os.Exit(102)
+		}
 		if string(phase) == "exec" || mode == "preflight-term" {
 			if mode == "term" || mode == "ignore-term" || mode == "preflight-term" {
 				term := make(chan os.Signal, 1)
@@ -133,7 +233,7 @@ func useFakeContainerRuntime(t *testing.T, f *fixture, mode string) string {
 		t.Fatal(err)
 	}
 	config := sandbox.ContainerConfig{RuntimePath: runtime, Image: "test-codex-image",
-		RuntimeEnv: map[string]string{"CODEX_RUNTIME_ROOT": state, "CODEX_RUNTIME_MODE": mode, "GORACE": "atexit_sleep_ms=0"}, AllowEnv: []string{"CODEX_HOME"},
+		RuntimeEnv: map[string]string{"CODEX_RUNTIME_ROOT": state, "CODEX_RUNTIME_MODE": mode, "CODEX_ORIGINAL_CONFIG": f.settings.ConfigDir(), "GORACE": "atexit_sleep_ms=0"}, AllowEnv: []string{"CODEX_HOME"},
 		WorktreeRoot: root, GitDirRoot: filepath.Join(root, "git"), ConfigDirRoot: root, HostHome: filepath.Join(root, "personal-home"),
 		DataDir: filepath.Join(root, "data"), RunnerTokenFile: filepath.Join(root, "data", "token"), ControlTimeout: 3 * time.Second}
 	f.config.Launch = ContainerLaunch(config, func(env adapter.SandboxEnv) (sandbox.SandboxSpec, error) {
@@ -160,6 +260,130 @@ func runtimeCalls(t *testing.T, root string) []runtimeCall {
 		calls = append(calls, call)
 	}
 	return calls
+}
+
+func assertVolumesRemoved(t *testing.T, root string) {
+	t.Helper()
+	volumes, err := filepath.Glob(filepath.Join(root, "*.volume"))
+	if err != nil || len(volumes) != 0 {
+		t.Fatalf("configuration volumes survived Result: %v %v", volumes, err)
+	}
+	calls := runtimeCalls(t, root)
+	for _, create := range calls {
+		if create.Args[0] != "volume" || create.Args[1] != "create" {
+			continue
+		}
+		name := create.Args[len(create.Args)-1]
+		removed := false
+		for _, call := range calls {
+			if slices.Equal(call.Args, []string{"volume", "rm", "--force", name}) {
+				removed = true
+			}
+		}
+		if !removed {
+			t.Fatalf("missing cleanup for volume %s", name)
+		}
+	}
+}
+
+func TestContainerRejectsConfigurationReplacementAfterAdapterVerification(t *testing.T) {
+	for _, boundary := range []string{"image", "create", "copy"} {
+		for _, kind := range []string{"replace", "symlink", "change"} {
+			t.Run(boundary+"/"+kind, func(t *testing.T) {
+				f := newFixture(t, "success")
+				root := useFakeContainerRuntime(t, f, "attack/"+boundary+"/"+kind)
+				_, result, _ := runResultAllowReplacement(t, f)
+				if result.Status != adapter.ResultFailed || result.ErrorClass == nil || *result.ErrorClass != adapter.ErrorConfig {
+					t.Fatalf("result=%+v", result)
+				}
+				for _, call := range runtimeCalls(t, root) {
+					if slices.Equal(call.Args[:2], []string{"container", "start"}) {
+						t.Fatalf("CLI started with changed config: %v", call.Args)
+					}
+					for _, arg := range call.Args {
+						if strings.HasPrefix(arg, "type=bind,source=") && strings.Contains(arg, "harness-") {
+							t.Fatalf("host configuration bind mounted: %s", arg)
+						}
+					}
+				}
+				dir, err := os.ReadFile(filepath.Join(root, "attacked"))
+				if err != nil {
+					t.Fatal("attack never ran:", err)
+				}
+				if kind != "change" {
+					if _, err := os.Lstat(string(dir) + "-displaced"); !os.IsNotExist(err) {
+						t.Fatalf("displaced copy survived Result: %v", err)
+					}
+				} else {
+					assertWorkingCopiesRemoved(t, f)
+				}
+				if _, err := f.settings.Files(context.Background()); err != nil {
+					t.Fatal("original changed:", err)
+				}
+				assertVolumesRemoved(t, root)
+			})
+		}
+	}
+}
+
+func TestContainerWorkingVolumeLifetime(t *testing.T) {
+	for _, mode := range []string{"success", "exit-130", "config-130", "volume-failure", "copy-failure", "create-failure", "readback-corrupt", "readback-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, "success")
+			root := useFakeContainerRuntime(t, f, mode)
+			_, result, _ := runResult(t, f)
+			if mode == "success" && result.Status != adapter.ResultSucceeded {
+				t.Fatalf("result=%+v", result)
+			}
+			if mode != "success" && result.Status != adapter.ResultFailed {
+				t.Fatalf("failure lost: %+v", result)
+			}
+			if mode == "readback-corrupt" {
+				if result.ErrorClass == nil || *result.ErrorClass != adapter.ErrorConfig {
+					t.Fatalf("mounted mismatch not config_error: %+v", result)
+				}
+				for _, call := range runtimeCalls(t, root) {
+					if slices.Equal(call.Args[:2], []string{"container", "start"}) {
+						t.Fatal("CLI started before mounted manifest verified")
+					}
+				}
+			}
+			assertVolumesRemoved(t, root)
+			assertWorkingCopiesRemoved(t, f)
+			if _, err := f.settings.Files(context.Background()); err != nil {
+				t.Fatal("original changed:", err)
+			}
+		})
+	}
+}
+
+func TestContainerWorkingVolumesAreExecutionLocal(t *testing.T) {
+	f := newFixture(t, "success")
+	root := useFakeContainerRuntime(t, f, "success")
+	for range 2 {
+		_, result, _ := runResult(t, f)
+		if result.Status != adapter.ResultSucceeded {
+			t.Fatalf("result=%+v", result)
+		}
+		assertVolumesRemoved(t, root)
+	}
+	volumes := map[string]bool{}
+	transfers := 0
+	for _, call := range runtimeCalls(t, root) {
+		if call.Args[0] == "volume" && call.Args[1] == "create" {
+			name := call.Args[len(call.Args)-1]
+			if volumes[name] {
+				t.Fatal("volume reused by another execution")
+			}
+			volumes[name] = true
+		}
+		if slices.Equal(call.Args[:2], []string{"container", "cp"}) && call.Args[2] == "-" {
+			transfers++
+		}
+	}
+	if len(volumes) != 2 || transfers != 2 {
+		t.Fatalf("volumes=%v transfers=%d; want one fresh copy per execution", volumes, transfers)
+	}
 }
 
 func TestContainerLaunchErrorClassification(t *testing.T) {
@@ -244,6 +468,8 @@ func TestContainerLaunchCancellationSequence(t *testing.T) {
 				<-ctx.Done()
 			}
 			r, err := f.h.Result(id)
+			assertWorkingCopiesRemoved(t, f)
+			assertVolumesRemoved(t, root)
 			want := adapter.ErrorCancelled
 			if tc.trigger == "deadline" {
 				want = adapter.ErrorTimeout
@@ -326,7 +552,9 @@ set -eu
 printf '%s\n' "$@" >> "$CAPTURE"
 case "$1:$2" in
   image:inspect) printf '%s\n' '{"Os":"linux","Config":{}}' ;;
+  volume:create|volume:rm) exit 0 ;;
   container:create) exit 0 ;;
+  container:cp) if [ "$3" = - ]; then cat > "$CAPTURE.tar"; else cat "$CAPTURE.tar"; fi ;;
   container:start) printf '%s\n' '{"type":"turn.completed"}' ;;
   container:inspect) printf '%s\n' '{"Status":"exited","Running":false,"ExitCode":0}' ;;
   container:rm) exit 0 ;;
@@ -351,10 +579,37 @@ esac
 		t.Fatal(err)
 	}
 	args := strings.Split(string(data), "\n")
-	for _, want := range []string{"--read-only", "--network", "none", "--workdir", f.env.Worktree, "HOME=/evaloom-home", "CODEX_HOME=" + f.env.ConfigDir, "type=bind,source=" + f.env.ConfigDir + ",target=" + f.env.ConfigDir + ",readonly", "--json", "login", "status"} {
+	var copyDir string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "CODEX_HOME=") {
+			dir := strings.TrimPrefix(arg, "CODEX_HOME=")
+			if dir == f.env.ConfigDir || (copyDir != "" && dir != copyDir) {
+				t.Fatal("preflight and exec did not use the same disposable copy")
+			}
+			copyDir = dir
+		}
+	}
+	if copyDir == "" || strings.Contains(string(data), f.env.ConfigDir) {
+		t.Fatal("original configuration mounted or copy missing")
+	}
+	for _, want := range []string{"--read-only", "--network", "none", "--workdir", f.env.Worktree, "HOME=/evaloom-home", "CODEX_HOME=" + copyDir, "--json", "login", "status"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("runtime missing %q: %s", want, data)
 		}
+	}
+	var configMounts []string
+	for _, arg := range args {
+		if strings.Contains(arg, "target="+copyDir) {
+			configMounts = append(configMounts, arg)
+		}
+	}
+	if len(configMounts) != 2 || configMounts[0] != configMounts[1] ||
+		!strings.HasPrefix(configMounts[0], "type=volume,source=evaloom-config-") ||
+		!strings.HasSuffix(configMounts[0], ",target="+copyDir+",volume-nocopy") {
+		t.Fatalf("preflight and exec must share a private volume, never a writable host bind: %v", configMounts)
+	}
+	if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
+		t.Fatal("working copy survived execution")
 	}
 	if strings.Count(string(data), "container\ncreate\n") != 2 {
 		t.Fatalf("preflight and exec not both sandboxed: %s", data)

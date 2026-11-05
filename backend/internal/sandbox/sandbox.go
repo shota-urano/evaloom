@@ -42,8 +42,10 @@ type SandboxSpec struct {
 	Worktree  string
 	GitDir    string
 	ConfigDir string
-	Env       map[string]string
-	Network   NetworkPolicy
+	// True only for an execution's disposable harness configuration copy.
+	ConfigWritable bool
+	Env            map[string]string
+	Network        NetworkPolicy
 	// Exact DNS host:port destinations, supplied by trusted Runner wiring.
 	// This is not a Project Registry or public HTTP API field.
 	AllowedDestinations []string

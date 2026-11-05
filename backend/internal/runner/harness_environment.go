@@ -25,6 +25,8 @@ import (
 // The caller provides Project files and the freshly observed worktree HEAD,
 // retains the returned RequestContext for HarnessRequest, and mounts ConfigDir
 // in its Harness SandboxSpec with Env's variable in ContainerConfig.AllowEnv.
+// For Codex, supply this original Environment through codex.Config.ResolveConfig;
+// the adapter owns a disposable working copy and passes it to ContainerLaunch.
 // HOME is supplied by the Sandbox's per-execution tmpfs, never by this method.
 // After the Sandbox stops, the caller must Close the returned Environment.
 func (runner *Runner) PrepareHarnessEnvironment(ctx context.Context, executionID, headSHA string,
