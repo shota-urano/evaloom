@@ -5,8 +5,75 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestAuthenticationLogExclusionStreamsAndAccumulatesAtCommandBoundaries(t *testing.T) {
+	e, a, store := authCopy(t, "CODEX_HOME")
+	initial, _ := os.ReadFile(store)
+	for _, value := range []string{"private-original", "private-preflight", "private-final"} {
+		if value != "private-original" {
+			if err := e.RefreshAuthentication([]byte(`{"token":"` + value + `"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, ok := a.FilterLog("diagnostic " + value); !ok || got != "diagnostic [REDACTED]" {
+			t.Fatal("observed credential not immediately excluded")
+		}
+		if got, ok := a.FilterLog("ordinary diagnostic"); !ok || got != "ordinary diagnostic" {
+			t.Fatal("ordinary output not available during execution")
+		}
+	}
+	if got := a.RedactLog("private-original private-preflight private-final"); strings.Contains(got, "private-") {
+		t.Fatal("command-boundary exclusions did not accumulate")
+	}
+	stored, err := os.ReadFile(store)
+	if err != nil || string(stored) != string(initial) {
+		t.Fatal("log refresh persisted credentials")
+	}
+}
+
+func TestAuthenticationLogExclusionStaysSuppressedAfterFailedRefresh(t *testing.T) {
+	e, a, _ := authCopy(t, "CODEX_HOME")
+	if e.RefreshAuthentication([]byte(`{"token":"private-invalid`)) == nil {
+		t.Fatal("invalid refresh succeeded")
+	}
+	if err := e.RefreshAuthentication([]byte(`{"token":"private-valid"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"unknown credential", "ordinary output", ""} {
+		if got, ok := a.FilterLog(text); ok || got != "" {
+			t.Fatal("CLI line released after failed recovery")
+		}
+	}
+}
+
+func TestAuthenticationLogExclusionConcurrentWithRefreshAndClose(t *testing.T) {
+	e, a, _ := authCopy(t, "CODEX_HOME")
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Go(func() {
+			for range 50 {
+				if got, ok := a.FilterLog("private-original"); ok && got != "[REDACTED]" {
+					t.Error("initial credential survived concurrent exclusion")
+				}
+			}
+		})
+	}
+	for range 10 {
+		if err := e.RefreshAuthentication([]byte(`{"token":"private-refreshed"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readers.Wait()
+	if _, ok := a.FilterLog("after close"); ok {
+		t.Fatal("closed lease released CLI output")
+	}
+}
 
 func TestAuthenticationLogExclusionIncludesOriginalAndRecoveredValues(t *testing.T) {
 	e, a, _ := authCopy(t, "CODEX_HOME")

@@ -52,14 +52,16 @@ func TestCodexCLIHelper(t *testing.T) {
 	args = args[2:]
 	mode := os.Getenv("FAKE_MODE")
 	if strings.HasPrefix(mode, "refresh-") {
-		// Deliberately emit both credential JSON and a bare refreshed token.
+		// Emit currently known credential JSON and its bare token before refreshing.
 		initial, err := os.ReadFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"))
 		if err != nil {
 			exit("credential read failed")
 		}
 		fmt.Fprintf(os.Stdout, "{\"type\":\"auth.debug\",\"credentials\":%s}\n", initial)
 		fmt.Fprintln(os.Stderr, string(initial))
-		fmt.Fprintln(os.Stderr, "private-refreshed-token")
+		var credential struct{ Token string }
+		_ = json.Unmarshal(initial, &credential)
+		fmt.Fprintln(os.Stderr, credential.Token)
 		mode = strings.TrimPrefix(mode, "refresh-")
 		if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), []byte(`{"token":"private-refreshed-token"}`), 0600); err != nil {
 			exit("credential update failed")

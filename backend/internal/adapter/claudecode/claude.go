@@ -21,7 +21,7 @@ import (
 )
 
 // Launch starts one command inside the prepared Harness Sandbox. Writers carry
-// output into memory until authentication recovery allows redaction. Wait must
+// output through authentication exclusion before log delivery. Wait must
 // confirm ALL writers have stopped. Launch must honor ctx during preparation;
 // Stop/Kill must be bounded.
 type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error)
@@ -113,10 +113,14 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	var working *harnessenv.Environment
 	var closeConfiguration func() error
 	var authentication *harnessenv.Authentication
+	var executionErr error
+	var executionFinished bool
 	defer func() {
 		// Credential recovery has its own control deadline. It must not turn an
 		// already-finished execution into a timeout while persisting its token.
-		executionErr := ctx.Err()
+		if !executionFinished {
+			executionErr = ctx.Err()
+		}
 		var authenticationWarning string
 		if closeConfiguration != nil {
 			if err := sandbox.WriteBackAuthentication(ctx); err != nil {
@@ -134,11 +138,6 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 			}
 		}
 		if authentication != nil {
-			s.mu.Lock()
-			for i := range s.logs {
-				s.logs[i].Text = authentication.RedactLog(s.logs[i].Text)
-			}
-			s.mu.Unlock()
 			result.Summary = authentication.RedactLog(result.Summary)
 			_ = authentication.Close()
 		}
@@ -211,17 +210,21 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	// Serialize a checked object: --settings cannot be interpreted as a path.
 	settings, _ = json.Marshal(object)
 	common := []string{"claude", "--setting-sources", "user,project", "--settings", string(settings)}
-	stderr := &lineWriter{session: s, stream: "stderr"}
+	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}
 	// Missing CLI becomes workload exit 127, not a runtime entrypoint failure.
 	// Prompt and settings are positional data, never interpolated shell source.
 	preflight := append([]string{"/bin/sh", "-c", `exec "$@"`, "evaloom-claude-preflight"}, common...)
 	preflight = append(preflight, "auth", "status", "--json")
-	preflightOut := &lineWriter{session: s, stream: "stdout"}
+	preflightOut := &lineWriter{session: s, stream: "stdout", authentication: authentication}
 	ctx, closeConfiguration, err = sandbox.WithWorkingConfiguration(ctx, working)
 	if err != nil {
 		return
 	}
 	class, err = h.command(ctx, env, preflight, preflightOut, stderr, adapter.ErrorConfig)
+	if err != nil {
+		executionErr, executionFinished = ctx.Err(), true
+	}
+	refreshAuthentication(ctx, s)
 	preflightOut.finish()
 	stderr.finish()
 	if err != nil {
@@ -234,8 +237,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		"--no-session-persistence", "--permission-mode", "dontAsk", "--permission-prompts", "none",
 		"--model", req.Profile.ModelID, "--", prompt)
 	parser := &events{}
-	stdout := &lineWriter{session: s, stream: "stdout", events: parser}
+	stdout := &lineWriter{session: s, stream: "stdout", events: parser, authentication: authentication}
 	class, err = h.command(ctx, env, command, stdout, stderr, adapter.ErrorExecutionFailed)
+	executionErr, executionFinished = ctx.Err(), true
+	refreshAuthentication(ctx, s)
 	stdout.finish()
 	stderr.finish()
 	result.Summary = parser.summary
@@ -376,15 +381,33 @@ func (h *harness) Logs(id adapter.SessionID) (<-chan adapter.LogLine, error) {
 	return s.stream, nil // One shared consumer, as in Runner's log collector.
 }
 
+// refreshAuthentication adds a trusted diagnostic outside the CLI filter when
+// recovery fails. Later raw CLI lines are suppressed by the credential lease.
+func refreshAuthentication(ctx context.Context, s *session) {
+	if err := sandbox.RefreshAuthentication(ctx); err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, "authentication log recovery failed: "+err.Error()+"\n")
+	}
+}
+
 func (s *session) deliver() {
 	defer close(s.stream)
-	// Unknown refreshed values must be excluded before Runner storage/events.
-	<-s.done
-	s.mu.Lock()
-	batch := s.logs
-	s.logs = nil
-	s.mu.Unlock()
-	for _, line := range batch {
-		s.stream <- line
+	finished := false
+	for {
+		s.mu.Lock()
+		batch := s.logs
+		s.logs = nil
+		s.mu.Unlock()
+		for _, line := range batch {
+			s.stream <- line
+		}
+		if finished {
+			return
+		}
+		select {
+		case <-s.done:
+			finished = true // drain the final batch after observing completion
+		case <-s.wake:
+		}
 	}
 }

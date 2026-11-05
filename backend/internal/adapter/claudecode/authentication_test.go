@@ -345,12 +345,14 @@ func TestAuthenticationWritebackWaitsForLastWriter(t *testing.T) {
 	}
 }
 
-// Logs are held until credential recovery; use the fake CLI's explicit marker
-// to synchronize cancellation independently of log publication.
+// Use the fake CLI's explicit marker to synchronize cancellation independently
+// of asynchronous log publication.
 func waitAuthenticationCLI(t *testing.T, ctx context.Context, root, marker string) {
 	t.Helper()
 	for {
-		if _, err := os.Stat(filepath.Join(root, marker)); err == nil {
+		// Creation precedes WriteFile's payload write. Cancelling on an empty
+		// marker can kill the helper before its PID/name has been published.
+		if data, err := os.ReadFile(filepath.Join(root, marker)); err == nil && len(data) > 0 {
 			return
 		}
 		select {

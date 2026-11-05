@@ -11,24 +11,51 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 )
 
-// WriteBackAuthentication is called only after every launched Process.Wait has
-// confirmed termination. Recovery must survive the execution's cancellation.
+// RefreshAuthentication reads the stopped command's credentials and accumulates
+// log exclusions without writing the store. Call after each Process.Wait,
+// including failed commands, before starting another CLI command.
+func RefreshAuthentication(ctx context.Context) error {
+	return recoverAuthentication(ctx, false)
+}
+
+// WriteBackAuthentication additionally persists the final recovered credentials.
+// Both operations require stopped writers and survive execution cancellation.
 // Diagnostic output from the runtime is never forwarded to execution logs.
 func WriteBackAuthentication(ctx context.Context) error {
+	return recoverAuthentication(ctx, true)
+}
+
+func recoverAuthentication(ctx context.Context, persist bool) error {
 	w, _ := ctx.Value(configurationKey{}).(*workingConfiguration)
 	if w == nil || w.authName == "" {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	data, err := w.readAuthentication(ctx)
+	if err != nil {
+		w.env.SuppressAuthenticationLogs()
+		return err
+	}
+	if data == nil {
+		return nil // no CLI could start on an unverified volume
+	}
+	if persist {
+		return w.env.WriteBackAuthentication(data)
+	}
+	return w.env.RefreshAuthentication(data)
+}
+
+func (w *workingConfiguration) readAuthentication(ctx context.Context) ([]byte, error) {
 	if w.closed {
-		return fmt.Errorf("authentication: configuration already closed")
+		return nil, fmt.Errorf("authentication: configuration already closed")
 	}
 	if w.owner == nil {
-		return w.env.WriteBackAuthentication(nil)
+		_, data, err := w.env.AuthenticationFile()
+		return data, err
 	}
 	if !w.seeded {
-		return nil
+		return nil, nil
 	} // no CLI could start on an unverified volume
 	c := w.owner
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.config.ControlTimeout)
@@ -39,15 +66,15 @@ func WriteBackAuthentication(ctx context.Context) error {
 	defer c.remove(name)
 	if _, err := c.output(ctx, "container", "create", "--name", name, "--network", "none", "--read-only",
 		"--mount", "type=volume,source="+w.volume+",target=/evaloom-auth,readonly,volume-nocopy", c.config.Image, "/bin/true"); err != nil {
-		return fmt.Errorf("authentication: recovery container creation failed")
+		return nil, fmt.Errorf("authentication: recovery container creation failed")
 	}
 	cmd := c.command(ctx, "container", "cp", name+":/evaloom-auth/"+w.authName, "-")
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("authentication: recovery pipe failed")
+		return nil, fmt.Errorf("authentication: recovery pipe failed")
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("authentication: recovery command failed")
+		return nil, fmt.Errorf("authentication: recovery command failed")
 	}
 	// Bound both tar metadata and payload before the untrusted archive is parsed.
 	// 64 KiB of metadata covers Docker's headers; no payload above 64 KiB is used.
@@ -57,12 +84,12 @@ func WriteBackAuthentication(ctx context.Context) error {
 	}
 	waitErr := cmd.Wait()
 	if readErr != nil {
-		return readErr
+		return nil, readErr
 	}
 	if waitErr != nil {
-		return fmt.Errorf("authentication: recovery command failed")
+		return nil, fmt.Errorf("authentication: recovery command failed")
 	}
-	return w.env.WriteBackAuthentication(data)
+	return data, nil
 }
 
 func authenticationArchive(source io.Reader, name string) ([]byte, error) {

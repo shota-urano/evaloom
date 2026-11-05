@@ -19,11 +19,12 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
-// The fake CLIs actually print credentials, including future refreshed values
-// before updating the file. No Docker, installed harness or model API is used.
+// The fake CLIs use distinct initial, preflight and final credentials. They print
+// known values during execution and final values without LF at command exit.
+// No Docker, installed harness or model API is used.
 func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 	for _, harness := range []string{"codex", "claude_code"} {
-		for _, outcome := range []string{"success", "failure", "cancel", "timeout", "preflight_failure", "invalid_json", "oversize", "symlink"} {
+		for _, outcome := range []string{"success", "failure", "cancel", "timeout", "preflight_failure", "invalid_json", "oversize", "symlink", "preflight_invalid_json", "preflight_oversize", "preflight_symlink"} {
 			t.Run(harness+"/"+outcome, func(t *testing.T) {
 				f := newLogControlPlane(t)
 				r, err := New(f.config)
@@ -60,7 +61,7 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					cmd.Dir, cmd.Stdout, cmd.Stderr = env.Worktree, out, stderr
 					cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + root, variable + "=" + env.ConfigDir,
 						"AUTH_FILE=" + filepath.Join(env.ConfigDir, authName), "ROOT=" + root,
-						"PHASE=" + phase, "OUTCOME=" + outcome, "STORE=" + store}
+						"PHASE=" + phase, "HARNESS=" + harness, "OUTCOME=" + outcome, "STORE=" + store}
 					if err := cmd.Start(); err != nil {
 						return nil, err
 					}
@@ -116,8 +117,8 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					_ = sink.Close()
 					collected <- texts
 				}()
-				// The fake CLI has already printed old/new credentials but remains
-				// alive. Neither the local file nor event delivery may contain them.
+				// The CLI prints ordinary output and then stays alive until released.
+				// Assert storage AND event delivery while it is still running.
 				for {
 					if _, err := os.Stat(filepath.Join(root, "printed")); err == nil {
 						break
@@ -128,13 +129,37 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					case <-time.After(time.Millisecond):
 					}
 				}
-				info, err := os.Stat(log.Path())
-				if err != nil || info.Size() != 0 {
-					t.Fatal("CLI output released before recovery")
+				wantDiagnostic := "ordinary diagnostic"
+				if strings.HasPrefix(outcome, "preflight_") {
+					wantDiagnostic = "ordinary preflight diagnostic"
 				}
-				var count int
-				if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'`).Scan(&count); err != nil || count != 0 {
-					t.Fatal("CLI output delivered before recovery")
+				streamDeadline := time.After(500 * time.Millisecond)
+				for {
+					live, err := os.ReadFile(log.Path())
+					if err != nil {
+						t.Fatal(err)
+					}
+					var count int
+					err = f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'
+						AND json_extract(payload, '$.text')=?`, wantDiagnostic).Scan(&count)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(live), wantDiagnostic) && count > 0 {
+						break
+					}
+					select {
+					case <-streamDeadline:
+						t.Fatal("ordinary diagnostic is not stored and delivered while CLI is running (Streaming=true)")
+					case <-time.After(time.Millisecond):
+					}
+				}
+				if status, err := h.Status(id); err != nil || status != adapter.SessionRunning {
+					t.Fatal("CLI ended before streaming assertion", err)
+				}
+				storedBeforeExit, err := os.ReadFile(store)
+				if err != nil || string(storedBeforeExit) != initial {
+					t.Fatal("command-boundary recovery persisted credentials before Execution ended")
 				}
 				if outcome == "cancel" {
 					_ = h.Cancel(id)
@@ -155,6 +180,9 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					}
 				} else if result.ErrorClass == nil || *result.ErrorClass != want {
 					t.Fatalf("result=%+v", result)
+				}
+				if strings.Contains(result.Summary, "private-") {
+					t.Fatal("authentication leaked into summary")
 				}
 				if err := await(t, readDone); err != nil {
 					t.Fatal(err)
@@ -191,8 +219,14 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					readLogFrame(t, events, "harness", text)
 				}
 				invalid := outcome == "invalid_json" || outcome == "oversize" || outcome == "symlink"
-				if !invalid && !strings.Contains(string(local), "ordinary diagnostic") {
+				if !strings.Contains(string(local), wantDiagnostic) {
 					t.Fatal("ordinary output lost")
+				}
+				if strings.HasPrefix(outcome, "preflight_") && outcome != "preflight_failure" {
+					if strings.Contains(string(local), "suppressed after failed recovery") ||
+						!strings.Contains(string(local), "authentication log recovery failed:") {
+						t.Fatal("CLI output released after failed preflight recovery, or missing safe diagnostic")
+					}
 				}
 				stored, err := os.ReadFile(store)
 				if err != nil {
@@ -202,8 +236,14 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 					if string(stored) != initial || !strings.Contains(string(local), "authentication writeback skipped:") {
 						t.Fatal("invalid writeback lost store/reason")
 					}
-				} else if !strings.Contains(string(stored), "private-refreshed-token") {
-					t.Fatal("refresh not persisted")
+				} else {
+					wantToken := "private-refreshed-token"
+					if outcome == "preflight_failure" {
+						wantToken = "private-preflight-token"
+					}
+					if !strings.Contains(string(stored), wantToken) {
+						t.Fatal("refresh not persisted")
+					}
 				}
 			})
 		}
@@ -212,28 +252,51 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 
 const authenticationLogCLI = `#!/bin/sh
 set -eu
-test -f "$AUTH_FILE"
-printf '{"type":"auth.debug","credentials":'
-cat "$AUTH_FILE"
-printf '}\n'
-cat "$AUTH_FILE" >&2
-printf '\nprivate-original-token private-original-refresh\n' >&2
-# A future refreshed value can be printed before the file is changed.
-printf '%s\n' 'private-refreshed-token private-refreshed-refresh' >&2
-if [ "$PHASE" = preflight ] && [ "$OUTCOME" != preflight_failure ]; then exit 0; fi
-printf '%s' '{"token":"private-refreshed-token","nested":{"refresh":"private-refreshed-refresh"}}' > "$AUTH_FILE"
-printf '{"type":"auth.debug","credentials":'
-cat "$AUTH_FILE"
-printf '}\n'
-cat "$AUTH_FILE" >&2
-printf '\nordinary diagnostic\n' >&2
-case "$OUTCOME" in
- invalid_json) printf '%s' '{"token":"private-unrecoverable' > "$AUTH_FILE"; printf 'private-unrecoverable\n' >&2 ;;
- oversize) dd if=/dev/zero of="$AUTH_FILE" bs=65537 count=1 2>/dev/null; printf 'private-unrecoverable\n' >&2 ;;
- symlink) rm -f "$AUTH_FILE"; ln -s "$STORE" "$AUTH_FILE"; printf 'private-unrecoverable\n' >&2 ;;
-esac
+if [ "$PHASE" = preflight ]; then
+ test -f "$AUTH_FILE"
+ printf '{"type":"auth.debug","credentials":'
+ cat "$AUTH_FILE"
+ printf '}\n'
+ cat "$AUTH_FILE" >&2
+ printf '\nprivate-original-token private-original-refresh\nordinary preflight diagnostic\n' >&2
+ printf '%s' '{"token":"private-preflight-token","nested":{"refresh":"private-preflight-refresh"}}' > "$AUTH_FILE"
+ case "$OUTCOME" in
+  preflight_invalid_json) printf '%s' '{"token":"private-invalid' > "$AUTH_FILE" ;;
+  preflight_oversize) dd if=/dev/zero of="$AUTH_FILE" bs=65537 count=1 2>/dev/null ;;
+  preflight_symlink) rm -f "$AUTH_FILE"; ln -s "$STORE" "$AUTH_FILE" ;;
+ esac
+ if [ "$OUTCOME" != preflight_failure ]; then exit 0; fi
+else
+ case "$OUTCOME" in
+  preflight_invalid_json|preflight_oversize|preflight_symlink)
+   # Even a successful later read must not re-enable output after failed recovery.
+   printf 'private-unrecoverable\nsuppressed after failed recovery\n' >&2
+   rm -f "$AUTH_FILE" ;;
+  *)
+   printf '{"type":"auth.debug","credentials":'
+   cat "$AUTH_FILE"
+   printf '}\n'
+   cat "$AUTH_FILE" >&2
+   printf '\nprivate-original-token private-original-refresh private-preflight-token private-preflight-refresh\n' >&2 ;;
+ esac
+ printf 'ordinary diagnostic\n' >&2
+ printf '%s' '{"token":"private-refreshed-token","nested":{"refresh":"private-refreshed-refresh"}}' > "$AUTH_FILE"
+ # Unknown values printed while a command is running are outside the guarantee.
+ # A final partial line is flushed only after the command-boundary reread.
+ printf 'private-refreshed-token' >&2
+ case "$OUTCOME" in
+  invalid_json) printf '%s' '{"token":"private-unrecoverable' > "$AUTH_FILE" ;;
+  oversize) dd if=/dev/zero of="$AUTH_FILE" bs=65537 count=1 2>/dev/null ;;
+  symlink) rm -f "$AUTH_FILE"; ln -s "$STORE" "$AUTH_FILE" ;;
+ esac
+fi
 touch "$ROOT/printed"
 while [ ! -f "$ROOT/release" ]; do sleep 0.01; done
 case "$OUTCOME" in failure|preflight_failure) exit 7 ;; esac
-printf '%s\n' '{"type":"turn.completed"}' '{"type":"result","subtype":"success","is_error":false,"result":"ordinary result"}'
+if [ "$HARNESS" = codex ]; then
+ printf '%s\n' '{"type":"turn.completed"}'
+ printf '%s' '{"type":"item.completed","item":{"type":"agent_message","text":"private-original-token private-preflight-token private-refreshed-token"}}'
+else
+ printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"private-original-token private-preflight-token private-refreshed-token"}'
+fi
 `

@@ -141,10 +141,20 @@ func TestAuthenticationIsSeparateFromConfigurationManifest(t *testing.T) {
 	}
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
+	if err := RefreshAuthentication(cancelled); err != nil {
+		t.Fatal("command-boundary recovery lost on cancellation", err)
+	}
+	if lease.RedactLog("private-initial private-refreshed") != "[REDACTED] [REDACTED]" {
+		t.Fatal("command-boundary recovery did not accumulate exclusions")
+	}
+	got, err := os.ReadFile(store)
+	if err != nil || string(got) != `{"token":"private-initial"}` {
+		t.Fatal("command-boundary recovery wrote the store", err)
+	}
 	if err := WriteBackAuthentication(cancelled); err != nil {
 		t.Fatal("writeback lost on cancellation", err)
 	}
-	got, err := os.ReadFile(store)
+	got, err = os.ReadFile(store)
 	if err != nil || string(got) != `{"token":"private-refreshed"}` {
 		t.Fatal("host fallback not written back", err)
 	}

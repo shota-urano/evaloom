@@ -37,19 +37,29 @@ func authenticationSecrets(data []byte) []string {
 	return secrets
 }
 
-// RedactLog is called only after recovery, before Close clears the lease. CLI
-// output must remain in memory until then: refreshed values are not known at
-// launch. Failed/invalid recovery suppresses all untrusted output because its
-// secrets cannot be enumerated safely. Trusted diagnostics are added afterwards.
+// FilterLog excludes all values observed so far before a line enters the log
+// queue. It is safe alongside command-boundary refreshes and Close. Failed
+// recovery suppresses later lines entirely, including after a successful retry.
+func (a *Authentication) FilterLog(text string) (string, bool) {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	if a.logBlocked {
+		return "", false
+	}
+	r := logredact.NewLiteralReader(strings.NewReader(text), a.logSecrets)
+	data, _ := io.ReadAll(r) // strings.Reader cannot fail
+	return string(data), true
+}
+
+// RedactLog applies the same exclusions to the final summary. When recovery
+// failed, return a marker rather than exposing the untrusted summary.
 func (a *Authentication) RedactLog(text string) string {
 	if text == "" {
 		return ""
 	}
-	if !a.logReady || a.root == nil {
+	filtered, ok := a.FilterLog(text)
+	if !ok {
 		return logredact.Marker
 	}
-	secrets := append(authenticationSecrets(a.initial), a.logSecrets...)
-	r := logredact.NewLiteralReader(strings.NewReader(text), secrets)
-	data, _ := io.ReadAll(r) // strings.Reader cannot fail
-	return string(data)
+	return filtered
 }

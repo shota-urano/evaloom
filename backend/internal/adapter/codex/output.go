@@ -6,17 +6,19 @@ import (
 	"sync"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 )
 
 // lineWriter supports fragmented writes, long lines and a final line without LF.
-// Collection does not wait for a Logs consumer. Output stays in memory until
-// authentication recovery permits exclusion before Logs delivery.
+// Collection does not wait for a Logs consumer. Each complete line is filtered
+// against all observed authentication values before entering the delivery queue.
 type lineWriter struct {
-	mu      sync.Mutex
-	pending []byte
-	session *session
-	stream  string
-	events  *events
+	authentication *harnessenv.Authentication
+	mu             sync.Mutex
+	pending        []byte
+	session        *session
+	stream         string
+	events         *events
 }
 
 func (w *lineWriter) Write(data []byte) (int, error) {
@@ -45,15 +47,24 @@ func (w *lineWriter) finish() {
 
 func (w *lineWriter) line(data []byte) {
 	text := string(bytes.TrimSuffix(data, []byte{'\r'}))
+	// Parse the original event, not redacted JSON. Summary is excluded after the
+	// last command's authentication refresh, before publishing HarnessResult.
+	if w.events != nil {
+		w.events.read([]byte(text))
+	}
+	if w.authentication != nil {
+		var ok bool
+		text, ok = w.authentication.FilterLog(text)
+		if !ok {
+			return
+		}
+	}
 	w.session.mu.Lock()
 	w.session.logs = append(w.session.logs, adapter.LogLine{Stream: w.stream, Text: text})
 	w.session.mu.Unlock()
 	select {
 	case w.session.wake <- struct{}{}:
 	default:
-	}
-	if w.events != nil {
-		w.events.read([]byte(text))
 	}
 }
 

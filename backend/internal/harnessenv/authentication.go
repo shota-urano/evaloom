@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -25,8 +26,9 @@ type Authentication struct {
 	lock       *os.File
 	name       string
 	initial    []byte
+	logMu      sync.Mutex
 	logSecrets []string
-	logReady   bool
+	logBlocked bool
 }
 
 func authError(reason string) error { return fmt.Errorf("authentication: %s", reason) }
@@ -86,6 +88,7 @@ func AcquireAuthentication(ctx context.Context, store string) (_ *Authentication
 	if err != nil {
 		return nil, configError(err)
 	}
+	a.logSecrets = authenticationSecrets(a.initial)
 	return a, nil
 }
 
@@ -176,6 +179,43 @@ func (e *Environment) AuthenticationFile() (string, []byte, error) {
 	return name, data, err
 }
 
+// RefreshAuthentication records values obtained after a CLI command has stopped,
+// without persisting them. A failed read permanently suppresses later CLI logs.
+// A nil input reads the local copy, for launchers that use that copy directly.
+func (e *Environment) RefreshAuthentication(data []byte) error {
+	a := e.authentication
+	if a == nil {
+		return nil
+	}
+	if data == nil {
+		_, local, err := e.AuthenticationFile()
+		if err != nil {
+			e.SuppressAuthenticationLogs()
+			return err
+		}
+		data = local
+	}
+	if err := ValidateAuthentication(data); err != nil {
+		e.SuppressAuthenticationLogs()
+		return err
+	}
+	secrets := authenticationSecrets(data)
+	a.logMu.Lock()
+	a.logSecrets = append(a.logSecrets, secrets...)
+	a.logMu.Unlock()
+	return nil
+}
+
+// SuppressAuthenticationLogs fails closed when Sandbox recovery cannot provide
+// valid credentials. Later successful reads must not re-enable CLI output.
+func (e *Environment) SuppressAuthenticationLogs() {
+	if a := e.authentication; a != nil {
+		a.logMu.Lock()
+		a.logBlocked = true
+		a.logMu.Unlock()
+	}
+}
+
 // WriteBackAuthentication validates bytes obtained from the stopped Sandbox.
 // A nil input reads the local copy, for launchers that use that copy directly.
 // Call even after cancellation, before Close; errors must only produce warnings.
@@ -187,15 +227,14 @@ func (e *Environment) WriteBackAuthentication(data []byte) error {
 	if data == nil {
 		_, local, err := e.AuthenticationFile()
 		if err != nil {
+			e.SuppressAuthenticationLogs()
 			return err
 		}
 		data = local
 	}
-	if err := ValidateAuthentication(data); err != nil {
+	if err := e.RefreshAuthentication(data); err != nil {
 		return err
 	}
-	a.logSecrets = append(a.logSecrets, authenticationSecrets(data)...)
-	a.logReady = true
 	if bytes.Equal(data, a.initial) {
 		return nil
 	}
@@ -243,8 +282,11 @@ func (a *Authentication) Close() error {
 		a.lock = nil
 	}
 	err = errors.Join(err, a.root.Close())
-	a.root, a.initial, a.logSecrets = nil, nil, nil
-	a.logReady = false
+	a.root, a.initial = nil, nil
+	a.logMu.Lock()
+	a.logSecrets = nil
+	a.logBlocked = true
+	a.logMu.Unlock()
 	if err != nil {
 		return authError("lease close failed")
 	}

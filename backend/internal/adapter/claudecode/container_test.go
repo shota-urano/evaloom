@@ -85,9 +85,15 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 				os.Exit(106)
 			}
 			if strings.Contains(args[2], ":/evaloom-auth/") {
-				if mode == "writeback-delay-failure" {
-					time.Sleep(1200 * time.Millisecond)
-					os.Exit(110)
+				if mode == "writeback-delay-failure" || mode == "final-refresh-delay-failure" {
+					previous, _ := os.ReadFile(filepath.Join(root, "recoveries"))
+					count, _ := strconv.Atoi(string(previous))
+					write("recoveries", strconv.Itoa(count+1))
+					if (mode == "writeback-delay-failure" && count >= 2) ||
+						(mode == "final-refresh-delay-failure" && count == 1) {
+						time.Sleep(1200 * time.Millisecond)
+						os.Exit(110)
+					}
 				}
 				tr := tar.NewReader(bytes.NewReader(data))
 				tw := tar.NewWriter(os.Stdout)
@@ -139,9 +145,6 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 		write(name+".phase", phase)
 	case "start":
 		if refresh {
-			fmt.Fprintln(os.Stdout, `{"type":"auth.debug","credentials":{"token":"private-volume-refreshed"}}`)
-			fmt.Fprintln(os.Stderr, `{"token":"private-volume-refreshed"}`)
-			fmt.Fprintln(os.Stderr, "private-volume-refreshed")
 			archive, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
 			if err != nil {
 				os.Exit(108)
@@ -159,7 +162,16 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 				}
 				data, _ := io.ReadAll(tr)
 				if h.Name == ".credentials.json" {
-					data = []byte(`{"token":"private-volume-refreshed"}`)
+					fmt.Fprintf(os.Stdout, "{\"type\":\"auth.debug\",\"credentials\":%s}\n", data)
+					fmt.Fprintln(os.Stderr, string(data))
+					var credential struct{ Token string }
+					_ = json.Unmarshal(data, &credential)
+					fmt.Fprintln(os.Stderr, credential.Token)
+					value := "private-volume-refreshed"
+					if string(phase) == "preflight" {
+						value = "private-volume-preflight"
+					}
+					data = []byte(`{"token":"` + value + `"}`)
 					h.Size = int64(len(data))
 				}
 				_ = tw.WriteHeader(h)
@@ -473,7 +485,7 @@ esac
 			t.Fatalf("runtime missing %q: %s", want, data)
 		}
 	}
-	if strings.Count(string(data), "container\ncreate\n") != 3 {
+	if strings.Count(string(data), "container\ncreate\n") != 5 {
 		t.Fatalf("preflight and exec not both sandboxed: %s", data)
 	}
 	var copiedDir string
@@ -532,7 +544,7 @@ func TestContainerAuthenticationRecoveredAfterEveryOutcome(t *testing.T) {
 				_ = f.h.Cancel(id)
 			}
 			for line := range lines {
-				if strings.Contains(line.Text, "private-volume-refreshed") {
+				if strings.Contains(line.Text, "private-volume-") {
 					t.Fatal("volume authentication in logs")
 				}
 			}
@@ -549,7 +561,11 @@ func TestContainerAuthenticationRecoveredAfterEveryOutcome(t *testing.T) {
 				t.Fatalf("result=%+v", result)
 			}
 			data, err := os.ReadFile(f.store)
-			if err != nil || string(data) != `{"token":"private-volume-refreshed"}` {
+			wantToken := "private-volume-refreshed"
+			if outcome == "preflight_failure" {
+				wantToken = "private-volume-preflight"
+			}
+			if err != nil || string(data) != `{"token":"`+wantToken+`"}` {
 				t.Fatal("volume refresh not recovered", err)
 			}
 			// Recovery happens only after a removal confirming writers stopped.
@@ -577,24 +593,29 @@ func TestContainerAuthenticationRecoveredAfterEveryOutcome(t *testing.T) {
 }
 
 func TestAuthenticationWritebackFailureCannotChangeFinishedExecution(t *testing.T) {
-	f := newFixture(t, "success")
-	useFakeContainerRuntime(t, f, "writeback-delay-failure")
-	f.request.Limits.TimeoutSec = 1
-	_, result, logs := runResult(t, f)
-	if result.Status != adapter.ResultSucceeded || result.ErrorClass != nil {
-		t.Fatalf("writeback failure/deadline changed finished result: %+v", result)
-	}
-	warning := false
-	for _, line := range logs {
-		if strings.Contains(line.Text, "authentication writeback skipped:") {
-			warning = true
-		}
-	}
-	if !warning {
-		t.Fatal("writeback failure not logged")
-	}
-	data, err := os.ReadFile(f.store)
-	if err != nil || string(data) != `{"fake":true}` {
-		t.Fatal("failed recovery changed store", err)
+	for _, mode := range []string{"writeback-delay-failure", "final-refresh-delay-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, "success")
+			useFakeContainerRuntime(t, f, mode)
+			f.request.Limits.TimeoutSec = 1
+			_, result, logs := runResult(t, f)
+			if result.Status != adapter.ResultSucceeded || result.ErrorClass != nil {
+				t.Fatalf("writeback failure/deadline changed finished result: %+v", result)
+			}
+			warning := false
+			for _, line := range logs {
+				if strings.Contains(line.Text, "authentication writeback skipped:") ||
+					strings.Contains(line.Text, "authentication log recovery failed:") {
+					warning = true
+				}
+			}
+			if !warning {
+				t.Fatal("writeback failure not logged")
+			}
+			data, err := os.ReadFile(f.store)
+			if err != nil || string(data) != `{"fake":true}` {
+				t.Fatal("failed recovery changed store", err)
+			}
+		})
 	}
 }
