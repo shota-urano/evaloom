@@ -51,6 +51,12 @@ func TestCodexCLIHelper(t *testing.T) {
 	}
 	args = args[2:]
 	mode := os.Getenv("FAKE_MODE")
+	if strings.HasPrefix(mode, "refresh-") {
+		mode = strings.TrimPrefix(mode, "refresh-")
+		if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), []byte(`{"token":"private-refreshed-token"}`), 0600); err != nil {
+			exit("credential update failed")
+		}
+	}
 	if slices.Equal(args, []string{"login", "status"}) {
 		if mode == "config" {
 			fmt.Fprintln(os.Stderr, "Error loading config.toml")
@@ -151,6 +157,7 @@ type fixture struct {
 	env       adapter.SandboxEnv
 	config    Config
 	settings  *harnessenv.Environment
+	store     string
 	processes []*localProcess
 	mu        sync.Mutex
 }
@@ -181,7 +188,7 @@ func newFixture(t *testing.T, mode string) *fixture {
 	base := git(repo, "rev-parse", "HEAD")
 	git(repo, "worktree", "add", "--quiet", "-b", "test-codex", worktree)
 	auth := `{"fake":true}`
-	settings, err := harnessenv.Create(context.Background(), harnessenv.Config{Root: root, CommitSHA: base, ConfigVariable: "CODEX_HOME", Files: []gitcontext.File{{Path: "auth.json", Content: auth, ContentHash: fmt.Sprintf("%x", sha256.Sum256([]byte(auth))), SourceCommitSHA: base}}})
+	settings, err := harnessenv.Create(context.Background(), harnessenv.Config{Root: root, CommitSHA: base, ConfigVariable: "CODEX_HOME", Files: []gitcontext.File{{Path: "config.toml", Content: auth, ContentHash: fmt.Sprintf("%x", sha256.Sum256([]byte(auth))), SourceCommitSHA: base}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +197,11 @@ func newFixture(t *testing.T, mode string) *fixture {
 			t.Error(err)
 		}
 	})
-	// Dummy subscription auth is pinned like all other dedicated config files.
+	// Subscription credentials are kept outside the pinned configuration.
+	store := filepath.Join(root, "stored-auth.json")
+	if err := os.WriteFile(store, []byte(auth), 0600); err != nil {
+		t.Fatal(err)
+	}
 	home := filepath.Join(root, "private-home")
 	if err := os.Mkdir(home, 0700); err != nil {
 		t.Fatal(err)
@@ -203,12 +214,12 @@ func newFixture(t *testing.T, mode string) *fixture {
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec '"+strings.ReplaceAll(binary, "'", "'\\''")+"' -test.run='^TestCodexCLIHelper$' -- \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
+	f := &fixture{store: store, settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
 		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
 		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["shell"]},"executionConfiguration":{"adapter":"codex","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
-	f.config = Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
+	f.config = Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
 		CancelGrace: 30 * time.Millisecond, Configure: func(_ context.Context, req adapter.HarnessRequest) ([]string, error) {
 			if req.Profile.HarnessID != "harness" || !strings.Contains(string(req.Profile.Definition), "shell") {
 				return nil, errors.New("policy unavailable")
@@ -379,7 +390,7 @@ func TestCodexConfigurationFailsClosed(t *testing.T) {
 					return nil, &harnesscontext.ConfigError{Err: err}
 				}
 			case "missing_auth":
-				if err := os.Remove(filepath.Join(f.env.ConfigDir, "auth.json")); err != nil {
+				if err := os.Remove(f.store); err != nil {
 					t.Fatal(err)
 				}
 			case "missing_policy":

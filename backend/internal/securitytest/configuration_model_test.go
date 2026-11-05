@@ -77,7 +77,9 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := configurationEnvironment(t, ctx, filepath.Join(root, "configuration"), cli, profile, append(files, credential))
+	store := filepath.Join(root, "model-auth.json")
+	configurationWrite(t, store, credential.Content)
+	settings := configurationEnvironment(t, ctx, filepath.Join(root, "configuration"), cli, profile, files)
 	vars := settings.Env()
 	vars["PATH"] = "/usr/local/bin:/usr/bin:/bin"
 	vars["GIT_CONFIG_NOSYSTEM"], vars["GIT_TERMINAL_PROMPT"] = "1", "0"
@@ -107,14 +109,14 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	var adapters adapter.Registry
 	switch cli.name {
 	case "codex":
-		err = adapters.Register(cli.name, codex.New(codex.Config{Launch: codex.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
+		err = adapters.Register(cli.name, codex.New(codex.Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: codex.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
 			ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
 			Configure: func(context.Context, adapter.HarnessRequest) ([]string, error) {
 				// The fixture permits shell/commit inside the outer Sandbox only.
 				return []string{`approval_policy="never"`}, nil
 			}}))
 	case "claude_code":
-		err = adapters.Register(cli.name, claudecode.New(claudecode.Config{Launch: claudecode.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
+		err = adapters.Register(cli.name, claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: claudecode.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
 			Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 				return json.RawMessage(`{"permissions":{"allow":["Bash"],"deny":["Read","Edit","Write","WebFetch","WebSearch","Agent"]}}`), nil
 			}}))

@@ -31,6 +31,10 @@ func WithWorkingConfiguration(ctx context.Context, env *harnessenv.Environment) 
 	if err != nil {
 		return ctx, nil, err
 	}
+	authName, authData, err := env.AuthenticationFile()
+	if err != nil {
+		return ctx, nil, &harnesscontext.ConfigError{Err: err}
+	}
 	var data bytes.Buffer
 	tw := tar.NewWriter(&data)
 	dirs := map[string]bool{}
@@ -57,16 +61,25 @@ func WithWorkingConfiguration(ctx context.Context, env *harnessenv.Environment) 
 			return ctx, nil, err
 		}
 	}
+	if authName != "" {
+		if err := tw.WriteHeader(&tar.Header{Name: authName, Mode: 0600, Size: int64(len(authData)), Typeflag: tar.TypeReg}); err != nil {
+			return ctx, nil, err
+		}
+		if _, err := tw.Write(authData); err != nil {
+			return ctx, nil, err
+		}
+	}
 	if err := tw.Close(); err != nil {
 		return ctx, nil, err
 	}
-	w := &workingConfiguration{env: env, archive: data.Bytes(), expected: expected, volume: "evaloom-config-" + strings.ToLower(ulid.Make().String())}
+	w := &workingConfiguration{env: env, authName: authName, archive: data.Bytes(), expected: expected, volume: "evaloom-config-" + strings.ToLower(ulid.Make().String())}
 	return context.WithValue(ctx, configurationKey{}, w), w.close, nil
 }
 
 type workingConfiguration struct {
 	mu             sync.Mutex
 	env            *harnessenv.Environment
+	authName       string
 	archive        []byte
 	expected       map[string]string
 	volume         string
@@ -144,6 +157,17 @@ func (w *workingConfiguration) verifyArchive(data []byte) error {
 		if header.Typeflag == tar.TypeDir {
 			continue
 		}
+		if name == w.authName && w.authName != "" {
+			if header.Typeflag != tar.TypeReg || seen[name] || header.Size > harnessenv.AuthenticationLimit {
+				return &harnesscontext.ConfigError{Err: fmt.Errorf("invalid mounted authentication file")}
+			}
+			data, err := io.ReadAll(io.LimitReader(tr, harnessenv.AuthenticationLimit+1))
+			if err != nil || harnessenv.ValidateAuthentication(data) != nil {
+				return &harnesscontext.ConfigError{Err: fmt.Errorf("invalid mounted authentication file")}
+			}
+			seen[name] = true
+			continue
+		}
 		want, ok := w.expected[name]
 		if header.Typeflag != tar.TypeReg || !ok || seen[name] {
 			return &harnesscontext.ConfigError{Err: fmt.Errorf("unselected or non-regular configuration file")}
@@ -154,7 +178,11 @@ func (w *workingConfiguration) verifyArchive(data []byte) error {
 		}
 		seen[name] = true
 	}
-	if len(seen) != len(w.expected) {
+	count := len(w.expected)
+	if w.authName != "" {
+		count++
+	}
+	if len(seen) != count {
 		return &harnesscontext.ConfigError{Err: fmt.Errorf("mounted configuration file missing")}
 	}
 	return nil

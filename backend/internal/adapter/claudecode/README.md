@@ -1,23 +1,27 @@
 # Claude Code Adapter
 
 仕様の正本は`docs/specs/08-harness-adapter.md`。共通の`adapter.Adapter`を実装する。
-Codex Adapterと同じ起動・セッション・中止の構造を使い、既存のCodex実装は変更しない。
+Codex Adapterと同じ起動・セッション・中止の構造を使う。
 ホスト上でCLIを直接起動する処理は持たない。自動テストは偽CLIと偽コンテナruntimeを使う。
 
 ## 起動と結果
 
 採用対象はローカルで`--version`と`--help`を確認したClaude Code 2.1.316。
-同じHarness Sandboxのworktreeと専用設定環境で、次の順に実行する。
+同じHarness Sandboxのworktreeと作業用の設定コピーで、次の順に実行する。
 
 1. `/bin/sh -c 'exec "$@"' evaloom-claude-preflight claude --setting-sources user,project --settings <settings JSON> auth status --json`
 2. `claude --setting-sources user,project --settings <settings JSON> -p --output-format stream-json --verbose --no-session-persistence --permission-mode dontAsk --permission-prompts none --model <modelId> -- <prompt>`
 
 preflightの非ゼロ終了は`config_error`にする。CLIが無い場合も固定のシェル式を
 通して終了コード127を得る。設定とプロンプトは位置引数として渡し、シェル式に埋め込まない。
-個人の認証情報を探したりコピーしたりしない。Q7・Q8に従い、呼び出し側が
-Evaloom専用のサブスクリプション認証を専用設定環境へ用意する。
+個人の認証情報を探したりコピーしたりしない。`Config.ResolveAuthentication`で
+Evaloom専用の認証の保管パスを解決する。同じHarnessには常に同じ絶対パスを返す。
+Adapterは読み取り前にOSロックを取り、作業用コピーの`.credentials.json`に配置する。
+認証はProfileとcontext_revisionsに含めない。停止後は全結果で認証を検査して書き戻し、
+コピーを削除してからロックを解放する。書き戻し失敗ではExecution結果を変えない。
+詳細は[`harnessenv/README.md`](../../harnessenv/README.md)の認証ファイルの節を参照する。
 
-`CLAUDE_CONFIG_DIR`を専用ディレクトリに向ける。HOMEは既存Containerが空のtmpfsで
+`CLAUDE_CONFIG_DIR`をExecution専用の書き込み可能な作業用コピーに向ける。HOMEは既存Containerが空のtmpfsで
 用意し、本人のHOMEをマウントしない。設定ソースは`user,project`に限定する。
 `user`は専用設定環境、`project`はworktreeの設定・指示・Skillsを読むために使う。
 未追跡のローカル設定を追加で採用しない。`NativeInstructionFiles`には`CLAUDE.md`を
@@ -53,6 +57,9 @@ stdout・stderrは行単位で`Logs`へ渡す。分割された書き込み、�
 - `ContainerLaunch`へ既存の`ContainerConfig`と、Executionごとの信頼された
   `SandboxSpec`解決関数を渡す。GitDir、ネットワーク、資源制限はRunnerが指定し、
   `CLAUDE_CONFIG_DIR`を環境変数の許可リストへ含める。
+- `Config.ResolveConfig`で元の`Environment`を返す。Adapterがコピーを作り、
+  認証以外の全ファイルを記録と照合する。`ContainerLaunch`は`ConfigWritable=true`で
+  検証済みのExecution専用volumeを使う。元設定とホストのコピーはマウントしない。
 - `Config.Configure`を必ず渡す。HarnessのTool PermissionsとProfileの
   `toolConfiguration`を照合し、採用CLIの設定JSONへ変換する。
 - `Config.CancelGrace`へRunnerの中止猶予時間を渡す。既定値は追加していない。
@@ -104,8 +111,7 @@ Git作者情報、猶予時間、資源制限の実運用値は選んでいな�
 
 1. 採用CLI版を含むLinuxイメージ、既存Containerのネットワーク設定、Evaloom専用の
    サブスクリプション認証、Git作者情報を用意し、上記のインターフェースへ接続する。
-   設定は既存Containerが読み取り専用でマウントするため、状態保存や認証更新に書き込みが
-   必要な場合の運用も確認する。ホスト実行へ切り替えない。
+   設定はExecution専用volumeで渡し、認証更新の書き戻しも確認する。
 2. 小さなfixtureのlinked worktreeでファイル追加とcommitを要求する。
    最終result、`git rev-list <base>..HEAD`が1件以上、Runnerのdiff artifactを確認する。
 3. 長時間の実行中に`Cancel`を呼び、停止・`cancelled`・worktree保持を確認する。

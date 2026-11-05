@@ -82,8 +82,12 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens
 		}
 		return &codexTestProcess{cmd: cmd}, nil
 	}
+	store := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(store, []byte(`{"dummy":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var registry adapter.Registry
-	if err := registry.Register("codex", codex.New(codex.Config{Launch: launch, CancelGrace: time.Second,
+	if err := registry.Register("codex", codex.New(codex.Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: launch, CancelGrace: time.Second,
 		ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
 		Configure:     func(context.Context, adapter.HarnessRequest) ([]string, error) { return nil, nil }})); err != nil {
 		t.Fatal(err)

@@ -29,6 +29,9 @@ type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Wr
 // Config is trusted Runner wiring, not a public API or Profile schema.
 type Config struct {
 	Launch Launch
+	// ResolveAuthentication returns the absolute Runner-owned credential path for
+	// req.Profile.HarnessID. All executions of that harness must use the same path.
+	ResolveAuthentication func(adapter.HarnessRequest) (string, error)
 	// ResolveConfig selects the original pinned Environment for this execution.
 	// Runner retains ownership of it. The adapter creates/verifies a working
 	// copy and closes that copy only after all Sandbox writers have stopped.
@@ -107,8 +110,16 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	class := adapter.ErrorConfig
 	var working *harnessenv.Environment
 	var closeConfiguration func() error
+	var authentication *harnessenv.Authentication
 	defer func() {
+		// Credential recovery has its own control deadline. It must not turn an
+		// already-finished execution into a timeout while persisting its token.
+		executionErr := ctx.Err()
 		if closeConfiguration != nil {
+			if err := sandbox.WriteBackAuthentication(ctx); err != nil {
+				warning := &lineWriter{session: s, stream: "stderr"}
+				_, _ = io.WriteString(warning, "authentication writeback skipped: "+err.Error()+"\n")
+			}
 			if err := closeConfiguration(); err != nil {
 				class = adapter.ErrorSandbox
 				result.Status = adapter.ResultFailed
@@ -120,9 +131,12 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 				result.Status = adapter.ResultFailed
 			}
 		}
-		if ctx.Err() != nil {
+		if authentication != nil {
+			_ = authentication.Close()
+		}
+		if executionErr != nil {
 			class = adapter.ErrorCancelled
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.Is(executionErr, context.DeadlineExceeded) {
 				class = adapter.ErrorTimeout
 			}
 			result.Status = adapter.ResultFailed
@@ -137,7 +151,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CODEX_HOME"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -157,6 +171,19 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	}
 	working, err = original.WorkingCopy(ctx)
 	if err != nil {
+		return
+	}
+	store, err := h.config.ResolveAuthentication(req)
+	if err != nil {
+		return
+	}
+	authentication, err = harnessenv.AcquireAuthentication(ctx, store)
+	if err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, err.Error()+"\n")
+		return
+	}
+	if err = authentication.Install(working); err != nil {
 		return
 	}
 	env.ConfigDir = working.ConfigDir()

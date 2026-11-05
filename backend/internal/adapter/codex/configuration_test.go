@@ -35,7 +35,7 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 				f.env.ConfigDir = filepath.Dir(f.env.ConfigDir)
 				f.env.Env["CODEX_HOME"] = f.env.ConfigDir
 			case "source_changed":
-				if err := os.WriteFile(filepath.Join(f.settings.ConfigDir(), "auth.json"), []byte("changed"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(f.settings.ConfigDir(), "config.toml"), []byte("changed"), 0600); err != nil {
 					t.Fatal(err)
 				}
 			default:
@@ -51,7 +51,7 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 							continue
 						}
 						dir := filepath.Join(filepath.Dir(f.settings.ConfigDir()), entry.Name())
-						name := filepath.Join(dir, "auth.json")
+						name := filepath.Join(dir, "config.toml")
 						switch mode {
 						case "directory_replacement", "original_symlink":
 							displaced = dir + "-displaced"
@@ -73,7 +73,7 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 						case "missing":
 							err = os.Remove(name)
 						case "symlink":
-							err = os.Symlink(filepath.Join(f.settings.ConfigDir(), "auth.json"), filepath.Join(dir, "link"))
+							err = os.Symlink(filepath.Join(f.settings.ConfigDir(), "config.toml"), filepath.Join(dir, "link"))
 						}
 						if err != nil {
 							t.Error(err)
@@ -156,7 +156,7 @@ func TestCodexCopyRemainsUntilSandboxStopConfirmed(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("sandbox never received stop")
 	}
-	if _, err := os.Stat(filepath.Join(directory, "auth.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(directory, "config.toml")); err != nil {
 		t.Fatal("copy removed before Wait confirmed stop:", err)
 	}
 	if status, err := f.h.Status(id); err != nil || status != adapter.SessionRunning {
@@ -186,7 +186,7 @@ func TestCodexWorkingCopyLifetime(t *testing.T) {
 					t.Error("CLI did not receive the same isolated copy")
 				}
 				directory = env.ConfigDir
-				name := filepath.Join(directory, "auth.json")
+				name := filepath.Join(directory, "config.toml")
 				if _, err := os.Stat(name); err != nil {
 					t.Error("copy missing while launching:", err)
 				}
