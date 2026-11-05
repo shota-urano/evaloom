@@ -24,10 +24,11 @@ func ContainerLaunch(config sandbox.ContainerConfig, resolve func(adapter.Sandbo
 		if err != nil {
 			return nil, err
 		}
-		if spec.Kind != sandbox.Harness || spec.ConfigWritable || spec.Worktree != env.Worktree || spec.ConfigDir != env.ConfigDir ||
+		if spec.Kind != sandbox.Harness || spec.Worktree != env.Worktree || spec.ConfigDir != env.ConfigDir ||
 			!maps.Equal(spec.Env, env.Env) || !slices.Contains(config.AllowEnv, "CLAUDE_CONFIG_DIR") {
 			return nil, &sandbox.Error{Op: "Claude Code sandbox scope mismatch"}
 		}
+		spec.ConfigWritable = true
 		local := config
 		local.Stdout, local.Stderr = stdout, stderr
 		container, err := sandbox.NewContainer(local)

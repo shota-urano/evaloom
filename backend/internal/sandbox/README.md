@@ -25,7 +25,7 @@ GitDirはHarnessだけ読み書き可能でテストでは読み取り専用、C
 マウントする。呼び出し側は、Evaloomの作業用クローンのGit領域とExecution専用の設定を渡す。
 GitDir全体を指定し、worktree内の`.git`が参照するパスもコンテナ内で解決できるようにする。
 
-Codexの`ConfigWritable=true`には、`WithWorkingConfiguration`が作るExecution専用の
+CodexとClaude Codeの`ConfigWritable=true`には、`WithWorkingConfiguration`が作るExecution専用の
 内部コンテキストも必要になる。照合済みの全ファイルをtarとして保持し、停止中の
 コンテナ経由で専用Docker volumeへ転送する。設定パスにはホストのbind mountを使わず、
 このvolumeだけをマウントする。既存の許可ルート・機密領域・重複の検査は省略しない。
@@ -34,7 +34,10 @@ Codexの`ConfigWritable=true`には、`WithWorkingConfiguration`が作るExecuti
 起動準備中にもホストコピーを照合し、差し替えや改変は`config_error`で拒否する。
 照合後にホストの名前が変わっても、転送済みの内容とマウントするvolumeは変わらない。
 Adapterは認証確認と本実行でvolumeを共有し、全プロセスの停止後に削除する。
-Claude CodeとTest Sandboxのマウントは従来どおりである。
+認証だけは記録済みハッシュと比較せず、対象パスの通常ファイルとして別に検査する。
+Adapterは停止確認後に`WriteBackAuthentication`を呼び、認証1つだけを回収してから
+volumeを削除する。回収用コンテナはネットワークなし・読み取り専用マウントで作り、
+起動しない。Test Sandboxのマウントは従来どおりである。
 
 許可ルートは構築時に実パスへ解決する。各マウント元の実パスが対応するルート内
 （ルート自身を含む）にあることを必須とし、ルート外を指すシンボリックリンクも拒否する。

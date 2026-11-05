@@ -87,8 +87,12 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"i
 		}
 		return &claudecodeTestProcess{cmd: cmd}, nil
 	}
+	store := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(store, []byte(`{"dummy":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var registry adapter.Registry
-	if err := registry.Register("claude_code", claudecode.New(claudecode.Config{Launch: launch, CancelGrace: time.Second, Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+	if err := registry.Register("claude_code", claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: launch, CancelGrace: time.Second, Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}})); err != nil {
 		t.Fatal(err)

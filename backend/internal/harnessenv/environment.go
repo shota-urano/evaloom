@@ -33,6 +33,8 @@ type Environment struct {
 	parent                      *os.Root
 	root                        *os.Root
 	expected                    map[string]string
+	working                     bool
+	authentication              *Authentication
 }
 
 func configError(err error) error { return &harnesscontext.ConfigError{Err: err} }
@@ -49,6 +51,9 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	}
 	expected := make(map[string]string, len(config.Files))
 	for _, file := range config.Files {
+		if file.Path == "auth.json" || file.Path == ".credentials.json" {
+			return nil, configError(fmt.Errorf("authentication files cannot be pinned configuration"))
+		}
 		if !fs.ValidPath(file.Path) || file.Path == "." || strings.ContainsAny(file.Path, "\x00\\") ||
 			file.SourceCommitSHA != config.CommitSHA || file.ContentHash != hash(file.Content) {
 			return nil, configError(fmt.Errorf("invalid pinned configuration file"))
@@ -131,12 +136,18 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
+	copy, err := Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
 		ConfigVariable: e.variable, Files: files})
+	if err == nil {
+		copy.working = true
+	}
+	return copy, err
 }
 
-// Files enumerates the actual directory, rejecting added, removed, changed or
-// non-regular files. Hashes cover the bytes on disk, not a caller's assertion.
+// Files enumerates pinned configuration, rejecting added, removed, changed or
+// non-regular files. The installed authentication file is checked for presence
+// and type only; neither its path nor its content/hash enters the returned list.
+// Hashes cover configuration bytes on disk, not a caller's assertion.
 // The same repository-relative paths can be sent to the existing context API.
 func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	if e.root == nil {
@@ -148,6 +159,7 @@ func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 		return nil, configError(err)
 	}
 	files := []gitcontext.File{}
+	authSeen := false
 	err := fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -160,6 +172,10 @@ func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 		}
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("configuration contains a non-regular file")
+		}
+		if e.authentication != nil && name == authenticationName(e.variable) {
+			authSeen = true
+			return nil
 		}
 		want, found := e.expected[name]
 		if !found {
@@ -178,6 +194,9 @@ func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	})
 	if err != nil {
 		return nil, configError(err)
+	}
+	if e.authentication != nil && !authSeen {
+		return nil, configError(fmt.Errorf("authentication file missing from copy"))
 	}
 	if len(files) != len(e.expected) {
 		return nil, configError(fmt.Errorf("configuration file missing"))

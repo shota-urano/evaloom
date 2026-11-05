@@ -22,13 +22,17 @@ import (
 )
 
 // Launch starts one command inside the prepared Harness Sandbox. Writers carry
-// raw output to Logs; Runner owns redaction. Wait must confirm ALL writers have
-// stopped. Launch must honor ctx during preparation; Stop/Kill must be bounded.
+// output through authentication exclusion before log delivery. Wait must
+// confirm ALL writers have stopped. Launch must honor ctx during preparation;
+// Stop/Kill must be bounded.
 type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error)
 
 // Config is trusted Runner wiring, not a public API or Profile schema.
 type Config struct {
 	Launch Launch
+	// ResolveAuthentication returns the absolute Runner-owned credential path for
+	// req.Profile.HarnessID. All executions of that harness must use the same path.
+	ResolveAuthentication func(adapter.HarnessRequest) (string, error)
 	// ResolveConfig selects the original pinned Environment for this execution.
 	// Runner retains ownership of it. The adapter creates/verifies a working
 	// copy and closes that copy only after all Sandbox writers have stopped.
@@ -107,8 +111,20 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	class := adapter.ErrorConfig
 	var working *harnessenv.Environment
 	var closeConfiguration func() error
+	var authentication *harnessenv.Authentication
+	var executionErr error
+	var executionFinished bool
 	defer func() {
+		// Credential recovery has its own control deadline. It must not turn an
+		// already-finished execution into a timeout while persisting its token.
+		if !executionFinished {
+			executionErr = ctx.Err()
+		}
+		var authenticationWarning string
 		if closeConfiguration != nil {
+			if err := sandbox.WriteBackAuthentication(ctx); err != nil {
+				authenticationWarning = "authentication writeback skipped: " + err.Error()
+			}
 			if err := closeConfiguration(); err != nil {
 				class = adapter.ErrorSandbox
 				result.Status = adapter.ResultFailed
@@ -120,9 +136,17 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 				result.Status = adapter.ResultFailed
 			}
 		}
-		if ctx.Err() != nil {
+		if authentication != nil {
+			result.Summary = authentication.RedactLog(result.Summary)
+			_ = authentication.Close()
+		}
+		if authenticationWarning != "" {
+			warning := &lineWriter{session: s, stream: "stderr"}
+			_, _ = io.WriteString(warning, authenticationWarning+"\n")
+		}
+		if executionErr != nil {
 			class = adapter.ErrorCancelled
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.Is(executionErr, context.DeadlineExceeded) {
 				class = adapter.ErrorTimeout
 			}
 			result.Status = adapter.ResultFailed
@@ -137,7 +161,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CODEX_HOME"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -159,6 +183,19 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	if err != nil {
 		return
 	}
+	store, err := h.config.ResolveAuthentication(req)
+	if err != nil {
+		return
+	}
+	authentication, err = harnessenv.AcquireAuthentication(ctx, store)
+	if err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, err.Error()+"\n")
+		return
+	}
+	if err = authentication.Install(working); err != nil {
+		return
+	}
 	env.ConfigDir = working.ConfigDir()
 	env.Env["CODEX_HOME"] = env.ConfigDir
 	overrides, err := h.config.Configure(ctx, req)
@@ -174,12 +211,12 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	}
 	// login status loads the dedicated config and checks saved CLI auth without
 	// invoking the model. A workload failure here is configuration, not execution.
-	stderr := &lineWriter{session: s, stream: "stderr"}
+	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}
 	// A fixed shell wrapper turns a missing CLI into workload exit 127 rather
 	// than a runtime entrypoint failure. All arguments remain positional data.
 	preflight := append([]string{"/bin/sh", "-c", `exec "$@"`, "evaloom-codex-preflight"}, common...)
 	preflight = append(preflight, "login", "status")
-	preflightOut := &lineWriter{session: s, stream: "stdout"}
+	preflightOut := &lineWriter{session: s, stream: "stdout", authentication: authentication}
 	// Compare the entire copy to the recorded selection immediately before any
 	// CLI (including login status) can run. CLI state written afterwards is
 	// deliberately neither re-pinned nor persisted in context_revisions.
@@ -188,6 +225,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		return
 	}
 	class, err = h.command(ctx, env, preflight, preflightOut, stderr, adapter.ErrorConfig)
+	if err != nil {
+		executionErr, executionFinished = ctx.Err(), true
+	}
+	refreshAuthentication(ctx, s)
 	preflightOut.finish()
 	stderr.finish()
 	if err != nil {
@@ -199,8 +240,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	command := append(append([]string{}, common...), "exec", "--json", "--color", "never", "--ephemeral",
 		"--sandbox", "danger-full-access", "--model", req.Profile.ModelID, "--cd", env.Worktree, "--", prompt)
 	parser := &events{}
-	stdout := &lineWriter{session: s, stream: "stdout", events: parser}
+	stdout := &lineWriter{session: s, stream: "stdout", events: parser, authentication: authentication}
 	class, err = h.command(ctx, env, command, stdout, stderr, adapter.ErrorExecutionFailed)
+	executionErr, executionFinished = ctx.Err(), true
+	refreshAuthentication(ctx, s)
 	stdout.finish()
 	stderr.finish()
 	result.Summary = parser.summary
@@ -341,8 +384,18 @@ func (h *harness) Logs(id adapter.SessionID) (<-chan adapter.LogLine, error) {
 	return s.stream, nil // One shared consumer, as in Runner's log collector.
 }
 
+// refreshAuthentication adds a trusted diagnostic outside the CLI filter when
+// recovery fails. Later raw CLI lines are suppressed by the credential lease.
+func refreshAuthentication(ctx context.Context, s *session) {
+	if err := sandbox.RefreshAuthentication(ctx); err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, "authentication log recovery failed: "+err.Error()+"\n")
+	}
+}
+
 func (s *session) deliver() {
 	defer close(s.stream)
+	finished := false
 	for {
 		s.mu.Lock()
 		batch := s.logs
@@ -351,16 +404,12 @@ func (s *session) deliver() {
 		for _, line := range batch {
 			s.stream <- line
 		}
+		if finished {
+			return
+		}
 		select {
 		case <-s.done:
-			s.mu.Lock()
-			batch = s.logs
-			s.logs = nil
-			s.mu.Unlock()
-			for _, line := range batch {
-				s.stream <- line
-			}
-			return
+			finished = true // drain the final batch after observing completion
 		case <-s.wake:
 		}
 	}

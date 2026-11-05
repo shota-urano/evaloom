@@ -35,6 +35,8 @@ func TestCodexRuntimeHelper(t *testing.T) {
 	}
 	args := os.Args[slices.Index(os.Args, "--")+1:]
 	mode := os.Getenv("CODEX_RUNTIME_MODE")
+	refresh := strings.HasPrefix(mode, "refresh-")
+	mode = strings.TrimPrefix(mode, "refresh-")
 	write := func(name, value string) {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(value), 0600); err != nil {
 			os.Exit(91)
@@ -63,7 +65,7 @@ func TestCodexRuntimeHelper(t *testing.T) {
 				continue
 			}
 			if parts[2] == "change" {
-				err = os.WriteFile(filepath.Join(dir, "auth.json"), []byte("unrecorded"), 0600)
+				err = os.WriteFile(filepath.Join(dir, "config.toml"), []byte("unrecorded"), 0600)
 			} else {
 				err = os.Rename(dir, dir+"-displaced")
 				if err == nil {
@@ -72,7 +74,7 @@ func TestCodexRuntimeHelper(t *testing.T) {
 					} else {
 						err = os.Mkdir(dir, 0700)
 						if err == nil {
-							err = os.WriteFile(filepath.Join(dir, "auth.json"), []byte("unrecorded"), 0600)
+							err = os.WriteFile(filepath.Join(dir, "config.toml"), []byte("unrecorded"), 0600)
 						}
 					}
 				}
@@ -121,7 +123,34 @@ func TestCodexRuntimeHelper(t *testing.T) {
 			if err != nil {
 				os.Exit(106)
 			}
-			_, _ = os.Stdout.Write(data)
+			if strings.Contains(args[2], ":/evaloom-auth/") {
+				if mode == "writeback-delay-failure" || mode == "final-refresh-delay-failure" {
+					previous, _ := os.ReadFile(filepath.Join(root, "recoveries"))
+					count, _ := strconv.Atoi(string(previous))
+					write("recoveries", strconv.Itoa(count+1))
+					if (mode == "writeback-delay-failure" && count >= 2) ||
+						(mode == "final-refresh-delay-failure" && count == 1) {
+						time.Sleep(1200 * time.Millisecond)
+						os.Exit(110)
+					}
+				}
+				tr := tar.NewReader(bytes.NewReader(data))
+				tw := tar.NewWriter(os.Stdout)
+				for {
+					h, err := tr.Next()
+					if err != nil {
+						break
+					}
+					if h.Name == "auth.json" {
+						_ = tw.WriteHeader(h)
+						_, _ = io.Copy(tw, tr)
+						break
+					}
+				}
+				_ = tw.Close()
+			} else {
+				_, _ = os.Stdout.Write(data)
+			}
 			os.Exit(0)
 		}
 		attack("copy")
@@ -156,6 +185,43 @@ func TestCodexRuntimeHelper(t *testing.T) {
 		}
 		write(name+".phase", phase)
 	case "start":
+		if refresh {
+			archive, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
+			if err != nil {
+				os.Exit(108)
+			}
+			tr := tar.NewReader(bytes.NewReader(archive))
+			var updated bytes.Buffer
+			tw := tar.NewWriter(&updated)
+			for {
+				h, err := tr.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					os.Exit(109)
+				}
+				data, _ := io.ReadAll(tr)
+				if h.Name == "auth.json" {
+					fmt.Fprintf(os.Stdout, "{\"type\":\"auth.debug\",\"credentials\":%s}\n", data)
+					fmt.Fprintln(os.Stderr, string(data))
+					var credential struct{ Token string }
+					_ = json.Unmarshal(data, &credential)
+					fmt.Fprintln(os.Stderr, credential.Token)
+					value := "private-volume-refreshed"
+					if string(phase) == "preflight" {
+						value = "private-volume-preflight"
+					}
+					data = []byte(`{"token":"` + value + `"}`)
+					h.Size = int64(len(data))
+				}
+				_ = tw.WriteHeader(h)
+				_, _ = tw.Write(data)
+			}
+			_ = tw.Close()
+			write("configuration.tar", updated.String())
+		}
+
 		// Inspect a transferred pinned file, independently of the host copy.
 		archive, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
 		if err != nil {
@@ -163,7 +229,7 @@ func TestCodexRuntimeHelper(t *testing.T) {
 		}
 		tr := tar.NewReader(bytes.NewReader(archive))
 		header, err := tr.Next()
-		if err != nil || header.Name != "auth.json" || header.Mode != 0600 {
+		if err != nil || header.Name != "config.toml" || header.Mode != 0600 {
 			os.Exit(101)
 		}
 		auth, err := io.ReadAll(tr)
@@ -611,7 +677,7 @@ esac
 	if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
 		t.Fatal("working copy survived execution")
 	}
-	if strings.Count(string(data), "container\ncreate\n") != 2 {
+	if strings.Count(string(data), "container\ncreate\n") != 5 {
 		t.Fatalf("preflight and exec not both sandboxed: %s", data)
 	}
 	bad := f.env
@@ -628,5 +694,102 @@ esac
 	}
 	if _, err := launch(context.Background(), bad, []string{"codex"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("invalid config mount accepted")
+	}
+}
+
+func TestContainerAuthenticationRecoveredAfterEveryOutcome(t *testing.T) {
+	for _, outcome := range []string{"success", "failure", "cancel", "timeout", "preflight_failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			mode := map[string]string{"success": "success", "failure": "exit-130", "cancel": "ignore-term", "timeout": "ignore-term", "preflight_failure": "config-130"}[outcome]
+			f := newFixture(t, "success")
+			root := useFakeContainerRuntime(t, f, "refresh-"+mode)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			if outcome == "timeout" {
+				f.request.Limits.TimeoutSec = 1
+			}
+			id, err := f.h.Start(ctx, f.request, f.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines, _ := f.h.Logs(id)
+			if outcome == "cancel" {
+				waitAuthenticationCLI(t, ctx, root, "started")
+				_ = f.h.Cancel(id)
+			}
+			for line := range lines {
+				if strings.Contains(line.Text, "private-volume-") {
+					t.Fatal("volume authentication in logs")
+				}
+			}
+			result, err := f.h.Result(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]adapter.ErrorClass{"failure": adapter.ErrorExecutionFailed, "cancel": adapter.ErrorCancelled, "timeout": adapter.ErrorTimeout, "preflight_failure": adapter.ErrorConfig}[outcome]
+			if outcome == "success" {
+				if result.Status != adapter.ResultSucceeded {
+					t.Fatalf("result=%+v", result)
+				}
+			} else if result.ErrorClass == nil || *result.ErrorClass != want {
+				t.Fatalf("result=%+v", result)
+			}
+			data, err := os.ReadFile(f.store)
+			wantToken := "private-volume-refreshed"
+			if outcome == "preflight_failure" {
+				wantToken = "private-volume-preflight"
+			}
+			if err != nil || string(data) != `{"token":"`+wantToken+`"}` {
+				t.Fatal("volume refresh not recovered", err)
+			}
+			// Recovery happens only after a removal confirming writers stopped.
+			recovered := false
+			stopped := false
+			for _, call := range runtimeCalls(t, root) {
+				if len(call.Args) > 1 && call.Args[0] == "container" && call.Args[1] == "rm" {
+					stopped = true
+				}
+				if len(call.Args) > 2 && call.Args[1] == "cp" && strings.Contains(call.Args[2], ":/evaloom-auth/") {
+					if !stopped {
+						t.Fatal("credential recovered before stopped Sandbox")
+					}
+					recovered = true
+				}
+				if len(call.Args) > 2 && call.Args[1] == "start" && strings.HasPrefix(call.Args[len(call.Args)-1], "evaloom-auth-") {
+					t.Fatal("recovery container must never start")
+				}
+			}
+			if !recovered {
+				t.Fatal("volume was not read for writeback")
+			}
+		})
+	}
+}
+
+func TestAuthenticationWritebackFailureCannotChangeFinishedExecution(t *testing.T) {
+	for _, mode := range []string{"writeback-delay-failure", "final-refresh-delay-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newFixture(t, "success")
+			useFakeContainerRuntime(t, f, mode)
+			f.request.Limits.TimeoutSec = 1
+			_, result, logs := runResult(t, f)
+			if result.Status != adapter.ResultSucceeded || result.ErrorClass != nil {
+				t.Fatalf("writeback failure/deadline changed finished result: %+v", result)
+			}
+			warning := false
+			for _, line := range logs {
+				if strings.Contains(line.Text, "authentication writeback skipped:") ||
+					strings.Contains(line.Text, "authentication log recovery failed:") {
+					warning = true
+				}
+			}
+			if !warning {
+				t.Fatal("writeback failure not logged")
+			}
+			data, err := os.ReadFile(f.store)
+			if err != nil || string(data) != `{"fake":true}` {
+				t.Fatal("failed recovery changed store", err)
+			}
+		})
 	}
 }

@@ -23,7 +23,7 @@ func workingSettings(t *testing.T, root string) *harnessenv.Environment {
 	t.Helper()
 	commit := strings.Repeat("a", 40)
 	var files []gitcontext.File
-	for _, pair := range [][2]string{{"auth.json", "pinned auth"}, {"skills/check/SKILL.md", "日本語\x00\xff\r\n"}} {
+	for _, pair := range [][2]string{{"config.toml", "pinned auth"}, {"skills/check/SKILL.md", "日本語\x00\xff\r\n"}} {
 		files = append(files, gitcontext.File{Path: pair[0], Content: pair[1], ContentHash: fmt.Sprintf("%x", sha256.Sum256([]byte(pair[1]))), SourceCommitSHA: commit})
 	}
 	env, err := harnessenv.Create(context.Background(), harnessenv.Config{Root: root, CommitSHA: commit, ConfigVariable: "CODEX_HOME", Files: files})
@@ -50,7 +50,7 @@ func TestWorkingConfigurationTransfersOnlyVerifiedBytes(t *testing.T) {
 		}
 	}()
 	w := ctx.Value(configurationKey{}).(*workingConfiguration)
-	want := map[string]string{"auth.json": "pinned auth", "skills/check/SKILL.md": "日本語\x00\xff\r\n"}
+	want := map[string]string{"config.toml": "pinned auth", "skills/check/SKILL.md": "日本語\x00\xff\r\n"}
 	got := map[string]string{}
 	tr := tar.NewReader(bytes.NewReader(w.archive))
 	for {
@@ -83,7 +83,7 @@ func TestWorkingConfigurationTransfersOnlyVerifiedBytes(t *testing.T) {
 		t.Fatalf("transfer=%v want=%v", got, want)
 	}
 	pinned := bytes.Clone(w.archive)
-	if err := os.WriteFile(filepath.Join(env.ConfigDir(), "auth.json"), []byte("unrecorded bytes"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(env.ConfigDir(), "config.toml"), []byte("unrecorded bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(w.archive, pinned) {
@@ -115,7 +115,7 @@ func TestWorkingConfigurationPreservesMountSafetyChecks(t *testing.T) {
 			case "data":
 				f.config.DataDir = env.ConfigDir()
 			case "token":
-				f.config.RunnerTokenFile = filepath.Join(env.ConfigDir(), "auth.json")
+				f.config.RunnerTokenFile = filepath.Join(env.ConfigDir(), "config.toml")
 			case "outside-root":
 				f.config.ConfigDirRoot = f.config.WorktreeRoot
 			case "overlap-worktree":

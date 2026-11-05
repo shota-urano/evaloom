@@ -44,7 +44,12 @@ func TestCodexConcurrentSessionsAndLateLogConsumer(t *testing.T) {
 		// Result must finish even if Logs was never called.
 		r, err := f.h.Result(id)
 		if err != nil || r.Status != adapter.ResultSucceeded {
-			t.Fatalf("result=%+v err=%v", r, err)
+			logs, _ := f.h.Logs(id)
+			var diagnostic []string
+			for line := range logs {
+				diagnostic = append(diagnostic, line.Text)
+			}
+			t.Fatalf("result=%+v err=%v class=%v logs=%v", r, err, r.ErrorClass, diagnostic)
 		}
 		*r.Usage.InputTokens = 999
 		again, err := f.h.Result(id)
