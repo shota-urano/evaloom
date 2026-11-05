@@ -17,6 +17,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/claudecode"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/codex"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
@@ -98,11 +99,16 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 		Network: sandbox.NetworkHarness, AllowedDestinations: destinations,
 		Limits: sandbox.ResourceLimits{CPU: 2, MemoryBytes: 2 * 1024 * 1024 * 1024, Time: 300 * time.Second}}
 	env := adapter.SandboxEnv{Worktree: spec.Worktree, ConfigDir: spec.ConfigDir, Env: spec.Env}
-	resolve := func(adapter.SandboxEnv) (sandbox.SandboxSpec, error) { return spec, nil }
+	resolve := func(e adapter.SandboxEnv) (sandbox.SandboxSpec, error) {
+		s := spec
+		s.ConfigDir, s.Env = e.ConfigDir, e.Env
+		return s, nil
+	}
 	var adapters adapter.Registry
 	switch cli.name {
 	case "codex":
 		err = adapters.Register(cli.name, codex.New(codex.Config{Launch: codex.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
+			ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
 			Configure: func(context.Context, adapter.HarnessRequest) ([]string, error) {
 				// The fixture permits shell/commit inside the outer Sandbox only.
 				return []string{`approval_policy="never"`}, nil
