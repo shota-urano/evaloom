@@ -9,7 +9,8 @@ import (
 )
 
 // lineWriter supports fragmented writes, long lines and a final line without LF.
-// Logging does not wait for a Logs consumer and never drops CLI output.
+// Collection does not wait for a Logs consumer. Output stays in memory until
+// authentication recovery permits exclusion before Logs delivery.
 type lineWriter struct {
 	mu      sync.Mutex
 	pending []byte

@@ -52,6 +52,14 @@ func TestCodexCLIHelper(t *testing.T) {
 	args = args[2:]
 	mode := os.Getenv("FAKE_MODE")
 	if strings.HasPrefix(mode, "refresh-") {
+		// Deliberately emit both credential JSON and a bare refreshed token.
+		initial, err := os.ReadFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"))
+		if err != nil {
+			exit("credential read failed")
+		}
+		fmt.Fprintf(os.Stdout, "{\"type\":\"auth.debug\",\"credentials\":%s}\n", initial)
+		fmt.Fprintln(os.Stderr, string(initial))
+		fmt.Fprintln(os.Stderr, "private-refreshed-token")
 		mode = strings.TrimPrefix(mode, "refresh-")
 		if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json"), []byte(`{"token":"private-refreshed-token"}`), 0600); err != nil {
 			exit("credential update failed")
@@ -449,12 +457,11 @@ func TestCodexCancellationAndTimeout(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines, _ := f.h.Logs(id)
-			// A streamed event proves exec has started before cancellation.
-			for line := range lines {
-				if line.Stream == "stdout" && (strings.Contains(line.Text, "turn.started") || line.Text == "preflight running") {
-					break
-				}
+			marker := "started"
+			if mode == "preflight-cancel" {
+				marker = "preflight-started"
 			}
+			waitAuthenticationCLI(t, ctx, f.env.Worktree, marker)
 			status, err := f.h.Status(id)
 			if err != nil || status != adapter.SessionRunning {
 				t.Fatalf("status=%s err=%v", status, err)

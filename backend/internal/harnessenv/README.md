@@ -84,9 +84,20 @@ symlink、hardlink、余分なエントリ、不正な内容は書き戻さな�
 成功・失敗・中止・タイムアウトの全結果でこの処理を行い、書き戻し後にコピーを削除して
 ロックを解放する。中止済みcontextでも、回収には既存の制御コマンドの期限を使う。
 書き戻しの失敗ではExecution結果を変更せず、内容・パスを含まない理由だけをログへ渡す。
-CLI出力の保存には従来どおりRunnerのログ除外処理を使う。
+CLIのstdout・stderrは認証回収までメモリ内に保持する。回収後、更新前と回収後の
+認証JSON全体・入れ子の文字列値・JSONでエスケープした値・複数行の各行を、
+Runnerと共通の`logredact`で除外してから`Logs`へ渡す。summaryにも同じ除外を適用する。
+保管場所への書き込みが失敗しても、回収できた値は除外する。回収できない・検査に
+通らない場合はCLI出力を`[REDACTED]`に置き換え、内容を含まない書き戻し失敗の理由だけを
+別途追加する。生の出力を一時ファイルへ保存しない。Runnerは従来のヘッダー・秘密鍵・
+既知の秘密値の除外も行い、Adapterによる除外をartifactの`redacted`へ引き継ぐ。
+このため、CLIログは実行中には届かず、停止と認証回収の後に届く。
 
 ## 仕様で未定義の部分と検証範囲
+
+仕様には認証更新後の値を除外するために許容するログ転送の遅延・メモリ保持量の
+規定が無い。更新前後の秘密値を保存・配信前に除外するため、この実装は停止後に
+転送する。新しい上限値・タイムアウト・設定キーは追加していない。
 
 仕様にはリポジトリのパスからCLI内の配置先への変換規則が無い。
 この実装は相対パスをそのまま保ち、`promptVersion`やSkillsの版から配置先を推測しない。
@@ -111,3 +122,10 @@ Container呼び出し引数・マウント元・有効な環境変数を検証�
 volumeの更新から停止・認証回収・書き戻しまでを検証する。
 実Dockerの認証回収は`security_docker`の`TestDockerAuthenticationWriteback`で検証できる。
 通常の`make verify`では実Docker・実CLI・モデルAPIの試験を実行しない。
+
+`runner/authentication_logs_test.go`の
+`TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE`は、両Adapterの偽CLIから
+更新前後の認証JSONとトークン単体を実際に出力する。成功・失敗・中止・タイムアウト・
+preflight失敗・不正JSON・サイズ超過・symlinkを通し、Runnerのローカルファイル、
+保存artifact、HTTPのSSEフレームに認証が残らないことを確認する。認証回収前に
+ファイルやイベントへ出力が届かないことも確認する。

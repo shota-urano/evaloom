@@ -21,10 +21,12 @@ const AuthenticationLimit = 64 * 1024
 // The stable sidecar lock is never removed or renamed with the credential.
 // All diagnostics are fixed text: neither paths nor credential bytes escape.
 type Authentication struct {
-	root    *os.Root
-	lock    *os.File
-	name    string
-	initial []byte
+	root       *os.Root
+	lock       *os.File
+	name       string
+	initial    []byte
+	logSecrets []string
+	logReady   bool
 }
 
 func authError(reason string) error { return fmt.Errorf("authentication: %s", reason) }
@@ -192,6 +194,8 @@ func (e *Environment) WriteBackAuthentication(data []byte) error {
 	if err := ValidateAuthentication(data); err != nil {
 		return err
 	}
+	a.logSecrets = append(a.logSecrets, authenticationSecrets(data)...)
+	a.logReady = true
 	if bytes.Equal(data, a.initial) {
 		return nil
 	}
@@ -239,7 +243,8 @@ func (a *Authentication) Close() error {
 		a.lock = nil
 	}
 	err = errors.Join(err, a.root.Close())
-	a.root, a.initial = nil, nil
+	a.root, a.initial, a.logSecrets = nil, nil, nil
+	a.logReady = false
 	if err != nil {
 		return authError("lease close failed")
 	}

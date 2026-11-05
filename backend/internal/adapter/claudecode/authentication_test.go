@@ -31,12 +31,13 @@ func TestAuthenticationWritebackEveryOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines, _ := f.h.Logs(id)
+			if outcome == "cancel" {
+				waitAuthenticationCLI(t, ctx, f.env.Worktree, "started")
+				_ = f.h.Cancel(id)
+			}
 			for line := range lines {
 				if strings.Contains(line.Text, "private-refreshed-token") {
 					t.Fatal("credential in logs")
-				}
-				if outcome == "cancel" && strings.Contains(line.Text, "system") {
-					_ = f.h.Cancel(id)
 				}
 			}
 			result, err := f.h.Result(id)
@@ -219,16 +220,7 @@ func TestAuthenticationSecondExecutionReadsAfterFirstWriteback(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = first.h.Cancel(id); _, _ = first.h.Result(id) })
 	lines, _ := first.h.Logs(id)
-	ready := false
-	for line := range lines {
-		if strings.Contains(line.Text, "system") {
-			ready = true
-			break
-		}
-	}
-	if !ready {
-		t.Fatal("first CLI did not start")
-	}
+	waitAuthenticationCLI(t, ctx, first.env.Worktree, "started")
 	go func() {
 		for range lines {
 		}
@@ -350,5 +342,21 @@ func TestAuthenticationWritebackWaitsForLastWriter(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("working copy survived Result")
+	}
+}
+
+// Logs are held until credential recovery; use the fake CLI's explicit marker
+// to synchronize cancellation independently of log publication.
+func waitAuthenticationCLI(t *testing.T, ctx context.Context, root, marker string) {
+	t.Helper()
+	for {
+		if _, err := os.Stat(filepath.Join(root, marker)); err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("CLI did not reach " + marker)
+		case <-time.After(time.Millisecond):
+		}
 	}
 }

@@ -21,8 +21,9 @@ import (
 )
 
 // Launch starts one command inside the prepared Harness Sandbox. Writers carry
-// raw output to Logs; Runner owns redaction. Wait must confirm ALL writers have
-// stopped. Launch must honor ctx during preparation; Stop/Kill must be bounded.
+// output into memory until authentication recovery allows redaction. Wait must
+// confirm ALL writers have stopped. Launch must honor ctx during preparation;
+// Stop/Kill must be bounded.
 type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error)
 
 // Config is trusted Runner wiring, not a public API or Profile schema.
@@ -116,10 +117,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		// Credential recovery has its own control deadline. It must not turn an
 		// already-finished execution into a timeout while persisting its token.
 		executionErr := ctx.Err()
+		var authenticationWarning string
 		if closeConfiguration != nil {
 			if err := sandbox.WriteBackAuthentication(ctx); err != nil {
-				warning := &lineWriter{session: s, stream: "stderr"}
-				_, _ = io.WriteString(warning, "authentication writeback skipped: "+err.Error()+"\n")
+				authenticationWarning = "authentication writeback skipped: " + err.Error()
 			}
 			if err := closeConfiguration(); err != nil {
 				class = adapter.ErrorSandbox
@@ -133,7 +134,17 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 			}
 		}
 		if authentication != nil {
+			s.mu.Lock()
+			for i := range s.logs {
+				s.logs[i].Text = authentication.RedactLog(s.logs[i].Text)
+			}
+			s.mu.Unlock()
+			result.Summary = authentication.RedactLog(result.Summary)
 			_ = authentication.Close()
+		}
+		if authenticationWarning != "" {
+			warning := &lineWriter{session: s, stream: "stderr"}
+			_, _ = io.WriteString(warning, authenticationWarning+"\n")
 		}
 		if executionErr != nil {
 			class = adapter.ErrorCancelled
@@ -367,25 +378,13 @@ func (h *harness) Logs(id adapter.SessionID) (<-chan adapter.LogLine, error) {
 
 func (s *session) deliver() {
 	defer close(s.stream)
-	for {
-		s.mu.Lock()
-		batch := s.logs
-		s.logs = nil
-		s.mu.Unlock()
-		for _, line := range batch {
-			s.stream <- line
-		}
-		select {
-		case <-s.done:
-			s.mu.Lock()
-			batch = s.logs
-			s.logs = nil
-			s.mu.Unlock()
-			for _, line := range batch {
-				s.stream <- line
-			}
-			return
-		case <-s.wake:
-		}
+	// Unknown refreshed values must be excluded before Runner storage/events.
+	<-s.done
+	s.mu.Lock()
+	batch := s.logs
+	s.logs = nil
+	s.mu.Unlock()
+	for _, line := range batch {
+		s.stream <- line
 	}
 }

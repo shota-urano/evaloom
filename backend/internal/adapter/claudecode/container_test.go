@@ -139,6 +139,9 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 		write(name+".phase", phase)
 	case "start":
 		if refresh {
+			fmt.Fprintln(os.Stdout, `{"type":"auth.debug","credentials":{"token":"private-volume-refreshed"}}`)
+			fmt.Fprintln(os.Stderr, `{"token":"private-volume-refreshed"}`)
+			fmt.Fprintln(os.Stderr, "private-volume-refreshed")
 			archive, err := os.ReadFile(filepath.Join(root, "configuration.tar"))
 			if err != nil {
 				os.Exit(108)
@@ -524,12 +527,13 @@ func TestContainerAuthenticationRecoveredAfterEveryOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines, _ := f.h.Logs(id)
+			if outcome == "cancel" {
+				waitAuthenticationCLI(t, ctx, root, "started")
+				_ = f.h.Cancel(id)
+			}
 			for line := range lines {
 				if strings.Contains(line.Text, "private-volume-refreshed") {
 					t.Fatal("volume authentication in logs")
-				}
-				if outcome == "cancel" && strings.Contains(line.Text, "system") {
-					_ = f.h.Cancel(id)
 				}
 			}
 			result, err := f.h.Result(id)
