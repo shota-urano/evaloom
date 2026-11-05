@@ -202,7 +202,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		}
 	}
 	if spec.Worktree == "" || (spec.Kind == Harness && (spec.GitDir == "" || spec.ConfigDir == "")) ||
-		(spec.Kind != Harness && spec.ConfigDir != "") {
+		(spec.Kind != Harness && (spec.ConfigDir != "" || spec.ConfigWritable)) {
 		return nil, &Error{Op: "missing or inappropriate sandbox directories"}
 	}
 	mem := strconv.FormatInt(spec.Limits.MemoryBytes, 10)
@@ -248,7 +248,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string) 
 		sources = append(sources, real)
 		targets = append(targets, path)
 		mount := "type=bind,source=" + real + ",target=" + path
-		if i == 2 || (i == 1 && spec.Kind != Harness) {
+		if (i == 2 && !spec.ConfigWritable) || (i == 1 && spec.Kind != Harness) {
 			mount += ",readonly"
 		}
 		args = append(args, "--mount", mount)

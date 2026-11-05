@@ -390,6 +390,14 @@ esac
 	if _, err := badLaunch(context.Background(), f.env, []string{"claude"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("scope mismatch accepted")
 	}
+	writableLaunch := ContainerLaunch(config, func(env adapter.SandboxEnv) (sandbox.SandboxSpec, error) {
+		spec, _ := scope(env)
+		spec.ConfigWritable = true
+		return spec, nil
+	})
+	if _, err := writableLaunch(context.Background(), f.env, []string{"claude"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("Claude Code accepted a writable configuration mount")
+	}
 	if _, err := launch(context.Background(), bad, []string{"claude"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("invalid config mount accepted")
 	}

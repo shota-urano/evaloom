@@ -121,6 +121,19 @@ func (e *Environment) ConfigDir() string { return e.directory }
 // supplies HOME and filters all other variables using its explicit allowlist.
 func (e *Environment) Env() map[string]string { return map[string]string{e.variable: e.directory} }
 
+// WorkingCopy makes an independent, disposable sibling under the same trusted
+// configuration root. The expected paths/hashes come from this Environment,
+// whose Files were submitted for context_revisions, never from the copy itself.
+// The caller owns Close, and must verify Files again before the first CLI starts.
+func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
+	files, err := e.Files(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
+		ConfigVariable: e.variable, Files: files})
+}
+
 // Files enumerates the actual directory, rejecting added, removed, changed or
 // non-regular files. Hashes cover the bytes on disk, not a caller's assertion.
 // The same repository-relative paths can be sent to the existing context API.

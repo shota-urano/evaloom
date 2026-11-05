@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
@@ -28,6 +29,11 @@ type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Wr
 // Config is trusted Runner wiring, not a public API or Profile schema.
 type Config struct {
 	Launch Launch
+	// ResolveConfig selects the original pinned Environment for this execution.
+	// Runner retains ownership of it. The adapter creates/verifies a working
+	// copy and closes that copy only after all Sandbox writers have stopped.
+	// Missing or mismatched configuration fails closed with config_error.
+	ResolveConfig func(adapter.SandboxEnv) (*harnessenv.Environment, error)
 	// Configure resolves Harness Tool Permissions using req.Profile.HarnessID
 	// and intersects them with Profile toolConfiguration. Return Codex TOML
 	// key=value overrides, or an error if the policy cannot be represented.
@@ -99,7 +105,14 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	result := adapter.HarnessResult{ContractVersion: adapter.ContractVersion, SessionID: id,
 		Status: adapter.ResultFailed, Commits: []string{}, LogArtifactIDs: []string{}, ArtifactIDs: []string{}}
 	class := adapter.ErrorConfig
+	var working *harnessenv.Environment
 	defer func() {
+		if working != nil {
+			if err := working.Close(); err != nil {
+				class = adapter.ErrorSandbox
+				result.Status = adapter.ResultFailed
+			}
+		}
 		if ctx.Err() != nil {
 			class = adapter.ErrorCancelled
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -117,7 +130,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CODEX_HOME"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -131,6 +144,16 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		(definition.Execution.Adapter != "" && definition.Execution.Adapter != "codex") || len(definition.Execution.Args) != 0 {
 		return // No unreviewed Profile flags may override isolation or the prompt.
 	}
+	original, err := h.config.ResolveConfig(env)
+	if err != nil || original == nil || original.ConfigDir() != env.ConfigDir || original.Env()["CODEX_HOME"] != env.ConfigDir {
+		return
+	}
+	working, err = original.WorkingCopy(ctx)
+	if err != nil {
+		return
+	}
+	env.ConfigDir = working.ConfigDir()
+	env.Env["CODEX_HOME"] = env.ConfigDir
 	overrides, err := h.config.Configure(ctx, req)
 	if err != nil {
 		return
@@ -150,6 +173,12 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	preflight := append([]string{"/bin/sh", "-c", `exec "$@"`, "evaloom-codex-preflight"}, common...)
 	preflight = append(preflight, "login", "status")
 	preflightOut := &lineWriter{session: s, stream: "stdout"}
+	// Compare the entire copy to the recorded selection immediately before any
+	// CLI (including login status) can run. CLI state written afterwards is
+	// deliberately neither re-pinned nor persisted in context_revisions.
+	if _, err := working.Files(ctx); err != nil {
+		return
+	}
 	class, err = h.command(ctx, env, preflight, preflightOut, stderr, adapter.ErrorConfig)
 	preflightOut.finish()
 	stderr.finish()

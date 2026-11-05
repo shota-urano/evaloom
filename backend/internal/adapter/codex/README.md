@@ -7,7 +7,7 @@
 ## 起動と結果
 
 採用対象はローカルでヘルプを確認した`codex-cli 0.163.0`。
-次の順に、同じ専用設定ディレクトリを使うHarness Sandboxで実行する。
+次の順に、同じ作業用の設定コピーを使うHarness Sandboxで実行する。
 
 1. `/bin/sh -c 'exec "$@"' evaloom-codex-preflight codex [設定上書き] login status`
 2. `codex [設定上書き] exec --json --color never --ephemeral --sandbox danger-full-access --model <modelId> --cd <worktree> -- <prompt>`
@@ -34,6 +34,7 @@ stdout・stderrを行単位で`Logs`へ渡す。長い行、分割された書�
 最終行も保持する。Logsは1つの消費側で読む。出力は生の値なので、保存には
 Runnerの既存ログ収集・機密情報除外を使う。
 `Result`はSandboxの全書き込みプロセスが停止するまで待つ。
+その後、作業用の設定コピーを削除してから結果を返す。
 HEAD・commit一覧・diff・PR URLは生成しない。
 
 `Cancel`または呼び出し元contextの中止で停止を要求し、指定された猶予時間を
@@ -57,6 +58,14 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
 - `harnessenv.Create`または`Runner.PrepareHarnessEnvironment`で固定済みファイルを配置し、
   `ConfigVariable="CODEX_HOME"`にする。`Environment.ConfigDir()`と`Environment.Env()`を
   `adapter.SandboxEnv`へ渡す。専用設定の内容・パスの選択は既存処理の責任とする。
+- `Config.ResolveConfig`で、渡された元設定ディレクトリに対応する`Environment`を返す。
+  Adapterはこの環境が保持する記録済みのパス・ハッシュを使い、同じ許可ルート内に
+  独立したコピーを作る。元設定はSandboxにマウントしない。
+  認証確認の直前に全ファイルを照合し、改変・余分・欠落があればCLIを起動せず
+  `config_error`にする。解決関数が無い場合も起動しない。
+  コピーの`CODEX_HOME`だけを差し替え、`ContainerLaunch`が`ConfigWritable=true`にする。
+  認証確認後のCLIの書き込みは本実行へ引き継ぐが、context_revisionsへ追加しない。
+  成功・失敗・中止・起動失敗のいずれでも、Sandbox停止後にコピーを削除する。
 - `ContainerLaunch`に既存の`ContainerConfig`と、Executionに対応する`SandboxSpec`の
   解決関数を渡す。GitDir、ネットワークの許可先、資源制限は信頼されたRunnerが与える。
   `CODEX_HOME`を環境変数の許可リストに含める。HOMEの隔離は既存Containerが行う。
@@ -98,8 +107,8 @@ Git作者名・メールアドレスの値は選んでいない。Runnerが専�
 1. 採用CLI版を含むLinuxイメージ、既存Containerのネットワーク設定、Evaloom専用の
    サブスクリプション認証を用意する。本人が普段使うHOMEをマウントしない。
 2. 専用設定環境に固定した`config.toml`・`auth.json`・Git作者情報を用意し、上記の
-   インターフェースに接続する。既存Containerは設定を読み取り専用でマウントするため、
-   認証更新やCLIの状態保存に書き込みが必要な場合の運用を別途確認する。
+   インターフェースに接続する。元設定は保持し、書き込み可能な作業用コピーを
+   `CODEX_HOME`に使う。実CLIの状態保存と認証更新はこのコピー内で確認する。
 3. 小さなfixtureプロジェクトのlinked worktreeで、ファイルの追加とcommitを要求する。
    JSONLの完了、worktreeの`git rev-list <base>..HEAD`が1件以上、Runnerのdiffを確認する。
 4. 長時間の処理中に`Cancel`を呼び、Sandbox停止・`cancelled`・worktree保持を確認する。

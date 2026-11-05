@@ -28,6 +28,8 @@ func ContainerLaunch(config sandbox.ContainerConfig, resolve func(adapter.Sandbo
 			!maps.Equal(spec.Env, env.Env) || !slices.Contains(config.AllowEnv, "CODEX_HOME") {
 			return nil, &sandbox.Error{Op: "Codex sandbox scope mismatch"}
 		}
+		// The adapter supplies its verified disposable copy, never the original.
+		spec.ConfigWritable = true
 		local := config
 		local.Stdout, local.Stderr = stdout, stderr
 		container, err := sandbox.NewContainer(local)

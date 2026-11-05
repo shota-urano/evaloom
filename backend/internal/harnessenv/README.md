@@ -40,6 +40,13 @@ HOMEは既存のContainerが実行ごとに作る空の`/evaloom-home` tmpfsを�
 専用設定は既存の読み取り専用マウントを使う。環境変数は`env -i`で初期化する。
 ホストのHOMEや秘密情報を環境変数だけで隠したと扱わない。
 
+Codex Adapterには`Config.ResolveConfig`で元の`Environment`を渡す。
+Adapterは`Environment.WorkingCopy`で同じ許可ルート内に独立したコピーを作り、
+起動前に`Files`で記録済みの全パス・ハッシュと照合する。
+コピーのみを`ConfigWritable=true`でマウントし、`CODEX_HOME`をそのコピーへ向ける。
+元設定はマウントしない。CLIが書いた状態は記録に追加せず、停止確認後にコピーを削除する。
+Claude Codeは従来どおり元設定を読み取り専用で使い、Test Sandboxには設定を渡さない。
+
 ## 仕様で未定義の部分と検証範囲
 
 仕様にはリポジトリのパスからCLI内の配置先への変換規則が無い。

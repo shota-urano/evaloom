@@ -244,6 +244,7 @@ func TestContainerLaunchCancellationSequence(t *testing.T) {
 				<-ctx.Done()
 			}
 			r, err := f.h.Result(id)
+			assertWorkingCopiesRemoved(t, f)
 			want := adapter.ErrorCancelled
 			if tc.trigger == "deadline" {
 				want = adapter.ErrorTimeout
@@ -351,10 +352,29 @@ esac
 		t.Fatal(err)
 	}
 	args := strings.Split(string(data), "\n")
-	for _, want := range []string{"--read-only", "--network", "none", "--workdir", f.env.Worktree, "HOME=/evaloom-home", "CODEX_HOME=" + f.env.ConfigDir, "type=bind,source=" + f.env.ConfigDir + ",target=" + f.env.ConfigDir + ",readonly", "--json", "login", "status"} {
+	var copyDir string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "CODEX_HOME=") {
+			dir := strings.TrimPrefix(arg, "CODEX_HOME=")
+			if dir == f.env.ConfigDir || (copyDir != "" && dir != copyDir) {
+				t.Fatal("preflight and exec did not use the same disposable copy")
+			}
+			copyDir = dir
+		}
+	}
+	if copyDir == "" || strings.Contains(string(data), f.env.ConfigDir) {
+		t.Fatal("original configuration mounted or copy missing")
+	}
+	for _, want := range []string{"--read-only", "--network", "none", "--workdir", f.env.Worktree, "HOME=/evaloom-home", "CODEX_HOME=" + copyDir, "type=bind,source=" + copyDir + ",target=" + copyDir, "--json", "login", "status"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("runtime missing %q: %s", want, data)
 		}
+	}
+	if slices.Contains(args, "type=bind,source="+copyDir+",target="+copyDir+",readonly") {
+		t.Fatal("working copy mounted read-only")
+	}
+	if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
+		t.Fatal("working copy survived execution")
 	}
 	if strings.Count(string(data), "container\ncreate\n") != 2 {
 		t.Fatalf("preflight and exec not both sandboxed: %s", data)
