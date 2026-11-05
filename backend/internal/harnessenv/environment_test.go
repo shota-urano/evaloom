@@ -159,3 +159,147 @@ func TestEmptySelectionAndCancellation(t *testing.T) {
 		t.Fatal("creation lost cancellation:", err)
 	}
 }
+
+func TestWorkingCopyIsIndependentAndUsesRecordedManifest(t *testing.T) {
+	ctx := context.Background()
+	cfg := config(t)
+	original, err := harnessenv.Create(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Close() })
+	first, err := original.WorkingCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := original.WorkingCopy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if first.ConfigDir() == original.ConfigDir() || first.ConfigDir() == second.ConfigDir() ||
+		filepath.Dir(first.ConfigDir()) != cfg.Root || first.Env()["CODEX_HOME"] != first.ConfigDir() {
+		t.Fatal("copy is not an execution-local sibling")
+	}
+	want, err := original.Files(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := first.Files(ctx)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("copy manifest=%v, err=%v; want=%v", got, err, want)
+	}
+	for _, file := range want {
+		source, err := os.Stat(filepath.Join(original.ConfigDir(), file.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy, err := os.Stat(filepath.Join(first.ConfigDir(), file.Path))
+		if err != nil || os.SameFile(source, copy) || copy.Mode().Perm() != 0600 {
+			t.Fatalf("copy shares inode or has unsafe permissions: %v %v", copy, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(first.ConfigDir(), "config.toml"), []byte("CLI state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Files(ctx); err == nil {
+		t.Fatal("copy accepted changed bytes against recorded hashes")
+	}
+	for _, env := range []*harnessenv.Environment{original, second} {
+		got, err := env.Files(ctx)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("copy mutation changed another environment: %v %v", got, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.ConfigDir()); !os.IsNotExist(err) {
+		t.Fatal("copy survived Close")
+	}
+	if _, err := original.Files(ctx); err != nil {
+		t.Fatal("closing copy affected original:", err)
+	}
+}
+
+func TestWorkingCopyRejectsChangedSourceWithoutLeavingCopy(t *testing.T) {
+	cfg := config(t)
+	original, err := harnessenv.Create(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Close() })
+	if err := os.WriteFile(filepath.Join(original.ConfigDir(), "config.toml"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	copy, err := original.WorkingCopy(context.Background())
+	requireConfigError(t, err)
+	entries, readErr := os.ReadDir(cfg.Root)
+	if copy != nil || readErr != nil || len(entries) != 1 {
+		t.Fatalf("failed copy was retained: %v %v %v", copy, entries, readErr)
+	}
+}
+
+func TestEnvironmentRejectsReplacementAndCleansMovedIdentity(t *testing.T) {
+	for _, replacement := range []string{"directory", "symlink", "missing"} {
+		t.Run(replacement, func(t *testing.T) {
+			cfg := config(t)
+			original, err := harnessenv.Create(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := original.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			copy, err := original.WorkingCopy(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := copy.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			nested := filepath.Join(cfg.Root, "moved")
+			if err := os.Mkdir(nested, 0700); err != nil {
+				t.Fatal(err)
+			}
+			displaced := filepath.Join(nested, "copy")
+			if err := os.Rename(copy.ConfigDir(), displaced); err != nil {
+				t.Fatal(err)
+			}
+			switch replacement {
+			case "directory":
+				if err := os.Mkdir(copy.ConfigDir(), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(copy.ConfigDir(), "unrelated"), []byte("retain"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(original.ConfigDir(), copy.ConfigDir()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = copy.Files(context.Background())
+			requireConfigError(t, err)
+			if err := copy.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(displaced); !os.IsNotExist(err) {
+				t.Fatalf("generated inode retained after rename: %v", err)
+			}
+			if replacement == "directory" {
+				if data, err := os.ReadFile(filepath.Join(copy.ConfigDir(), "unrelated")); err != nil || string(data) != "retain" {
+					t.Fatalf("deleted unrelated replacement: %s %v", data, err)
+				}
+			}
+			if _, err := original.Files(context.Background()); err != nil {
+				t.Fatal("cleanup followed symlink or changed original:", err)
+			}
+		})
+	}
+}

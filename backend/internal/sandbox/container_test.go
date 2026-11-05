@@ -450,6 +450,8 @@ func TestContainerRejectsUnsafeSpecsBeforeInvokingRuntime(t *testing.T) {
 		{"data-as-config", func(f *fixture) { f.spec.ConfigDir = f.config.DataDir }},
 		{"token-in-mount", func(f *fixture) { f.config.RunnerTokenFile = filepath.Join(f.spec.Worktree, "token") }},
 		{"test-cannot-see-config", func(f *fixture) { f.spec.Kind = TestRun }},
+		{"test-run-cannot-write-config", func(f *fixture) { f.spec.Kind = TestRun; f.spec.ConfigDir = ""; f.spec.ConfigWritable = true }},
+		{"test-setup-cannot-write-config", func(f *fixture) { f.spec.Kind = TestSetup; f.spec.ConfigDir = ""; f.spec.ConfigWritable = true }},
 		{"harness-needs-config", func(f *fixture) { f.spec.ConfigDir = "" }},
 		{"harness-needs-git", func(f *fixture) { f.spec.GitDir = "" }},
 		{"overlap-mounts", func(f *fixture) { f.spec.ConfigDir = f.spec.Worktree }},
@@ -473,15 +475,18 @@ func TestContainerRejectsUnsafeSpecsBeforeInvokingRuntime(t *testing.T) {
 		}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t, "normal")
-			tc.edit(f)
-			p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
-			requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
-			if p != nil || len(f.calls(t)) != 0 {
-				t.Fatal("unsafe spec invoked runtime")
-			}
-		})
+		for _, writable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/writable=%t", tc.name, writable), func(t *testing.T) {
+				f := newFixture(t, "normal")
+				f.spec.ConfigWritable = writable
+				tc.edit(f)
+				p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+				requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)
+				if p != nil || len(f.calls(t)) != 0 {
+					t.Fatal("unsafe spec invoked runtime")
+				}
+			})
+		}
 	}
 }
 
@@ -490,6 +495,7 @@ func TestContainerRejectsMountRootEscapes(t *testing.T) {
 		for _, escape := range []string{"home-credentials-symlink", "outside-direct", "root-prefix-sibling", "other-root-symlink"} {
 			t.Run(field+"/"+escape, func(t *testing.T) {
 				f := newFixture(t, "normal")
+				f.spec.ConfigWritable = field == "config"
 				source := map[string]*string{"worktree": &f.spec.Worktree, "git": &f.spec.GitDir, "config": &f.spec.ConfigDir}[field]
 				root := *source
 				outside := filepath.Join(f.root, "outside")

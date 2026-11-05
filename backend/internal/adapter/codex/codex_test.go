@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -59,7 +58,8 @@ func TestCodexCLIHelper(t *testing.T) {
 		}
 		if mode == "preflight-cancel" {
 			signal.Ignore(syscall.SIGTERM)
-			_ = os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "preflight-started"), []byte(strconv.Itoa(os.Getpid())), 0600)
+			cwd, _ := os.Getwd()
+			_ = os.WriteFile(filepath.Join(cwd, "preflight-started"), []byte(strconv.Itoa(os.Getpid())), 0600)
 			fmt.Println("preflight running")
 			for {
 				time.Sleep(time.Second)
@@ -150,6 +150,7 @@ type fixture struct {
 	request   adapter.HarnessRequest
 	env       adapter.SandboxEnv
 	config    Config
+	settings  *harnessenv.Environment
 	processes []*localProcess
 	mu        sync.Mutex
 }
@@ -202,44 +203,46 @@ func newFixture(t *testing.T, mode string) *fixture {
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexec '"+strings.ReplaceAll(binary, "'", "'\\''")+"' -test.run='^TestCodexCLIHelper$' -- \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
+	f := &fixture{settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
 		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
 		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["shell"]},"executionConfiguration":{"adapter":"codex","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
-	f.config = Config{CancelGrace: 30 * time.Millisecond, Configure: func(_ context.Context, req adapter.HarnessRequest) ([]string, error) {
-		if req.Profile.HarnessID != "harness" || !strings.Contains(string(req.Profile.Definition), "shell") {
-			return nil, errors.New("policy unavailable")
-		}
-		return []string{"features.web_search_request=false"}, nil
-	}, Launch: func(ctx context.Context, env adapter.SandboxEnv, args []string, out, errOut io.Writer) (sandbox.Process, error) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if (args[0] != "codex" && args[0] != "/bin/sh") || env.Worktree != worktree || !reflect.DeepEqual(env.Env, settings.Env()) {
-			return nil, errors.New("scope mismatch")
-		}
-		cmd := exec.Command(fake, args[1:]...)
-		if args[0] == "/bin/sh" {
-			cmd = exec.Command(args[0], args[1:]...)
-		}
-		cmd.Dir, cmd.Stdout, cmd.Stderr = env.Worktree, out, errOut
-		cmd.Env = []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + home, "CODEX_HOME=" + env.ConfigDir, "EVALOOM_CODEX_HELPER=1", "FAKE_MODE=" + mode, "GORACE=atexit_sleep_ms=0",
-			"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid"}
-		if mode == "missing-cli" {
-			cmd.Env = append(cmd.Env, "PATH=/nonexistent-evaloom-test-path")
-		}
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		if err := cmd.Start(); err != nil {
-			return nil, &harnesscontext.ConfigError{Err: err}
-		}
-		p := &localProcess{cmd: cmd, done: make(chan struct{})}
-		f.mu.Lock()
-		f.processes = append(f.processes, p)
-		f.mu.Unlock()
-		go func() { p.err = cmd.Wait(); close(p.done) }()
-		return p, nil
-	}}
+	f.config = Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
+		CancelGrace: 30 * time.Millisecond, Configure: func(_ context.Context, req adapter.HarnessRequest) ([]string, error) {
+			if req.Profile.HarnessID != "harness" || !strings.Contains(string(req.Profile.Definition), "shell") {
+				return nil, errors.New("policy unavailable")
+			}
+			return []string{"features.web_search_request=false"}, nil
+		}, Launch: func(ctx context.Context, env adapter.SandboxEnv, args []string, out, errOut io.Writer) (sandbox.Process, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if (args[0] != "codex" && args[0] != "/bin/sh") || env.Worktree != worktree ||
+				env.ConfigDir == settings.ConfigDir() || env.Env["CODEX_HOME"] != env.ConfigDir {
+				return nil, errors.New("scope mismatch")
+			}
+			cmd := exec.Command(fake, args[1:]...)
+			if args[0] == "/bin/sh" {
+				cmd = exec.Command(args[0], args[1:]...)
+			}
+			cmd.Dir, cmd.Stdout, cmd.Stderr = env.Worktree, out, errOut
+			cmd.Env = []string{"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"), "HOME=" + home, "CODEX_HOME=" + env.ConfigDir, "EVALOOM_CODEX_HELPER=1", "FAKE_MODE=" + mode, "GORACE=atexit_sleep_ms=0",
+				"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Fixture", "GIT_AUTHOR_EMAIL=fixture@example.invalid", "GIT_COMMITTER_NAME=Fixture", "GIT_COMMITTER_EMAIL=fixture@example.invalid"}
+			if mode == "missing-cli" {
+				cmd.Env = append(cmd.Env, "PATH=/nonexistent-evaloom-test-path")
+			}
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := cmd.Start(); err != nil {
+				return nil, &harnesscontext.ConfigError{Err: err}
+			}
+			p := &localProcess{cmd: cmd, done: make(chan struct{})}
+			f.mu.Lock()
+			f.processes = append(f.processes, p)
+			f.mu.Unlock()
+			go func() { p.err = cmd.Wait(); close(p.done) }()
+			return p, nil
+		}}
 	f.h = New(f.config)
 	t.Cleanup(func() {
 		f.mu.Lock()
@@ -257,6 +260,15 @@ func newFixture(t *testing.T, mode string) *fixture {
 }
 
 func runResult(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResult, []adapter.LogLine) {
+	t.Helper()
+	id, result, logs := runResultAllowReplacement(t, f)
+	assertWorkingCopiesRemoved(t, f)
+	return id, result, logs
+}
+
+// Replacement tests assert cleanup by inode/path themselves: an unrelated
+// object inserted at the old name must not be deleted by Environment.Close.
+func runResultAllowReplacement(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResult, []adapter.LogLine) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -280,6 +292,19 @@ func runResult(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResu
 		t.Fatal(err)
 	}
 	return id, r, logs
+}
+
+func assertWorkingCopiesRemoved(t *testing.T, f *fixture) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(f.settings.ConfigDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "harness-") && entry.Name() != filepath.Base(f.settings.ConfigDir()) {
+			t.Fatalf("working configuration survived Result: %s", entry.Name())
+		}
+	}
 }
 
 func TestCodexNonInteractiveCommit(t *testing.T) {
@@ -443,7 +468,7 @@ func TestCodexCancellationAndTimeout(t *testing.T) {
 			}
 			pidFile := filepath.Join(f.env.Worktree, "started")
 			if mode == "preflight-cancel" {
-				pidFile = filepath.Join(f.env.ConfigDir, "preflight-started")
+				pidFile = filepath.Join(f.env.Worktree, "preflight-started")
 			}
 			pidBytes, err := os.ReadFile(pidFile)
 			if err != nil {
@@ -456,6 +481,7 @@ func TestCodexCancellationAndTimeout(t *testing.T) {
 			if _, err := os.Stat(f.env.Worktree); err != nil {
 				t.Fatal("worktree not retained")
 			}
+			assertWorkingCopiesRemoved(t, f)
 		})
 	}
 }

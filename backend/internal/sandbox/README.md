@@ -25,6 +25,17 @@ GitDirはHarnessだけ読み書き可能でテストでは読み取り専用、C
 マウントする。呼び出し側は、Evaloomの作業用クローンのGit領域とExecution専用の設定を渡す。
 GitDir全体を指定し、worktree内の`.git`が参照するパスもコンテナ内で解決できるようにする。
 
+Codexの`ConfigWritable=true`には、`WithWorkingConfiguration`が作るExecution専用の
+内部コンテキストも必要になる。照合済みの全ファイルをtarとして保持し、停止中の
+コンテナ経由で専用Docker volumeへ転送する。設定パスにはホストのbind mountを使わず、
+このvolumeだけをマウントする。既存の許可ルート・機密領域・重複の検査は省略しない。
+転送後は、起動前のコンテナからvolumeの全ファイルを読み戻し、記録済みのパス・ハッシュと
+照合する。余分・欠落・内容の不一致・symlinkなどの非通常ファイルは`config_error`にする。
+起動準備中にもホストコピーを照合し、差し替えや改変は`config_error`で拒否する。
+照合後にホストの名前が変わっても、転送済みの内容とマウントするvolumeは変わらない。
+Adapterは認証確認と本実行でvolumeを共有し、全プロセスの停止後に削除する。
+Claude CodeとTest Sandboxのマウントは従来どおりである。
+
 許可ルートは構築時に実パスへ解決する。各マウント元の実パスが対応するルート内
 （ルート自身を含む）にあることを必須とし、ルート外を指すシンボリックリンクも拒否する。
 HOME配下でも専用の許可ルート内にある管理領域は使える。本人のHOME全体やその祖先、
@@ -143,6 +154,18 @@ GitHubと1.1.1.1への接続も拒否されることを確かめる。
 公開HTTPS宛先への正の確認も実行する場合は、さらに
 `EVALOOM_SANDBOX_TEST_ALLOWED_DESTINATION=example.com:443`を明示する。
 有効化していない場合だけ`t.Skip`し、有効化後の前提不足や試験失敗はFAILにする。
+
+作業用の設定コピーは、モデルAPIと実CLIを使わず実Dockerでも検証できる。
+
+```sh
+cd backend
+EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
+  go test -tags security_docker ./internal/sandbox -run '^TestDockerWorkingConfiguration$' -count=1 -v
+```
+
+指定イメージは事前に用意し、`/usr/bin/env`、`/bin/sh`、`cat`、`touch`が必要になる。
+この試験は読み取り専用のルートFS、専用volumeへの設定転送、CLI状態の引き継ぎ、
+元設定の不可視・不変、終了後のvolume削除を確認する。
 
 仕様にruntime・イメージ名・環境変数許可リストの具体値、CPU・メモリの値、
 制御コマンドの待機上限がないため、既定値を設けず内部設定として受け取る。

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -121,12 +122,30 @@ func (e *Environment) ConfigDir() string { return e.directory }
 // supplies HOME and filters all other variables using its explicit allowlist.
 func (e *Environment) Env() map[string]string { return map[string]string{e.variable: e.directory} }
 
+// WorkingCopy makes an independent, disposable sibling under the same trusted
+// configuration root. The expected paths/hashes come from this Environment,
+// whose Files were submitted for context_revisions, never from the copy itself.
+// The caller owns Close, and must verify Files again before the first CLI starts.
+func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
+	files, err := e.Files(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
+		ConfigVariable: e.variable, Files: files})
+}
+
 // Files enumerates the actual directory, rejecting added, removed, changed or
 // non-regular files. Hashes cover the bytes on disk, not a caller's assertion.
 // The same repository-relative paths can be sent to the existing context API.
 func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	if e.root == nil {
 		return nil, configError(fmt.Errorf("configuration environment is closed"))
+	}
+	// Never silently read a retained descriptor after its published name has
+	// been replaced. Lstat also rejects a symlink back to the original config.
+	if err := e.checkIdentity(); err != nil {
+		return nil, configError(err)
 	}
 	files := []gitcontext.File{}
 	err := fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
@@ -163,24 +182,83 @@ func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	if len(files) != len(e.expected) {
 		return nil, configError(fmt.Errorf("configuration file missing"))
 	}
+	if err := e.checkIdentity(); err != nil {
+		return nil, configError(err)
+	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+func (e *Environment) checkIdentity() error {
+	actual, err := e.root.Stat(".")
+	if err != nil {
+		return err
+	}
+	named, err := os.Lstat(e.directory)
+	if err != nil {
+		return err
+	}
+	if !named.IsDir() || !os.SameFile(actual, named) {
+		return fmt.Errorf("configuration directory replaced")
+	}
+	return nil
 }
 
 // Close removes only this Environment's generated directory. Call after the
 // Sandbox has stopped, including on execution failure or cancellation.
 func (e *Environment) Close() error {
-	if e.root != nil {
-		e.root.Close()
-		e.root = nil
-	}
 	if e.parent == nil {
 		return nil
 	}
-	if err := e.parent.RemoveAll(filepath.Base(e.directory)); err != nil {
-		return err
+	var cleanup error
+	if e.root != nil {
+		identity, err := e.root.Stat(".")
+		cleanup = errors.Join(cleanup, err)
+		// Clear through the retained handle, even if the directory was moved.
+		entries, err := fs.ReadDir(e.root.FS(), ".")
+		cleanup = errors.Join(cleanup, err)
+		for _, entry := range entries {
+			cleanup = errors.Join(cleanup, e.root.RemoveAll(entry.Name()))
+		}
+		if identity != nil {
+			// Find the generated inode under its trusted root rather than delete
+			// an unrelated replacement at its former name. Never follow links.
+			named, statErr := e.parent.Lstat(filepath.Base(e.directory))
+			if statErr == nil && os.SameFile(identity, named) {
+				err = e.parent.Remove(filepath.Base(e.directory))
+			} else {
+				err = fs.WalkDir(e.parent.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+					if os.IsNotExist(err) {
+						return nil
+					} // another execution finished
+					if err != nil {
+						return err
+					}
+					if name == "." || !entry.IsDir() {
+						return nil
+					}
+					info, err := entry.Info()
+					if os.IsNotExist(err) {
+						return nil
+					}
+					if err != nil {
+						return err
+					}
+					if os.SameFile(identity, info) {
+						if err := e.parent.Remove(name); err != nil {
+							return err
+						}
+						return fs.SkipDir
+					}
+					return nil
+				})
+			}
+			cleanup = errors.Join(cleanup, err)
+		}
+		cleanup = errors.Join(cleanup, e.root.Close())
+		e.root = nil
 	}
-	err := e.parent.Close()
+	cleanup = errors.Join(cleanup, e.parent.Close())
 	e.parent = nil
-	return err
+	return cleanup
 }
