@@ -27,7 +27,7 @@ status: confirmed
 | | Harness Sandbox | Test Sandbox |
 |---|---|---|
 | 実行するもの | Codex / Claude Code（AI によるコード変更と commit） | セットアップコマンド、テストコマンド、テスト基準値の取得 |
-| 書き込みできる場所 | 当該 Execution の worktree（と commit に必要な Git 領域、3.6） | 当該 Execution の worktree（テストの出力先を含む） |
+| 書き込みできる場所 | 当該 Execution の worktree（と commit に必要な Git 領域、3.6）、作業用の設定コピー（[`08-harness-adapter.md`](./08-harness-adapter.md) 3.4。要る CLI のみ） | 当該 Execution の worktree（テストの出力先を含む） |
 | 秘密情報 | 渡さない（モデル API の接続手段だけ例外、3.5） | 一切渡さない |
 | ネットワーク | 3.3 のハーネス用ポリシー | 3.3 のテスト用ポリシー |
 
@@ -111,7 +111,7 @@ requirements 21章で「ハーネスとテストを隔離する具体的な方�
 |---|---|
 | PR マージ | ハーネスには GitHub の認証情報もネットワーク経路も無い。Git Publisher のコードにマージの処理を持たせず、GitHub 側の設定でもベースブランチを更新できないようにする（[`11-git-publisher.md`](./11-git-publisher.md) 3.5） |
 | 本番環境へのデプロイ、外部メール送信 | Sandbox にその認証情報とネットワーク経路が無い。Runner にその処理を持たせない |
-| 重要ファイル削除 | ハーネスが書き込めるのは worktree（と 3.6 の Git 領域）だけ |
+| 重要ファイル削除 | ハーネスが書き込めるのは worktree（と 3.6 の Git 領域、Execution ごとに捨てる作業用の設定コピー）だけ |
 | 認証・権限変更、共通契約・評価基準・中央セキュリティポリシーの変更 | Sandbox から Control API に届かない。Runner トークンでは権限設定を変更する API を呼べない（[`01-architecture.md`](./01-architecture.md) 3.4） |
 
 ### 3.8 GitHub 側の CI（requirements 15.7）
@@ -145,6 +145,7 @@ type SandboxSpec struct {
     Worktree    string            // 書き込み可能
     GitDir      string            // commit に必要な Git 領域（harness のみ書き込み可）
     ConfigDir   string            // 専用設定環境（harness のみ）
+    ConfigWritable bool           // ConfigDir が作業用の設定コピーのときだけ true（書き込み可でマウントする）
     Env         map[string]string // 許可リスト方式
     Network     NetworkPolicy
     Limits      ResourceLimits    // CPU、メモリ、実行時間

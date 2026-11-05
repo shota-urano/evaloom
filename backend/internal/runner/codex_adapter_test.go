@@ -83,7 +83,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens
 		return &codexTestProcess{cmd: cmd}, nil
 	}
 	var registry adapter.Registry
-	if err := registry.Register("codex", codex.New(codex.Config{Launch: launch, CancelGrace: time.Second, Configure: func(context.Context, adapter.HarnessRequest) ([]string, error) { return nil, nil }})); err != nil {
+	if err := registry.Register("codex", codex.New(codex.Config{Launch: launch, CancelGrace: time.Second,
+		ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
+		Configure:     func(context.Context, adapter.HarnessRequest) ([]string, error) { return nil, nil }})); err != nil {
 		t.Fatal(err)
 	}
 	h, _ := registry.Lookup("codex")

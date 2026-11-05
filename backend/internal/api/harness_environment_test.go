@@ -84,6 +84,29 @@ func TestHarnessEnvironmentPersistsEveryPlacedFile(t *testing.T) {
 					t.Fatalf("record differs from disk manifest: %+v %+v", row, file)
 				}
 			}
+			// The writable configuration inherits exactly the manifest that the
+			// real Runner/context API persisted. CLI writes never become pins.
+			copy, err := env.WorkingCopy(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = copy.Close() })
+			copied, err := copy.Files(context.Background())
+			if err != nil || !reflect.DeepEqual(copied, manifest) {
+				t.Fatalf("copy differs from persisted configuration: %v %v", copied, err)
+			}
+			if err := os.WriteFile(filepath.Join(copy.ConfigDir(), "cli-state"), []byte("runtime only"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := copy.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(copy.ConfigDir()); !os.IsNotExist(err) {
+				t.Fatal("copy survived cleanup")
+			}
+			if !reflect.DeepEqual(pinnedRows(t, f), rows) {
+				t.Fatal("CLI state changed context_revisions")
+			}
 			// A repeated preparation uses a fresh directory but preserves revision IDs.
 			again, retry, err := r.PrepareHarnessEnvironment(context.Background(), otherExecution, input.HeadSHA, input.Project, cfg)
 			if err != nil {

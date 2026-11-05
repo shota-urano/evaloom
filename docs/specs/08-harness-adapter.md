@@ -59,7 +59,7 @@ type Capabilities struct {
 
 ### 3.3 Adapter の共通の流れ
 
-1. Harness Sandbox を作る（[`09-sandbox.md`](./09-sandbox.md)）。worktree だけを書き込み可能にする。
+1. Harness Sandbox を作る（[`09-sandbox.md`](./09-sandbox.md)）。書き込み可能にするのは worktree（と commit に必要な Git 領域）と、3.4 の作業用の設定コピーだけとする。
 2. 専用設定環境を作る（3.4）。
 3. Execution Context と HarnessRequest を、CLI に渡せる形（引数、標準入力、ファイル）にする。
 4. Sandbox の中で CLI を非対話モードで起動する。
@@ -85,6 +85,7 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 | ハーネスの設定を与える | Profile の commit SHA から読んだ設定・プロンプト・Skills（[`07-context.md`](./07-context.md) 3.3）を専用設定ディレクトリに置く |
 | CLI に専用設定ディレクトリを使わせる | Codex は `CODEX_HOME`、Claude Code は `CLAUDE_CONFIG_DIR` を専用ディレクトリに向ける案。各 CLI の版で効くことを実装時に確かめる |
 | 読み込んだ構成を記録する | 専用設定ディレクトリの全ファイルのパスとハッシュを context_revisions（layer=`harness`、kind=`harness_config`）に保存する（requirements 7.1） |
+| 設定ディレクトリへの書き込みが要る CLI に対応する | 専用設定ディレクトリは読み取り専用のまま残す。CLI が設定ディレクトリに書き込めないと起動しない場合は、Execution ごとに書き込み可能な作業用の設定コピーを作り、CLI の設定ディレクトリの環境変数をそのコピーへ向ける。CLI を起動する前に、コピーの全ファイルのパスとハッシュが記録した値と一致することを確かめ、一致しなければ `config_error` で止める。コピーは Execution の終了時に捨て、次の Execution に持ち越さない。CLI がコピーへ書き込んだ内容は、読み込んだ構成の記録に含めない。どの CLI がコピーを要するかは Adapter が決める |
 
 「HOME を見せない」ことを主な対策とし、環境変数による設定ディレクトリの指定は補助とする。環境変数だけに頼ると、CLI の版の違いで別の場所を読む可能性が残るためである。
 
@@ -96,7 +97,7 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 |---|---|
 | 起動 | 非対話モード（`codex exec` を候補とする）。引数・フラグは採用する版で確定する |
 | 作業ディレクトリ | Sandbox 内の worktree |
-| 設定 | `CODEX_HOME` を専用設定ディレクトリに向ける（案） |
+| 設定 | `CODEX_HOME` を 3.4 の作業用の設定コピーに向ける。codex-cli 0.163.0 は `CODEX_HOME` に書き込めないと起動しない（`failed to initialize in-process app-server client: Read-only file system`。2026-11-05 に [`14-security-tests.md`](./14-security-tests.md) 3.1 の実モデル試験で確認） |
 | Project Context | Codex は作業ディレクトリの `AGENTS.md` を読む。`NativeInstructionFiles` に `AGENTS.md` を宣言する（実装時に確認） |
 | ツール権限 | Harness の Tool Permissions と Profile の toolConfiguration を、CLI の設定に反映する |
 | 認証 | Q7（サブスクリプションか API キーか）と Q8（値をハーネスから見えないようにする方式）の結論に従う（[`09-sandbox.md`](./09-sandbox.md) 3.5） |
@@ -178,4 +179,6 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
   - 受け入れ基準: テスト用プロジェクトの worktree で Codex を非対話で起動し、commit が1つ以上作られる; 中止で止まる; 異常終了が 3.7 の分類で返る
 - [ ] [Backend] Claude Code Adapter
   - 受け入れ基準: テスト用プロジェクトの worktree で Claude Code を非対話で起動し、commit が1つ以上作られる; 中止で止まる; 異常終了が 3.7 の分類で返る
+- [ ] [Backend] 作業用の設定コピー（3.4。設定ディレクトリへの書き込みが要る CLI 向け。Codex で使う）
+  - 受け入れ基準: Codex Adapter が CODEX_HOME を Execution ごとの書き込み可能な設定コピーに向け、元の専用設定ディレクトリは読み取り専用のまま変わらない; コピーのハッシュが記録と一致しないと CLI を起動せず config_error になる; コピーは Execution の終了時（成功・失敗・中止）に消える; Claude Code Adapter と Test Sandbox の書き込み範囲は変わらない
 - [ ] （人間） Claude Code・Codex の認証方式と、各社規約での自動実行の可否を確認して決める（Q7）
