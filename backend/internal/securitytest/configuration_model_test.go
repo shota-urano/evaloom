@@ -111,14 +111,13 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	case "codex":
 		err = adapters.Register(cli.name, codex.New(codex.Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: codex.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
 			ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
-			Configure: func(context.Context, adapter.HarnessRequest) ([]string, error) {
-				// The fixture permits shell/commit inside the outer Sandbox only.
-				return []string{`approval_policy="never"`}, nil
+			ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
 			}}))
 	case "claude_code":
 		err = adapters.Register(cli.name, claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: claudecode.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
-			Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
-				return json.RawMessage(`{"permissions":{"allow":["Bash"],"deny":["Read","Edit","Write","WebFetch","WebSearch","Agent"]}}`), nil
+			ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+				return json.RawMessage(`{"deny":["Read","Edit","Write","WebFetch","WebSearch","Agent"]}`), nil
 			}}))
 	default:
 		t.Fatalf("unwired real Adapter %s", cli.name)

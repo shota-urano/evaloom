@@ -54,7 +54,7 @@ test -z "${RUNNER_TOKEN:-}"
 test "$1" = --setting-sources
 test "$2" = user,project
 test "$3" = --settings
-test "$4" = '{}'
+test "$4" = '{"permissions":{"allow":[],"deny":[]}}'
 shift 4
 if [ "$1" = auth ]; then
   test "$2" = status
@@ -92,7 +92,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"i
 		t.Fatal(err)
 	}
 	var registry adapter.Registry
-	if err := registry.Register("claude_code", claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: launch, CancelGrace: time.Second, Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+	if err := registry.Register("claude_code", claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: launch, CancelGrace: time.Second, ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 		return json.RawMessage(`{}`), nil
 	}})); err != nil {
 		t.Fatal(err)

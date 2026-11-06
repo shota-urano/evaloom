@@ -35,15 +35,11 @@ type Config struct {
 	// ResolveConfig selects the Runner-owned pinned configuration. The adapter
 	// owns a verified working copy until stopped writers and auth writeback.
 	ResolveConfig func(adapter.SandboxEnv) (*harnessenv.Environment, error)
-	// Configure validates pinned Profile settings for the adopted CLI version,
-	// resolves Harness Tool Permissions using req.Profile.HarnessID and intersects
-	// them with Profile toolConfiguration. Return the complete settings JSON
-	// object (including permission rules), or an error if it cannot be represented.
-	// Validate all selected dedicated and Project settings before launch: print
-	// mode may silently ignore invalid files. Include deny rules that constrain
-	// permissions from every loaded source, not only additional allow rules.
-	// A missing resolver fails closed: the request has no Tool Permissions.
-	Configure func(context.Context, adapter.HarnessRequest) (json.RawMessage, error)
+	// ResolveToolPermissions returns the claim-time Harness toolPermissions object.
+	// The common HarnessRequest intentionally has no such wire field. Runner
+	// supplies the pinned claim value; conversion belongs to this adapter.
+	// A missing resolver or malformed value fails closed before any CLI starts.
+	ResolveToolPermissions func(context.Context, adapter.HarnessRequest) (json.RawMessage, error)
 	// CancelGrace is supplied by Runner's cancellation policy (no Q15 default).
 	CancelGrace time.Duration
 }
@@ -162,7 +158,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.ResolveToolPermissions == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CLAUDE_CONFIG_DIR"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -199,16 +195,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	}
 	env.ConfigDir = working.ConfigDir()
 	env.Env["CLAUDE_CONFIG_DIR"] = env.ConfigDir
-	settings, err := h.config.Configure(ctx, req)
+	settings, err := h.configurePermissions(ctx, req)
 	if err != nil {
 		return
 	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal(settings, &object) != nil || object == nil {
-		return
-	}
-	// Serialize a checked object: --settings cannot be interpreted as a path.
-	settings, _ = json.Marshal(object)
 	common := []string{"claude", "--setting-sources", "user,project", "--settings", string(settings)}
 	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}
 	// Missing CLI becomes workload exit 127, not a runtime entrypoint failure.
