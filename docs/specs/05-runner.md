@@ -99,7 +99,7 @@ Sandbox には本物の秘密情報を渡さない（[`09-sandbox.md`](./09-sand
 
 **タイムアウト**:
 
-- 工程ごとの上限時間（setup / ハーネス / テスト）は Project の timeouts、無ければ全体設定の既定値を使う。値は requirements に無く、実装時に確定する（Q15）。
+- 工程ごとの上限時間（setup / ハーネス / テスト）は Project の timeouts、無ければ Runner の設定ファイルの `defaultTimeouts`（4.1）を使う（Q15、2026-11-06 決定）。
 - 上限を超えたら、Adapter のキャンセル（[`08-harness-adapter.md`](./08-harness-adapter.md)）を呼び、Sandbox ごとプロセスを止める。一定時間で止まらなければ強制終了する。
 - `timed_out`（error_class=`timeout`）を報告する。
 
@@ -129,7 +129,38 @@ requirements 15.3 の承認対象操作（本番デプロイ、PR マージ、�
 | 自動リトライ | 0回 | requirements 8.3 |
 | 中断・失敗時の worktree | 保持する | requirements 8.3 |
 | push の条件 | 必須の検証がすべて成功したときだけ | requirements 8.5 |
-| タイムアウト値 | 未定（実装時に確定） | Q15 |
+| タイムアウト値 | Project の timeouts、無ければ 4.1 の `defaultTimeouts`（setup 15分、ハーネス 60分、テスト 30分） | Q15（2026-11-06 決定） |
+| 隔離方式 | Phase 1 ではすべての Project をコンテナで隔離する。Xcode 等が要る Project は登録しない（[`09-sandbox.md`](./09-sandbox.md) 3.4 の決定。Tart の実装を起票するまで対象外） | Q1（2026-11-06 確認） |
+
+### 4.1 Runner の設定ファイル（2026-11-06 決定）
+
+Runner の設定は、起動時に `-config` で渡す JSON ファイル1つにまとめる。各部品の仕様が「Runner の設定で指定する」としている値の正本はこの表とする。
+
+- パスはすべて絶対パスで書く。launchd から起動しても対話シェルから起動しても同じ意味になるようにするためである。
+- 表に無いキーがあれば起動時にエラーで止める。必須のキーが無い場合も同じとする。既定値は表に書いたものだけで、ほかの値を暗黙に選ばない。
+- 設定ファイルには秘密情報の値を書かない。秘密情報はファイルのパスで指す。
+
+| キー | 型 | 必須 | 内容 | 出典 |
+|---|---|---|---|---|
+| `runnerId` | 文字列 | 必須 | Runner ID | 3.1 |
+| `controlPlaneUrl` | 文字列 | 必須 | Control Plane の URL | 3.1, requirements 2.3 |
+| `tokenFile` | パス | 必須 | Runner トークンのファイル | 3.1 |
+| `worktreeRoot` | パス | 必須 | Worktree Root | [`06-worktree.md`](./06-worktree.md) |
+| `dataDir` | パス | 必須 | データディレクトリ（ログ、成果物、ハーネスの認証ファイル）。Git 管理外に置く | 3.4, requirements 3.1 |
+| `harnessAuthFiles` | オブジェクト（Harness ID → パス） | 必須 | ハーネスごとの Evaloom 専用の認証ファイル。パスは `dataDir` の中に置き、権限は 0600 とする。Execution の Harness ID が表に無ければ `config_error` で止める | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.4 |
+| `githubAppPrivateKeyFile` | パス | 必須 | Git Publisher が使う GitHub App の秘密鍵。`~/.config/evaloom/` の中に置く。App ID と Installation ID は [`11-git-publisher.md`](./11-git-publisher.md) 3.5.1 の値をコードに持ち、設定には書かない | [`11-git-publisher.md`](./11-git-publisher.md) 3.5.1 |
+| `container.runtimePath` | パス | 必須 | コンテナのランタイムの CLI | [`09-sandbox.md`](./09-sandbox.md) |
+| `container.image` | 文字列 | 必須 | Harness Sandbox と Test Sandbox のイメージ | [`09-sandbox.md`](./09-sandbox.md) |
+| `container.proxyImage` | 文字列 | 必須 | ネットワークの許可先を絞るプロキシのイメージ | [`09-sandbox.md`](./09-sandbox.md) 3.3 |
+| `container.proxyBinary` | パス | 必須 | プロキシのコンテナに入れる補助プログラム（Linux 用にビルド済みのもの） | [`09-sandbox.md`](./09-sandbox.md) 3.3 |
+| `container.runtimeEnv` | オブジェクト（名前 → 値） | 任意 | ランタイムの CLI だけに渡す環境変数（例 `DOCKER_HOST`）。コンテナには渡さない | [`09-sandbox.md`](./09-sandbox.md) |
+| `commitAuthor.name` | 文字列 | 必須 | ハーネスが作る commit の作者名。専用設定環境の Git 設定で与える | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.3 |
+| `commitAuthor.email` | 文字列 | 必須 | 同じくメールアドレス。GitHub App の bot（evaloom-publisher[bot]）の noreply アドレスを入れる運用を推奨する | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.3 |
+| `defaultTimeouts.setupSec` | 整数（秒） | 任意（既定 900） | setup の上限時間。Project の timeouts.setupSec が優先する | Q15 |
+| `defaultTimeouts.harnessSec` | 整数（秒） | 任意（既定 3600） | ハーネス実行の上限時間。Project の timeouts.harnessSec が優先する | Q15 |
+| `defaultTimeouts.testSec` | 整数（秒） | 任意（既定 1800） | テスト1回の上限時間。工程7と工程10に別々に掛ける。Project の timeouts.testSec が優先する | Q15 |
+
+heartbeat と claim の間隔、強制終了までの猶予など、本人が変える必要のない値は設定に出さず、実装の定数とする。
 
 ## 5. インターフェース
 
@@ -195,4 +226,10 @@ heartbeat の要求と応答（案）:
 - [ ] [Backend] タイムアウトとキャンセル（Adapter のキャンセル、強制終了、状態報告）
   - 受け入れ基準: 上限時間を短くしたテストでハーネスが止まり timed_out が報告される; 中止指示で cancelled が報告される; どちらも worktree が残る
 - [ ] [Backend] 使用量の記録
+
+- [ ] [Backend] Runner の設定ファイルを 4.1 の表どおりに読む（キーの追加、必須・既定値・未知キーの検査、パスの検査）
+  - 受け入れ基準: 4.1 の必須キーが1つでも欠けた設定、表に無いキーを含む設定、相対パスを含む設定で、`evaloom-runner` が起動時にエラーで終わることをテストで確かめる; `defaultTimeouts` を省いた設定で 900 / 3600 / 1800 秒が使われる; `harnessAuthFiles` のパスが `dataDir` の外にある設定を起動時に拒否する
+
+- [ ] [Backend] 起動コマンドから工程表への接続（3.3 の工程1〜13 に、実装済みの部品を設定ファイルの値で組み立てて渡す）
+  - 受け入れ基準: `backend/cmd/evaloom-runner` が claim した Execution を工程1から13まで実行し、起動時の「execution stages are not implemented」の表示が無くなる; ダミーのハーネス（`adapter/dummy`）とローカルの bare リポジトリを使った結合テストで、claim から `succeeded` の報告と push までを1本通す（GitHub の PR 作成はテスト用の HTTP サーバーで受ける）; 工程の途中で失敗させたテストで、以降の工程を行わず worktree を残す; Execution の Harness ID が `harnessAuthFiles` に無いとき、ハーネスを起動せず `config_error` で止まる; タイムアウトに Project の timeouts、無ければ `defaultTimeouts` が使われる
   - 受け入れ基準: 完了した Execution ごとに usage_records に実行時間が記録される; トークン数が取れない Adapter では NULL になる
