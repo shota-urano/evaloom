@@ -26,7 +26,8 @@ var projectSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // transport uses safegit.Output without additional credentials. Implementations
 // must retain safegit's protections and supply credentials outside repositories,
 // without enabling credential helpers or persisting secrets in Git config/URLs.
-// The specification has not yet selected a credential delivery mechanism.
+// Spec 11, 3.6 supplies a stage-scoped installation token via child-only
+// GIT_CONFIG_* variables (publisher.ReadSession).
 type ReadTransport interface {
 	Output(ctx context.Context, directory string, args ...string) ([]byte, error)
 }

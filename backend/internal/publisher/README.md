@@ -58,6 +58,40 @@ REST 通信失敗、中止を通す。鍵・JWT・トークン・Basic 認証値
 DB/WAL/SHM ファイルを検索する。Sandbox は既存 Container の偽 runtime を使い、
 Harness / setup / test の呼び出しを観測する。実 OS の隔離突破試験は仕様14の別タスク。
 
+## 読み取り用の認証
+
+`NewGitHubAppReader` は、仕様11の3.6に従い、対象リポジトリ1件と
+`contents: read`・`metadata: read`・`pull_requests: read` だけを要求する。
+書き込み用の `NewGitHubApp` とはトークンを共有しない。
+`Reader.ForStage` を工程ごとに呼び、返された `ReadSession` を工程内だけで使う。
+工程1は `Output` の `ls-remote`、工程2は `State`、工程3は
+`worktree.ReadTransport` として使える。`ForStage` の除外登録関数は必須で、
+トークンとGitのBasic認証値を、使用前にRunnerのログ除外対象へ登録する。
+
+工程3の新規作成では `Execution.PrepareReadRepository` に `Reader` と
+`worktree.Repositories` を渡す。返されたRepositoriesで `RecordRemoteBase` と
+`CreateWorktree` を行い、工程終了後は保持しない。認証情報の発行やcloneが
+失敗した場合は `failed`（`config_error`）を報告する。
+後続のログは `Runner.NewLog` の除外値に `Execution.LogSecrets()` を渡す。
+起動コマンドから各工程への組み立ては、別タスク `evaloom-1b9` が担当する。
+
+Gitは `safegit.HTTPSReadOutput` を使う。認証を伴う処理は新しい一時領域から
+実行し、既存クローンのHTTP設定・include・helper・フックを読まない。
+fetchは一時リポジトリで取得した後、トークンを渡さないGit処理で
+追跡refとオブジェクトを作業用クローンへ取り込む。
+cloneはcheckoutとtemplateを無効にし、登録済みのorigin URLだけを保存する。
+SSH形式のURLも通信時はHTTPSへ変換する。
+
+`TestReadTokenPermissionsAndAuthenticatedStage3Isolation` はトークン発行要求、
+認証必須のGit HTTPサーバーに対するclone・fetch・ls-remote、設定ファイルと
+worktree、Sandboxの環境、Runnerのログ・eventsを確認する。
+`TestStage3ReadTokenFailuresReportConfigError` は認証失敗や不正な応答を拒否し、
+実際のControl PlaneとSQLiteで `failed`・`config_error` を確認する。
+Sandboxの環境確認には既存Containerと偽runtimeを使う。OSの隔離試験は別タスクである。
+
+仕様書ではQ70が案と表記されている。本タスクの指示と受け入れ基準に従って
+3.6の方式を実装しており、仕様書は変更していない。
+
 ## 再実行前の PR 確認
 
 `CheckPreviousPR` は Runner の準備工程2で呼ぶ内部境界である。
