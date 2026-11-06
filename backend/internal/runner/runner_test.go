@@ -23,7 +23,19 @@ func testConfig(t *testing.T, endpoint string) Config {
 	if err := os.WriteFile(tokenFile, []byte(testToken+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return Config{"mac-mini", endpoint, tokenFile, filepath.Join(dir, "worktrees"), filepath.Join(dir, "data")}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Config{
+		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
+		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
+		HarnessAuthFiles:        map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
+		Container:               ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		CommitAuthor:            CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
+		DefaultTimeouts:         DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+	}
 }
 
 var testToken = base64.RawURLEncoding.EncodeToString(make([]byte, 32))
