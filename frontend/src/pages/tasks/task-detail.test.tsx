@@ -240,6 +240,8 @@ describe('タスク詳細', () => {
     const done = history(E1, 1, 'failed', { errorClass: 'harness_failed', finishedAt: '2026-10-28T04:00:00Z' })
     TASK = taskWith('failed', [done])
     EXECUTIONS = { [E1]: detailOf(done) }
+    // EventSource が開くまで待ってから取る（findByRole('log') の時点ではまだ開いていないことがある）。
+    await waitFor(() => expect(events.open(`/api/executions/${E1}/events`)).toHaveLength(1))
     const source = events.open(`/api/executions/${E1}/events`)[0]
     act(() => source.emit('status_changed', { from: 'running', to: 'failed', reason: 'runner_result' }, 42))
 
@@ -353,6 +355,8 @@ describe('タスク詳細', () => {
     EXECUTIONS = { [E1]: detailOf(item) }
     const { events } = renderTask()
     await screen.findByRole('log')
+    // EventSource が開くまで待ってから取る（findByRole('log') の時点ではまだ開いていないことがある）。
+    await waitFor(() => expect(events.open(`/api/executions/${E1}/events`)).toHaveLength(1))
     const source = events.open(`/api/executions/${E1}/events`)[0]
     expect(source).toBeDefined()
     const done = history(E1, 1, 'failed', { errorClass: 'harness_failed', finishedAt: '2026-10-28T04:00:00Z' })
