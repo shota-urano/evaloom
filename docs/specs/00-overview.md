@@ -251,25 +251,25 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q39 | 開始点で基準値を取るとき、テストが失敗した・レポートが無い場合の扱い | 決定（2026-11-01）: 失敗するテストがあっても記録して続ける。レポートも件数も取れなければ作業を始めず `failed`（`config_error`） | 10 |
 | Q40 | Runner が再起動した後に、保存済みの基準値のテスト ID 一覧を読む方法（`test_ids` の成果物の形式を含む） | 決定（2026-11-01）: 本人の判断は要らない。Runner と Gate をつなぐタスクで、既存の API の範囲で実装側が決め、仕様に書き足す。書き足した先: 10 の 3.3.3（形式と経路）、04 の 3.3.1（claim の応答の `worktree`） | 04, 05, 10 |
 | Q41 | Dashboard のエラー状況に通知失敗を出す方法（全 Execution の `notification_failed` を集めて返す API が無かった） | 決定（2026-11-01）: 本人用 API `GET /api/notification-failures` を追加する。全 Execution の `notification_failed` を新しい順に、共通のページネーションで返す。既読・解決済みの印は持たない。書き足した先: 01 の 5.1、12 の 5（応答の形）と 9（実装単位）、13 の 3.2 | 01, 12, 13 |
-| Q42 | Linear Webhook を受ける公開 HTTPS 経路の構成（requirements 6.6, 21章） | A: Cloudflare Tunnel 等の外向きトンネルを、Webhook 専用の待ち受け（本人用 API とは別ポート）にだけ向ける（推奨）。B: Tailscale Funnel。C: 外部リレーが保存し Control Plane が pull。どの案でも署名は Evaloom 自身が検証する | 15 |
-| Q43 | Mac mini の停止中などで取りこぼした Webhook を補うか | Control Plane の起動時と一定間隔で、対象 Team の ai-ready 付き Issue を API で照会し、linear_issue_links に無く、最後に受信できた時刻より後に更新された Issue だけを起動として扱う案。導入前から ai-ready が付いている Issue を一斉に起動しないため | 15 |
-| Q44 | Issue 本文のどこを受け入れ条件とみなすか（requirements 6.3） | 見出し「受け入れ条件」または「Acceptance Criteria」から、次の同じ階層以上の見出しまで。空白だけなら書かれていないとみなす案 | 15 |
-| Q45 | ルーティングや受け入れ条件で保留したタスクの持ち方と、解除の手順 | tasks.project_id を NULL 可にし、intake_block_cause に理由を持つ。Execution は作らない。保留中に Issue の更新が届いたら判定をやり直し、通れば同じタスクを起動する案（requirements 6.2「付いたまま更新されても再び起動しない」の例外になる） | 15 |
-| Q46 | 作成後の Issue の更新と、ai-ready の付け直しを、タスクにどう反映するか | 本文と受け入れ条件はタスク作成時に固定し、以後の編集は反映しない。付け直したとき、前のタスクが終端状態なら新しいタスクを作り、終端でないタスクがあれば何もしない案 | 15 |
-| Q47 | Linear Project を使ったルーティング（requirements 6.1 の任意機能）を Phase 2 で作るか | 作らない案。条件19・20 は Team + Label で満たせる | 15 |
-| Q48 | トリガーのラベル名（`ai-ready`）と実行先ラベルの接頭辞（`repo:`）を固定するか、設定にするか | requirements 6.2 は推奨例としているため、全体設定で持ち、既定値をこの2つにする案 | 15 |
-| Q49 | Linear の個人 API キーと署名シークレットの置き場所、どの Linear ユーザーのキーを使うか | `~/.config/evaloom/`（権限 0600）に置き、Control Plane だけが読む案（GitHub App の秘密鍵と同じ扱い）。循環防止で操作者を見分けるため、本人とは別の Evaloom 専用の Linear ユーザーのキーを使う案。キーの権限を絞れるかは実装時に Linear で確かめる | 15, 16 |
-| Q50 | requirements 17章の project_integrations を Phase 2 で作るか | 作らず、projects に linear_team_id と linear_routing_label の列を足す案。連携先が Linear だけのため | 02, 15 |
-| Q51 | Evaloom が Linear の Issue の状態（Workflow state）やラベルを変えるか | Phase 2 はコメントだけを返し、状態とラベルは変えない案。Linear 側の自動化を介した循環を避けるため | 16 |
-| Q52 | Linear にコメントを出す場面と、本文に載せない情報 | 受付時は出さず、保留・Blocked・承認待ち・完了・失敗・マージ・中止で出す。ログ本文、テストの出力、Runner のパスは載せない案（ワークスペースの他のメンバーも読めるため） | 16 |
-| Q53 | Phase 2 で承認を経て Evaloom が実際に行う操作 | PR マージだけ。ほかの承認対象操作は Phase 2 でも権限で拒否する案 | 17 |
-| Q54 | 承認後の PR マージを誰が、どの権限で行うか | Runner の Git Publisher が claim で「承認済みの操作」を受け取って行う。GitHub はルールセット B の Bypass に evaloom-publisher を足し、A（PR 必須・CI 必須）の Bypass は空のままにする案。Phase 1 で決めた「Evaloom はマージしない」（05, 09, 11）を書き換えることになる | 11, 17 |
-| Q55 | 承認の有効期限の既定値（requirements 15.8「承認ごとに設定する」） | 既定 24 時間、承認時に本人が変えられる案 | 17 |
-| Q56 | PR のマージ方式（merge commit / squash / rebase） | merge commit 案。テストした commit がそのまま履歴に残るため。Project ごとに変えるかは未定 | 17 |
-| Q57 | 本人が承認を却下したときのタスクの状態 | タスクを failed（理由 approval_rejected）にし、PR は開いたまま残す。本人は continue の再実行で直せる案 | 17 |
-| Q58 | 承認待ちの間に、本人が GitHub 上で直接マージ・クローズした場合 | Runner が承認待ちの PR を定期的に読み、承認を invalidated にする。マージならタスクを completed、クローズなら failed にする案 | 17 |
-| Q59 | `waiting_approval` と `merging` の Execution を同時実行の枠に数えるか | どちらも数えない案（Blocked と同じく、ハーネスのプロセスが動いていないため） | 04, 17 |
-| Q60 | 承認ポリシー（projects.approval_policy）の値の形（Q35 で Phase 2 に回した点） | `{ "version": 1, "mergePullRequest": "require_approval" }`。値は `require_approval` か `direct_push`。ほかの項目は持たせない。既定は `require_approval` とする案 | 03, 17 |
-| Q61 | 直接 push の判断に使う承認ポリシーを、claim の時点の値にするか、push 直前の値にするか | push 直前に Control Plane から読み直し、claim の時点と違えば安全側（PR を作る）を選ぶ案。読めなければ push しない | 11, 17 |
-| Q62 | 直接 push で、ベースブランチが先へ進んでいて fast-forward できない場合 | 強制 push せず、PR を作る経路へ切り替えて本人のレビューに回す案 | 11, 17 |
-| Q63 | 直接 push の Project で、GitHub のルールセットに App を例外として入れる手順（Q35 で Phase 2 に回した点） | force push と削除の禁止を Bypass 空のルールセット C に分け、A と B の Bypass に App を足す案。Bypass の種類は実機で確かめる | 11, 17 |
+| Q42 | Linear Webhook を受ける公開 HTTPS 経路の構成（requirements 6.6, 21章） | 決定（2026-11-06、15〜17 の確定時に A を採用）: A: Cloudflare Tunnel 等の外向きトンネルを、Webhook 専用の待ち受け（本人用 API とは別ポート）にだけ向ける（推奨）。B: Tailscale Funnel。C: 外部リレーが保存し Control Plane が pull。どの案でも署名は Evaloom 自身が検証する | 15 |
+| Q43 | Mac mini の停止中などで取りこぼした Webhook を補うか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Control Plane の起動時と一定間隔で、対象 Team の ai-ready 付き Issue を API で照会し、linear_issue_links に無く、最後に受信できた時刻より後に更新された Issue だけを起動として扱う案。導入前から ai-ready が付いている Issue を一斉に起動しないため | 15 |
+| Q44 | Issue 本文のどこを受け入れ条件とみなすか（requirements 6.3） | 決定（2026-11-06、15〜17 の確定時に案を採用）: 見出し「受け入れ条件」または「Acceptance Criteria」から、次の同じ階層以上の見出しまで。空白だけなら書かれていないとみなす案 | 15 |
+| Q45 | ルーティングや受け入れ条件で保留したタスクの持ち方と、解除の手順 | 決定（2026-11-06、15〜17 の確定時に案を採用）: tasks.project_id を NULL 可にし、intake_block_cause に理由を持つ。Execution は作らない。保留中に Issue の更新が届いたら判定をやり直し、通れば同じタスクを起動する案（requirements 6.2「付いたまま更新されても再び起動しない」の例外になる） | 15 |
+| Q46 | 作成後の Issue の更新と、ai-ready の付け直しを、タスクにどう反映するか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 本文と受け入れ条件はタスク作成時に固定し、以後の編集は反映しない。付け直したとき、前のタスクが終端状態なら新しいタスクを作り、終端でないタスクがあれば何もしない案 | 15 |
+| Q47 | Linear Project を使ったルーティング（requirements 6.1 の任意機能）を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らない案。条件19・20 は Team + Label で満たせる | 15 |
+| Q48 | トリガーのラベル名（`ai-ready`）と実行先ラベルの接頭辞（`repo:`）を固定するか、設定にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: requirements 6.2 は推奨例としているため、全体設定で持ち、既定値をこの2つにする案 | 15 |
+| Q49 | Linear の個人 API キーと署名シークレットの置き場所、どの Linear ユーザーのキーを使うか | 決定（2026-11-06、15〜17 の確定時に案を採用）: `~/.config/evaloom/`（権限 0600）に置き、Control Plane だけが読む案（GitHub App の秘密鍵と同じ扱い）。循環防止で操作者を見分けるため、本人とは別の Evaloom 専用の Linear ユーザーのキーを使う案。キーの権限を絞れるかは実装時に Linear で確かめる | 15, 16 |
+| Q50 | requirements 17章の project_integrations を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らず、projects に linear_team_id と linear_routing_label の列を足す案。連携先が Linear だけのため | 02, 15 |
+| Q51 | Evaloom が Linear の Issue の状態（Workflow state）やラベルを変えるか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Phase 2 はコメントだけを返し、状態とラベルは変えない案。Linear 側の自動化を介した循環を避けるため | 16 |
+| Q52 | Linear にコメントを出す場面と、本文に載せない情報 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 受付時は出さず、保留・Blocked・承認待ち・完了・失敗・マージ・中止で出す。ログ本文、テストの出力、Runner のパスは載せない案（ワークスペースの他のメンバーも読めるため） | 16 |
+| Q53 | Phase 2 で承認を経て Evaloom が実際に行う操作 | 決定（2026-11-06、15〜17 の確定時に案を採用）: PR マージだけ。ほかの承認対象操作は Phase 2 でも権限で拒否する案 | 17 |
+| Q54 | 承認後の PR マージを誰が、どの権限で行うか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Runner の Git Publisher が claim で「承認済みの操作」を受け取って行う。GitHub はルールセット B の Bypass に evaloom-publisher を足し、A（PR 必須・CI 必須）の Bypass は空のままにする案。Phase 1 で決めた「Evaloom はマージしない」（05, 09, 11）を書き換えることになる | 11, 17 |
+| Q55 | 承認の有効期限の既定値（requirements 15.8「承認ごとに設定する」） | 決定（2026-11-06、15〜17 の確定時に案を採用）: 既定 24 時間、承認時に本人が変えられる案 | 17 |
+| Q56 | PR のマージ方式（merge commit / squash / rebase） | 決定（2026-11-06、15〜17 の確定時に案を採用）: merge commit 案。テストした commit がそのまま履歴に残るため。Project ごとに変えるかは未定 | 17 |
+| Q57 | 本人が承認を却下したときのタスクの状態 | 決定（2026-11-06、15〜17 の確定時に案を採用）: タスクを failed（理由 approval_rejected）にし、PR は開いたまま残す。本人は continue の再実行で直せる案 | 17 |
+| Q58 | 承認待ちの間に、本人が GitHub 上で直接マージ・クローズした場合 | 決定（2026-11-06、15〜17 の確定時に案を採用）: Runner が承認待ちの PR を定期的に読み、承認を invalidated にする。マージならタスクを completed、クローズなら failed にする案 | 17 |
+| Q59 | `waiting_approval` と `merging` の Execution を同時実行の枠に数えるか | 決定（2026-11-06、15〜17 の確定時に案を採用）: どちらも数えない案（Blocked と同じく、ハーネスのプロセスが動いていないため） | 04, 17 |
+| Q60 | 承認ポリシー（projects.approval_policy）の値の形（Q35 で Phase 2 に回した点） | 決定（2026-11-06、15〜17 の確定時に案を採用）: `{ "version": 1, "mergePullRequest": "require_approval" }`。値は `require_approval` か `direct_push`。ほかの項目は持たせない。既定は `require_approval` とする案 | 03, 17 |
+| Q61 | 直接 push の判断に使う承認ポリシーを、claim の時点の値にするか、push 直前の値にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: push 直前に Control Plane から読み直し、claim の時点と違えば安全側（PR を作る）を選ぶ案。読めなければ push しない | 11, 17 |
+| Q62 | 直接 push で、ベースブランチが先へ進んでいて fast-forward できない場合 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 強制 push せず、PR を作る経路へ切り替えて本人のレビューに回す案 | 11, 17 |
+| Q63 | 直接 push の Project で、GitHub のルールセットに App を例外として入れる手順（Q35 で Phase 2 に回した点） | 決定（2026-11-06、15〜17 の確定時に案を採用）: force push と削除の禁止を Bypass 空のルールセット C に分け、A と B の Bypass に App を足す案。Bypass の種類は実機で確かめる | 11, 17 |
