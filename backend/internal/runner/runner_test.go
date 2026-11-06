@@ -32,7 +32,7 @@ func testConfig(t *testing.T, endpoint string) Config {
 		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
 		HarnessAuthFiles:        map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
 		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
-		Container:               ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		Container:               ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 		CommitAuthor:            CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
 		DefaultTimeouts:         DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
 	}

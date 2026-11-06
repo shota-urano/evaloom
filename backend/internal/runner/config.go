@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
 type Config struct {
@@ -35,6 +38,15 @@ type ContainerConfig struct {
 	ProxyImage  string            `json:"proxyImage"`
 	ProxyBinary string            `json:"proxyBinary"`
 	RuntimeEnv  map[string]string `json:"runtimeEnv,omitempty"`
+	CPUs        float64           `json:"cpus"`
+	MemoryMiB   int64             `json:"memoryMiB"`
+}
+
+// ResourceLimits converts validated Runner configuration to the common limits
+// for Harness, setup and test sandboxes. The stage supplies its own timeout
+// after applying Project overrides; CPU and memory are always Runner-owned.
+func (config ContainerConfig) ResourceLimits(timeout time.Duration) sandbox.ResourceLimits {
+	return sandbox.ResourceLimits{CPU: config.CPUs, MemoryBytes: config.MemoryMiB * (1 << 20), Time: timeout}
 }
 
 type CommitAuthorConfig struct {
@@ -72,7 +84,10 @@ func LoadConfig(path string) (Config, error) {
 	if !validConfigJSON(raw, reflect.TypeOf(Config{})) {
 		return Config{}, fmt.Errorf("runner: invalid config JSON")
 	}
-	config := Config{DefaultTimeouts: DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800}}
+	config := Config{
+		Container:       ContainerConfig{CPUs: 4, MemoryMiB: 8192},
+		DefaultTimeouts: DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+	}
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return Config{}, fmt.Errorf("runner: invalid config JSON")
 	}
@@ -187,6 +202,12 @@ func (config Config) validate() error {
 		if field.seconds <= 0 || uint64(field.seconds) > uint64((1<<63-1)/time.Second) {
 			return fmt.Errorf("runner: %s must be positive seconds within the supported duration range", field.name)
 		}
+	}
+	if config.Container.CPUs <= 0 || math.IsNaN(config.Container.CPUs) || math.IsInf(config.Container.CPUs, 0) {
+		return fmt.Errorf("runner: container.cpus must be a finite positive number")
+	}
+	if config.Container.MemoryMiB <= 0 || config.Container.MemoryMiB > math.MaxInt64/(1<<20) {
+		return fmt.Errorf("runner: container.memoryMiB must be positive MiB within the supported byte range")
 	}
 	return nil
 }
