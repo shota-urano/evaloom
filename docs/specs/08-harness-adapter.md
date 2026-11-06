@@ -1,5 +1,6 @@
 ---
 status: confirmed
+confirmed_rev: db34b14
 範囲: 共通契約に従う Adapter インターフェース、Capability、Codex / Claude Code Adapter、ハーネスの専用設定環境、Adapter の登録
 ---
 
@@ -49,6 +50,7 @@ type Capabilities struct {
 
 - 再開やストリーミングなどハーネスごとに異なる能力は Capability として宣言する。サポートしない能力を無理に共通化しない（requirements 9.3）。Phase 1 の Runner は Resume を使わない（中断した Execution は失敗として扱うため、requirements 8.3）。
 - `NativeInstructionFiles` は Context Builder が二重に渡さないために使う（[`07-context.md`](./07-context.md) 3.6）。
+- `SessionID` は、Runner がハーネス工程を抜ける報告（`running` からの遷移）に `harnessSessionId` として載せ、Control Plane が executions.harness_session_id に保存する（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、2026-11-06 追記）。
 
 ### 3.2 Adapter の登録（条件31）
 
@@ -118,8 +120,9 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 | 作業ディレクトリ | Sandbox 内の worktree |
 | 設定 | `CODEX_HOME` を 3.4 の作業用の設定コピーに向ける。codex-cli 0.163.0 は `CODEX_HOME` に書き込めないと起動しない（`failed to initialize in-process app-server client: Read-only file system`。2026-11-05 に [`14-security-tests.md`](./14-security-tests.md) 3.1 の実モデル試験で確認） |
 | Project Context | Codex は作業ディレクトリの `AGENTS.md` を読む。`NativeInstructionFiles` に `AGENTS.md` を宣言する（実装時に確認） |
-| ツール権限 | Harness の Tool Permissions と Profile の toolConfiguration を、CLI の設定に反映する |
+| ツール権限 | Harness の Tool Permissions と Profile の toolConfiguration を、CLI の設定に反映する。変換の規則は 3.8（案 Q72） |
 | 認証 | Q7（サブスクリプションか API キーか）と Q8（値をハーネスから見えないようにする方式）の結論に従う（[`09-sandbox.md`](./09-sandbox.md) 3.5） |
+| ネットワークの許可先（案 Q71） | ChatGPT のログインで使う `chatgpt.com:443`、`auth.openai.com:443`、`api.openai.com:443` を候補とする。採用する CLI の版で、この一覧だけで認証確認と本実行が通ることを [`14-security-tests.md`](./14-security-tests.md) 3.1 の実モデル試験で確かめてから確定する |
 
 ### 3.6 Claude Code Adapter
 
@@ -129,8 +132,9 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 | 作業ディレクトリ | Sandbox 内の worktree |
 | 設定 | `CLAUDE_CONFIG_DIR` を 3.4 の作業用の設定コピーに向ける。認証トークンの書き戻し（3.4）に、`.credentials.json` を書き込めるコピーが要るため |
 | Project Context | Claude Code が作業ディレクトリから読む指示ファイル（`CLAUDE.md` 等）を `NativeInstructionFiles` に宣言する。`AGENTS.md` を CLI が自分で読まない場合は、Context Builder が固定した `AGENTS.md` の内容を渡す（実装時に確認） |
-| ツール権限 | Harness の Tool Permissions と Profile の toolConfiguration を、CLI の許可設定に反映する |
+| ツール権限 | Harness の Tool Permissions と Profile の toolConfiguration を、CLI の許可設定に反映する。変換の規則は 3.8（案 Q72） |
 | 認証 | Codex と同じく Q7 / Q8 に従う |
+| ネットワークの許可先（案 Q71） | サブスクリプションのログインで使う `api.anthropic.com:443`、`console.anthropic.com:443`、`claude.ai:443` を候補とする。Codex と同じく実モデル試験で確かめてから確定する |
 
 ### 3.7 エラー分類の対応（requirements 9.5）
 
@@ -142,6 +146,20 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 | Runner が中止指示で止めた | `cancelled` |
 
 `test_failed` は Adapter ではなく Gate 2 が付ける（[`10-verification-gates.md`](./10-verification-gates.md)）。
+
+### 3.8 Tool Permissions から CLI の設定への変換（2026-11-06 追記、案 Q72）
+
+requirements は Tool Permissions の中身の形を定めていない（5.2 に項目名があるだけ）。Runner は claim の `profile.toolPermissions`（harnesses.tool_permissions、[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2）と Profile 定義の `toolConfiguration.allowedTools`（[`02-data-model.md`](./02-data-model.md) 4.3）を Adapter に渡し、Adapter が CLI の設定に変換する。変換は Adapter のパッケージの中に置く（3.2 の条件31の範囲）。Phase 1 の形と規則を次の案とする。
+
+| 項目 | 内容（案） |
+|---|---|
+| Tool Permissions の形 | `{ "deny": ["<CLI のツール名・規則>", ...] }`。`{}`（登録 API の既定値）は追加の禁止なしを表す。`deny` 以外のキーがあれば、その Execution は `config_error` で止める |
+| ツール名の書き方 | Adapter が使う CLI の表記のまま書く（例: Claude Code の `Bash(git push:*)`）。Evaloom 独自のツール名は作らない |
+| Claude Code | 設定 JSON を `{ "permissions": { "allow": <allowedTools>, "deny": <deny> } }` とする。`--permission-mode dontAsk` なので、`allow` に無い操作は確認を求めずに拒否され、`deny` は `allow` より優先される |
+| Codex | 採用した版（codex-cli 0.163.0）には、ツールごとの許可・禁止を表す設定が無い。`allowedTools` と `deny` がどちらも空のときだけ起動し、どちらかに値があれば表現できない権限として `config_error` で止める。実際の制限は Harness Sandbox（[`09-sandbox.md`](./09-sandbox.md)）で行う |
+| 変換できない値 | 未知のキー、配列でない値、空文字の要素は `config_error` とし、CLI を起動しない |
+
+Tool Permissions は本人だけが変更できる（[`03-registry.md`](./03-registry.md) 3.4）。Runner は claim の時点の値を使い、実行中に読み直さない。
 
 ## 4. 設定値・確定値
 
@@ -203,3 +221,5 @@ Evaloom から起動するハーネスには、Execution ごとに専用の設�
 - [ ] [Backend] 認証ファイルの受け渡しと書き戻し（3.4。Codex と Claude Code。同じハーネスの認証を使う Execution を同時に1本までにする）
   - 受け入れ基準: Codex Adapter と Claude Code Adapter が、保管場所の認証ファイルを作業用の設定コピーの対象パス（auth.json / .credentials.json）に置いてから CLI を起動し、Claude Code Adapter も CLAUDE_CONFIG_DIR を作業用の設定コピーに向ける; 保管場所に認証ファイルが無いと CLI を起動せず config_error になる; CLI がコピーの認証ファイルを書き換えた場合、Execution の終了時（成功・失敗・中止・タイムアウト）に保管場所の内容が書き換え後と一致する; JSON のオブジェクトとして読めない・64 KiB を超える・symlink の認証ファイルは書き戻さず、保管場所の内容が変わらない; 書き込みが途中で失敗しても保管場所の認証ファイルは書き戻し前の内容のまま読める; context_revisions に認証ファイルのパス・内容・ハッシュが保存されない; 同じハーネスの Execution を2本同時に始めると、2本目は1本目の書き戻しが終わるまで保管場所の認証ファイルを読まない; ロックを待っている Execution が中止指示で止まる; 開始時に読んだ認証の値と、認証確認の終了後に読み直した値（本実行で出力したもの）が Runner のログファイル・events に出ない; 通常のログ行は CLI の実行中にも逐次保存・配信される
 - [ ] （人間） Claude Code・Codex の認証方式と、各社規約での自動実行の可否を確認して決める（Q7）
+- [ ] [Backend] Tool Permissions の変換とモデル API の宛先（3.8、3.5・3.6 の許可先。Q71・Q72 の決定後。[`05-runner.md`](./05-runner.md) 9章の「起動コマンドから工程表への接続」の前提）
+  - 受け入れ基準: Claude Code Adapter が `allowedTools` と `deny` から `permissions.allow` / `permissions.deny` の設定 JSON を作り、CLI の起動引数に渡す; Codex Adapter が空の Tool Permissions と空の `allowedTools` で起動し、どちらかに値があると CLI を起動せず `config_error` になる; 未知のキーを持つ Tool Permissions で両 Adapter とも `config_error` になる; 各 Adapter が宣言した許可先だけが Harness Sandbox の `AllowedDestinations` に渡る; 許可先の一覧に `github.com` とそのサブドメインが入っていない

@@ -1,5 +1,6 @@
 ---
 status: confirmed
+confirmed_rev: 06bfbdc
 範囲: worktree の作成・再利用、開始点 SHA の記録、ブランチ作成、コピー許可リスト、セットアップコマンド、保持とクリーンアップ
 ---
 
@@ -33,7 +34,7 @@ status: confirmed
 
 ### 3.2 新規作成
 
-1. Runner が worktree の元になるリポジトリ（3.2.2）でリモートの Base Branch を取得する（`git fetch <remote> <baseBranch>`）。取得に使う認証情報は Trusted Runner の読み取り用で、worktree には置かない。
+1. Runner が worktree の元になるリポジトリ（3.2.2）でリモートの Base Branch を取得する（`git fetch <remote> <baseBranch>`）。取得に使う認証情報は Trusted Runner の読み取り用で、worktree には置かない。読み取り用の認証情報の供給方法は [`11-git-publisher.md`](./11-git-publisher.md) 3.6（案、Q70）。
 2. 取得した `<remote>/<baseBranch>` の commit SHA を開始点 SHA（base_sha）として記録する。
 3. ブランチ名を決め（3.2.1）、worktree を作る。
    ```
@@ -44,6 +45,8 @@ status: confirmed
 6. worktrees に行を作り（status=`active`）、Execution に base_sha・branch_name・worktree_id を書く。
 7. `worktree_ready` イベントを送る。
 8. セットアップコマンドを実行する（3.4）。
+
+6 と 7 は、Runner が result の `worktree` 報告（`action=created`）を1回送り、Control Plane が1つのトランザクションで行う（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、2026-11-06 追記）。worktree の ID は Runner が ULID で採番する。コピーの途中で失敗・中止した場合はこの報告を送らない。
 
 本人の通常のローカルリポジトリの作業ツリー（本人のチェックアウト）には触れない。Git 操作はすべて [`09-sandbox.md`](./09-sandbox.md) 3.6 の安全なラッパーで行う。
 
@@ -63,6 +66,8 @@ requirements 15.4 は「通常のローカルリポジトリを直接変更せ�
 | 通常 | `evaloom/<task-id>-<shortName>` | 確定（requirements 8.5） |
 | 最初からやり直す（mode=`fresh`） | `evaloom/<task-id>-<shortName>-r<n>`（n は fresh の通し番号） | 案（Q22、requirements 21章で詳細設計事項） |
 
+n は claim の `execution.freshNumber`（同じタスクで mode=`fresh` の Execution のうち seq がこの Execution 以下のものの数、[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2）を使う（2026-11-06 追記）。continue を含む `seq` で代用しない。worktree のディレクトリ名にも同じ n を付ける（`<task-id>-r<n>`）。
+
 同名のブランチがローカルかリモートにすでにある場合は作らずに `failed`（`config_error`）とする。既存ブランチを上書きしない。
 
 ### 3.3 再利用（mode=`continue`）
@@ -79,6 +84,8 @@ requirements 8.5「原則として、前回のブランチ・worktree・PR を�
    - 前回の worktree の準備（作り直し、コピー許可リストの配置、セットアップ）が最後まで終わった記録が無い
 5. 問題が無ければ、base_sha は前回の値を引き継ぎ、worktrees.status を `active` に戻す。
 6. worktree が削除済み（`cleaned`）でブランチが残っている場合は、そのブランチから worktree を作り直す。開始点 SHA は前回の値を使う。
+
+1〜4 の照合に使う前回の情報（worktrees.status、3 の最後の既知の SHA、準備が最後まで終わった記録の有無）は、claim の `worktree.status`・`expectedHeadSha`・`preparationComplete` で受け取る（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2、2026-11-06 追記）。6 の作り直しでは、Git がディレクトリを作る前に result の `worktree` 報告（`action=restore_started`）を送り、コピー許可リストの配置を終えたら `action=restored` を送る（同 3.4.1）。照合に通った後の関連付けは、既存の再利用の報告（`worktreeId`・`branchName`・`baseSha`）で行う。
 
 再利用の確認では、判断に迷う状態を自動で直さない。上の 4 に挙げたものに限らず、前回の状態と食い違う点があれば `blocked`（cause=`git_state`）にして本人に確認を求める。
 
@@ -100,7 +107,7 @@ Test Sandbox には本物の秘密情報を渡さない。依存関係の取得�
 
 1. Project の copy_allowlist の各パスについて、本人のローカルリポジトリから worktree の同じ相対パスへコピーする。
 2. コピーするのは通常ファイルだけ。シンボリックリンク、ディレクトリ、許可リスト外のファイルはコピーしない。
-3. コピー元が無いパスは飛ばし、`log` イベントで警告を出す。
+3. コピー元が無いパスは飛ばし、`log` イベントで警告を出す（`stream=runner`、`sourceId=worktree-copy-missing/<許可リスト内の順番>`。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1）。
 4. コピーしたファイルの相対パスと SHA-256 を worktrees.copied_files に記録する。Gate 3 の作業ツリー確認と、3.3 の未コミット確認で除外するためである。
 
 許可リストに載せてよいのは秘密情報を含まないファイルだけである。テストに値が必要なら、テスト専用のダミーの値を使う（requirements 8.6, 15.6）。
@@ -131,7 +138,8 @@ Test Sandbox には本物の秘密情報を渡さない。依存関係の取得�
 
 ## 5. インターフェース
 
-- 報告: `POST /api/executions/{id}/result`（base_sha、branch_name、worktree の情報）、`POST /api/executions/{id}/events`（`worktree_ready`、`log`）
+- 報告: `POST /api/executions/{id}/result`（base_sha、branch_name、worktree の情報。`worktree_ready` イベントは result の `worktree` 報告を受けた Control Plane が記録する。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1）、`POST /api/executions/{id}/events`（`log`）
+- 受け取り: claim の `worktree`（`status`・`expectedHeadSha`・`preparationComplete` を含む）と `execution.freshNumber`（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2）
 - テーブル: worktrees、executions、test_runs（[`02-data-model.md`](./02-data-model.md)）
 
 ## 6. エラー処理
@@ -140,7 +148,7 @@ Test Sandbox には本物の秘密情報を渡さない。依存関係の取得�
 |---|---|
 | fetch の失敗 | `failed`（`config_error`）。認証情報の値はログに出さない |
 | 同名ブランチがすでにある | `failed`（`config_error`） |
-| worktree のパスが Worktree Root の外に解決された | `failed`（`config_error`）。audit_logs に記録 |
+| worktree のパスが Worktree Root の外に解決された | `failed`（`config_error`）。audit_logs に記録（`failed` の報告に `audit.action=worktree.path_rejected` を付ける。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1） |
 | 再利用時に未コミットの変更がある、HEAD が想定と違う | `blocked`（`git_state`） |
 | セットアップの失敗 | `failed`（`config_error`） |
 | セットアップのタイムアウト | `timed_out` |

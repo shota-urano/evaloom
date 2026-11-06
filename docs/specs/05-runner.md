@@ -1,5 +1,6 @@
 ---
 status: confirmed
+confirmed_rev: 430ae21
 範囲: Local Runner の pull ループ、heartbeat、Execution の実行手順、ログ収集と機密情報除外、タイムアウト、キャンセル
 ---
 
@@ -51,7 +52,7 @@ loop:
 | # | 工程 | Execution 状態 | 詳細仕様 |
 |---|---|---|---|
 | 1 | Project のパスを再検証する | `preparing` | [`03-registry.md`](./03-registry.md) 3.2 |
-| 2 | 前回の PR の状態を確認する（mode=`continue` で PR があるとき） | `preparing` | [`11-git-publisher.md`](./11-git-publisher.md) 3.4 |
+| 2 | 前回の PR の状態を確認する（タスクに PR が記録されているとき。mode は `continue` と `fresh` の両方。2026-11-06 修正、[`11-git-publisher.md`](./11-git-publisher.md) 3.4 の表が `fresh` の列を持つため） | `preparing` | [`11-git-publisher.md`](./11-git-publisher.md) 3.4 |
 | 3 | worktree を作成または再利用し、開始点 SHA を記録する | `preparing` | [`06-worktree.md`](./06-worktree.md) |
 | 4 | 適用対象の `AGENTS.md` と設定を固定し、Control Plane に送る | `preparing` | [`07-context.md`](./07-context.md) |
 | 5 | Control Plane から Execution Context を受け取る | `preparing` | [`07-context.md`](./07-context.md) |
@@ -119,6 +120,34 @@ HarnessResult の `usage`（取れる場合のトークン数）と、Execution 
 
 requirements 15.3 の承認対象操作（本番デプロイ、PR マージ、外部メール送信、重要ファイル削除、認証・権限変更、共通契約・評価基準・中央セキュリティポリシーの変更）を行うコードを Runner に持たせない。Git Publisher が使う GitHub の認証情報にもマージの権限を与えない（[`11-git-publisher.md`](./11-git-publisher.md) 3.5）。
 
+### 3.9 工程表を組み立てるときの入力と報告先（2026-11-06 追記）
+
+起動コマンドから 3.3 の工程表へ実装済みの部品をつなぐとき（9章の「起動コマンドから工程表への接続」）、部品が外から受け取る値と、Runner が Control Plane へ送る記録の経路を次の表で決める。Runner は管理 DB を開かない（[`01-architecture.md`](./01-architecture.md) 3.1）。Runner 用 API のエンドポイントは増やさず、claim の応答と result の要求に項目を足す（Q40 と同じ方針）。
+
+表の「状態」が「案」の行は、本人が 00-overview.md の Q 表で決めるまで実装しない。案の行が未決のあいだ、その値を Profile の別の値や Execution の seq などで推測して埋めない。値が無いときは `failed`（`config_error`）で止める。
+
+| 境界 | Runner が使う値・送る記録 | 書いた場所 | 状態 |
+|---|---|---|---|
+| worktree とコピー一覧の登録 | 新規作成した worktree の ID・パス・ブランチ・開始点 SHA・コピー一覧を、result の `worktree` 報告（`action=created`）で送る。Control Plane が worktrees の行、Execution の関連付け、`worktree_ready` イベントを1つのトランザクションで保存する。コピー元が無い警告は既存の `log` イベントで送る | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、[`06-worktree.md`](./06-worktree.md) 3.2・3.5 | 決定 |
+| 監査記録（パスの拒否、push 後のリモート SHA の不一致） | `failed` の報告に `audit` を付け、Control Plane が状態の遷移と同じトランザクションで audit_logs に書く | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、[`06-worktree.md`](./06-worktree.md) 6章、[`11-git-publisher.md`](./11-git-publisher.md) 6章 | 決定 |
+| worktree の再利用に要る情報 | 前回の worktree の status、最後の既知の SHA、準備が終わった記録の有無を claim の `worktree` で受け取る。作り直しの開始と、作り直した後のコピー一覧は result の `worktree` 報告（`action=restore_started` / `restored`）で送る | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1・3.4.1、[`06-worktree.md`](./06-worktree.md) 3.3 | 決定 |
+| fresh の通し番号 | claim の `execution.freshNumber` を使う。`seq` で代用しない | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1、[`06-worktree.md`](./06-worktree.md) 3.2.1 | 決定（番号の付け方は Q22 の案に従う） |
+| 前回の PR | claim の `pullRequests`（タスクの過去の PR の一覧）を使い、工程2で GitHub から状態を読む | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1、[`11-git-publisher.md`](./11-git-publisher.md) 3.4.2 | 案（Q69） |
+| Sandbox の資源上限 | 4.1 の `container.cpus` と `container.memoryMiB` | 4.1、[`09-sandbox.md`](./09-sandbox.md) 3.2 | 案（Q68） |
+| Sandbox 内のシェルと環境変数 | セットアップ・テストのコマンドは `/bin/sh -c <コマンド>` で起動する。Runner が足す環境変数は、Adapter と Git の作者情報のものだけとする | [`09-sandbox.md`](./09-sandbox.md) 5章 | 決定 |
+| テストレポートの形式名 | `projects.test_report_format` の値 `junit_xml` を JUnit XML として読む | [`09-sandbox.md`](./09-sandbox.md) 5章、[`10-verification-gates.md`](./10-verification-gates.md) 3.3.2 | 決定 |
+| setup の許可宛先 | claim の `project.setupAllowedHosts` を使う。空なら setup もネットワークを全遮断する | [`02-data-model.md`](./02-data-model.md) projects、[`09-sandbox.md`](./09-sandbox.md) 3.3 | 案（Q73） |
+| ハーネスのモデル API の宛先 | Adapter ごとにパッケージ内の定数で持つ | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.5・3.6、[`09-sandbox.md`](./09-sandbox.md) 3.3 | 案（Q71） |
+| ハーネスリポジトリのパス | claim の `profile.harnessRepoPath`（harnesses.repo_path）を使う | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1、[`07-context.md`](./07-context.md) 3.3 | 決定 |
+| CLI の設定ディレクトリの環境変数 | Codex は `CODEX_HOME`、Claude Code は `CLAUDE_CONFIG_DIR` | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.5・3.6 | 決定（既存） |
+| Tool Permissions の取得と CLI 設定への変換 | claim の `profile.toolPermissions`（harnesses.tool_permissions）を受け取り、Adapter が変換する | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1、[`08-harness-adapter.md`](./08-harness-adapter.md) 3.8 | 案（Q72） |
+| push 直後の pushed_sha と PR 情報の保存 | `publishing` のまま result で `pushedSha` を送り、保存の応答を受けてから PR を作る。PR の作成・確認の後に `prNumber`・`prUrl`・`prCreated` を送る | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、[`11-git-publisher.md`](./11-git-publisher.md) 3.2・3.3 | 決定 |
+| Blocked から続行したときの情報 | claim の `resume`（本人が続行を選んだ Block、この Execution の Gate の結果、作業概要）を使う。PR 本文のハーネスの版は Profile 定義の `harnessVersion` を使う | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1、[`11-git-publisher.md`](./11-git-publisher.md) 3.3 | 決定（作業概要の取得だけ案、Q74） |
+| 非公開 Project の読み取り用認証 | 同じ GitHub App の、権限を読み取りに絞ったインストールアクセストークン | [`11-git-publisher.md`](./11-git-publisher.md) 3.6 | 案（Q70） |
+| Harness のセッション ID | ハーネス工程を抜ける報告（`running` からの遷移）に既存の `harnessSessionId` を載せる | [`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、[`08-harness-adapter.md`](./08-harness-adapter.md) 3.1 | 決定 |
+
+キャンセルの猶予とランタイムの制御コマンドの待機上限は、4.1 の最後の段落どおり実装の定数とする（設定に出さない）。
+
 ## 4. 設定値・確定値
 
 | 項目 | 値 | 出典 |
@@ -130,6 +159,7 @@ requirements 15.3 の承認対象操作（本番デプロイ、PR マージ、�
 | 中断・失敗時の worktree | 保持する | requirements 8.3 |
 | push の条件 | 必須の検証がすべて成功したときだけ | requirements 8.5 |
 | タイムアウト値 | Project の timeouts、無ければ 4.1 の `defaultTimeouts`（setup 15分、ハーネス 60分、テスト 30分） | Q15（2026-11-06 決定） |
+| Sandbox の資源上限 | 1つあたり CPU 4、メモリ 8 GiB（4.1 の `container.cpus` / `container.memoryMiB` の既定値）。案 | Q68 |
 | 隔離方式 | Phase 1 ではすべての Project をコンテナで隔離する。Xcode 等が要る Project は登録しない（[`09-sandbox.md`](./09-sandbox.md) 3.4 の決定。Tart の実装を起票するまで対象外） | Q1（2026-11-06 確認） |
 
 ### 4.1 Runner の設定ファイル（2026-11-06 決定）
@@ -154,6 +184,8 @@ Runner の設定は、起動時に `-config` で渡す JSON ファイル1つに�
 | `container.proxyImage` | 文字列 | 必須 | ネットワークの許可先を絞るプロキシのイメージ | [`09-sandbox.md`](./09-sandbox.md) 3.3 |
 | `container.proxyBinary` | パス | 必須 | プロキシのコンテナに入れる補助プログラム（Linux 用にビルド済みのもの） | [`09-sandbox.md`](./09-sandbox.md) 3.3 |
 | `container.runtimeEnv` | オブジェクト（名前 → 値） | 任意 | ランタイムの CLI だけに渡す環境変数（例 `DOCKER_HOST`）。コンテナには渡さない | [`09-sandbox.md`](./09-sandbox.md) |
+| `container.cpus` | 数値 | 任意（既定 4）。案（Q68） | Harness Sandbox と Test Sandbox の1つあたりの CPU 数の上限。0 以下は起動時にエラー | [`09-sandbox.md`](./09-sandbox.md) 3.2、Q68 |
+| `container.memoryMiB` | 整数（MiB） | 任意（既定 8192）。案（Q68） | 同じくメモリの上限。swap への超過は許さない。0 以下は起動時にエラー | [`09-sandbox.md`](./09-sandbox.md) 3.2、Q68 |
 | `commitAuthor.name` | 文字列 | 必須 | ハーネスが作る commit の作者名。専用設定環境の Git 設定で与える | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.3 |
 | `commitAuthor.email` | 文字列 | 必須 | 同じくメールアドレス。GitHub App の bot（evaloom-publisher[bot]）の noreply アドレスを入れる運用を推奨する | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.3 |
 | `defaultTimeouts.setupSec` | 整数（秒） | 任意（既定 900） | setup の上限時間。Project の timeouts.setupSec が優先する | Q15 |
@@ -230,6 +262,10 @@ heartbeat の要求と応答（案）:
 - [ ] [Backend] Runner の設定ファイルを 4.1 の表どおりに読む（キーの追加、必須・既定値・未知キーの検査、パスの検査）
   - 受け入れ基準: 4.1 の必須キーが1つでも欠けた設定、表に無いキーを含む設定、相対パスを含む設定で、`evaloom-runner` が起動時にエラーで終わることをテストで確かめる; `defaultTimeouts` を省いた設定で 900 / 3600 / 1800 秒が使われる; `harnessAuthFiles` のパスが `dataDir` の外にある設定を起動時に拒否する
 
-- [ ] [Backend] 起動コマンドから工程表への接続（3.3 の工程1〜13 に、実装済みの部品を設定ファイルの値で組み立てて渡す）
-  - 受け入れ基準: `backend/cmd/evaloom-runner` が claim した Execution を工程1から13まで実行し、起動時の「execution stages are not implemented」の表示が無くなる; ダミーのハーネス（`adapter/dummy`）とローカルの bare リポジトリを使った結合テストで、claim から `succeeded` の報告と push までを1本通す（GitHub の PR 作成はテスト用の HTTP サーバーで受ける）; 工程の途中で失敗させたテストで、以降の工程を行わず worktree を残す; Execution の Harness ID が `harnessAuthFiles` に無いとき、ハーネスを起動せず `config_error` で止まる; タイムアウトに Project の timeouts、無ければ `defaultTimeouts` が使われる
+- [ ] [Backend] Sandbox の資源上限の設定キー（4.1 の `container.cpus`、`container.memoryMiB`。Q68 の決定後）
+  - 受け入れ基準: 2つのキーを省いた設定で、Harness Sandbox と Test Sandbox の起動引数に CPU 4・メモリ 8192 MiB が渡る; 値を指定するとその値が渡る; 0 以下の値で `evaloom-runner` が起動時にエラーで終わる
+
+- [ ] [Backend] 起動コマンドから工程表への接続（3.3 の工程1〜13 に、実装済みの部品を設定ファイルの値と 3.9 の入力で組み立てて渡す）
+  - 前提: 次の実装単位が先に終わっていること。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 9章の「claim の応答の追加項目」と「result の工程内報告と監査の付記」、[`08-harness-adapter.md`](./08-harness-adapter.md) 9章の「Tool Permissions の変換とモデル API の宛先」（Q71・Q72）、[`11-git-publisher.md`](./11-git-publisher.md) 9章の「読み取り用のインストールアクセストークン」（Q70）、この章の「Sandbox の資源上限の設定キー」（Q68）。`pullRequests` を使う工程2は Q69 の決定が要る。[`03-registry.md`](./03-registry.md) 9章の「setup の許可宛先の登録」（Q73）は前提にしない（決まるまで claim が空配列を返し、setup はネットワークを全遮断して動く）。3.9 の表で「案」の行は、対応する Q が決まってから実装する
+  - 受け入れ基準: `backend/cmd/evaloom-runner` が claim した Execution を工程1から13まで実行し、起動時の「execution stages are not implemented」の表示が無くなる; 起動コマンドが組み立てる依存だけを使い（テスト用の記録実装や `nil` の境界を渡さない）、実際の Control Plane のハンドラと SQLite に対して、ダミーのハーネス（`adapter/dummy`）とローカルの bare リポジトリで claim から `succeeded` の報告と push までを1本通す結合テストがある。テストで置き換えてよいのは、コンテナのランタイム（偽 runtime）、Adapter（`adapter/dummy`）、GitHub の HTTP API とトークン発行（テスト用の HTTP サーバー）だけとする; そのテストの後、SQLite に worktrees の行（コピー一覧を含む）、`worktree_ready`・`pushed`・`pr_created` のイベント、executions の base_sha・branch_name・worktree_id・harness_session_id・verified_sha・pushed_sha・pr_number・pr_url、usage_records の行が残っている; テスト用の GitHub サーバーが PR 作成要求を受けた時点で、SQLite の pushed_sha が verified_sha と同じ値で保存済みである; mode=`fresh` の Execution（タスクに `fresh` が1回目）で、ブランチ名が `-r1` で終わる; 前回の PR が開いている mode=`fresh` の Execution で、工程2で `blocked`（`git_state`）になり worktree を作らない; resume_point=`gate3` の Execution で工程11から始まり、PR 本文に本人が続行を選んだ Block の原因が入る; worktree のパスが Worktree Root の外に解決される設定で `failed`（`config_error`）になり、audit_logs に行が残る; 工程の途中で失敗させたテストで、以降の工程を行わず worktree を残す; Execution の Harness ID が `harnessAuthFiles` に無いとき、ハーネスを起動せず `config_error` で止まる; タイムアウトに Project の timeouts、無ければ `defaultTimeouts` が使われる
   - 受け入れ基準: 完了した Execution ごとに usage_records に実行時間が記録される; トークン数が取れない Adapter では NULL になる

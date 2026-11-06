@@ -101,7 +101,7 @@ Evaloomを以下のレイヤーで構成する。
 | 初期実行ホスト    | Mac mini M4 Pro            |
 | バックグラウンド起動 | launchd                    |
 | 初期利用範囲     | Mac mini本体からの接続のみ（ループバック）。別の端末・遠隔からの接続は認証導入後（15.5） |
-| Webhook受信   | 署名検証付きの公開HTTPSエンドポイント経由（Mac miniのポートは直接公開しない） |
+| Linear取り込み | EvaloomからLinear APIへ一定間隔で照会する（ポーリング）。Mac miniのポートは公開しない |
 | 通知         | Linearコメント＋macOS通知（将来Slack・スマートフォンを追加可能にする） |
 
 
@@ -407,9 +407,9 @@ Linear Projectを利用したルーティングは任意機能として残す。
 
 ## 6.3 ルーティング処理
 
-1. Linear Webhook受信
-2. 署名検証
-3. イベント重複排除
+1. Linear APIへの定期照会（ポーリング）
+2. `ai-ready`の付与・取り外しの検出（前回の照会結果との差分）
+3. 重複排除（同じ付与から二重にタスクを作らない）
 4. Team ID確認
 5. Issue Label取得
 6. 登録済みProject IDとの照合
@@ -447,8 +447,9 @@ Linearの料金枠・アーカイブ仕様は運用開始時に公式情報と�
 ## 6.6 接続方式
 
 - GraphQL APIの読み書きには個人APIキーを使う（Phase 2）。
-- Webhookの受信には、APIキーとは別の署名シークレットを使って署名を検証する。
-- Mac miniのローカルHTTPポートは直接公開しない。署名検証付きの公開HTTPSエンドポイントを経由してイベントを受け取る。
+- Linearの変化は、EvaloomがGraphQL APIへ一定間隔で照会して取得する（ポーリング）。Webhookは使わない。
+- Mac miniのローカルHTTPポートは公開しない。Linearとの通信は、Mac miniから外へ向かうHTTPSだけで行う。
+- 照会の間隔だけ取り込みが遅れることを許容する。Mac miniが止まっている間に付いた`ai-ready`は、再開後の照会で取り込む。
 
 ---
 
@@ -563,7 +564,7 @@ Evaloomから起動するハーネスには、専用の設定環境を設ける�
 初期対応：
 
 - React管理画面からの手動指示
-- Linear Webhook
+- Linear（APIの定期照会）
 
 Phase 1で扱うのは開発タスク（コード変更とPR作成）だけとする。調査・文書タスクは後のPhaseで扱う。
 
@@ -1091,7 +1092,7 @@ Evaluation Agent（10.4）はReviewer分野に含める。
 
 ## 15.2 必須対策
 
-- Webhook署名検証
+- 外部からの受信口を公開しない（LinearはAPIの定期照会で取得する）
 - イベント重複排除
 - 循環トリガー防止
 - 許可済み実行パス
@@ -1374,7 +1375,6 @@ Docker等による隔離は有力だが、コンテナで実行するだけで�
 | GET    | /api/tasks/{id}              | タスク詳細               |
 | POST   | /api/tasks/{id}/cancel       | タスク中止               |
 | GET    | /api/executions/{id}/events  | SSE実行イベント           |
-| POST   | /api/webhooks/linear         | Linearイベント受信        |
 | GET    | /api/evaluations             | 評価結果                |
 | GET    | /api/improvements            | 改善候補                |
 | POST   | /api/approvals/{id}/decision | 承認・却下               |
@@ -1416,7 +1416,7 @@ APIには共通の認証・認可・入力検証・エラー規約・ページ�
 
 ## Phase 2：Linear連携
 
-- Webhook受信（公開HTTPSエンドポイント経由・署名検証）
+- Linear APIの定期照会（ポーリング）による`ai-ready`付きIssueの取得
 - Team + Labelルーティング
 - 自動タスク作成
 - 対象プロジェクトでの実行
@@ -1539,7 +1539,7 @@ APIには共通の認証・認可・入力検証・エラー規約・ページ�
 - ハーネスの専用設定環境の作り方（7.5）
 - モデルAPIの認証情報をハーネスから見えないようにする方式（15.6）
 - Claude Code・Codexの認証方式（サブスクリプションかAPIキーか）と、各社規約での自動実行の可否
-- Linear Webhookを受ける公開HTTPSエンドポイントの構成（6.6）
+- Linear APIの照会の間隔と、レート制限への収め方（6.6）
 - macOS通知の実現方式（8.8）
 - 修正時間の計測方法（12.5）
 - 改善実験の件数条件（Phase 4開始時、12.4）

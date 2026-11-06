@@ -1,5 +1,6 @@
 ---
 status: confirmed
+confirmed_rev: e73237a
 範囲: 手動タスク作成、タスクと Execution の状態遷移、claim と同時実行制御、再起動時の回収、再実行、中止、Blocked からの続行
 ---
 
@@ -87,7 +88,7 @@ Runner は空きがあるときに claim を呼ぶ。Control Plane は1つの書
 
 `blocked` の Execution はアクティブに数えない（Q23 案）。Blocked の間はプロセスが動いていないためである。worktree は保持する。
 
-#### 3.3.1 claim の応答（案）
+#### 3.3.1 claim の応答（案。工程表の接続のための追加項目は 3.3.2）
 
 ```json
 {
@@ -111,11 +112,80 @@ Runner は空きがあるときに claim を呼ぶ。Control Plane は1つの書
 
 `previous` は同じタスクの直前の Execution の情報で、mode=`continue` のときに使う（[`06-worktree.md`](./06-worktree.md), [`11-git-publisher.md`](./11-git-publisher.md)）。
 
+#### 3.3.2 工程表の接続のために足す項目（2026-11-06 追記）
+
+Runner が工程1〜13を組み立てるときに要る値（[`05-runner.md`](./05-runner.md) 3.9）を、上の応答に次のとおり足す。Runner 用 API のエンドポイントは増やさない（Q40 と同じ方針）。値はすべて claim のトランザクションの中で読む。ただし `execution.resumeHarnessSummary` は成果物を読むため、`worktree.baseline.testIds` と同じく確定後に読む。
+
+```json
+{
+  "execution": {
+    "freshNumber": 1,
+    "resumeHeadSha": "...", "harnessHeadSha": "...", "verifiedSha": "...", "verifyRun": { "...": "test_runs kind=verify" },
+    "resumeBlock": { "id": "...", "cause": "gate2_missing_tests", "headSha": "...", "gateResultId": "...", "detail": {}, "decidedAt": "..." },
+    "resumeGateResults": [ { "id": "...", "gate": 2, "result": "blocked", "baseSha": "...", "targetSha": "...", "findings": [] } ],
+    "resumeHarnessSummary": "..."
+  },
+  "project": { "setupAllowedHosts": ["registry.npmjs.org:443"] },
+  "profile": { "harnessRepoPath": "/Users/.../harness-repo", "toolPermissions": {} },
+  "pullRequests": [ { "number": 12, "branchName": "evaloom/task-001-add-login", "seq": 2 } ],
+  "worktree": { "setupStatus": "succeeded", "status": "retained", "expectedHeadSha": "...", "preparationComplete": true }
+}
+```
+
+| 項目 | 内容 | 出典・状態 |
+|---|---|---|
+| `execution.freshNumber` | mode=`fresh` のとき、同じタスクで mode=`fresh` の Execution のうち seq がこの Execution 以下のものの数（1以上）。mode=`continue` では null。同じ Execution を再 claim しても値は変わらない | [`06-worktree.md`](./06-worktree.md) 3.2.1（Q22 の案「n は fresh の通し番号」）から導いた。決定 |
+| `execution.resumeHeadSha`、`harnessHeadSha`、`verifiedSha`、`verifyRun` | 既存の実装が返している項目。resume_point があるとき、同じ Execution の値を返す。それ以外は null | 既存（evaloom の claim API の実装）をこの節を正本として追記する |
+| `execution.resumeBlock` | resume_point があるとき、本人が `continue` を選んだ execution_blocks の行（`decision=continue` のうち最新）。Runner は再開時に HEAD が `headSha` と一致することを確かめ（3.8 の4）、PR 本文に原因と detail を載せる（[`11-git-publisher.md`](./11-git-publisher.md) 3.3）。それ以外は null | 3.8、11 の 3.3 から導いた。決定 |
+| `execution.resumeGateResults` | resume_point があるとき、同じ Execution の gate_results（作成順）。PR 本文の Gate の結果に使う。それ以外は空配列 | 11 の 3.3 から導いた。決定 |
+| `execution.resumeHarnessSummary` | resume_point があるとき、同じ Execution で Runner が登録した `harness_output` の成果物から読んだ作業概要。読めなければ null | 案（Q74） |
+| `project.setupAllowedHosts` | projects.setup_allowed_hosts（`host:port` の配列）。Q73 が決まるまでは常に空配列を返す（setup もネットワークを全遮断する。安全側） | 案（Q73） |
+| `profile.harnessRepoPath` | 割り当てた Harness の harnesses.repo_path。Runner はこのリポジトリから Profile の commit SHA の Harness Context を読む（[`07-context.md`](./07-context.md) 3.3） | 02 の harnesses、07 の 3.3 から導いた。決定 |
+| `profile.toolPermissions` | 割り当てた Harness の harnesses.tool_permissions（JSON オブジェクト）。claim の時点の値を返す | 03 の 3.7 から導いた。決定。中身の形と変換は案（Q72） |
+| `pullRequests` | 同じタスクで seq がこの Execution より小さい Execution の pr_number（null 以外）を、番号ごとに1件にまとめ、seq の新しい順に並べたもの。`branchName` と `seq` はその PR を記録した最新の Execution の値。無ければ空配列 | 案（Q69）。[`11-git-publisher.md`](./11-git-publisher.md) 3.4.2 |
+| `worktree.status` | worktrees.status（`active` / `retained` / `cleaned`） | [`06-worktree.md`](./06-worktree.md) 3.3 の1・6から導いた。決定 |
+| `worktree.expectedHeadSha` | 直前の Execution の最後の既知の SHA（pushed_sha、無ければ harness_head_sha、無ければ base_sha） | 06 の 3.3 の3。決定 |
+| `worktree.preparationComplete` | その worktree の最後の作り直しの開始（3.4.1 の `restore_started`）より後に、同じパス・ブランチ・開始点 SHA の `worktree_ready` イベントがあり、かつ worktrees.setup_status が `succeeded` であるか、setup_status が `pending` で「setup 不要」の記録（3.4.1）が同じトランザクションで残っていれば true。それ以外は false | 06 の 3.3 の4（準備が最後まで終わった記録）から導いた。決定 |
+
+`worktree` が null のとき（前回までに worktree が無い）、`status`・`expectedHeadSha`・`preparationComplete` も返さない。
+
 ### 3.4 Runner からの報告
 
 - `POST /api/executions/{id}/events`: ログ・進行イベントを execution_events に追加する。
 - `POST /api/executions/{id}/result`: 工程の区切りごとに状態の遷移を要求する。Control Plane は 3.2 の表に従って遷移を検証し、合わない要求は 409 で拒否する。
 - 終端状態（`succeeded` / `failed` / `cancelled` / `timed_out`）または `blocked` に入ったら、通知を要求する（[`12-notification.md`](./12-notification.md)）。
+
+#### 3.4.1 result の工程内報告と監査の付記（2026-11-06 追記）
+
+工程の途中で、状態を変えずに記録だけを保存する報告がある。既存の実装は、`preparing` のまま開始点 SHA・基準値・worktree の再利用を送る報告（`fromStatus` と `status` が同じ値）を受け付けている。工程表の接続（[`05-runner.md`](./05-runner.md) 3.9）のため、同じ形の報告を次のとおり足す。管理 DB に書くのは Control Plane だけで（[`01-architecture.md`](./01-architecture.md) 3.1）、[`06-worktree.md`](./06-worktree.md) 5章と [`11-git-publisher.md`](./11-git-publisher.md) 5章がこれらの記録の報告先を result としているため、決定とする。
+
+共通の約束:
+
+- 認証、Execution の所有者の照合、`BEGIN IMMEDIATE` のトランザクション、監査記録（`runner:<id>/execution.result/...`）は既存の result と同じとする。
+- 1回の報告に載せてよいのは、下の表の1行ぶんの項目だけとする。ほかの項目（Gate の結果、`errorClass` など）との同時送信は 400 とする。
+- 同じ内容の再送は 204 を返し、行やイベントを増やさない。保存済みの値と違う内容の再送は 409 とする。
+- 状態は変えない。`status_changed` イベントも通知の要求も作らない。
+
+| 報告 | `fromStatus` = `status` | 要求に載せる項目 | Control Plane が同じトランザクションで行うこと |
+|---|---|---|---|
+| worktree の新規作成 | `preparing` | `worktree: { "action": "created", "id": "<ULID。Runner が採番>", "path", "branchName", "baseSha", "copiedFiles": [{ "path", "sha256" }] }` | worktrees に行を作る（status=`active`、setup_status=`pending`、Task・Project・Runner はこの Execution のもの）。executions の worktree_id・branch_name を書く。`baseSha` は保存済みの executions.base_sha と一致しなければ 422。`worktree_ready` イベント（`path`、`branch`、`baseSha`）を記録する。Project の setup_command が空なら、「setup 不要」の `log` イベント（`sourceId=worktree-setup-not-required/<worktree-id>`、`stream=runner`）も記録する |
+| 作り直しの開始 | `preparing` | `worktree: { "action": "restore_started", "id": "<既存の worktree ID>" }` | worktree が直前の Execution のもの（既存の再利用の報告と同じ照合）であることを確かめる。copied_files を空配列、setup_status を `pending` にする。`log` イベント（`sourceId=worktree-restore/<worktree-id>`、`stream=runner`）を記録する |
+| 作り直しの完了 | `preparing` | `worktree: { "action": "restored", "id": "<既存の worktree ID>", "path", "branchName", "baseSha", "copiedFiles": [...] }` | `path`・`branchName`・`baseSha` が保存済みの行と一致することを確かめ（不一致は 422）、copied_files を書き、`worktree_ready` イベントと、setup_command が空なら「setup 不要」の `log` イベントを記録する。関連付けと status=`active` は既存の再利用の報告で行う |
+| push の直後 | `publishing` | `pushedSha`、`branchName` | `pushedSha` が保存済みの verified_sha と一致しなければ 422。`branchName` が executions.branch_name と違えば 422。pushed_sha を書き、`pushed` イベント（`sha`、`branch`）を記録する |
+| PR の作成・確認の後 | `publishing` | `prNumber`、`prUrl`、`prCreated`（真偽値） | pushed_sha が保存済みでなければ 422。pr_number・pr_url を書く。`prCreated=true` のときだけ `pr_created` イベント（`prNumber`、`prUrl`）を記録する |
+
+コピー元が無かったパスの警告（[`06-worktree.md`](./06-worktree.md) 3.5 の3）は、既存の `POST /api/executions/{id}/events` の `log` イベント（`stream=runner`、`sourceId=worktree-copy-missing/<コピー許可リスト内の順番>`）で送る。
+
+**監査の付記**: `failed` を報告するとき、監査記録が要る失敗には `audit` を付ける。Control Plane は状態の遷移と同じトランザクションで audit_logs に1行書く（actor=`runner:<id>`、target_type=`execution`、target_id=Execution ID）。値は次の2つに限る。ほかの値と、`failed` 以外の報告への付記は 400 とする。
+
+| `audit.action` | 付ける場面 | `audit.detail` | 対応する `errorClass` |
+|---|---|---|---|
+| `worktree.path_rejected` | worktree のパスが Worktree Root の外に解決された（新規作成・再利用・作り直しのどれでも） | `{ "path": "<解決後の実パス>" }` | `config_error` |
+| `publish.remote_mismatch` | push 後のリモートのブランチの SHA が verified_sha と違う | `{ "branch", "verifiedSha", "observedSha" }` | `publish_failed` |
+
+detail には秘密情報や Git の生のエラー本文を入れない。
+
+**ハーネスのセッション ID**: Adapter が発行したセッション ID（[`08-harness-adapter.md`](./08-harness-adapter.md) 3.1）は、`running` から次の状態（`verifying`・`failed`・`timed_out`・`cancelled`）へ移る報告に、既存の `harnessSessionId` として載せる。Adapter の `Start` が失敗してセッション ID が無い場合は載せない。Control Plane は executions.harness_session_id に保存する。
 
 ### 3.5 中止（`POST /api/tasks/{id}/cancel`）
 
@@ -252,3 +322,7 @@ resume_point の列定義は [`02-data-model.md`](./02-data-model.md) の execut
   - 受け入れ基準: failed のタスクに retry すると seq+1 の pending Execution ができる; running のタスクへの retry は 409; mode が Execution に記録される
 - [ ] [Backend] Blocked からの続行 API
   - 受け入れ基準: headSha が一致しないと 422; context_conflict の Block に continue すると 422; continue で Execution が pending に戻り resume_point が記録される; abort でタスクが cancelled になる; 判断が audit_logs に残る
+- [ ] [Backend] claim の応答の追加項目（3.3.2。[`05-runner.md`](./05-runner.md) 9章の「起動コマンドから工程表への接続」の前提）
+  - 受け入れ基準: 最初の Execution の後に fresh・continue・fresh の順で再実行したタスクで、seq=2 の `freshNumber` が 1、seq=3（continue）が null、seq=4 が 2 になり、同じ Execution の再 claim で値が変わらない; resume_point=`gate3` の claim に `resumeBlock`（decision=continue の行）と同じ Execution の `resumeGateResults` が入り、resume_point が無い claim では null と空配列になる; `profile.harnessRepoPath` と `profile.toolPermissions` が割り当てた Harness の行と一致する; 過去の Execution に pr_number が2つある場合、`pullRequests` が番号ごとに1件、seq の新しい順になる（Q69 の決定後）; `worktree.expectedHeadSha` が直前の Execution の pushed_sha、無ければ harness_head_sha、無ければ base_sha になる; 作り直しの開始の後に `worktree_ready` が無い worktree で `preparationComplete` が false になる; `project.setupAllowedHosts` が Q73 の決定前は空配列になる; Q74 を採る場合、同じ Execution の `harness_output` 成果物の `summary` が `resumeHarnessSummary` に入り、成果物が無い・読めないときは null で claim が返る
+- [ ] [Backend] result の工程内報告と監査の付記（3.4.1。[`05-runner.md`](./05-runner.md) 9章の「起動コマンドから工程表への接続」の前提）
+  - 受け入れ基準: `worktree.action=created` の報告で worktrees の行・executions の worktree_id と branch_name・`worktree_ready` イベントが1つのトランザクションで保存され、同じ内容の再送で行もイベントも増えない; 保存済みの base_sha と違う `baseSha` の作成報告が 422 になり何も保存されない; `restore_started` で copied_files が空・setup_status が pending になり、`restored` でコピー一覧と `worktree_ready` が保存される; 直前の Execution のものでない worktree への `restore_started` が拒否される; `publishing` のまま送った `pushedSha` が verified_sha と違うと 422、同じなら pushed_sha と `pushed` イベントが保存され状態は `publishing` のまま; pushed_sha が未保存の PR 報告が 422 になる; `prCreated=false` の報告では `pr_created` イベントが記録されない; `audit.action=worktree.path_rejected` を付けた `failed` の報告で、状態の遷移と audit_logs の行が両方保存され、どちらかの保存に失敗するとどちらも残らない; `failed` 以外の報告への `audit` と表に無い action が 400 になる; `running` から `verifying` への報告の `harnessSessionId` が executions.harness_session_id に保存される

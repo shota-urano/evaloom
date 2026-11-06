@@ -1,5 +1,6 @@
 ---
 status: confirmed
+confirmed_rev: 84875c2
 範囲: 整合性アンカー。Phase 1 のテーブル、状態の列挙値、共通契約と Harness Profile のスキーマ
 ---
 
@@ -80,6 +81,7 @@ requirements 5.1 の保持情報に対応する。
 | test_report_format | TEXT NULL | `junit_xml` など（Q12、追加） | - |
 | test_report_path | TEXT NULL | worktree 内のレポート出力パス（Q12、追加） | - |
 | setup_command | TEXT NULL | worktree 作成後に Test Sandbox で実行 | セットアップコマンド |
+| setup_allowed_hosts | TEXT (JSON 配列) | setup の Test Sandbox から接続してよい宛先（`host:port`）。既定は空配列（Q28 の「Project ごとに登録」を受けた追加。案 Q73、[`09-sandbox.md`](./09-sandbox.md) 3.3） | - |
 | copy_allowlist | TEXT (JSON 配列) | worktree へコピーしてよいファイルの相対パス | コピー許可リスト |
 | allowed_operations | TEXT (JSON) | 許可操作 | 許可操作 |
 | approval_policy | TEXT (JSON) | 承認ポリシー。Phase 1 は保存と表示だけ（Q25） | 承認ポリシー |
@@ -287,6 +289,8 @@ Execution ごとに固定した Context を保存する（requirements 7.1, 8.3�
 | redacted | INTEGER | 機密情報の除外処理を通したか（0 / 1） |
 | created_at | TEXT | |
 
+kind=`harness_output` は、Runner が工程9で登録する HarnessResult（5.8）の JSON とする。Blocked から続行した Execution の PR 本文に作業概要を載せるため、Control Plane が claim の `execution.resumeHarnessSummary` を読む元に使う（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2。案 Q74、2026-11-06 追記）。
+
 #### audit_logs
 
 | 列 | 型 | 説明 |
@@ -432,6 +436,8 @@ requirements 8.3 の11状態。値は snake_case にする。
 | `pr_created` | Runner | `prNumber`, `prUrl` |
 | `notification_sent` | Control Plane | `kind`, `channel` |
 | `notification_failed` | Control Plane | `kind`, `channel`, `reason`（`permission_denied` / `launch_failed` / `timeout` / `other`。[`12-notification.md`](./12-notification.md) 3.4） |
+
+発生元が Runner のイベントのうち、`log` 以外（`worktree_ready`、`pushed`、`pr_created`）は、Runner が result の工程内報告で送った値を Control Plane が同じトランザクションで記録する（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、2026-11-06 追記）。既存の `POST /api/executions/{id}/events` が受け付けるのは `log` だけである。`context_pinned` は context の API（[`07-context.md`](./07-context.md)）の側で記録する。`harness_started` / `harness_finished` の送り方は工程表の接続には要らないため、この追記では決めない。
 
 ### 5.4 エラー分類（executions.error_class）
 
