@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"github.com/shota-urano/evaloom/backend/internal/logredact"
 	"io"
 	"os"
 	"reflect"
@@ -174,10 +175,10 @@ func TestRedactionStreamBoundariesAndReadErrors(t *testing.T) {
 				source = io.MultiReader(source, iotest.ErrReader(readFailure))
 			}
 			patterns := &patternReader{source: bufio.NewReader(source)}
-			literals := newSecretReader(patterns, test.secrets)
+			literals := logredact.NewLiteralReader(patterns, test.secrets)
 			got, err := io.ReadAll(literals)
-			if string(got) != test.want || (err != nil) != test.fail || (test.fail && !errors.Is(err, readFailure)) || (patterns.changed || literals.changed) != test.changed {
-				t.Fatalf("output=%q err=%v changed=%v; want=%q fail=%v changed=%v", got, err, patterns.changed || literals.changed, test.want, test.fail, test.changed)
+			if string(got) != test.want || (err != nil) != test.fail || (test.fail && !errors.Is(err, readFailure)) || (patterns.changed || literals.Changed()) != test.changed {
+				t.Fatalf("output=%q err=%v changed=%v; want=%q fail=%v changed=%v", got, err, patterns.changed || literals.Changed(), test.want, test.fail, test.changed)
 			}
 		})
 	}

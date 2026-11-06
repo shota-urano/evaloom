@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/shota-urano/evaloom/backend/internal/logredact"
 	"io"
 	"net/http"
 	"net/url"
@@ -84,10 +85,10 @@ func (log *Log) Path() string { return log.path }
 // A read failure preserves any partial output before returning the error.
 func (log *Log) Read(source io.Reader) error {
 	patterns := &patternReader{source: bufio.NewReader(source)}
-	literals := newSecretReader(patterns, log.secrets)
+	literals := logredact.NewLiteralReader(patterns, log.secrets)
 	defer func() {
 		log.mu.Lock()
-		log.redacted = log.redacted || patterns.changed || literals.changed
+		log.redacted = log.redacted || patterns.changed || literals.Changed()
 		log.mu.Unlock()
 	}()
 	reader := bufio.NewReader(literals)
@@ -111,6 +112,9 @@ func (log *Log) Read(source io.Reader) error {
 func (log *Log) appendLine(text string) error {
 	log.mu.Lock()
 	defer log.mu.Unlock()
+	// Harness adapters exclude recovered authentication values before Logs.
+	// Preserve that upstream exclusion in artifact metadata as well.
+	log.redacted = log.redacted || strings.Contains(text, logredact.Marker)
 	if log.finished {
 		return fmt.Errorf("runner: log is finished")
 	}

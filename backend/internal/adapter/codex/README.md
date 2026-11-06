@@ -16,7 +16,10 @@
 確認する。非ゼロ終了は`config_error`にする。固定のシェル式にはCLI引数を
 位置引数として渡す。プロンプトや設定をシェルのソースに埋め込まない。
 認証ファイルをホストのHOMEから探したり、コピーしたりしない。
-Q7・Q8の決定に従い、呼び出し側がEvaloom専用のログイン情報を設定環境に用意する。
+Q7・Q8の決定に従い、`Config.ResolveAuthentication`でEvaloom専用の認証の保管パスを
+解決する。同じHarnessには常に同じ絶対パスを返す。Adapterが読み取り前にOSロックを
+取り、作業用コピーの`auth.json`へ配置する。認証はProfileとcontext_revisionsに含めない。
+詳細は[`harnessenv/README.md`](../../harnessenv/README.md)の認証ファイルの節を参照する。
 
 プロンプトには固定済みのExecution Context、JSONとして区切ったTask、
 commitまで行う指示を渡す。Model IDは要求から取得する。
@@ -31,10 +34,13 @@ JSONLの`item.completed`のうち最後の`agent_message.text`をsummaryに使�
 非ゼロ終了は`execution_failed`にする。Adapterで`test_failed`は付けない。
 
 stdout・stderrを行単位で`Logs`へ渡す。長い行、分割された書き込み、改行のない
-最終行も保持する。Logsは1つの消費側で読む。出力は生の値なので、保存には
-Runnerの既存ログ収集・機密情報除外を使う。
+最終行も保持する。Logsは1つの消費側で読む。出力は認証回収までメモリ内に保持し、
+更新前後の認証値を除外してから渡す。認証を回収できなければCLI出力を伏せる。
+このためCLIログは停止後に届く。保存にはRunnerの既存ログ収集・機密情報除外も使う。
 `Result`はSandboxの全書き込みプロセスが停止するまで待つ。
-その後、作業用の設定コピーを削除してから結果を返す。
+その後、成功・失敗・中止・タイムアウトに関係なく、volumeの認証ファイル1つを検査して
+保管場所へ原子的に書き戻す。書き戻しを終え、コピーの削除とOSロックの解放後に結果を返す。
+書き戻し失敗ではExecution結果を変えず、認証内容を含まない理由だけをログに残す。
 HEAD・commit一覧・diff・PR URLは生成しない。
 
 `Cancel`または呼び出し元contextの中止で停止を要求し、指定された猶予時間を
@@ -122,8 +128,8 @@ Git作者名・メールアドレスの値は選んでいない。Runnerが専�
 
 1. 採用CLI版を含むLinuxイメージ、既存Containerのネットワーク設定、Evaloom専用の
    サブスクリプション認証を用意する。本人が普段使うHOMEをマウントしない。
-2. 専用設定環境に固定した`config.toml`・`auth.json`・Git作者情報を用意し、上記の
-   インターフェースに接続する。元設定は保持し、書き込み可能な作業用コピーを
+2. Profileの`config.toml`とGit作者情報、Git管理外の認証の保管ファイルを用意し、
+   `ResolveConfig`と`ResolveAuthentication`に接続する。元設定は保持し、書き込み可能な作業用コピーを
    `CODEX_HOME`に使う。実CLIの状態保存と認証更新はこのコピー内で確認する。
 3. 小さなfixtureプロジェクトのlinked worktreeで、ファイルの追加とcommitを要求する。
    JSONLの完了、worktreeの`git rev-list <base>..HEAD`が1件以上、Runnerのdiffを確認する。

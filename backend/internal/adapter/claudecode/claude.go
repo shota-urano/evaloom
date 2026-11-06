@@ -16,17 +16,25 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
 // Launch starts one command inside the prepared Harness Sandbox. Writers carry
-// raw output to Logs; Runner owns redaction. Wait must confirm ALL writers have
-// stopped. Launch must honor ctx during preparation; Stop/Kill must be bounded.
+// output through authentication exclusion before log delivery. Wait must
+// confirm ALL writers have stopped. Launch must honor ctx during preparation;
+// Stop/Kill must be bounded.
 type Launch func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error)
 
 // Config is trusted Runner wiring, not a public API or Profile schema.
 type Config struct {
 	Launch Launch
+	// ResolveAuthentication returns the absolute Runner-owned credential path for
+	// req.Profile.HarnessID. All executions of that harness must use the same path.
+	ResolveAuthentication func(adapter.HarnessRequest) (string, error)
+	// ResolveConfig selects the Runner-owned pinned configuration. The adapter
+	// owns a verified working copy until stopped writers and auth writeback.
+	ResolveConfig func(adapter.SandboxEnv) (*harnessenv.Environment, error)
 	// Configure validates pinned Profile settings for the adopted CLI version,
 	// resolves Harness Tool Permissions using req.Profile.HarnessID and intersects
 	// them with Profile toolConfiguration. Return the complete settings JSON
@@ -102,10 +110,44 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	result := adapter.HarnessResult{ContractVersion: adapter.ContractVersion, SessionID: id,
 		Status: adapter.ResultFailed, Commits: []string{}, LogArtifactIDs: []string{}, ArtifactIDs: []string{}}
 	class := adapter.ErrorConfig
+	var working *harnessenv.Environment
+	var closeConfiguration func() error
+	var authentication *harnessenv.Authentication
+	var executionErr error
+	var executionFinished bool
 	defer func() {
-		if ctx.Err() != nil {
+		// Credential recovery has its own control deadline. It must not turn an
+		// already-finished execution into a timeout while persisting its token.
+		if !executionFinished {
+			executionErr = ctx.Err()
+		}
+		var authenticationWarning string
+		if closeConfiguration != nil {
+			if err := sandbox.WriteBackAuthentication(ctx); err != nil {
+				authenticationWarning = "authentication writeback skipped: " + err.Error()
+			}
+			if err := closeConfiguration(); err != nil {
+				class = adapter.ErrorSandbox
+				result.Status = adapter.ResultFailed
+			}
+		}
+		if working != nil {
+			if err := working.Close(); err != nil {
+				class = adapter.ErrorSandbox
+				result.Status = adapter.ResultFailed
+			}
+		}
+		if authentication != nil {
+			result.Summary = authentication.RedactLog(result.Summary)
+			_ = authentication.Close()
+		}
+		if authenticationWarning != "" {
+			warning := &lineWriter{session: s, stream: "stderr"}
+			_, _ = io.WriteString(warning, authenticationWarning+"\n")
+		}
+		if executionErr != nil {
 			class = adapter.ErrorCancelled
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if errors.Is(executionErr, context.DeadlineExceeded) {
 				class = adapter.ErrorTimeout
 			}
 			result.Status = adapter.ResultFailed
@@ -120,7 +162,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CLAUDE_CONFIG_DIR"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -134,6 +176,29 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		(definition.Execution.Adapter != "" && definition.Execution.Adapter != "claude_code") || len(definition.Execution.Args) != 0 {
 		return // No unreviewed Profile flags may override isolation or the prompt.
 	}
+	original, err := h.config.ResolveConfig(env)
+	if err != nil || original == nil || original.ConfigDir() != env.ConfigDir || original.Env()["CLAUDE_CONFIG_DIR"] != env.ConfigDir {
+		return
+	}
+	working, err = original.WorkingCopy(ctx)
+	if err != nil {
+		return
+	}
+	store, err := h.config.ResolveAuthentication(req)
+	if err != nil {
+		return
+	}
+	authentication, err = harnessenv.AcquireAuthentication(ctx, store)
+	if err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, err.Error()+"\n")
+		return
+	}
+	if err = authentication.Install(working); err != nil {
+		return
+	}
+	env.ConfigDir = working.ConfigDir()
+	env.Env["CLAUDE_CONFIG_DIR"] = env.ConfigDir
 	settings, err := h.config.Configure(ctx, req)
 	if err != nil {
 		return
@@ -145,13 +210,21 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	// Serialize a checked object: --settings cannot be interpreted as a path.
 	settings, _ = json.Marshal(object)
 	common := []string{"claude", "--setting-sources", "user,project", "--settings", string(settings)}
-	stderr := &lineWriter{session: s, stream: "stderr"}
+	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}
 	// Missing CLI becomes workload exit 127, not a runtime entrypoint failure.
 	// Prompt and settings are positional data, never interpolated shell source.
 	preflight := append([]string{"/bin/sh", "-c", `exec "$@"`, "evaloom-claude-preflight"}, common...)
 	preflight = append(preflight, "auth", "status", "--json")
-	preflightOut := &lineWriter{session: s, stream: "stdout"}
+	preflightOut := &lineWriter{session: s, stream: "stdout", authentication: authentication}
+	ctx, closeConfiguration, err = sandbox.WithWorkingConfiguration(ctx, working)
+	if err != nil {
+		return
+	}
 	class, err = h.command(ctx, env, preflight, preflightOut, stderr, adapter.ErrorConfig)
+	if err != nil {
+		executionErr, executionFinished = ctx.Err(), true
+	}
+	refreshAuthentication(ctx, s)
 	preflightOut.finish()
 	stderr.finish()
 	if err != nil {
@@ -164,8 +237,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		"--no-session-persistence", "--permission-mode", "dontAsk", "--permission-prompts", "none",
 		"--model", req.Profile.ModelID, "--", prompt)
 	parser := &events{}
-	stdout := &lineWriter{session: s, stream: "stdout", events: parser}
+	stdout := &lineWriter{session: s, stream: "stdout", events: parser, authentication: authentication}
 	class, err = h.command(ctx, env, command, stdout, stderr, adapter.ErrorExecutionFailed)
+	executionErr, executionFinished = ctx.Err(), true
+	refreshAuthentication(ctx, s)
 	stdout.finish()
 	stderr.finish()
 	result.Summary = parser.summary
@@ -306,8 +381,18 @@ func (h *harness) Logs(id adapter.SessionID) (<-chan adapter.LogLine, error) {
 	return s.stream, nil // One shared consumer, as in Runner's log collector.
 }
 
+// refreshAuthentication adds a trusted diagnostic outside the CLI filter when
+// recovery fails. Later raw CLI lines are suppressed by the credential lease.
+func refreshAuthentication(ctx context.Context, s *session) {
+	if err := sandbox.RefreshAuthentication(ctx); err != nil {
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, "authentication log recovery failed: "+err.Error()+"\n")
+	}
+}
+
 func (s *session) deliver() {
 	defer close(s.stream)
+	finished := false
 	for {
 		s.mu.Lock()
 		batch := s.logs
@@ -316,16 +401,12 @@ func (s *session) deliver() {
 		for _, line := range batch {
 			s.stream <- line
 		}
+		if finished {
+			return
+		}
 		select {
 		case <-s.done:
-			s.mu.Lock()
-			batch = s.logs
-			s.logs = nil
-			s.mu.Unlock()
-			for _, line := range batch {
-				s.stream <- line
-			}
-			return
+			finished = true // drain the final batch after observing completion
 		case <-s.wake:
 		}
 	}

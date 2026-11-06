@@ -246,9 +246,10 @@ GOCACHE="$model_test_tmp/go-cache" go test -tags=security_model \
 ```
 
 認証値をイメージやProfileのGit履歴には入れない。テストは明示したJSONだけを
-`harnessenv.Create`へ渡し、`auth.json`または`.credentials.json`として専用環境に
-配置する。認証JSONの形式と有効性は製品Adapterのpreflightと実モデル呼び出しが
-検査する。未設定・空オブジェクト・不正JSON、認証失敗、モデルへの接続失敗は
+一時ディレクトリの保管ファイルへ0600で書き、`ResolveAuthentication`で渡す。
+AdapterがOSロックを取得し、`auth.json`または`.credentials.json`として作業用コピーに
+配置する。認証は`harnessenv.Files`とcontext_revisionsに含めない。
+認証JSONの形式は起動前に、有効性はpreflightと実モデル呼び出しで検査する。未設定・空オブジェクト・不正JSON、認証失敗、モデルへの接続失敗は
 合格にならない。JSON形式が正しいだけでは認証済みとは扱わない。
 
 Dockerの呼び出しにも一時HOMEと空の`DOCKER_CONFIG`を使う。通常のDockerソケットを
@@ -281,8 +282,9 @@ Codex Adapter / Claude Code Adapterの`ContainerLaunch`から本物の
 Harness Sandboxでpreflightと実CLIを起動する。Execution IDとHarnessResultを
 共通契約で渡す。ハーネス以外の工程はfixture用の処理であり、HTTPのclaim、
 Gate、push、PR作成の検証はこの試験の範囲に含めない。
-専用設定の読み取り専用マウント、空の専用HOME、環境変数の許可リスト、
-宛先制限付きプロキシは既存Containerの実装を使う。ホスト起動は行わない。
+CLIの作業用設定volume、空の専用HOME、環境変数の許可リスト、
+宛先制限付きプロキシは既存Containerの実装を使う。アクセス試行用の別コンテナでは
+元設定を読み取り専用でマウントする。ホスト起動は行わない。
 
 CLIの成功と、最終応答にBがあることを必須とする。Aは最終応答・stdout・stderrの
 すべてで禁止し、JSONでエスケープされた文字列も調べる。Bがツール呼び出しや
@@ -309,11 +311,11 @@ CLIの成功と、最終応答にBがあることを必須とする。Aは最終
 現状はカナリアと同一Sandbox設定でのアクセス試行を記録する。
 
 HarnessのTool PermissionsとProfileの`toolConfiguration`からCLI設定への変換、
-認証情報の準備・更新は、既存Adapterと同じ内部境界に残る。このfixtureでは
-shellまたはBashを許可する固定の設定変換を`Configure`に渡し、CLI設定の生成を
-一般化しない。モデルIDは既存Profileの`modelId`を使う。
-読み取り専用の専用設定に対してCLIが認証更新や状態保存の書き込みを要求した場合も、
-マウントを緩めずに失敗させる。実運用の認証更新方法はこの試験では確定しない。
+このfixtureではshellまたはBashを許可する固定の設定変換を`Configure`に渡し、
+CLI設定の生成を一般化しない。モデルIDは既存Profileの`modelId`を使う。
+認証と状態保存には製品Adapterの作業用コピーを使う。CLI停止後の認証は検査して
+一時保管ファイルへ書き戻し、元設定とProfileは変更しない。
+Runner設定ファイルの認証キー名と、認証ファイルの準備方法は確定しない。
 公開API・テーブル・列・製品既定値・確定済み仕様書・Makefileは変更していない。
 
 通常の`make verify`では`TestConfigurationCanaryPlacement`が実Profileの固定SHAから

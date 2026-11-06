@@ -91,6 +91,24 @@ func TestHarnessEnvironmentPersistsEveryPlacedFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = copy.Close() })
+			store := filepath.Join(t.TempDir(), "credential")
+			authContent := `{"token":"private-context-token"}`
+			if err := os.WriteFile(store, []byte(authContent), 0600); err != nil {
+				t.Fatal(err)
+			}
+			lease, err := harnessenv.AcquireAuthentication(context.Background(), store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Close()
+			if err := lease.Install(copy); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range pinnedRows(t, f) {
+				if row.SourcePath == "auth.json" || row.SourcePath == ".credentials.json" || row.Content == authContent || row.ContentHash == contextHash(authContent) {
+					t.Fatal("authentication persisted in context_revisions")
+				}
+			}
 			copied, err := copy.Files(context.Background())
 			if err != nil || !reflect.DeepEqual(copied, manifest) {
 				t.Fatalf("copy differs from persisted configuration: %v %v", copied, err)
