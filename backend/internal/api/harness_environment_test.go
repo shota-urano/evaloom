@@ -32,7 +32,7 @@ func environmentRunner(t *testing.T, f *authFixture, token string) *runner.Runne
 		TokenFile: tokenPath, WorktreeRoot: root, DataDir: root,
 		HarnessAuthFiles:        map[string]string{},
 		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
-		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 		CommitAuthor:            runner.CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
 		DefaultTimeouts:         runner.DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
 	})
