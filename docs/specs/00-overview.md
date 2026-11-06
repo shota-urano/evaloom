@@ -204,7 +204,7 @@ requirements で確定している値。各詳細仕様にも再掲する。変�
 | 暫定運用 | 評価仕様を持たない Profile の状態（11.1） |
 | Blocked | 自動では先へ進めず、本人の確認を待つ状態 |
 
-## 7. 要確認リスト（Phase 1 全体と Phase 2 の下書き。Q42 以降が Phase 2）
+## 7. 要確認リスト（Phase 1 全体と Phase 2 の下書き。Q42〜Q67 が Phase 2、Q68 以降は Phase 1 の工程表の接続（05 の 3.9））
 
 requirements で確定しておらず、本仕様書群で「実装時に確定」または「提案」とした事項。各詳細仕様の該当節にも同じ内容を書いている。
 
@@ -277,3 +277,10 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q65 | 照会と照会の間（案では1分）に ai-ready を付けて外した、または外して付け直した変化を見逃してよいか | 案: 見逃してよい。前者は何も起きず、後者は付いたままとして扱う。Linear の Issue の履歴を読めば見分けられるが、照会の回数と処理が増えるため Phase 2 では行わない | 15 |
 | Q66 | requirements 17章の event_inbox を Phase 2 で作るか | 案: 作らない。Webhook をやめたため、受け取った本文を先に保存して後で処理する必要が無い。前回の照会結果は linear_issue_states、判定の結果は linear_issue_states と audit_logs に残す。Linear 以外のイベント入力（Phase 6）で受信口が要るようになったら作り直す | 02, 15 |
 | Q67 | ai-ready が付いたまま、登録していない Team へ移された Issue をどう扱うか | 案: 取り外しと同じく、待機中・実行中のタスクを中止する（理由 linear_issue_moved）。照会の対象から外れて、以後の取り外しやキャンセルを検出できなくなるため | 15 |
+| Q68 | （Phase 1、工程表の接続）Sandbox 1つあたりの CPU・メモリの上限（09 の 3.2 が「実装時に確定」としていた値） | 案: Runner の設定ファイルに `container.cpus`（既定 4）と `container.memoryMiB`（既定 8192）を足す。実測した Mac mini（14 コア、64 GB）で同時実行2本でも収まり、Tart の実測で使った VM の既定（4 CPU、8 GB）と同じ値。宛先を許可する実行ではプロキシのコンテナ2つにも同じ上限が付くため、1本あたり最大で3つ分の枠になる点に注意（上限であって確保ではない）。Docker の VM に割り当てたメモリより大きくしない | 05, 09 |
+| Q69 | （Phase 1、工程表の接続）工程2で確かめる「前回の PR」をどう取り出すか（claim の `previous` は直前の1件だけで、fresh では null） | 案: claim に `pullRequests`（タスクの過去の Execution が記録した PR を番号ごとに1件、新しい順）を足す。continue は引き継ぐブランチと同じブランチの最新の1件に 3.4 の表を当てる。fresh は全件を見て、1件でもマージ済みなら failed（pr_merged）、開いていれば blocked（git_state）。fresh の Block の headSha は開いている PR の head の SHA を使う | 04, 11 |
+| Q70 | （Phase 1、工程表の接続）非公開リポジトリの clone・fetch・PR 取得に使う読み取り用の認証情報 | 案: Git Publisher と同じ GitHub App のインストールアクセストークンを、権限を contents・metadata・pull_requests の read に絞って発行する。Git には環境変数の `http.extraHeader` で渡し、ファイルや URL に残さない。本人の SSH 鍵・`gh` のログイン・Project ごとの deploy key は採らない | 06, 11 |
+| Q71 | （Phase 1、工程表の接続）Harness Sandbox から接続してよいモデル API の宛先 | 案: Adapter のパッケージに定数で持つ。Codex は `chatgpt.com:443`・`auth.openai.com:443`・`api.openai.com:443`、Claude Code は `api.anthropic.com:443`・`console.anthropic.com:443`・`claude.ai:443` を候補とし、実モデル試験（14 の 3.1）で認証確認と本実行が通る最小の一覧に絞って確定する。CLI が更新確認・テレメトリの宛先に届かないと動かない場合は、宛先を足す前に CLI の設定で止められるかを先に確かめる | 08, 09 |
+| Q72 | （Phase 1、工程表の接続）Tool Permissions（harnesses.tool_permissions）の形と、CLI の設定への変換 | 案: 形は `{ "deny": [CLI の表記のツール名・規則] }`、`{}` は追加の禁止なし。Claude Code は `permissions.allow` に Profile の allowedTools、`permissions.deny` に deny を入れる。Codex（0.163.0）はツールごとの設定が無いため、allowedTools と deny がどちらも空のときだけ起動する。実際の制限は Harness Sandbox で行う | 03, 08 |
+| Q73 | （Phase 1、工程表の接続）Q28 の「setup は Project ごとに登録した宛先だけ許可」の登録先（projects に列が無かった） | 案: projects に setup_allowed_hosts（`host:port` の JSON 配列、既定は空）を足し、Project の登録・更新 API で受け付ける。決まるまでは claim が空配列を返し、setup もネットワークを全遮断する | 02, 03, 09 |
+| Q74 | （Phase 1、工程表の接続）Blocked から続行した Execution の PR 本文に載せる作業概要を、どこから取るか（ハーネスを再実行しないため HarnessResult が手元に無い） | 案: Runner が工程9で HarnessResult の JSON を既存の成果物の種類 `harness_output` で登録し、Control Plane が claim の `execution.resumeHarnessSummary` に summary を入れて返す（Q40 の test_ids と同じ経路）。読めなければ null とし、PR 本文には「作業概要を取得できなかった」と書いて PR 作成は止めない | 02, 04, 11 |

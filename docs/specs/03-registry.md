@@ -1,5 +1,5 @@
 ---
-status: confirmed
+status: draft
 範囲: Project / Harness / Harness Profile の登録、パス検証、版の固定、プロジェクトへの割り当て
 ---
 
@@ -53,6 +53,14 @@ Registry へパスを登録する際に次を確かめる。1つでも失敗し�
 - worktree へコピーしてよいファイルを、リポジトリルートからの相対パスで列挙する（requirements 5.1）。
 - `..` を含むパス、絶対パス、ワイルドカードは受け付けない（案）。
 - 許可リストには秘密情報を含まないファイルだけを載せる（requirements 8.6）。Control Plane は登録時に、ファイル名が `.env`、`.env.*`、`*.pem`、`*.key`、`id_*` に一致するものに警告を出す（案）。拒否まではしない。値が必要ならテスト専用のダミー値を使う運用を画面に表示する。
+
+### 3.3.1 setup の許可宛先（2026-11-06 追記、案 Q73）
+
+Q28 で「setup はプロジェクトごとに登録した宛先だけ許可する」と決めたが、登録する項目が無かった。projects に setup_allowed_hosts（`host:port` の JSON 配列、既定は空配列、[`02-data-model.md`](./02-data-model.md)）を足し、Project の登録・更新（`POST /api/projects`、`PATCH /api/projects/{id}`、要求の項目名は `setupAllowedHosts`）で受け付ける案とする。
+
+- 各要素は小文字の DNS ホスト名と 1〜65535 のポートを `:` でつないだものとする。ワイルドカード、IP リテラル、`localhost` などのローカル名は 400 で拒否する（[`09-sandbox.md`](./09-sandbox.md) 3.3 の宛先の書き方）。
+- 変更前後の値を audit_logs に残す（3.1 の4と同じく権限設定の変更として扱う）。
+- 空配列なら setup もネットワークを全遮断する。
 
 ### 3.4 Harness の登録・更新
 
@@ -167,3 +175,5 @@ requirements 15.3 により、Phase 1 でも本人は管理画面から許可操
   - 受け入れ基準: SemVer でない版、定義内の版の不一致、Adapter の不一致が拒否される; 同じ版を別 SHA で登録すると 409; 同じ SHA の再登録は既存行を返す; 登録された行の operation_status が provisional
 - [ ] [Backend] Project への Profile 割り当て API
   - 受け入れ基準: 1つの Harness を2つの Project に別の版で割り当てられる; 新しい版を登録しても既存の割り当てが変わらない; 未登録の版の指定が 422 になる
+- [ ] [Backend] setup の許可宛先の登録（3.3.1。projects.setup_allowed_hosts の列追加、登録・更新 API、claim の `project.setupAllowedHosts`。Q73 の決定後。[`05-runner.md`](./05-runner.md) 9章の「起動コマンドから工程表への接続」の前提ではない）
+  - 受け入れ基準: `setupAllowedHosts` を省いて登録した Project の値が空配列になる; ワイルドカード、IP リテラル、`localhost`、ポートの無い値がそれぞれ 400 になる; 更新で変更前後の値が audit_logs に残る; 登録した値が claim の `project.setupAllowedHosts` にそのまま入る

@@ -1,5 +1,5 @@
 ---
-status: confirmed
+status: draft
 範囲: Harness Sandbox と Test Sandbox の隔離条件、隔離方式の選択、ネットワークポリシー、秘密情報とモデル API 認証情報の扱い、ホスト側 Git 操作の防御
 ---
 
@@ -43,7 +43,7 @@ status: confirmed
 | 不要なネットワークアクセスを禁止する | 3.3 |
 | ホスト側の機密ディレクトリをマウントしない | マウントするのは worktree と、3.6 の Git 領域と、専用設定環境だけ |
 | 管理権限につながるインターフェースを渡さない | Docker ソケット、launchd、Runner の制御用ソケットを渡さない |
-| CPU・メモリ・実行時間に上限を設ける | 方式ごとの資源制限で設定する。値は実装時に確定（Q15） |
+| CPU・メモリ・実行時間に上限を設ける | 方式ごとの資源制限で設定する。実行時間は Project の timeouts、無ければ Runner の `defaultTimeouts`（Q15 で決定）。CPU とメモリは Runner の設定ファイルの `container.cpus` / `container.memoryMiB`、既定は Sandbox 1つあたり CPU 4・メモリ 8 GiB（[`05-runner.md`](./05-runner.md) 4.1、案 Q68） |
 
 同じ macOS ユーザーで動かす場合、API トークンを別ファイルに置くだけでは隔離にならない（requirements 15.7）。どの方式でも、上の条件を [`14-security-tests.md`](./14-security-tests.md) の隔離突破テストで実際に確かめる。
 
@@ -58,6 +58,16 @@ status: confirmed
 | テスト用（テスト実行） | なし | すべて | 決定（Q28） |
 
 setup で依存関係を取得するにはネットワークが要る場合がある（requirements 15.7 の `composer install` の例）。setup とテスト実行でポリシーを分けるか、どこまで許可するかは requirements に無いため、本人が上の表のとおり決めた（Q28、2026-10-29）。
+
+許可先の持ち方（2026-11-06 追記）:
+
+| 種別 | 許可先の一覧の置き場所 | 状態 |
+|---|---|---|
+| ハーネス用 | Adapter のパッケージの中の定数。Adapter が使う CLI が接続するモデル API と認証の更新先だけを `host:port` で並べる。Adapter を足すときは、そのパッケージの中で一覧も足す（[`08-harness-adapter.md`](./08-harness-adapter.md) 3.2 の条件31の範囲に収まる）。一覧の候補は [`08-harness-adapter.md`](./08-harness-adapter.md) 3.5・3.6 | 案（Q71） |
+| テスト用（setup） | projects.setup_allowed_hosts（`host:port` の配列、[`02-data-model.md`](./02-data-model.md)）。本人が Project の登録・更新で入れる。claim の `project.setupAllowedHosts` で Runner に渡る。空なら setup もネットワークを全遮断する | 案（Q73）。Q73 が決まるまで claim は常に空配列を返す |
+| テスト用（テスト実行） | 持たない（全遮断） | 決定（Q28） |
+
+宛先の書き方はコンテナ方式のプロキシの制約に合わせ、小文字の DNS ホスト名とポートの完全一致とする。ワイルドカード、IP リテラル、`localhost` などのローカル名は受け付けない。ハーネス用には `github.com` とそのサブドメインを入れない（push の手段を与えないため）。
 
 ### 3.4 隔離方式の選択（Q1）
 
@@ -190,6 +200,17 @@ type Sandbox interface {
 ```
 
 Adapter（[`08-harness-adapter.md`](./08-harness-adapter.md)）と Gate 2・setup（[`06-worktree.md`](./06-worktree.md)、[`10-verification-gates.md`](./10-verification-gates.md)）はこのインターフェースだけを使う。隔離方式（Q1）を変えても呼び出し側は変えない。
+
+Runner が `SandboxSpec` に入れる値（2026-11-06 追記、決定）:
+
+| 項目 | 値 | 理由 |
+|---|---|---|
+| setup・テスト・基準値のコマンド | `["/bin/sh", "-c", <Project Registry のコマンド文字列>]` | コマンドは projects.setup_command / test_command に1つの文字列で登録する（[`02-data-model.md`](./02-data-model.md)）。コンテナのイメージは Linux（[`05-runner.md`](./05-runner.md) 4.1 の `container.image`）なので、POSIX のシェルの `/bin/sh` で解釈する。既存の Adapter の認証確認も Sandbox 内の `/bin/sh` を使っている |
+| `Env`（setup・テスト・基準値） | Runner からは足さない（空） | 3.2 の許可リスト方式の最小。テストに値が要る場合は、コピー許可リストのダミーの値を使う（3.5） |
+| `Env`（ハーネス） | 専用設定環境の変数（`CODEX_HOME` / `CLAUDE_CONFIG_DIR`）と、commit の作者情報を与える Git の設定の変数（`GIT_CONFIG_COUNT`、`GIT_CONFIG_KEY_n`、`GIT_CONFIG_VALUE_n`。[`05-runner.md`](./05-runner.md) 4.1 の `commitAuthor`）だけ | [`08-harness-adapter.md`](./08-harness-adapter.md) 3.3・3.4 |
+| `Limits.Time` | その工程の上限時間の残り | [`05-runner.md`](./05-runner.md) 3.6 |
+| `Limits` の CPU・メモリ | [`05-runner.md`](./05-runner.md) 4.1 の `container.cpus` / `container.memoryMiB` | 案（Q68） |
+| テストレポートの形式名 | projects.test_report_format が `junit_xml` のとき JUnit XML として読む（[`02-data-model.md`](./02-data-model.md)、[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1 の例と同じ値）。ほかの値は「レポートを解釈できない」として [`10-verification-gates.md`](./10-verification-gates.md) 3.3 の表に従う | 02 の projects |
 
 ## 6. エラー処理
 
