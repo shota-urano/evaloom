@@ -10,7 +10,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
-// Timeouts are injected global limits. Q15 has no agreed defaults. Project
+// Timeouts are injected global limits. Project
 // values (seconds) override these limits; baseline and Gate 2 share Test.
 type Timeouts struct {
 	Setup, Harness, Test time.Duration

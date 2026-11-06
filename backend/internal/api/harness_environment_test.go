@@ -23,8 +23,19 @@ func environmentRunner(t *testing.T, f *authFixture, token string) *runner.Runne
 	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r, err := runner.New(runner.Config{RunnerID: "mac-mini", ControlPlaneURL: f.server.URL,
-		TokenFile: tokenPath, WorktreeRoot: root, DataDir: root})
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := runner.New(runner.Config{
+		RunnerID: "mac-mini", ControlPlaneURL: f.server.URL,
+		TokenFile: tokenPath, WorktreeRoot: root, DataDir: root,
+		HarnessAuthFiles:        map[string]string{},
+		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
+		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		CommitAuthor:            runner.CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
+		DefaultTimeouts:         runner.DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

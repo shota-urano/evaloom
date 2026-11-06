@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,7 +94,19 @@ func writeConfig(t *testing.T, endpoint string) string {
 	if err := os.WriteFile(tokenFile, []byte(base64.RawURLEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
 		t.Fatal(err)
 	}
-	config := runner.Config{RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile, WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data")}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := runner.Config{
+		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
+		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
+		HarnessAuthFiles:        map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
+		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		CommitAuthor:            runner.CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
+		DefaultTimeouts:         runner.DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+	}
 	content, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -141,4 +156,91 @@ func TestRunHelpExitsWithoutStarting(t *testing.T) {
 	if err := run(context.Background(), []string{"-help"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestStartupRejectsInvalidConfiguration(t *testing.T) {
+	// Re-execute the test binary through the real main, including os.Exit(1).
+	if path := os.Getenv("EVALOOM_TEST_STARTUP_CONFIG"); path != "" {
+		os.Args = []string{"evaloom-runner", "-config", path}
+		main()
+		return
+	}
+	basePath := writeConfig(t, "https://control.example.test")
+	base, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type invalidConfig struct {
+		name string
+		edit func(map[string]any)
+	}
+	var cases []invalidConfig
+	for _, key := range []string{
+		"runnerId", "controlPlaneUrl", "tokenFile", "worktreeRoot", "dataDir", "harnessAuthFiles", "githubAppPrivateKeyFile",
+		"container", "container.runtimePath", "container.image", "container.proxyImage", "container.proxyBinary",
+		"commitAuthor", "commitAuthor.name", "commitAuthor.email",
+	} {
+		cases = append(cases, invalidConfig{"missing/" + key, func(config map[string]any) {
+			object, field := configObject(config, key)
+			delete(object, field)
+		}})
+	}
+	for _, section := range []string{"", "container", "commitAuthor", "defaultTimeouts"} {
+		cases = append(cases, invalidConfig{"unknown/" + section, func(config map[string]any) {
+			object := config
+			if section != "" {
+				object = config[section].(map[string]any)
+			}
+			object["secret-unknown-key"] = "secret-value"
+		}})
+	}
+	for _, key := range []string{"tokenFile", "worktreeRoot", "dataDir", "githubAppPrivateKeyFile", "container.runtimePath", "container.proxyBinary", "harnessAuthFiles.codex"} {
+		cases = append(cases, invalidConfig{"relative/" + key, func(config map[string]any) {
+			object, field := configObject(config, key)
+			object[field] = "secret-relative-path"
+		}})
+	}
+	cases = append(cases,
+		invalidConfig{"auth outside dataDir", func(config map[string]any) {
+			config["harnessAuthFiles"] = map[string]any{"codex": "/secret-outside/auth.json"}
+		}},
+		invalidConfig{"case alias", func(config map[string]any) { config["RunnerId"] = config["runnerId"]; delete(config, "runnerId") }},
+	)
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var config map[string]any
+			if err := json.Unmarshal(base, &config); err != nil {
+				t.Fatal(err)
+			}
+			tt.edit(config)
+			content, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "runner.json")
+			if err := os.WriteFile(path, content, 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStartupRejectsInvalidConfiguration$")
+			cmd.Env = append(os.Environ(), "EVALOOM_TEST_STARTUP_CONFIG="+path)
+			output, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("runner did not exit with startup error: %v\n%s", err, output)
+			}
+			if !bytes.Contains(output, []byte("runner:")) || bytes.Contains(output, []byte("started")) || bytes.Contains(output, []byte("secret")) {
+				t.Fatalf("unexpected startup output: %s", output)
+			}
+		})
+	}
+}
+
+func configObject(config map[string]any, key string) (map[string]any, string) {
+	parts := strings.Split(key, ".")
+	if len(parts) == 1 {
+		return config, key
+	}
+	return config[parts[0]].(map[string]any), parts[1]
 }

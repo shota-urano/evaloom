@@ -40,7 +40,7 @@ func New(config Config) (*Runner, error) {
 	}
 	content, err := os.ReadFile(config.TokenFile)
 	if err != nil {
-		return nil, fmt.Errorf("runner: read token file: %w", err)
+		return nil, fmt.Errorf("runner: cannot read token file")
 	}
 	token := strings.TrimSpace(string(content))
 	secret, err := base64.RawURLEncoding.DecodeString(token)

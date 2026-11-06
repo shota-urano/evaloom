@@ -64,11 +64,10 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 
 ## Runnerの設定と起動時heartbeat
 
-正本は`docs/specs/05-runner.md`の3.1・5・9節。
-以下は現在の実装上の選択を説明したもので、仕様の固定値ではない。
+設定の正本は`docs/specs/05-runner.md`の4.1節。起動と通信は同仕様の3.1・5・9節を参照する。
 
 起動引数は`evaloom-runner -config <JSONファイル>`。
-設定の各項目を必須とし、未知の項目や複数のJSON値を拒否する。
+仕様表の必須項目を検査し、未知の項目、型が違う値、`null`、複数のJSON値を拒否する。
 設定パスの既定値は設けない。launchdのテンプレートは`data/runner.json`を指定する。
 
 ```json
@@ -77,11 +76,29 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
   "controlPlaneUrl": "http://127.0.0.1:8080",
   "tokenFile": "/absolute/path/data/runner.token",
   "worktreeRoot": "/absolute/path/worktrees",
-  "dataDir": "/absolute/path/data/runner"
+  "dataDir": "/absolute/path/data/runner",
+  "harnessAuthFiles": {
+    "codex": "/absolute/path/data/runner/codex/auth.json",
+    "claude_code": "/absolute/path/data/runner/claude/.credentials.json"
+  },
+  "githubAppPrivateKeyFile": "/Users/runner/.config/evaloom/publisher.pem",
+  "container": {
+    "runtimePath": "/absolute/path/bin/docker",
+    "image": "evaloom-harness:local",
+    "proxyImage": "evaloom-proxy:local",
+    "proxyBinary": "/absolute/path/bin/evaloom-proxy-linux"
+  },
+  "commitAuthor": {
+    "name": "evaloom-publisher[bot]",
+    "email": "YOUR_BOT_NOREPLY_ADDRESS"
+  }
 }
 ```
 
-3つのファイル・ディレクトリのパスは絶対パスで指定する。
+パスはすべて絶対パスで指定する。上の秘密鍵パスは実行ユーザーのホームに合わせる。
+`harnessAuthFiles`は`dataDir`内に置く。既存のシンボリックリンクが外部を指す場合も拒否し、既存ファイルの権限は0600かを検査する。
+`container.runtimeEnv`は任意の文字列のマップで、ランタイムCLIに渡す環境変数を指定する。
+`defaultTimeouts`は省略でき、`setupSec`は900秒、`harnessSec`は3600秒、`testSec`は1800秒になる。項目ごとの省略も同じ既定値を使い、指定値は正の整数とする。
 ディレクトリの作成、worktreeの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
 データディレクトリは利用者がGit管理外に配置する。
 
