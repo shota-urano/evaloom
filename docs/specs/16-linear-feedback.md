@@ -1,6 +1,5 @@
 ---
-status: confirmed
-confirmed_rev: 50ec887
+status: draft
 範囲: Linear Issue への実行結果の返却（コメント）、受け入れ条件の記入依頼、送信の再試行、Evaloom 自身の更新による再起動（循環トリガー）の防止
 ---
 
@@ -78,13 +77,18 @@ requirements 6.4 は「処理完了後」に返すとし、8.8 は「承認待�
 
 ### 3.5 循環トリガーの防止（requirements 6.4, 15.2）
 
-Evaloom が Issue を更新しても、同じジョブを再び起動しないことを、次の3つで確かめる。
+Evaloom は Linear の変化を Issue の定期照会で取得する（[`15-linear-intake.md`](./15-linear-intake.md) 3.1）。Evaloom が Issue にコメントを付けても、同じジョブを再び起動しないことを、次の3つで確かめる。
 
-1. **起動の契機を `ai-ready` の付与に限る**: Evaloom は Issue のラベルを変えない（Q51 案）。そのため Evaloom の更新で起動の条件（[`15-linear-intake.md`](./15-linear-intake.md) 3.5）が満たされることは無い。
-2. **Comment のイベントを購読しない**: Evaloom のコメントの Webhook は届かない（[`15-linear-intake.md`](./15-linear-intake.md) 3.5）。
-3. **Evaloom 自身の操作を無視する**: Webhook の本文の操作者が、API キーの持ち主（Evaloom として使っている Linear ユーザー）と一致するイベントは、判定の前に `ignored` にする（案）。1 と 2 が後から崩れた場合の二重の防御である。
+1. **起動の契機を `ai-ready` の付与に限る**: 起動は「前回の照会で `ai-ready` が付いていなかった Issue に、今回は付いている」ときだけである（[`15-linear-intake.md`](./15-linear-intake.md) 3.4）。Evaloom は Issue のラベルを変えない（Q51 案）。そのため Evaloom の操作で起動の条件が満たされることは無い。
+2. **照会でコメントを読まない**: 照会は Issue の項目（ラベル、状態、Team、本文、更新時刻）だけを読み、コメントを読まない（[`15-linear-intake.md`](./15-linear-intake.md) 3.2）。Evaloom のコメントは判定の入力にならない。コメントで Issue の更新時刻が進んだとしても、判定はラベルの有無の変化だけを見るため起動しない。
+3. **保留の再判定は新しいタスクを作らない**: 更新時刻を使うのは保留したタスクの再判定（[`15-linear-intake.md`](./15-linear-intake.md) 3.6.3）だけである。Evaloom のコメントで更新時刻が進んで再判定が走っても、Issue の中身が変わっていなければ同じ保留の理由になり、何も起きない。同じ理由のコメントは dedupe_key（3.7）で2回出さない。
 
-3 は、本人が自分の個人 API キーを Evaloom に使う場合、本人が Linear の画面で行った操作も同じ操作者になる。そのため 3 を入れるなら、Evaloom 専用の Linear ユーザーの API キーを使う必要がある（Q49）。
+Webhook のときに考えていた「Comment のイベントを購読しない」と「操作者が Evaloom のユーザーと一致するイベントを無視する」は、ポーリングでは不要になった。照会の結果には操作者が含まれないため、操作者での見分けは行わない。
+
+Evaloom 専用の Linear ユーザーの API キーを使う理由（Q49）は、次の2つになる。
+
+- Linear の画面で、Evaloom のコメントと本人のコメントを見分けられる。
+- API キーの持ち主を本人と分けておけば、キーを無効にしても本人の Linear の使い方に影響しない。
 
 ### 3.6 Issue の状態（Q51）
 
@@ -168,4 +172,4 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 - [ ] [Backend] 送った結果が分からないときの照合
   - 受け入れ基準: 応答の前に接続を切るテストで、再送の前にコメントの有無を読み、すでにあれば再送しない
 - [ ] [Backend] 循環トリガーの防止の確認テスト（3.5）
-  - 受け入れ基準: Evaloom のコメントの後に届いた Issue の更新イベントでタスクが作られない; 操作者が Evaloom の Linear ユーザーのイベントが ignored になる
+  - 受け入れ基準: ai-ready が付いたままの Issue に Evaloom がコメントを付け、更新時刻が進んだ後の照会でタスクが作られない; 保留中のタスクの Issue に Evaloom が保留のコメントを付けた後の照会で、同じ理由のコメントがもう1回作られない; Linear クライアントの照会がコメントを要求しない
