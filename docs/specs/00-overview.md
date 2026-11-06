@@ -194,7 +194,7 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 
 | # | 事項 | 選択肢・提案 | 記載仕様 |
 |---|---|---|---|
-| Q1 | ハーネスとテストの隔離方式（OS ユーザー分離 / macOS sandbox / コンテナ / VM） | 決定（2026-10-29、一部）: macOS 専用ツールチェーンが要らない Project はコンテナ。Xcode 等が要る Project は、実行ごとに使い捨てる macOS VM（Tart + Softnet）を第一案とし、VM 内での `xcodebuild test`・シミュレータ・起動時間を実測してから採否を決める。比較表は 09 の 3.4 | 09 |
+| Q1 | ハーネスとテストの隔離方式（OS ユーザー分離 / macOS sandbox / コンテナ / VM） | 決定（2026-10-29）: macOS 専用ツールチェーンが要らない Project はコンテナ。決定（2026-11-05、実測後）: Xcode 等が要る Project は、実行ごとに使い捨てる macOS VM（Tart + Softnet）。Softnet は `0.0.0.0/0` を遮断して要る宛先だけ許可する。実測結果と条件は 09 の 3.4 | 09 |
 | Q2 | 本人用 API の認証方式と CSRF 対策 | 起動時生成のセッショントークン + SameSite=Strict Cookie + CSRF トークン（提案） | 01 |
 | Q3 | Runner 専用 API のエンドポイント（18章には claim だけがある） | heartbeat / events / result / cancel 確認を追加（提案） | 01 |
 | Q4 | 18章に無い本人用 API（Project 更新、Harness・Profile 登録、Blocked からの続行 など） | 01 の API 一覧で「追加案」として明記 | 01 |
