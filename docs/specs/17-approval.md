@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: c8f1d9b
 範囲: 承認の対象と承認ポリシー、承認と操作内容の結び付け（head SHA が変わったら無効）、承認の原子的な消費、承認後の PR マージ、PR マージを承認対象から外した Project のベースブランチへの直接 push（Q35）
 ---
 
