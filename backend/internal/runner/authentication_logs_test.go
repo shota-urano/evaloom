@@ -72,10 +72,12 @@ func TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE(t *testing.T) {
 				var h adapter.Adapter
 				if harness == "codex" {
 					h = codex.New(codex.Config{Launch: launch, ResolveConfig: resolve, ResolveAuthentication: auth,
-						CancelGrace: 20 * time.Millisecond, Configure: func(context.Context, adapter.HarnessRequest) ([]string, error) { return nil, nil }})
+						CancelGrace: 20 * time.Millisecond, ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+							return json.RawMessage(`{}`), nil
+						}})
 				} else {
 					h = claudecode.New(claudecode.Config{Launch: launch, ResolveConfig: resolve, ResolveAuthentication: auth,
-						CancelGrace: 20 * time.Millisecond, Configure: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+						CancelGrace: 20 * time.Millisecond, ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 							return json.RawMessage(`{}`), nil
 						}})
 				}

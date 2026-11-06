@@ -56,13 +56,13 @@ func configurationProfile(t *testing.T, ctx context.Context, f *Fixture, cli con
 	// The image may run with a different UID from the host bind-mount owner.
 	// Trust only this disposable worktree, never all directories via '*'.
 	configurationWrite(t, filepath.Join(repo, ".gitconfig"), fmt.Sprintf("[user]\n\tname = Evaloom Test\n\temail = evaloom-test@example.invalid\n[safe]\n\tdirectory = %q\n", f.Worktree))
-	tool := "shell"
+	tools := []string{}
 	if cli.name == "claude_code" {
-		tool = "Bash"
+		tools = []string{"Bash"}
 	}
 	definition := map[string]any{
 		"profileVersion": "1.0.0", "harnessVersion": "1.0.0", "modelId": modelID,
-		"promptVersion": "isolation", "skillVersions": []any{}, "toolConfiguration": map[string]any{"allowedTools": []string{tool}},
+		"promptVersion": "isolation", "skillVersions": []any{}, "toolConfiguration": map[string]any{"allowedTools": tools},
 		"contextPolicyVersion": "1", "contextFiles": []string{cli.instruction, ".gitconfig"},
 		"executionConfiguration": map[string]any{"adapter": cli.name, "args": []string{}},
 		"collaborationPolicy":    "solo", "evaluationPolicyVersion": nil,

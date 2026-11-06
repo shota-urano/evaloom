@@ -89,7 +89,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens
 	var registry adapter.Registry
 	if err := registry.Register("codex", codex.New(codex.Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: launch, CancelGrace: time.Second,
 		ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
-		Configure:     func(context.Context, adapter.HarnessRequest) ([]string, error) { return nil, nil }})); err != nil {
+		ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		}})); err != nil {
 		t.Fatal(err)
 	}
 	h, _ := registry.Lookup("codex")

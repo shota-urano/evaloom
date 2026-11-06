@@ -28,8 +28,13 @@ Adapterは読み取り前にOSロックを取り、作業用コピーの`.creden
 宣言する。`AGENTS.md`は宣言せず、Context Builderが固定して組み立てた内容を
 `req.Context.Instructions`経由でプロンプトへ渡す。
 
-`Configure`が返す設定JSONをオブジェクトとして検査し、再シリアライズしてCLIへ渡す。
-ファイルパス・null・配列・不正JSONは起動前に`config_error`にする。
+`ResolveToolPermissions`が返すclaim時点のTool Permissionsと、Profileの
+`toolConfiguration.allowedTools`から、Adapterが`permissions.allow`と`permissions.deny`の
+設定JSONを生成し、`--settings`の引数として認証確認と本実行の両方へ渡す。
+空の一覧もJSON配列として渡す。CLIの規則の文字列は変えず、allowとdenyが同じ規則を
+含む場合も両方へ渡す。denyの優先はCLIが処理する。
+Tool Permissionsの未知キー、配列でない値、文字列でない要素、空文字、nullは
+起動前に`config_error`にする。
 `dontAsk`と`--permission-prompts none`により、許可されていない操作への応答を待たない。
 プロンプトには固定済みExecution Context、JSONで区切ったTask、commitまで行う指示を渡す。
 
@@ -57,13 +62,16 @@ stdout・stderrは行単位で`Logs`へ渡す。分割された書き込み、�
   `ConfigVariable="CLAUDE_CONFIG_DIR"`と固定済みファイルを渡す。
   `ConfigDir()`と`Env()`を`adapter.SandboxEnv`へ渡す。
 - `ContainerLaunch`へ既存の`ContainerConfig`と、Executionごとの信頼された
-  `SandboxSpec`解決関数を渡す。GitDir、ネットワーク、資源制限はRunnerが指定し、
+  `SandboxSpec`解決関数を渡す。GitDir、ネットワークポリシー、資源制限はRunnerが指定し、
   `CLAUDE_CONFIG_DIR`を環境変数の許可リストへ含める。
+  `NetworkHarness`の許可先はAdapter内の定数で置き換え、`api.anthropic.com:443`、
+  `console.anthropic.com:443`、`claude.ai:443`だけをSandboxへ渡す。
+  `NetworkNone`は全遮断のままにし、setup用ポリシーは拒否する。
 - `Config.ResolveConfig`で元の`Environment`を返す。Adapterがコピーを作り、
   認証以外の全ファイルを記録と照合する。`ContainerLaunch`は`ConfigWritable=true`で
   検証済みのExecution専用volumeを使う。元設定とホストのコピーはマウントしない。
-- `Config.Configure`を必ず渡す。HarnessのTool PermissionsとProfileの
-  `toolConfiguration`を照合し、採用CLIの設定JSONへ変換する。
+- `Config.ResolveToolPermissions`を必ず渡す。claim時点のHarnessの`toolPermissions`を
+  JSONオブジェクトとして返す。`{}`は追加の禁止なしを表す。CLI設定への変換はAdapterが行う。
 - `Config.CancelGrace`へRunnerの中止猶予時間を渡す。既定値は追加していない。
 - `registry.Register("claude_code", claudecode.New(config))`で登録する。
   RunnerとControl Planeは既存の登録表から名前で解決する。
@@ -96,12 +104,10 @@ CLIの終了コードが128以上でも、Sandbox障害が確認されなけれ�
 
 ## 仕様の穴
 
-HarnessRequestにはHarnessのTool Permissionsが無く、そのJSONとCLI権限の対応も未定義である。
-Codex Adapterと同じく`Config.Configure`を信頼された変換の境界にする。
-呼び出し側は、固定済みの専用設定・Project設定を採用CLIのスキーマで検証し、
-各ソースの許可規則を制限するdeny規則も返す必要がある。printモードは不正設定を
-黙って無視することがあるため、認証確認だけに設定検証を任せない。
-未知のツール、表現できない権限、設定不備は変換エラーとして起動を止める。
+HarnessRequestにはHarnessのTool Permissionsが無いため、要求項目は増やさず、
+`Config.ResolveToolPermissions`をclaimの固定値を受け取る内部境界として使う。
+起動コマンドとclaimの接続は後続タスクevaloom-1b9が行う。権限の形と変換規則は
+仕様08の3.8と仕様00のQ72に従う。
 
 Profileの`executionConfiguration.args`は許可範囲が未定義なので空配列だけを受け付ける。
 Git作者情報、猶予時間、資源制限の実運用値は選んでいない。
@@ -124,3 +130,8 @@ Git作者情報、猶予時間、資源制限の実運用値は選んでいな�
 起動方法は[公式CLIリファレンス](https://code.claude.com/docs/en/cli-reference)、
 result形式は[公式SDK型定義](https://code.claude.com/docs/en/agent-sdk/typescript)、
 設定ソースと指示ファイルの対応は[公式設定ガイド](https://code.claude.com/docs/en/agent-sdk/claude-code-features)を参照。
+
+`permissions_test.go`の`TestClaudeCodeToolPermissionsLaunchArguments`が空・非空の権限と
+CLI引数の対応を、`TestClaudeCodeToolPermissionsRejectInvalidBeforeCLI`が不正な権限での
+CLI未起動と`config_error`を検証する。`TestContainerLaunchOnlyAdapterDestinations`は
+Sandboxへ渡す宛先の全件一致、GitHubの除外、一覧の置き換え、実行間の独立性を検証する。

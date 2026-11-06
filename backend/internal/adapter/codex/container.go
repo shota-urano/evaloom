@@ -10,10 +10,29 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
+// Model API and subscription-auth destinations adopted in spec 00, Q71.
+// Keep them in this adapter package; GitHub access belongs to Git Publisher.
+const (
+	chatGPTDestination    = "chatgpt.com:443"
+	openAIAuthDestination = "auth.openai.com:443"
+	openAIAPIDestination  = "api.openai.com:443"
+)
+
 // ContainerLaunch binds the existing container implementation to an execution's
-// trusted GitDir, network policy and resource limits. No defaults are invented.
+// trusted GitDir, network policy and resource limits. The adapter owns
+// the exact model/auth destinations; caller-supplied destinations are replaced.
 // One launcher/adapter may serve multiple executions via resolve.
 func ContainerLaunch(config sandbox.ContainerConfig, resolve func(adapter.SandboxEnv) (sandbox.SandboxSpec, error)) Launch {
+	return containerLaunch(config, resolve, func(ctx context.Context, config sandbox.ContainerConfig, spec sandbox.SandboxSpec, args []string) (sandbox.Process, error) {
+		container, err := sandbox.NewContainer(config)
+		if err != nil {
+			return nil, err
+		}
+		return container.RunControlled(ctx, spec, args)
+	})
+}
+
+func containerLaunch(config sandbox.ContainerConfig, resolve func(adapter.SandboxEnv) (sandbox.SandboxSpec, error), run func(context.Context, sandbox.ContainerConfig, sandbox.SandboxSpec, []string) (sandbox.Process, error)) Launch {
 	config.RuntimeEnv = maps.Clone(config.RuntimeEnv)
 	config.AllowEnv = slices.Clone(config.AllowEnv)
 	return func(ctx context.Context, env adapter.SandboxEnv, args []string, stdout, stderr io.Writer) (sandbox.Process, error) {
@@ -28,15 +47,19 @@ func ContainerLaunch(config sandbox.ContainerConfig, resolve func(adapter.Sandbo
 			!maps.Equal(spec.Env, env.Env) || !slices.Contains(config.AllowEnv, "CODEX_HOME") {
 			return nil, &sandbox.Error{Op: "Codex sandbox scope mismatch"}
 		}
-		// The adapter supplies a verified configuration capability in ctx. The
-		// sandbox mounts its private volume, never this path as a writable bind.
+		// NetworkNone remains useful for offline executions. Never inherit setup
+		// hosts or arbitrary destinations from Runner's reusable SandboxSpec.
+		if spec.Network != "" && spec.Network != sandbox.NetworkNone && spec.Network != sandbox.NetworkHarness {
+			return nil, &sandbox.Error{Op: "invalid harness network policy"}
+		}
+		spec.AllowedDestinations = nil
+		if spec.Network == sandbox.NetworkHarness {
+			spec.AllowedDestinations = []string{chatGPTDestination, openAIAuthDestination, openAIAPIDestination}
+		}
+		// Use the verified private configuration volume from ctx.
 		spec.ConfigWritable = true
 		local := config
 		local.Stdout, local.Stderr = stdout, stderr
-		container, err := sandbox.NewContainer(local)
-		if err != nil {
-			return nil, err
-		}
-		return container.RunControlled(ctx, spec, args)
+		return run(ctx, local, spec, args)
 	}
 }
