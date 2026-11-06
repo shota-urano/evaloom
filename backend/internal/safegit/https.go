@@ -77,13 +77,16 @@ func HTTPSOutput(ctx context.Context, repo, repositoryURL, token, operation, ref
 func httpsEnvironment(dir, objects, repositoryURL, token string) []string {
 	// In particular do not inherit trace/curl logging, proxies, SSH agents,
 	// GITHUB_TOKEN, GIT_CONFIG_*, client certificates, or the host's .netrc.
-	return []string{
+	env := []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "XDG_CONFIG_HOME=" + dir,
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_ALLOW_PROTOCOL=https",
 		"GIT_ASKPASS=/usr/bin/false", "SSH_ASKPASS=/usr/bin/false", "GIT_NO_LAZY_FETCH=1",
-		"GIT_OBJECT_DIRECTORY=" + objects,
 		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http." + repositoryURL + ".extraHeader",
 		"GIT_CONFIG_VALUE_0=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token)),
 	}
+	if objects != "" {
+		env = append(env, "GIT_OBJECT_DIRECTORY="+objects)
+	}
+	return env
 }

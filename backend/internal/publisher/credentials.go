@@ -33,6 +33,10 @@ var ErrAuthentication = errors.New("publisher: GitHub App authentication failed"
 // inside this boundary. No cache, disk storage, environment mutation or retry
 // is used. The supplied HTTP transport is trusted and must not log credentials.
 func NewGitHubApp(client *http.Client, repositoryURL string, readPrivateKey func(context.Context) ([]byte, error)) (*GitHub, error) {
+	return newGitHubApp(client, repositoryURL, readPrivateKey, false)
+}
+
+func newGitHubApp(client *http.Client, repositoryURL string, readPrivateKey func(context.Context) ([]byte, error), readOnly bool) (*GitHub, error) {
 	repo, err := githubRepository(repositoryURL)
 	if err != nil || client == nil || readPrivateKey == nil {
 		return nil, ErrPRConfiguration
@@ -41,7 +45,7 @@ func NewGitHubApp(client *http.Client, repositoryURL string, readPrivateKey func
 	copy.Jar = nil
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	g, err := NewGitHub(&copy, func(ctx context.Context) (string, error) {
-		return installationToken(ctx, &copy, repo, readPrivateKey)
+		return installationToken(ctx, &copy, repo, readPrivateKey, readOnly)
 	})
 	if err != nil {
 		return nil, err
@@ -50,7 +54,7 @@ func NewGitHubApp(client *http.Client, repositoryURL string, readPrivateKey func
 	return g, nil
 }
 
-func installationToken(ctx context.Context, client *http.Client, repo string, readKey func(context.Context) ([]byte, error)) (string, error) {
+func installationToken(ctx context.Context, client *http.Client, repo string, readKey func(context.Context) ([]byte, error), readOnly bool) (string, error) {
 	fail := func() (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -70,6 +74,9 @@ func installationToken(ctx context.Context, client *http.Client, repo string, re
 	}
 	_, name, _ := strings.Cut(repo, "/")
 	permissions := map[string]string{"contents": "write", "pull_requests": "write", "metadata": "read"}
+	if readOnly {
+		permissions["contents"], permissions["pull_requests"] = "read", "read"
+	}
 	input := struct {
 		Repositories []string          `json:"repositories"`
 		Permissions  map[string]string `json:"permissions"`
