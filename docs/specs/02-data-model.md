@@ -320,6 +320,12 @@ Execution ごとに固定した Context を保存する（requirements 7.1, 8.3�
 | evaluation_rubrics, evaluation_runs, evaluation_scores, contracts, dependency_edges, human_feedback | 3〜4 | 評価・中央テスト |
 | improvement_proposals, experiments, experiment_assignments | 4 | 自己改善 |
 | collaboration_sessions, collaboration_messages | 5 | AI 協議 |
+
+Phase 2 で追加するテーブル・列の下書き（status: draft）は、次の仕様に書いている。Phase 2 の実装に入るときに、この節へ反映する。
+
+- event_inbox、linear_issue_links、projects の Linear 列、tasks の source・intake_block_cause: [`15-linear-intake.md`](./15-linear-intake.md) 3.8（project_integrations は作らない案、Q50）
+- linear_outbox（追加）: [`16-linear-feedback.md`](./16-linear-feedback.md) 3.7
+- approvals、executions.status の `waiting_approval` / `merging`: [`17-approval.md`](./17-approval.md) 3.9
 | models | 未定（Q19） | Phase 1 ロードマップに Model Registry が無い。Profile が Model ID を文字列で持つ |
 
 ## 4. 設定値・確定値
