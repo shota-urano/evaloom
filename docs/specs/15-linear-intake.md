@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 57117d5
 範囲: Linear Webhook の受信（公開 HTTPS 経路・署名検証・重複排除）、Team + Label ルーティング、Linear からの自動タスク作成、ai-ready の取り外しと Issue のキャンセルによる中止
 ---
 
