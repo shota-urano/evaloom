@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 430ae21
 範囲: Local Runner の pull ループ、heartbeat、Execution の実行手順、ログ収集と機密情報除外、タイムアウト、キャンセル
 ---
 

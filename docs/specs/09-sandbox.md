@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 85cdc03
 範囲: Harness Sandbox と Test Sandbox の隔離条件、隔離方式の選択、ネットワークポリシー、秘密情報とモデル API 認証情報の扱い、ホスト側 Git 操作の防御
 ---
 

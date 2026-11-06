@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: f1b4137
 範囲: Project / Harness / Harness Profile の登録、パス検証、版の固定、プロジェクトへの割り当て
 ---
 

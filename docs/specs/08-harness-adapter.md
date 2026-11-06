@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: db34b14
 範囲: 共通契約に従う Adapter インターフェース、Capability、Codex / Claude Code Adapter、ハーネスの専用設定環境、Adapter の登録
 ---
 

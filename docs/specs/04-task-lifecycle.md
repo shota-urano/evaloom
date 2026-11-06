@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: e73237a
 範囲: 手動タスク作成、タスクと Execution の状態遷移、claim と同時実行制御、再起動時の回収、再実行、中止、Blocked からの続行
 ---
 

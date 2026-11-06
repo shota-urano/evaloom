@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 84875c2
 範囲: 整合性アンカー。Phase 1 のテーブル、状態の列挙値、共通契約と Harness Profile のスキーマ
 ---
 

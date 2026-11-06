@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 938ed95
 範囲: 検証済み commit の push と PR 作成・更新、push 直前の確認、再実行時の PR の扱い、GitHub 側の権限設定
 ---
 

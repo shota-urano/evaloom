@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 06bfbdc
 範囲: worktree の作成・再利用、開始点 SHA の記録、ブランチ作成、コピー許可リスト、セットアップコマンド、保持とクリーンアップ
 ---
 
