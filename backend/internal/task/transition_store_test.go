@@ -120,7 +120,9 @@ func TestTransitionRejectsMissingWrongTaskAndHistoricalExecution(t *testing.T) {
 			case "missing task":
 				change.TaskID = "missing"
 			case "wrong task":
-				mustExec(t, db, `INSERT INTO tasks SELECT 'task-2', project_id, title, body, acceptance_criteria,
+				mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria,
+					short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
+					SELECT 'task-2', project_id, title, body, acceptance_criteria,
 					short_name, task_type, collaboration_mode, status, 'key-2', created_at, updated_at FROM tasks`)
 				change.TaskID = "task-2"
 			case "historical":

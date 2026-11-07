@@ -82,7 +82,7 @@ func TestRegistryRejectsInvalidForeignKeys(t *testing.T) {
 	}{
 		{
 			"project runner",
-			`INSERT INTO projects SELECT 'bad', name, '/bad', git_remote_url, 'missing',
+			`INSERT INTO projects (` + registryProjectColumns + `) SELECT 'bad', name, '/bad', git_remote_url, 'missing',
 			base_branch, default_role, review_role, context_location, test_command,
 			test_report_format, test_report_path, setup_command, copy_allowlist,
 			allowed_operations, approval_policy, timeouts,
