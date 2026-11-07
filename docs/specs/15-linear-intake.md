@@ -113,7 +113,7 @@ Webhook の再送が無くなったため、重複排除の対象は「同じ付
 | ラベルは登録済みだが、Issue の Team がその Project の Team と違う | 自動実行せず Blocked（案） | `routing_team_mismatch` |
 | 実行先ラベルが1つも無い | 自動実行せず Blocked（案） | `routing_no_label` |
 
-5. 受け入れ条件を本文から取り出す（3.6.1）。取り出せなければ Blocked にし（requirements 6.3）、Linear へ受け入れ条件の記入を求めるコメントを返す（[`16-linear-feedback.md`](./16-linear-feedback.md)）。保留の理由は `missing_acceptance_criteria`。
+5. 受け入れ条件を本文から取り出す（3.6.1）。取り出せなければ Blocked にし（requirements 6.3）、Linear へ受け入れ条件の記入を求めるコメントを返す（[`16-linear-feedback.md`](./16-linear-feedback.md)）。保留の理由は `missing_acceptance_criteria`。このときタスクの acceptance_criteria は空文字列にする（2026-11-08 決定）。
 6. Project の `default_role` に割り当てが無ければ、手動作成と同じく実行できない。保留の理由を `config_missing_assignment` として Blocked にする（案。手動作成では 422 で断るが、Linear からの取り込みでは断る相手がいないため）。
 7. すべて通ったら、手動作成（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.1）と同じ手順でタスクと Execution（seq=1、mode=`continue`、`pending`）を作り、タスクを `queued` にする。違いは次のとおり。
    - tasks.source=`linear`。
@@ -185,6 +185,7 @@ requirements 17章の event_inbox（受信イベント）は Phase 2 では作�
 
 - project_id を NULL 可にする。NULL を許すのは source=`linear` かつ intake_block_cause が NULL でないときだけとする（アプリ側で検証する）。
 - 保留の理由の値: `routing_multiple_labels` / `routing_unknown_label` / `routing_team_mismatch` / `routing_no_label` / `missing_acceptance_criteria` / `config_missing_assignment`。
+- acceptance_criteria を空文字列にしてよいのは、source=`linear` かつ intake_block_cause=`missing_acceptance_criteria` のときだけとする。手動作成のタスクは今までどおり空を許さない。既存の DB の制約（空を許さない CHECK）は、この条件に合わせて変える（2026-11-08 決定）。
 - 保留は Execution を持たないため、execution_blocks（[`02-data-model.md`](./02-data-model.md) 5.6）とは別に持つ。
 
 #### linear_issue_states（追加）
@@ -283,7 +284,8 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
 | 状況 | 処理 |
 |---|---|
 | 照会の途中（ページの途中を含む）で Linear API が失敗 | その回の照会を捨て、判定もしない。linear_poll_teams の last_error と consecutive_failures を更新し、次の間隔で照会し直す |
-| 続けて失敗した回数が上限（実装時に確定）を超えた | Dashboard のエラー状況に出し、macOS 通知で本人に知らせる（案）。照会は続ける |
+| 続けて失敗した回数が上限（5回。1分おきの照会で5分にあたる。2026-11-08 決定）を超えた | Dashboard のエラー状況に出し、macOS 通知で本人に知らせる（案）。照会は続ける |
+| API キーのファイルが無い・読めない・権限が 0600 でない | 照会を始めない。対象のすべての Team の last_error を `auth` にし、Dashboard の取り込み状況に出す。理由（ファイルが無い・権限が違う）は値を含めずにログにも出す（2026-11-08 決定） |
 | Linear API の認証エラー | last_error=`auth`。API キーの値はログに出さない。macOS 通知で本人に知らせる（案）。照会は間隔ごとに続ける |
 | レート制限に掛かった | last_error=`rate_limited`。Linear が返す再開の目安まで照会を止める |
 | 一覧から消えた Issue の取り直しに失敗 | その Issue の行を変えず、次の照会で再び確かめる。ほかの Issue の判定は進める |
@@ -321,11 +323,11 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
 - [ ] [Backend] Linear GraphQL クライアント（API キーの読み込み、対象 Team の ai-ready 付き Issue の一覧をページを読み切って取得、Issue の個別取得）
   - 受け入れ基準: テスト用のサーバーに対して、複数ページに分かれた一覧を最後まで取得できる; ページの途中で失敗させると、一覧を返さずにエラーになる; API キーの値がログと DB に現れない; API キーのファイルが無い・権限が 0600 でないときは照会を始めず理由を記録する
 - [ ] [Backend] Linear Poller（起動時と1分ごとの照会、1本ずつの実行、Team ごとの成功・失敗の記録、レート制限で待つ）
-  - 受け入れ基準: Control Plane を起動すると1回照会し、その後は設定した間隔で照会する; 照会が間隔より長く掛かっても、2本目が同時に始まらない; 失敗すると linear_poll_teams の last_error と consecutive_failures が更新され、成功で戻る; linear_team_id を登録した Project が無いときは照会しない
+  - 受け入れ基準: Control Plane を起動すると1回照会し、その後は設定した間隔で照会する; 照会が間隔より長く掛かっても、2本目が同時に始まらない; 失敗すると linear_poll_teams の last_error と consecutive_failures が更新され、成功で戻る; linear_team_id を登録した Project が無いときは照会しない; 5回続けて失敗すると Dashboard のエラー状況に出て macOS 通知が1回出る; API キーのファイルが無い・権限が 0600 でないとき、対象の Team の last_error が auth になる
 - [ ] [Backend] 付与・取り外しの判定（3.4 の2つの表、最初の照会の扱い、重複排除）
   - 受け入れ基準: 前回に無く今回ある Issue で起動になり attach_seq が1増える; 付いたまま本文やラベルを変えた Issue で何も起きない; 一覧から消えた Issue を取り直し、ラベルが外れていれば中止、キャンセルなら中止になる; Team の最初の照会では、一覧の Issue を記録するだけでタスクが作られない; 外して付け直した Issue で、前のタスクが終端なら新しいタスクができ、終端でなければできない; 判定の途中で失敗させても、次の照会でタスクが二重にできない
 - [ ] [Backend] ルーティングと受け入れ条件の取り出し、タスク作成（3.6）
-  - 受け入れ基準: Team とラベルが一致する Issue から queued のタスクと pending の Execution ができる; 実行先ラベルが2つ・未登録・無し・Team 違いでは Execution の無い blocked のタスクができ、intake_block_cause が表の値になる; 受け入れ条件の見出しが無い Issue が missing_acceptance_criteria で保留になる; Linear Project を設定していない Issue でも実行される
+  - 受け入れ基準: Team とラベルが一致する Issue から queued のタスクと pending の Execution ができる; 実行先ラベルが2つ・未登録・無し・Team 違いでは Execution の無い blocked のタスクができ、intake_block_cause が表の値になる; 受け入れ条件の見出しが無い Issue が missing_acceptance_criteria で保留になり、acceptance_criteria が空文字列で保存される; source=manual のタスクは acceptance_criteria が空だと保存できない; Linear Project を設定していない Issue でも実行される
 - [ ] [Backend] 保留したタスクの再判定（3.6.3）
   - 受け入れ基準: 保留中のタスクの Issue で実行先ラベルを直し、更新時刻が進んだ状態で照会すると、同じタスクが queued になり Execution が1つできる; 更新時刻が変わらない照会では再判定しない; 保留の理由が変わらなければ何も起きない; 保留していないタスクの Issue の更新では何も起きない
 - [ ] [Backend] Linear 起因の中止（3.7）
