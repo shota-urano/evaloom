@@ -91,7 +91,9 @@ type Execution struct {
 	harnessWallTimeMS *int64
 	now               func() time.Time
 	// Read credentials are retained only for log exclusion, never Sandbox env.
-	logSecrets []string
+	logSecrets       []string
+	audit            *ResultAudit
+	harnessSessionID adapter.SessionID
 }
 
 // StageFunc performs one stage. A failure or block must return an error; the
@@ -190,7 +192,8 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 				return execution.stageError(stage.Stage, err)
 			}
 			if checkErr != nil {
-				return &StageError{stage.Stage, checkErr}
+				return &StageError{stage.Stage, errors.Join(checkErr,
+					execution.reportResult(model.ExecutionFailed, model.ErrorPublishFailed, nil, "push直前の中止確認ができない"))}
 			}
 		}
 		if executor.control != nil && stage.ID != StageComplete {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/safegit"
 	"github.com/shota-urano/evaloom/backend/internal/worktree"
@@ -62,6 +64,36 @@ func (s *ReadSession) State(ctx context.Context, repositoryURL string, number in
 		return "", ErrPRConfiguration
 	}
 	return s.app.State(ctx, repositoryURL, number)
+}
+
+// ObservePullRequest also records the open PR's observed HEAD for a fresh
+// git_state Block, before any local worktree exists (spec 11, 3.4.2).
+func (s *ReadSession) ObservePullRequest(ctx context.Context, repositoryURL string, number int) (PullRequestState, string, error) {
+	if s == nil || s.app == nil || number <= 0 {
+		return "", "", ErrPRConfiguration
+	}
+	repo, err := s.app.repository(repositoryURL)
+	if err != nil {
+		return "", "", err
+	}
+	var pr githubPR
+	err = s.app.request(ctx, http.MethodGet, "/repos/"+repo+"/pulls/"+strconv.Itoa(number), nil, http.StatusOK, &pr)
+	if err != nil {
+		return "", "", err
+	}
+	if pr.Number != number || pr.Merged == nil || !strings.EqualFold(pr.URL, "https://github.com/"+repo+"/pull/"+strconv.Itoa(number)) {
+		return "", "", ErrPullRequest
+	}
+	if pr.State == "closed" {
+		if *pr.Merged {
+			return PRMerged, "", nil
+		}
+		return PRClosed, "", nil
+	}
+	if pr.State == "open" && !*pr.Merged && objectID.MatchString(pr.Head.SHA) {
+		return PROpen, pr.Head.SHA, nil
+	}
+	return "", "", ErrPullRequest
 }
 
 // Output accepts only the exact clone/fetch/ls-remote forms used by worktree.

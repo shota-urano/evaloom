@@ -92,6 +92,12 @@ func (execution *Execution) reportResult(status model.ExecutionStatus, class mod
 	result.BranchName = execution.BranchName
 	result.HarnessHeadSHA, result.VerifiedSHA = execution.HarnessHeadSHA, execution.VerifiedSHA
 	result.GateResults, result.TestRuns, result.Block = execution.gateResults, execution.testRuns, block
+	if status == model.ExecutionFailed && execution.audit != nil && execution.audit.Action != "" {
+		result.Audit = execution.audit
+	}
+	if execution.status == model.ExecutionRunning {
+		result.HarnessSessionID = string(execution.harnessSessionID)
+	}
 	if status == model.ExecutionSucceeded {
 		result.Usage = execution.completedUsage()
 	}
@@ -105,6 +111,14 @@ func (execution *Execution) reportResult(status model.ExecutionStatus, class mod
 
 func (execution *Execution) stageError(stage Stage, err error) error {
 	if execution.control != nil {
+		// A stage may have already delivered its terminal result before a
+		// concurrent shutdown/cancellation arrives. Never send a second terminal
+		// transition (for example failed -> cancelled) after that acknowledgement.
+		switch execution.status {
+		case model.ExecutionFailed, model.ExecutionBlocked, model.ExecutionTimedOut,
+			model.ExecutionCancelled, model.ExecutionSucceeded, model.ExecutionInterrupted:
+			return &StageError{Stage: stage, Err: err}
+		}
 		var status model.ExecutionStatus
 		var class model.ErrorClass
 		switch {
