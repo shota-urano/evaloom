@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -22,7 +23,29 @@ func (runner *Runner) RegisterLogArtifact(ctx context.Context, artifact LogArtif
 	return runner.registerArtifact(ctx, artifact)
 }
 
-// registerArtifact also serves Runner-generated diffs through the existing API.
+// deliverArtifact retains one closed file and identity until registration is
+// acknowledged or the execution is cancelled. Never rerun the producing stage.
+func (runner *Runner) deliverArtifact(ctx context.Context, artifact LogArtifact) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := runner.registerArtifact(ctx, artifact); err == nil {
+			return nil
+		}
+		// Spec 05, section 6: preserve the local artifact for later resend.
+		// Reuse the Runner's existing retry interval; no new timeout default.
+		timer := time.NewTimer(runner.pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// registerArtifact also serves Runner-generated diffs and harness results.
 func (runner *Runner) registerArtifact(ctx context.Context, artifact LogArtifact) error {
 	for _, value := range []string{artifact.ID, artifact.ExecutionID} {
 		if id, err := ulid.ParseStrict(value); err != nil || id.String() != value {

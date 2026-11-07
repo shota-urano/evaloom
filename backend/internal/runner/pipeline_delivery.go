@@ -278,5 +278,5 @@ func (p *claimPipeline) harnessHead(ctx context.Context, e *Execution) error {
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		return fmt.Errorf("runner: save harness result failed")
 	}
-	return p.runner.registerArtifact(ctx, LogArtifact{ID: id, ExecutionID: e.Claim.Execution.ID, Kind: "harness_output", Path: path})
+	return p.runner.deliverArtifact(ctx, LogArtifact{ID: id, ExecutionID: e.Claim.Execution.ID, Kind: "harness_output", Path: path})
 }

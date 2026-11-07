@@ -28,6 +28,8 @@ Sandbox、Adapter、Gate、Publisher、ログ・使用量の部品を使う。
 Gitの作者情報はcommitAuthorから実行プロセス専用のGit設定環境変数で渡す。
 
 失敗した工程の後は実行せず、作成済みworktreeを保持する。
+工程9のdiffとharness_outputは、登録に失敗しても保存済みのファイルとartifactIdを使って再送する。
+登録成功の応答を受けてから次の工程へ進み、再送待ちもキャンセルで停止する。
 パス拒否にはconfig_errorと監査を記録し、push直前の中止確認に失敗した場合は
 publish_failedを報告する。認証設定やclaimの必須情報が無ければ成功扱いにしない。
 
@@ -43,6 +45,7 @@ Gitのテスト用起動スクリプトはGitHubの接続先とTLS証明書を�
 | 確認する動作 | テスト |
 | --- | --- |
 | 13工程、worktreeとコピーのハッシュ、各イベント、Executionの全記録、usage、PR作成前のpushedSha保存、初回freshの-r1、読み取りと書き込みのトークン権限 | `TestProductionPipelineClaimPushAndSQLite` |
+| harness_outputの初回503と保存後の応答喪失、同じID・内容での再送、重複行を作らずpush・succeededまで進むこと | `TestProductionPipelineRetriesHarnessOutput` |
 | 工程途中の失敗、worktree保持、認証設定不足、パス逸脱の監査、ProjectとdefaultTimeoutsの期限 | `TestProductionPipelineStopsAndRetainsWorktree` |
 | 開いている前回PRがあるfreshの停止 | `TestProductionPipelineFreshOpenPRBlocksBeforeWorktree` |
 | Gate 3からの再開、ハーネス・テストを再実行しないこと、PR本文のBlock原因 | `TestProductionPipelineResumeGate3UsesSavedBlock` |

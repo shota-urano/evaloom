@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
@@ -70,26 +69,13 @@ func (runner *Runner) assembleHarnessResult(ctx context.Context, e *Execution) e
 	if snapshot.base != e.BaseSHA || snapshot.worktree != e.WorktreePath || snapshot.diff.ExecutionID != e.Claim.Execution.ID {
 		return fmt.Errorf("runner: harness snapshot scope changed")
 	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := runner.registerArtifact(ctx, snapshot.diff); err == nil {
-			e.HarnessHeadSHA, e.HarnessResult.HeadSHA = snapshot.head, snapshot.head
-			e.HarnessResult.Commits = append([]string{}, snapshot.commits...)
-			e.HarnessResult.DiffArtifactID = snapshot.diff.ID
-			return nil
-		}
-		// Spec 05, section 6: preserve the local artifact for later resend.
-		// Reuse the Runner's existing retry interval; no new timeout default.
-		timer := time.NewTimer(runner.pollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
+	if err := runner.deliverArtifact(ctx, snapshot.diff); err != nil {
+		return err
 	}
+	e.HarnessHeadSHA, e.HarnessResult.HeadSHA = snapshot.head, snapshot.head
+	e.HarnessResult.Commits = append([]string{}, snapshot.commits...)
+	e.HarnessResult.DiffArtifactID = snapshot.diff.ID
+	return nil
 }
 
 func (runner *Runner) snapshotHarness(ctx context.Context, e *Execution) (*harnessSnapshot, error) {

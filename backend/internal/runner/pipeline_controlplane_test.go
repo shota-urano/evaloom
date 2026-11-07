@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -122,6 +123,12 @@ type productionPipelineFixture struct {
 	tokenPermissions            []map[string]string
 	server                      *httptest.Server
 	cookie                      *http.Cookie
+	harnessOutputs              []harnessOutputAttempt
+}
+
+type harnessOutputAttempt struct {
+	id   string
+	body []byte
 }
 
 func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipelineFixture {
@@ -202,8 +209,39 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	}
 	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ContextConfig{}, api.ArtifactConfig{Store: files, MaxBytes: 1 << 20}, f.adapters)
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failOutput := false
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/artifacts") && r.URL.Query().Get("kind") == "harness_output" {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			id := r.URL.Query().Get("artifactId")
+			local, err := os.ReadFile(filepath.Join(f.config.DataDir, "artifacts", id+".json"))
+			if err != nil || !bytes.Equal(local, body) {
+				t.Errorf("harness output not retained locally: %v", err)
+			}
+			f.mu.Lock()
+			f.harnessOutputs = append(f.harnessOutputs, harnessOutputAttempt{id: id, body: body})
+			failOutput = len(f.harnessOutputs) == 1
+			f.mu.Unlock()
+			if failOutput && scenario == "output_unavailable" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
 		result := httptest.NewRecorder()
 		handler.ServeHTTP(result, r)
+		if failOutput && scenario == "output_lost_ack" {
+			if result.Code < 200 || result.Code >= 300 {
+				t.Errorf("lost acknowledgement requires a committed artifact: %d %s", result.Code, result.Body.String())
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		if result.Code >= 400 {
 			t.Logf("Control Plane %s: %d %s", r.URL.Path, result.Code, result.Body.String())
 		}
@@ -377,6 +415,46 @@ func TestProductionPipelineClaimPushAndSQLite(t *testing.T) {
 	}
 	f.assertSucceeded(t)
 }
+
+func TestProductionPipelineRetriesHarnessOutput(t *testing.T) {
+	for _, scenario := range []string{"output_unavailable", "output_lost_ack"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newProductionPipelineFixture(t, scenario)
+			if err := f.execute(t); err != nil {
+				t.Fatal(err)
+			}
+			f.assertSucceeded(t)
+			f.mu.Lock()
+			attempts := append([]harnessOutputAttempt(nil), f.harnessOutputs...)
+			f.mu.Unlock()
+			if len(attempts) != 2 || attempts[0].id == "" || attempts[0].id != attempts[1].id || !bytes.Equal(attempts[0].body, attempts[1].body) {
+				t.Fatalf("harness output retry changed identity/content: %+v", attempts)
+			}
+			var result adapter.HarnessResult
+			if err := json.Unmarshal(attempts[0].body, &result); err != nil || result.Summary != "dummy completed "+logExecution || result.HeadSHA == "" || result.DiffArtifactID == "" {
+				t.Fatalf("harness output lost result: %+v %v", result, err)
+			}
+			var count int
+			if err := f.db.QueryRow(`SELECT count(*) FROM artifacts WHERE execution_id=? AND kind='harness_output'`, logExecution).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("harness output rows=%d err=%v", count, err)
+			}
+			var hash string
+			var size int64
+			if err := f.db.QueryRow(`SELECT sha256,size_bytes FROM artifacts WHERE id=? AND execution_id=? AND kind='harness_output'`, attempts[0].id, logExecution).Scan(&hash, &size); err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(attempts[0].body)
+			if hash != hex.EncodeToString(digest[:]) || size != int64(len(attempts[0].body)) {
+				t.Fatalf("stored harness output differs: hash=%s size=%d", hash, size)
+			}
+			path := filepath.Join(f.config.DataDir, "artifacts", attempts[0].id+".json")
+			if local, err := os.ReadFile(path); err != nil || !bytes.Equal(local, attempts[0].body) {
+				t.Fatalf("saved harness output differs after retry: %v", err)
+			}
+		})
+	}
+}
+
 func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	t.Helper()
 	var status, base, branch, worktreeID, session, verified, pushed, prURL string
