@@ -258,6 +258,7 @@ heartbeat の要求と応答（案）:
 - [ ] [Backend] タイムアウトとキャンセル（Adapter のキャンセル、強制終了、状態報告）
   - 受け入れ基準: 上限時間を短くしたテストでハーネスが止まり timed_out が報告される; 中止指示で cancelled が報告される; どちらも worktree が残る
 - [ ] [Backend] 使用量の記録
+  - 受け入れ基準: 完了した Execution ごとに usage_records に実行時間が記録される; トークン数が取れない Adapter では NULL になる
 
 - [ ] [Backend] Runner の設定ファイルを 4.1 の表どおりに読む（キーの追加、必須・既定値・未知キーの検査、パスの検査）
   - 受け入れ基準: 4.1 の必須キーが1つでも欠けた設定、表に無いキーを含む設定、相対パスを含む設定で、`evaloom-runner` が起動時にエラーで終わることをテストで確かめる; `defaultTimeouts` を省いた設定で 900 / 3600 / 1800 秒が使われる; `harnessAuthFiles` のパスが `dataDir` の外にある設定を起動時に拒否する
@@ -268,4 +269,3 @@ heartbeat の要求と応答（案）:
 - [ ] [Backend] 起動コマンドから工程表への接続（3.3 の工程1〜13 に、実装済みの部品を設定ファイルの値と 3.9 の入力で組み立てて渡す）
   - 前提: 次の実装単位が先に終わっていること。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 9章の「claim の応答の追加項目」と「result の工程内報告と監査の付記」、[`08-harness-adapter.md`](./08-harness-adapter.md) 9章の「Tool Permissions の変換とモデル API の宛先」（Q71・Q72）、[`11-git-publisher.md`](./11-git-publisher.md) 9章の「読み取り用のインストールアクセストークン」（Q70）、この章の「Sandbox の資源上限の設定キー」（Q68）。`pullRequests` を使う工程2は Q69 の決定が要る。[`03-registry.md`](./03-registry.md) 9章の「setup の許可宛先の登録」（Q73）は前提にしない（決まるまで claim が空配列を返し、setup はネットワークを全遮断して動く）。3.9 の表で「案」の行は、対応する Q が決まってから実装する
   - 受け入れ基準: `backend/cmd/evaloom-runner` が claim した Execution を工程1から13まで実行し、起動時の「execution stages are not implemented」の表示が無くなる; 起動コマンドが組み立てる依存だけを使い（テスト用の記録実装や `nil` の境界を渡さない）、実際の Control Plane のハンドラと SQLite に対して、ダミーのハーネス（`adapter/dummy`）とローカルの bare リポジトリで claim から `succeeded` の報告と push までを1本通す結合テストがある。テストで置き換えてよいのは、コンテナのランタイム（偽 runtime）、Adapter（`adapter/dummy`）、GitHub の HTTP API とトークン発行（テスト用の HTTP サーバー）だけとする; そのテストの後、SQLite に worktrees の行（コピー一覧を含む）、`worktree_ready`・`pushed`・`pr_created` のイベント、executions の base_sha・branch_name・worktree_id・harness_session_id・verified_sha・pushed_sha・pr_number・pr_url、usage_records の行が残っている; テスト用の GitHub サーバーが PR 作成要求を受けた時点で、SQLite の pushed_sha が verified_sha と同じ値で保存済みである; mode=`fresh` の Execution（タスクに `fresh` が1回目）で、ブランチ名が `-r1` で終わる; 前回の PR が開いている mode=`fresh` の Execution で、工程2で `blocked`（`git_state`）になり worktree を作らない; resume_point=`gate3` の Execution で工程11から始まり、PR 本文に本人が続行を選んだ Block の原因が入る; worktree のパスが Worktree Root の外に解決される設定で `failed`（`config_error`）になり、audit_logs に行が残る; 工程の途中で失敗させたテストで、以降の工程を行わず worktree を残す; Execution の Harness ID が `harnessAuthFiles` に無いとき、ハーネスを起動せず `config_error` で止まる; タイムアウトに Project の timeouts、無ければ `defaultTimeouts` が使われる
-  - 受け入れ基準: 完了した Execution ごとに usage_records に実行時間が記録される; トークン数が取れない Adapter では NULL になる
