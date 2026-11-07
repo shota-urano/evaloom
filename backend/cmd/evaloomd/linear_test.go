@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 	polled := make(chan string, 1)
 	original := newLinearPoller
 	t.Cleanup(func() { newLinearPoller = original })
-	newLinearPoller = func(db *sql.DB, logger *slog.Logger) (*linearintake.Poller, error) {
+	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
 		// An interval far longer than the test isolates the startup poll.
 		return &linearintake.Poller{DB: db, Client: startupPollClient{polled}, Logger: logger, Interval: time.Hour}, nil
 	}
@@ -95,7 +96,7 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 
 func TestDefaultLinearPollerUsesProductionConfiguration(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	poller, err := newLinearPoller(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	poller, err := newLinearPoller(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), 49123)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,5 +105,23 @@ func TestDefaultLinearPollerUsesProductionConfiguration(t *testing.T) {
 	}
 	if _, ok := poller.Client.(*linear.Client); !ok {
 		t.Fatalf("client = %T; want *linear.Client", poller.Client)
+	}
+	// On macOS the production Poller must alert through the macOS helper.
+	if runtime.GOOS == "darwin" {
+		if _, ok := poller.Alerter.(macOSLinearAlerter); !ok {
+			t.Fatalf("alerter = %T; want macOSLinearAlerter", poller.Alerter)
+		}
+	}
+}
+
+func TestLinearPollAlerterIsMacOSOnlyOnDarwin(t *testing.T) {
+	alerter, ok := linearPollAlerter("darwin", "/Users/owner", 49123).(macOSLinearAlerter)
+	if !ok || alerter.macOS == nil {
+		t.Fatalf("darwin alerter = %#v; want macOSLinearAlerter", alerter)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		if got := linearPollAlerter(goos, "/unused", 8080); got != nil {
+			t.Fatalf("%s alerter = %#v; want nil", goos, got)
+		}
 	}
 }

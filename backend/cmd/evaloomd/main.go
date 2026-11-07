@@ -39,7 +39,8 @@ const (
 
 // newLinearPoller builds the Linear Poller started with the Control Plane
 // (spec 15 3.1). Tests replace it to avoid the real Linear API.
-var newLinearPoller = func(db *sql.DB, logger *slog.Logger) (*linearintake.Poller, error) {
+// port is the actual bound port, used by the macOS alert to open the Dashboard.
+var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearintake.Poller, error) {
 	keyPath, err := linear.DefaultAPIKeyPath()
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear: %w", err)
@@ -48,9 +49,36 @@ var newLinearPoller = func(db *sql.DB, logger *slog.Logger) (*linearintake.Polle
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear: %w", err)
 	}
-	// No Alerter yet: the macOS helper only opens task detail URLs (spec 12
-	// 3.3), and a polling alert has no task. Alerts are logged meanwhile.
-	return &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}, nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear alert home: %w", err)
+	}
+	poller := &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}
+	if alerter := linearPollAlerter(runtime.GOOS, home, port); alerter != nil {
+		poller.Alerter = alerter
+	}
+	return poller, nil
+}
+
+// macOSLinearAlerter sends the Linear polling alert (spec 15 6章) through the
+// same macOS helper as task notifications.
+type macOSLinearAlerter struct{ macOS *notification.MacOS }
+
+func (a macOSLinearAlerter) AlertLinearPollFailing(ctx context.Context, alert linearintake.Alert) error {
+	return a.macOS.NotifyLinearPollFailing(ctx, string(alert.Class), alert.ConsecutiveFailures)
+}
+
+// linearPollAlerter returns the macOS alerter on darwin and nil elsewhere,
+// like phase1NotificationChannels.
+func linearPollAlerter(goos, home string, port int) linearintake.Alerter {
+	if goos != "darwin" {
+		return nil
+	}
+	return macOSLinearAlerter{notification.NewMacOS(notificationHelperPath(home), port)}
+}
+
+func notificationHelperPath(home string) string {
+	return filepath.Join(home, "Applications", "Evaloom Notifications.app")
 }
 
 func main() {
@@ -157,7 +185,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		<-notificationsDone // Stop DB users before closing the connection.
 	}()
 	// Poll Linear once at startup and then at each interval (spec 15 3.1).
-	poller, err := newLinearPoller(db, logger)
+	poller, err := newLinearPoller(db, logger, listener.Addr().(*net.TCPAddr).Port)
 	if err != nil {
 		return err
 	}
@@ -212,8 +240,7 @@ func phase1NotificationChannels(goos, home string, port int) []notification.Chan
 	if goos != "darwin" {
 		return nil
 	}
-	helper := filepath.Join(home, "Applications", "Evaloom Notifications.app")
-	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(helper, port)}}
+	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(notificationHelperPath(home), port)}}
 }
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {

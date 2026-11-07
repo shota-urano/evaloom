@@ -181,3 +181,37 @@ func TestMacOSRejectsInvalidInputWithoutLaunching(t *testing.T) {
 		}
 	}
 }
+
+func TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard(t *testing.T) {
+	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
+	var launched bool
+	m.run = func(cmd *exec.Cmd) error {
+		launched = true
+		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear の照会が失敗",
+			"Linear の照会が続けて失敗しています\nnetwork\n5 回連続", "http://127.0.0.1:49123/"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("command = %q; want %q", cmd.Args, want)
+		}
+		return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+	}
+	if err := m.NotifyLinearPollFailing(context.Background(), "network", 5); err != nil || !launched {
+		t.Fatalf("alert err = %v, launched = %v", err, launched)
+	}
+	// Free-form classifications (which could carry a response body or key)
+	// and invalid counts never reach the helper.
+	launched = false
+	for _, tc := range []struct {
+		class string
+		count int
+	}{{"lin_api_SECRET", 5}, {"", 5}, {"auth", 0}} {
+		if err := m.NotifyLinearPollFailing(context.Background(), tc.class, tc.count); err == nil || launched {
+			t.Fatalf("%q/%d accepted: err=%v launched=%v", tc.class, tc.count, err, launched)
+		}
+	}
+	m.run = func(cmd *exec.Cmd) error {
+		return os.WriteFile(helperResultPath(t, cmd), []byte("permission_denied"), 0o600)
+	}
+	if err := m.NotifyLinearPollFailing(context.Background(), "auth", 1); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("permission denied err = %v", err)
+	}
+}
