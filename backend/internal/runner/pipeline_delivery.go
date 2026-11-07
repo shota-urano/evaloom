@@ -220,12 +220,28 @@ func (p *claimPipeline) prepareResume(ctx context.Context, e *Execution) error {
 	e.HarnessHeadSHA, e.VerifiedSHA, e.VerifyRun = e.Claim.Execution.HarnessHeadSHA, e.Claim.Execution.VerifiedSHA, e.Claim.Execution.VerifyRun
 	// Reuse validates the Git directory/branch and the unchanged approved tree.
 	// Returning an error before BeforeRecreate prevents an unrecorded restore.
-	_, err = (worktree.Repositories{WorktreeRoot: p.config.WorktreeRoot}).Reuse(ctx, worktree.ReuseRequest{
+	reused, err := (worktree.Repositories{WorktreeRoot: p.config.WorktreeRoot}).Reuse(ctx, worktree.ReuseRequest{
 		ProjectID: e.Claim.Project.ID, RepositoryURL: e.Claim.Project.GitRemoteURL, Path: w.Path, BranchName: w.BranchName, BaseSHA: w.BaseSHA,
 		ExpectedHeadSHA: b.HeadSHA, CopiedFiles: w.CopiedFiles, BeforeRecreate: func(context.Context) error { return ErrPipelineInput },
 	})
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, worktree.ErrWorktreePath) {
+		if p.deps.Audit != nil {
+			if auditErr := p.deps.Audit.RecordWorktreePathRejection(e.control.ReportContext, e.Claim.Execution.ID); auditErr != nil {
+				return errors.Join(ErrPipelineInput, auditErr)
+			}
+		}
+		return ErrPipelineInput
+	}
 	if err != nil {
-		return errors.Join(fmt.Errorf("runner: resume worktree check stopped execution"), e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGitState, HeadSHA: b.HeadSHA}))
+		head := reused.HeadSHA
+		if head == "" {
+			return errors.Join(fmt.Errorf("runner: resume worktree check stopped execution"), e.reportResult(model.ExecutionBlocked, "",
+				&ResultBlock{Cause: model.BlockGitState, HeadSHA: b.HeadSHA}, "現在のHEADを取得できない。記録したSHAは続行判断時のSHAであり、現在のHEADは未確認"))
+		}
+		return errors.Join(fmt.Errorf("runner: resume worktree check stopped execution"), e.reportBlock(model.ExecutionBlocked, "", &ResultBlock{Cause: model.BlockGitState, HeadSHA: head}))
 	}
 	if err := json.Unmarshal(e.Claim.Profile.Definition, &p.definition); err != nil {
 		return err

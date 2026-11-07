@@ -30,12 +30,12 @@ import (
 const pipelineCancelGrace = 5 * time.Second
 const pipelineControlTimeout = 5 * time.Second
 
-// ErrPipelineInput means a required specification/delivery boundary has no
-// implementation. Never substitute fabricated metadata or an acknowledged no-op.
-var ErrPipelineInput = errors.New("runner: required pipeline input is unspecified")
+// ErrPipelineInput means required claim data or a delivery dependency is absent.
+// Never substitute fabricated metadata or an acknowledged no-op.
+var ErrPipelineInput = errors.New("runner: required pipeline input is missing")
 
-// PipelinePolicy supplies values not defined by the configuration/claim schema.
-// It is internal wiring, not a new JSON configuration or Control Plane API.
+// PipelinePolicy maps configuration and claim values to component inputs.
+// Model API destinations are owned by each production Adapter.
 type PipelinePolicy struct {
 	CPU                 float64
 	MemoryBytes         int64
@@ -47,9 +47,9 @@ type PipelinePolicy struct {
 	ConfigVariable      string
 }
 
-// PipelineDependencies isolates the missing delivery contracts called out in
-// the existing components' READMEs. Production must supply real acknowledged
-// implementations once those contracts are specified; nil fails closed.
+// PipelineDependencies connects the existing components to acknowledged result
+// reports. PipelineDependenciesForClaim supplies the production implementations;
+// missing required dependencies fail closed.
 type PipelineDependencies struct {
 	Copies WorktreeCopyRecorder
 	Reuse  WorktreeReuseRepository

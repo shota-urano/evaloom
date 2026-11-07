@@ -1,66 +1,56 @@
 # 起動コマンドと工程表の接続
 
-`Runner.ExecuteClaim`が仕様05の13工程を組み立てる。起動コマンドはclaimを
-この処理へ渡す。認証設定が無い場合や、必要な内部境界を取得できない場合は
-`failed/config_error`を報告する。未実装の境界を成功扱いにはしない。
+`cmd/evaloom-runner`は、claimごとに`PipelineDependenciesForClaim`で依存を組み立て、
+`Runner.ExecuteClaim`へ渡す。仕様05の13工程には既存のRegistry、Worktree、Context、
+Sandbox、Adapter、Gate、Publisher、ログ・使用量の部品を使う。
+管理DBの更新はControl Planeだけが行う。
 
-Projectのパス検証、作業用クローン、worktreeの作成・コピー・再利用、
-commitに固定したContext、setup、基準値、Adapter、Gate 2・3、Publisher、
-ログと使用量には既存の部品を使う。各Executionは専用の工程ハンドラを持つ。
-本番のSandboxはContainerであり、ホスト実行への代替経路は設けていない。
+## 入力と記録の経路
 
-工程の期限は設定の`defaultTimeouts`から作り、Projectの同名の値を優先する。
-Sandboxにも工程の残り時間を渡す。キャンセルの猶予とruntime制御コマンドの
-上限は、仕様05の4.1で認められている実装定数として各5秒にする。
-Gitの作者情報は`commitAuthor`からExecution専用のGit設定環境変数で渡す。
-既存のHarness認証ロック、設定コピーの照合、認証の書き戻しはAdapterが行う。
-ログの除外処理にはstdout・stderrをそれぞれ継続したストリームで渡す。
-
-## 現在の本番接続の制約
-
-仕様書・公開API・テーブル・列・設定キーは変更していない。
-そのため、起動コマンドだけでは全工程を完了できない。
-`PipelineDependencies`の次の境界は、仕様の確定と実装が必要になる。
-起動コマンドは空の依存設定を渡すため、認証とパスの検証を通っても
-工程3で停止する。再実行では工程2で停止する場合もある。
-
-| 境界 | 不足している仕様・入力 |
+| 処理 | 接続先 |
 | --- | --- |
-| `Copies` | worktreeとコピー一覧の登録、`worktree_ready`を永続化するRunnerからの要求形式。既存の`WorktreeCopyRecorder`のHTTP実装が無い |
-| `Audit`、Publisherの監査 | パス拒否とリモートSHA不一致をaudit_logsへ送る要求形式 |
-| `Reuse` | 前回の既知SHA、保持状態、準備完了の取得と、復元開始・コピー再登録の送信形式 |
-| `FreshNumber` | continueを含むExecutionのseqとは別の、タスク内のfresh通し番号の取得経路 |
-| `PreviousPR` | タスクの過去のPRの確認経路。claimのpreviousは直前のExecutionだけで、freshではnullになる。open/freshのBlockに必要な前回HEADも不足する |
-| `Policy` | CPU・メモリ、Sandbox内のシェルと環境変数、JUnit形式名の対応、モデルAPIとsetupの許可宛先、Harnessリポジトリのパス、Tool Permissionsの取得とCLI権限への変換規則 |
-| `Publication` | pushを確認した直後、PR作成より前にpushed_shaを保存する要求形式。PR情報の保存形式も未実装。既存のresult APIはpublishing中のメタデータだけの保存に対応していない |
-| 再開時の情報 | Blockから続行した場合のworktree準備・実際に使ったHarnessの版・本人が承認したBlockの内容の取得経路。現在の組み立てはresumeを安全側で停止する |
-| 読み取り用認証 | 非公開Projectの検証・clone・fetchに使う認証の供給方法。Publisher用の書き込み権限を読み取り用認証の代わりにはしない |
-| Harnessセッションの記録 | Adapterが発行したsession IDを既存のexecutions.harness_session_idへ送る要求形式 |
+| Projectの再検証、clone・fetch・リモートブランチの確認 | `publisher.Reader`が工程ごとに読み取り専用トークンを発行し、RegistryとWorktreeへ渡す |
+| 前回のPR | claimの`pullRequests`を読み取り用トークンで確認する。freshではマージ済みを優先して拒否し、開いているPRがあればworktree作成前に停止する |
+| freshの番号 | claimの`execution.freshNumber`を使う。Executionのseqで代用しない |
+| worktreeとコピー一覧 | resultの`worktree`報告で登録し、保存の応答を待つ。再利用の照合にはclaimのstatus・expectedHeadSha・preparationCompleteを使う |
+| パス拒否、push後のSHA不一致 | failedのresultに`audit`を付ける |
+| Context | claimのharnessRepoPathとProfileのcommit SHAから設定を固定し、既存context APIへ送る |
+| Sandbox | 設定のruntime・image・proxy・CPU・メモリを使う。setupはclaimのsetupAllowedHostsだけを許可し、基準値とテストはネットワークを遮断する |
+| ハーネス | CodexとClaude Codeに、専用設定環境、harnessAuthFiles、claimのtoolPermissionsを渡す。許可宛先とCLI権限への変換は各Adapterが担当する |
+| セッションと作業概要 | runningを抜けるresultにharnessSessionIdを載せる。工程9でHarnessResultをharness_output成果物として登録する |
+| pushとPR | publishingのままpushedShaをresultで保存し、応答後にPRを作成する。その後、PR情報をresultで保存する |
+| Blockからの続行 | gate3から再開し、claimのresumeBlock・resumeGateResults・resumeHarnessSummaryを使う。判断時のHEADを再確認し、PR本文にBlockの内容を載せる |
+| 使用量と完了 | 工程13で実行時間とAdapterの使用量をsucceededのresultへ載せる |
 
-Harnessの版は通常実行のPR本文では、登録済みProfile定義の`harnessVersion`を使う。
-実CLIの版を観測して一致を保証する取得経路は、上の表の未定義部分に含む。
-不足した入力をProfileの他の値やExecutionのseqで推測して埋めない。
+工程の期限はProjectのtimeoutsを優先し、省略した項目には設定のdefaultTimeoutsを使う。
+基準値とGate 2にはそれぞれ独立した期限を設け、Sandboxには残り時間を渡す。
+キャンセルの猶予とruntime制御コマンドの上限は各5秒の実装定数とする。
+Gitの作者情報はcommitAuthorから実行プロセス専用のGit設定環境変数で渡す。
 
-## 結合テストの範囲
+失敗した工程の後は実行せず、作成済みworktreeを保持する。
+パス拒否にはconfig_errorと監査を記録し、push直前の中止確認に失敗した場合は
+publish_failedを報告する。認証設定やclaimの必須情報が無ければ成功扱いにしない。
 
-`TestPipelineClaimThroughPushAndSucceeded`はpullループのheartbeat・claimから
-工程実行、ローカルbareリポジトリへのpush、HTTPサーバーへのPR作成要求、
-succeededと使用量の報告までを通す。Adapterには`adapter/dummy`を登録する。
-テストだけのラッパーがworktreeへのcommitを作る。setup・テストの隔離境界は
-テスト用Sandboxに置き換え、本番コードにはホスト実行経路を追加しない。
-Gitの安全なラッパーがローカルファイルへの直接pushを拒否するため、
-bareリポジトリへはループバックのGit daemon経由で接続する。
+## 結合テスト
 
-未定義のworktree・Publisher保存境界はテスト用の記録実装を渡す。
-Control PlaneのHTTPはテストサーバーを使い、既存result形式と状態の順序を検査する。
-このテストは、本番Control Planeへのworktree・PR保存や管理DBへの保存まで
-実装できたことの証拠にはならない。使用量のDB保存は既存のusageテストの担当である。
-外部GitHub、モデルAPI、実コンテナには依存しない。
+`pipeline_controlplane_test.go`は、起動コマンドと同じ`PipelineDependenciesForClaim`を使い、
+実際のControl Planeハンドラ・認証・SQLite・Gitでclaimからsucceededまで確認する。
+置き換えるのはコンテナruntime、adapter/dummy、GitHubのHTTP接続先とトークン発行だけである。
+Gitのテスト用起動スクリプトはGitHubの接続先とTLS証明書をテストサーバーへ向け、
+実際のGitでローカルbareリポジトリへのclone・fetch・push・SHAの読み戻しを行う。
+永続化の記録実装やSandbox自体の代替実装は渡さない。
 
-setup失敗、Gate 2失敗、認証設定不足、未定義の境界、Projectの期限超過と
-defaultTimeoutsの期限超過でも後続工程を止める。作成済みworktreeは保持する。
-Runnerトークンと複数行の秘密鍵の内容がログ・eventsに残らないことも確認する。
-起動コマンドのテストは、実際の`run`がclaimを工程表へ渡してconfig_errorを
-報告することと、終了指示が重なっても確定済みのfailedを再報告しないことを確認する。
+| 確認する動作 | テスト |
+| --- | --- |
+| 13工程、worktreeとコピーのハッシュ、各イベント、Executionの全記録、usage、PR作成前のpushedSha保存、初回freshの-r1、読み取りと書き込みのトークン権限 | `TestProductionPipelineClaimPushAndSQLite` |
+| 工程途中の失敗、worktree保持、認証設定不足、パス逸脱の監査、ProjectとdefaultTimeoutsの期限 | `TestProductionPipelineStopsAndRetainsWorktree` |
+| 開いている前回PRがあるfreshの停止 | `TestProductionPipelineFreshOpenPRBlocksBeforeWorktree` |
+| Gate 3からの再開、ハーネス・テストを再実行しないこと、PR本文のBlock原因 | `TestProductionPipelineResumeGate3UsesSavedBlock` |
+| 再開時のパス逸脱・Git領域の逸脱と監査、判断後のHEAD変更による再停止 | `TestProductionPipelineResumeRejectsChangedWorktree` |
+| push直前の中止確認と通信失敗の終端報告 | `TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed` |
+| setup・ハーネス・基準値・Gate 2の期限とProject優先 | `TestStageTimeoutsProjectOverridesAndIndependentDeadlines` |
+| 起動表示、claimから工程表への受け渡し、認証設定不足の報告 | `cmd/evaloom-runner`の`TestRunWaitsUntilShutdown`・`TestRunExecutesClaimAndReportsMissingHarnessAuthentication` |
 
-実コンテナと実CLIでの隔離・モデル実行の試験は、この結合テストでは実行しない。
+`pipeline_test.go`には工程単体の差し替えによる追加テストも残している。
+本番依存の接続とDB保存の証拠は、上記のProductionPipelineテストで確認する。
+実コンテナ、実モデル、実GitHubへの接続は、この結合テストでは実行しない。

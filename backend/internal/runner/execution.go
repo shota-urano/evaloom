@@ -192,7 +192,8 @@ func (executor *Executor) Execute(ctx context.Context, claim Claim) error {
 				return execution.stageError(stage.Stage, err)
 			}
 			if checkErr != nil {
-				return &StageError{stage.Stage, checkErr}
+				return &StageError{stage.Stage, errors.Join(checkErr,
+					execution.reportResult(model.ExecutionFailed, model.ErrorPublishFailed, nil, "push直前の中止確認ができない"))}
 			}
 		}
 		if executor.control != nil && stage.ID != StageComplete {

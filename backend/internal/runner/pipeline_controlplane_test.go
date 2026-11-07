@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -415,6 +416,11 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	if f.harnessCalls != 1 || f.prCalls != 1 {
 		t.Fatalf("harness/PR %d/%d", f.harnessCalls, f.prCalls)
 	}
+	read := map[string]string{"contents": "read", "metadata": "read", "pull_requests": "read"}
+	write := map[string]string{"contents": "write", "metadata": "read", "pull_requests": "write"}
+	if !reflect.DeepEqual(f.tokenPermissions, []map[string]string{read, read, write, write, write}) {
+		t.Fatalf("stage-scoped token permissions: %v", f.tokenPermissions)
+	}
 	if !strings.Contains(f.prBodies[0], "Gate 3: pass") {
 		t.Fatal("PR lacks Gate evidence")
 	}
@@ -559,5 +565,76 @@ func TestProductionPipelineResumeGate3UsesSavedBlock(t *testing.T) {
 	var tests int
 	if err := f.db.QueryRow(`SELECT count(*) FROM test_runs WHERE execution_id=?`, logExecution).Scan(&tests); err != nil || tests != 3 {
 		t.Fatalf("resume reran setup/tests: %d %v", tests, err)
+	}
+}
+
+func TestProductionPipelineResumeRejectsChangedWorktree(t *testing.T) {
+	for _, scenario := range []string{"path_escape", "changed_head", "git_pointer_escape"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newProductionPipelineFixture(t, "resume")
+			if err := f.execute(t); err == nil {
+				t.Fatal("expected Gate 2 Block")
+			}
+			owner := &baselineHTTPFixture{logControlPlane: &logControlPlane{db: f.db, server: f.server, cookie: f.cookie}}
+			owner.continueBlocked(t)
+			var path string
+			if err := f.db.QueryRow(`SELECT path FROM worktrees`).Scan(&path); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "path_escape" {
+				if _, err := f.db.Exec(`UPDATE worktrees SET path=?`, f.source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			defer cancel()
+			claim, err := f.process.claim(ctx)
+			if err != nil || claim == nil || claim.Worktree == nil || claim.Execution.ResumePoint == nil || *claim.Execution.ResumePoint != "gate3" {
+				t.Fatalf("resume claim: %v %v", claim, err)
+			}
+			head := claim.Execution.ResumeBlock.HeadSHA
+			switch scenario {
+			case "path_escape":
+				// The saved path itself must be checked before any Git operation.
+				if claim.Worktree.Path != f.source {
+					t.Fatal("claim did not return the saved path")
+				}
+			case "git_pointer_escape":
+				// The apparent task path is inside the root but its Git area is not.
+				gate2Write(t, filepath.Join(path, ".git"), "gitdir: "+filepath.Join(f.source, ".git")+"\n")
+			case "changed_head":
+				gate2Write(t, filepath.Join(path, "code"), "changed after owner decision\n")
+				gate2Git(t, path, "commit", "-am", "advance after decision")
+				head = gate2Git(t, path, "rev-parse", "HEAD")
+			}
+			deps := f.process.PipelineDependenciesForClaim(f.config, *claim)
+			deps.Adapters = f.adapters
+			var stage *StageError
+			if err := f.process.ExecuteClaim(ctx, ctx, f.config, *claim, deps); !errors.As(err, &stage) || stage.Stage.ID != StageGate3 {
+				t.Fatalf("resume must stop at Gate 3: %v", err)
+			}
+			var status string
+			var class sql.NullString
+			if err := f.db.QueryRow(`SELECT status,error_class FROM executions WHERE id=?`, logExecution).Scan(&status, &class); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "changed_head" {
+				var observed string
+				if err := f.db.QueryRow(`SELECT head_sha FROM execution_blocks WHERE execution_id=? AND decision IS NULL`, logExecution).Scan(&observed); err != nil || status != "blocked" || observed != head {
+					t.Fatalf("changed HEAD: %s %s %v", status, observed, err)
+				}
+			} else {
+				var detail string
+				if err := f.db.QueryRow(`SELECT detail FROM audit_logs WHERE action='worktree.path_rejected'`).Scan(&detail); err != nil || status != "failed" || class.String != "config_error" || !strings.Contains(detail, claim.Worktree.Path) {
+					t.Fatalf("path refusal: %s %s %s %v", status, class.String, detail, err)
+				}
+			}
+			if f.harnessCalls != 1 || f.prCalls != 0 {
+				t.Fatal("resume reran the harness or published")
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal("worktree was not retained", err)
+			}
+		})
 	}
 }

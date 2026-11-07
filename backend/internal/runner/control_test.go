@@ -178,7 +178,9 @@ func TestControlledExecutorChecksCancellationBeforePublishAndFailsClosed(t *test
 					t.Fatalf("cancelled push: error=%v reports=%v", err, reports)
 				}
 			case "offline":
-				if !errors.Is(err, checkErr) || len(reports) != 0 {
+				want := []ExecutionResult{{FromStatus: model.ExecutionClaimed, Status: model.ExecutionFailed,
+					ErrorClass: model.ErrorPublishFailed, ErrorMessage: "push直前の中止確認ができない"}}
+				if !errors.Is(err, checkErr) || !reflect.DeepEqual(reports, want) {
 					t.Fatalf("offline push: error=%v reports=%v", err, reports)
 				}
 			case "allowed":
