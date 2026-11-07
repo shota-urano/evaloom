@@ -65,6 +65,8 @@ func ownsPredecessorWorktree(r *http.Request, tx *sql.Tx, executionID string, in
 		WHERE e.id=? AND e.mode='continue' AND w.id=? AND w.task_id=e.task_id
 		AND w.project_id=t.project_id AND w.runner_id=e.runner_id
 		AND w.base_sha=? AND w.branch_name=? AND p.base_sha=w.base_sha AND p.branch_name=w.branch_name
+		AND (e.base_sha IS NULL OR e.base_sha=w.base_sha)
+		AND (e.branch_name IS NULL OR e.branch_name=w.branch_name)
 		AND (e.worktree_id IS NULL OR e.worktree_id=w.id))`,
 		executionID, *input.WorktreeID, *input.BaseSHA, *input.BranchName).Scan(&own)
 	return own, err

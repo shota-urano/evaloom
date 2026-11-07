@@ -1,6 +1,6 @@
 # Runnerの結果報告API
 
-正本は`docs/specs/04-task-lifecycle.md`の3.2・3.4・6節、
+正本は`docs/specs/04-task-lifecycle.md`の3.2・3.4（3.4.1を含む）・6節、
 `02-data-model.md`のexecutions・execution_blocks・5.2〜5.6節、
 `05-runner.md`の3.3・3.6節、`06-worktree.md`の3.6節、
 `10-verification-gates.md`の3〜5節、`12-notification.md`の3.1・3.4節。
@@ -10,11 +10,12 @@
 Executionの`runner_id`を照合する。不一致と未claimは403にし、既存の
 `auth.reject`経路で監査記録を残す。存在しないExecutionは404にする。
 
-仕様に要求JSONと通知要求の保存形式がないため、次の実装判断を採用した。
+工程内報告と監査付記の要求JSONは仕様04の3.4.1に従う。
+従来の状態遷移と通知要求には、次の実装判断を採用した。
 
 - 要求には`fromStatus`と`status`を指定する。成功は本文なしの204を返す。
   `fromStatus`が現在値と違う報告、同じ状態への再送、過去のExecutionへの報告、
-  未知の状態、既存の遷移表にない報告は409にする。再送を成功扱いにはしない。
+  未知の状態、既存の遷移表にない報告は409にする。状態遷移の再送を成功扱いにはしない。
   ただし基準値の測定報告は、`baseline`にtest_runsのcamelCase表記の測定値を載せ、
   `fromStatus=preparing`、`status=preparing`、`worktreeId`、`baseSha`で送る。
   状態を変えず、worktree・開始点SHAの関連付けと`kind=baseline`の保存を同じ
@@ -88,3 +89,24 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
 仕様にはgateResultsの要求JSON、Findingのrule一覧・文字数上限・件数上限が未定義である。
 要求JSONは`feat/pdy.1-gate1-diff`の形を引き継ぐ。ruleは保存用の文字列として扱い、
 Gate固有の判定はAPIに持ち込まない。元ブランチ独自の文字数・件数上限は取り込まない。
+
+仕様04の3.4.1の工程内報告は`results_stages.go`で処理する。
+`worktree.action=created / restore_started / restored`は`preparing`のまま、
+`pushedSha`と`branchName`、または`prNumber`・`prUrl`・`prCreated`は
+`publishing`のままで送る。別の行の項目や工程メタデータとの混在は400にする。
+既存の認証・最新Executionの照合と書き込みトランザクションを共有する。
+
+各報告の内容は既存の`execution.result`監査記録のdetailに
+`taskId`・`from`・`to`とともに`step`・`report`として保存し、再送を照合する。
+同じ内容は204とし、行・イベント・監査記録を追加しない。内容の変更は409とする。
+ただし開始点SHAや復元の識別情報、pushのSHA・ブランチの不一致は仕様どおり422とする。
+復元開始の再送では、既に保存したコピー一覧とsetupの結果を消さない。
+状態遷移・`status_changed`・通知要求は作らない。
+
+復元開始と完了ではExecutionへの関連付けを変更しない。
+復元完了の監査記録と`worktree_ready`を照合することで、関連付け前でも
+既存の再利用報告から準備完了を確かめられる。関連付けとactiveへの変更は
+その再利用報告で行う。既存の直接保存経路の準備完了判定も維持する。
+
+`failed`への`audit`付記は許可されたaction・detailの項目・errorClassを検証し、
+専用監査行と既存の`execution.result`監査行を状態遷移と同時に保存する。

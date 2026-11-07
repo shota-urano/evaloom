@@ -38,6 +38,9 @@ type resultInput struct {
 	Baseline    *model.TestRun     `json:"baseline"`
 	TestRuns    []model.TestRun    `json:"testRuns"`
 	SetupStatus *string            `json:"setupStatus"`
+	Worktree    *resultWorktree    `json:"worktree"`
+	PRCreated   *bool              `json:"prCreated"`
+	Audit       *resultAudit       `json:"audit"`
 }
 
 type resultGateResult struct {
@@ -102,6 +105,10 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
 			return
 		}
+		if err := validateResultAudit(input); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
 		if hasSetupResult(input) {
 			err = saveSetupResult(r, tx, execution, input)
 			if err == nil {
@@ -116,6 +123,18 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 		}
 		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
 			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
+			return
+		}
+		if hasStageResult(input) {
+			err = saveStageResult(r, tx, execution, input)
+			if err == nil {
+				err = tx.Commit()
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		// Stage 7 completes while still preparing. This measurement-only report
@@ -159,6 +178,13 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 		}
 		if err == nil {
 			err = saveResult(r, tx, execution, input)
+		}
+		if err == nil {
+			if audit := input.Audit; audit != nil {
+				_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
+					Actor: "runner:" + runner, Action: audit.Action, TargetType: "execution", TargetID: id, Detail: audit.Detail,
+				})
+			}
 		}
 		if err == nil {
 			err = task.TransitionExecutionTx(ctx, tx, task.Transition{
