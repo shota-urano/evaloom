@@ -16,21 +16,42 @@ import (
 // ExecutionResult uses the existing result endpoint's transition contract.
 // Stage-specific metadata reporting remains the responsibility of stage code.
 type ExecutionResult struct {
-	FromStatus     model.ExecutionStatus `json:"fromStatus"`
-	Status         model.ExecutionStatus `json:"status"`
-	ErrorClass     model.ErrorClass      `json:"errorClass,omitempty"`
-	ErrorMessage   string                `json:"errorMessage,omitempty"`
-	WorktreeID     string                `json:"worktreeId,omitempty"`
-	BranchName     string                `json:"branchName,omitempty"`
-	BaseSHA        string                `json:"baseSha,omitempty"`
-	Baseline       *model.TestRun        `json:"baseline,omitempty"`
-	Usage          *ExecutionUsage       `json:"usage,omitempty"`
-	HarnessHeadSHA string                `json:"harnessHeadSha,omitempty"`
-	VerifiedSHA    string                `json:"verifiedSha,omitempty"`
-	GateResults    []GateResult          `json:"gateResults,omitempty"`
-	TestRuns       []model.TestRun       `json:"testRuns,omitempty"`
-	SetupStatus    string                `json:"setupStatus,omitempty"`
-	Block          *ResultBlock          `json:"block,omitempty"`
+	FromStatus       model.ExecutionStatus `json:"fromStatus"`
+	Status           model.ExecutionStatus `json:"status"`
+	ErrorClass       model.ErrorClass      `json:"errorClass,omitempty"`
+	ErrorMessage     string                `json:"errorMessage,omitempty"`
+	WorktreeID       string                `json:"worktreeId,omitempty"`
+	BranchName       string                `json:"branchName,omitempty"`
+	BaseSHA          string                `json:"baseSha,omitempty"`
+	Baseline         *model.TestRun        `json:"baseline,omitempty"`
+	Usage            *ExecutionUsage       `json:"usage,omitempty"`
+	HarnessHeadSHA   string                `json:"harnessHeadSha,omitempty"`
+	VerifiedSHA      string                `json:"verifiedSha,omitempty"`
+	GateResults      []GateResult          `json:"gateResults,omitempty"`
+	TestRuns         []model.TestRun       `json:"testRuns,omitempty"`
+	SetupStatus      string                `json:"setupStatus,omitempty"`
+	Block            *ResultBlock          `json:"block,omitempty"`
+	Worktree         *ResultWorktree       `json:"worktree,omitempty"`
+	Audit            *ResultAudit          `json:"audit,omitempty"`
+	PushedSHA        string                `json:"pushedSha,omitempty"`
+	PRNumber         *int                  `json:"prNumber,omitempty"`
+	PRURL            string                `json:"prUrl,omitempty"`
+	PRCreated        *bool                 `json:"prCreated,omitempty"`
+	HarnessSessionID string                `json:"harnessSessionId,omitempty"`
+}
+
+type ResultWorktree struct {
+	Action      string              `json:"action"`
+	ID          string              `json:"id"`
+	Path        string              `json:"path,omitempty"`
+	BranchName  string              `json:"branchName,omitempty"`
+	BaseSHA     string              `json:"baseSha,omitempty"`
+	CopiedFiles *[]model.CopiedFile `json:"copiedFiles,omitempty"`
+}
+
+type ResultAudit struct {
+	Action string            `json:"action"`
+	Detail map[string]string `json:"detail"`
 }
 
 type GateResult struct {

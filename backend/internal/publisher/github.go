@@ -43,6 +43,7 @@ type githubPR struct {
 	State  string `json:"state"`
 	Merged *bool  `json:"merged"`
 	Head   struct {
+		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
 		Repo struct {
 			FullName string `json:"full_name"`

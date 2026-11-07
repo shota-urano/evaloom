@@ -17,15 +17,19 @@ const maxConcurrentExecutions = 2
 // Claim is the HTTP execution input. The Runner never opens the management DB.
 type Claim struct {
 	Execution struct {
-		ID             string         `json:"id"`
-		TaskID         string         `json:"taskId"`
-		Seq            int            `json:"seq"`
-		Mode           string         `json:"mode"`
-		ResumePoint    *string        `json:"resumePoint"`
-		ResumeHeadSHA  string         `json:"resumeHeadSha"`
-		HarnessHeadSHA string         `json:"harnessHeadSha"`
-		VerifiedSHA    string         `json:"verifiedSha"`
-		VerifyRun      *model.TestRun `json:"verifyRun"`
+		ID                   string            `json:"id"`
+		TaskID               string            `json:"taskId"`
+		Seq                  int               `json:"seq"`
+		Mode                 string            `json:"mode"`
+		ResumePoint          *string           `json:"resumePoint"`
+		ResumeHeadSHA        string            `json:"resumeHeadSha"`
+		HarnessHeadSHA       string            `json:"harnessHeadSha"`
+		VerifiedSHA          string            `json:"verifiedSha"`
+		VerifyRun            *model.TestRun    `json:"verifyRun"`
+		FreshNumber          *int              `json:"freshNumber"`
+		ResumeBlock          *ClaimResumeBlock `json:"resumeBlock"`
+		ResumeGateResults    []GateResult      `json:"resumeGateResults"`
+		ResumeHarnessSummary *string           `json:"resumeHarnessSummary"`
 	} `json:"execution"`
 	Task struct {
 		Title              string `json:"title"`
@@ -35,18 +39,22 @@ type Claim struct {
 	} `json:"task"`
 	Project model.Project `json:"project"`
 	Profile struct {
-		HarnessID  string          `json:"harnessId"`
-		Adapter    string          `json:"adapter"`
-		Version    string          `json:"version"`
-		CommitSHA  string          `json:"commitSha"`
-		Definition json.RawMessage `json:"definition"`
+		HarnessID       string          `json:"harnessId"`
+		Adapter         string          `json:"adapter"`
+		Version         string          `json:"version"`
+		CommitSHA       string          `json:"commitSha"`
+		Definition      json.RawMessage `json:"definition"`
+		HarnessRepoPath string          `json:"harnessRepoPath"`
+		ToolPermissions json.RawMessage `json:"toolPermissions"`
 	} `json:"profile"`
 	Previous *struct {
 		WorktreePath *string `json:"worktreePath"`
 		BranchName   *string `json:"branchName"`
 		PRNumber     *int    `json:"prNumber"`
 	} `json:"previous"`
-	Worktree *ClaimWorktree `json:"worktree"`
+	Worktree          *ClaimWorktree     `json:"worktree"`
+	PullRequests      []ClaimPullRequest `json:"pullRequests"`
+	SetupAllowedHosts []string           `json:"-"`
 	// Explicit null confirms that no earlier worktree was recorded. An omitted
 	// field in an older/partial response cannot establish baseline absence.
 	worktreeSnapshotPresent bool
@@ -60,23 +68,44 @@ func (c *Claim) UnmarshalJSON(data []byte) error {
 	}
 	var fields struct {
 		Worktree json.RawMessage `json:"worktree"`
+		Project  struct {
+			SetupAllowedHosts []string `json:"setupAllowedHosts"`
+		} `json:"project"`
 	}
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	*c = Claim(decoded)
 	c.worktreeSnapshotPresent = fields.Worktree != nil
+	c.SetupAllowedHosts = fields.Project.SetupAllowedHosts
 	return nil
 }
 
+type ClaimResumeBlock struct {
+	ID        string          `json:"id"`
+	Cause     string          `json:"cause"`
+	HeadSHA   string          `json:"headSha"`
+	Detail    json.RawMessage `json:"detail"`
+	DecidedAt *string         `json:"decidedAt"`
+}
+
+type ClaimPullRequest struct {
+	Number     int     `json:"number"`
+	BranchName *string `json:"branchName"`
+	Seq        int     `json:"seq"`
+}
+
 type ClaimWorktree struct {
-	ID          string             `json:"id"`
-	Path        string             `json:"path"`
-	BaseSHA     string             `json:"baseSha"`
-	BranchName  string             `json:"branchName"`
-	SetupStatus string             `json:"setupStatus"`
-	Baseline    *ClaimBaseline     `json:"baseline"`
-	CopiedFiles []model.CopiedFile `json:"copiedFiles"`
+	ID                  string             `json:"id"`
+	Path                string             `json:"path"`
+	BaseSHA             string             `json:"baseSha"`
+	BranchName          string             `json:"branchName"`
+	SetupStatus         string             `json:"setupStatus"`
+	Baseline            *ClaimBaseline     `json:"baseline"`
+	CopiedFiles         []model.CopiedFile `json:"copiedFiles"`
+	Status              string             `json:"status"`
+	ExpectedHeadSHA     string             `json:"expectedHeadSha"`
+	PreparationComplete bool               `json:"preparationComplete"`
 }
 
 // ClaimBaseline carries the saved IDs supplied by the Control Plane (Q40).

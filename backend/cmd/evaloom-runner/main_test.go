@@ -60,7 +60,10 @@ func TestRunWaitsUntilShutdown(t *testing.T) {
 		t.Fatal("runner did not send heartbeat immediately on startup")
 	}
 	select {
-	case <-output:
+	case line := <-output:
+		if strings.Contains(line, "not implemented") {
+			t.Fatalf("obsolete startup message: %s", line)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("runner did not start")
 	}
@@ -77,6 +80,54 @@ func TestRunWaitsUntilShutdown(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runner did not stop after cancellation")
+	}
+}
+
+func TestRunExecutesClaimAndReportsMissingHarnessAuthentication(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reports []runner.ExecutionResult
+	claimed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/heartbeat"):
+			io.WriteString(w, `{"cancelExecutionIds":[]}`)
+		case strings.HasSuffix(req.URL.Path, "/claim"):
+			if claimed {
+				w.WriteHeader(204)
+				return
+			}
+			claimed = true
+			io.WriteString(w, `{"execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"},"worktree":null}`)
+		case strings.HasSuffix(req.URL.Path, "/result"):
+			var result runner.ExecutionResult
+			if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
+				t.Error(err)
+			}
+			reports = append(reports, result)
+			w.WriteHeader(204)
+			if result.Status == "failed" {
+				cancel()
+			}
+		default:
+			t.Errorf("unexpected request: %s", req.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	path := writeConfig(t, server.URL)
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, []string{"-config", path}, make(startupOutput, 8)) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("claimed execution was not stopped and reported")
+	}
+	if len(reports) != 2 || reports[0].Status != "preparing" || reports[1].FromStatus != "preparing" || reports[1].Status != "failed" || reports[1].ErrorClass != "config_error" {
+		t.Fatalf("reports=%+v", reports)
 	}
 }
 
