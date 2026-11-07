@@ -1,0 +1,324 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"io/fs"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"testing/fstest"
+
+	"modernc.org/sqlite/lib"
+)
+
+const legacyTaskColumns = `id, project_id, title, body, acceptance_criteria, short_name,
+	task_type, collaboration_mode, status, idempotency_key, created_at, updated_at`
+
+func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	db, err := open(context.Background(), path, beforeLinearMigration(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	seedVerificationRecords(t, db)
+	if _, err := insertTask(db, "task-002", "key-2", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	mustTaskExec(t, db, `UPDATE executions SET worktree_id = 'worktree-1'`)
+	mustTaskExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
+		VALUES ('execution-1', 'log', '{}', ?)`, registryTime)
+	mustTaskExec(t, db, `INSERT INTO notification_requests (execution_id, status, created_at)
+		VALUES ('execution-1', 'blocked', ?)`, registryTime)
+	queries := []string{
+		"SELECT " + legacyTaskColumns + " FROM tasks ORDER BY id",
+		"SELECT " + registryProjectColumns + " FROM projects ORDER BY id",
+	}
+	for _, table := range []string{"worktrees", "executions", "execution_events", "artifacts",
+		"test_runs", "gate_results", "execution_blocks", "audit_logs", "usage_records", "notification_requests"} {
+		queries = append(queries, "SELECT * FROM "+table+" ORDER BY 1")
+	}
+	before := make([][][]any, len(queries))
+	for i, query := range queries {
+		before[i] = migrationRows(t, db, query)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A second open also checks that the migration is not applied twice.
+	for range 2 {
+		db = openRegistry(t, path)
+		for i, query := range queries {
+			if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before[i]) {
+				t.Fatalf("migration changed %s: got %#v, want %#v", query, got, before[i])
+			}
+		}
+		if got := migrationRows(t, db, `SELECT source, intake_block_cause FROM tasks ORDER BY id`); !reflect.DeepEqual(got, [][]any{{"manual", nil}, {"manual", nil}}) {
+			t.Fatalf("migrated task origins = %#v", got)
+		}
+		if got := migrationRows(t, db, `SELECT linear_team_id, linear_routing_label FROM projects`); !reflect.DeepEqual(got, [][]any{{nil, nil}}) {
+			t.Fatalf("migrated routing = %#v", got)
+		}
+		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+		if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
+			t.Fatalf("foreign key violations = %#v", violations)
+		}
+		_, err := db.Exec(`DELETE FROM tasks WHERE id = 'task-001'`)
+		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY)
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
+	db := openTaskTables(t)
+	insertRegistryProject(t, db, "project-b", "/repos/project-b")
+	insertRegistryProject(t, db, "project-c", "/repos/project-c")
+	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a',
+		linear_routing_label = 'repo:a' WHERE id = 'project-a'`)
+	_, err := db.Exec(`UPDATE projects SET linear_team_id = 'team-a',
+		linear_routing_label = 'repo:a' WHERE id = 'project-b'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+	// Both components take part in the key; incomplete routing stays nullable.
+	for _, routing := range [][2]any{{"team-b", "repo:a"}, {"team-a", "repo:b"},
+		{nil, "repo:a"}, {"team-a", nil}, {nil, nil}} {
+		mustTaskExec(t, db, `UPDATE projects SET linear_team_id = ?,
+			linear_routing_label = ? WHERE id = 'project-b'`, routing[0], routing[1])
+	}
+	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a' WHERE id = 'project-c'`)
+	// INSERT, as well as UPDATE, must reject a duplicate complete pair.
+	_, err = db.Exec(`INSERT INTO projects (` + registryProjectColumns + `, linear_team_id, linear_routing_label)
+		SELECT 'duplicate', name, '/repos/duplicate', git_remote_url, runner_id, base_branch,
+		default_role, review_role, context_location, test_command, test_report_format, test_report_path,
+		setup_command, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at,
+		linear_team_id, linear_routing_label FROM projects WHERE id = 'project-a'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+}
+
+func TestLinearMigrationTaskProjectNullability(t *testing.T) {
+	db := openTaskTables(t)
+	_, err := db.Exec(`UPDATE tasks SET project_id = NULL WHERE id = 'task-001'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	for _, test := range []struct {
+		name           string
+		source, cause  any
+		project        any
+		constraintCode int
+	}{
+		{"manual without project", "manual", nil, nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"manual with cause without project", "manual", "routing_no_label", nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"linear without cause or project", "linear", nil, nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"unknown source", "unknown", nil, "project-a", sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"null source", nil, nil, "project-a", sqlite3.SQLITE_CONSTRAINT_NOTNULL},
+		{"unknown cause", "linear", "unknown", nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"missing project", "linear", nil, "missing", sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := insertLinearMigrationTask(db, test.name, test.project, test.source, test.cause)
+			assertRegistryConstraint(t, err, test.constraintCode)
+		})
+	}
+	for i, cause := range []string{"routing_multiple_labels", "routing_unknown_label", "routing_team_mismatch",
+		"routing_no_label", "missing_acceptance_criteria", "config_missing_assignment"} {
+		if _, err := insertLinearMigrationTask(db, fmt.Sprint(i), nil, "linear", cause); err != nil {
+			t.Fatalf("valid held task with cause %s: %v", cause, err)
+		}
+	}
+	_, err = db.Exec(`UPDATE tasks SET source = 'manual' WHERE id = '0'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	_, err = db.Exec(`UPDATE tasks SET intake_block_cause = NULL WHERE id = '0'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	mustTaskExec(t, db, `UPDATE tasks SET project_id = 'project-a', intake_block_cause = NULL,
+		status = 'queued' WHERE id = '0'`)
+	_, err = insertLinearMigrationTask(db, "routed", "project-a", "linear", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Existing manual writers omit the new columns and retain their behavior.
+	if _, err := insertTask(db, "manual-default", "default", "queued"); err != nil {
+		t.Fatal(err)
+	}
+	var source string
+	if err := db.QueryRow(`SELECT source FROM tasks WHERE id = 'manual-default'`).Scan(&source); err != nil || source != "manual" {
+		t.Fatalf("default source = %q, err = %v", source, err)
+	}
+}
+
+func TestLinearMigrationIssueLinksConstraints(t *testing.T) {
+	db := openTaskTables(t)
+	for _, id := range []string{"task-002", "task-003", "task-004"} {
+		if _, err := insertTask(db, id, id, "queued"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(id, issue, task string, seq int) error {
+		_, err := db.Exec(`INSERT INTO linear_issue_links
+			(id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
+			VALUES (?, ?, 'ENG-123', 'https://example.invalid/issue/ENG-123', 'team-a', ?, ?, ?)`,
+			id, issue, task, seq, registryTime)
+		return err
+	}
+	if err := insert("link-1", "issue-a", "task-001", 1); err != nil {
+		t.Fatal(err)
+	}
+	assertRegistryConstraint(t, insert("duplicate-attach", "issue-a", "task-002", 1), sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+	assertRegistryConstraint(t, insert("duplicate-task", "issue-b", "task-001", 1), sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+	assertRegistryConstraint(t, insert("missing-task", "issue-b", "missing", 1), sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY)
+	// The same issue may link to a later task; another issue may use seq=1.
+	for _, args := range [][3]string{{"link-2", "issue-a", "task-002"}, {"link-3", "issue-b", "task-003"}} {
+		seq := 1
+		if args[1] == "issue-a" {
+			seq = 2
+		}
+		if err := insert(args[0], args[1], args[2], seq); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, statement := range []string{
+		`UPDATE linear_issue_links SET attach_seq = 1 WHERE id = 'link-2'`,
+		`UPDATE linear_issue_links SET task_id = 'task-001' WHERE id = 'link-2'`,
+	} {
+		_, err := db.Exec(statement)
+		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+	}
+	_, err := db.Exec(`DELETE FROM tasks WHERE id = 'task-002'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY)
+}
+
+func TestLinearMigrationPollStateTables(t *testing.T) {
+	db := openTaskTables(t)
+	mustTaskExec(t, db, `INSERT INTO linear_issue_states
+		(linear_issue_id, issue_identifier, team_id, ai_ready, attach_seq, issue_updated_at, first_seen_at, last_seen_at)
+		VALUES ('issue-a', 'ENG-123', 'team-a', 1, 0, ?, ?, ?)`, registryTime, registryTime, registryTime)
+	mustTaskExec(t, db, `INSERT INTO linear_poll_teams (team_id, consecutive_failures) VALUES ('team-a', 0)`)
+	if got := migrationRows(t, db, `SELECT last_decision, last_decision_at FROM linear_issue_states`); !reflect.DeepEqual(got, [][]any{{nil, nil}}) {
+		t.Fatalf("initial decision = %#v", got)
+	}
+	if got := migrationRows(t, db, `SELECT baseline_done_at, last_success_at, last_error, consecutive_failures FROM linear_poll_teams`); !reflect.DeepEqual(got, [][]any{{nil, nil, nil, int64(0)}}) {
+		t.Fatalf("initial poll state = %#v", got)
+	}
+	for _, decision := range []string{"started", "held", "cancelled", "skipped_active_task", "skipped_initial", "skipped_cancelled"} {
+		mustTaskExec(t, db, `UPDATE linear_issue_states SET last_decision = ?, last_decision_at = ?`, decision, registryTime)
+	}
+	for _, class := range []any{"auth", "rate_limited", "network", "other", nil} {
+		mustTaskExec(t, db, `UPDATE linear_poll_teams SET last_error = ?`, class)
+	}
+	mustTaskExec(t, db, `UPDATE linear_issue_states SET ai_ready = 0, attach_seq = 1`)
+	for _, statement := range []string{`UPDATE linear_issue_states SET ai_ready = 2`,
+		`UPDATE linear_poll_teams SET last_error = 'unknown'`} {
+		_, err := db.Exec(statement)
+		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	}
+	for _, table := range []string{"linear_issue_states", "linear_poll_teams"} {
+		_, err := db.Exec("INSERT INTO " + table + " SELECT * FROM " + table)
+		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY)
+	}
+	if got := migrationRows(t, db, `SELECT name FROM sqlite_master WHERE type = 'table'
+		AND name IN ('event_inbox', 'project_integrations', 'tasks_linear_intake')`); len(got) != 0 {
+		t.Fatalf("out-of-scope or temporary tables = %#v", got)
+	}
+}
+
+func beforeLinearMigration(t *testing.T) fstest.MapFS {
+	t.Helper()
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := readMigrations(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, migration := range migrations {
+		if migration.version < 10 {
+			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
+		}
+	}
+	return previous
+}
+
+func insertLinearMigrationTask(db *sql.DB, id string, project, source, cause any) (sql.Result, error) {
+	return db.Exec(`INSERT INTO tasks (`+legacyTaskColumns+`, source, intake_block_cause)
+		VALUES (?, ?, 'Title', 'Body', 'tests pass', 'change', 'development', 'solo', 'blocked', ?, ?, ?, ?, ?)`,
+		id, project, id, registryTime, registryTime, source, cause)
+}
+
+func migrationRows(t *testing.T, db *sql.DB, query string) [][]any {
+	t.Helper()
+	rows, err := db.Query(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result [][]any
+	for rows.Next() {
+		values := make([]any, len(columns))
+		dest := make([]any, len(values))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		if err := rows.Scan(dest...); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, values)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	previous := beforeLinearMigration(t)
+	db, err := open(context.Background(), path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sql, err := migrationFiles.ReadFile("migrations/0010_linear_intake.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Break an existing reference after the rebuild. The pre-commit check must
+	// reject it and roll back the schema, the data, and the migration history.
+	previous["0010_linear_intake.sql"] = &fstest.MapFile{Data: append(sql, []byte(`
+		UPDATE executions SET task_id = 'missing';`)...)}
+	db, err = open(context.Background(), path, previous)
+	if err == nil || db != nil || !strings.Contains(err.Error(), "foreign key check failed") {
+		t.Fatalf("failed rebuild = %v, %v", db, err)
+	}
+	db, err = open(context.Background(), path, beforeLinearMigration(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrationRows(t, db, `SELECT name FROM pragma_table_info('tasks') WHERE name = 'source'`); len(got) != 0 {
+		t.Fatalf("failed migration changed task schema: %#v", got)
+	}
+	if got := migrationRows(t, db, `SELECT task_id FROM executions`); !reflect.DeepEqual(got, [][]any{{"task-001"}}) {
+		t.Fatalf("failed migration changed references: %#v", got)
+	}
+	if got := migrationRows(t, db, `SELECT name FROM pragma_table_info('projects') WHERE name = 'linear_team_id'`); len(got) != 0 {
+		t.Fatalf("failed migration changed project schema: %#v", got)
+	}
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9})
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = openRegistry(t, path)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+}

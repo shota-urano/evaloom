@@ -18,12 +18,29 @@ type migration struct {
 	sql     string
 }
 
-func migrate(ctx context.Context, db *sql.DB, source fs.FS) error {
+func migrate(ctx context.Context, db *sql.DB, source fs.FS) (err error) {
 	migrations, err := readMigrations(source)
 	if err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	// SQLite table rebuilds must disable foreign keys outside the transaction.
+	// Pin the connection so this setting cannot affect a different connection;
+	// validate all references before each commit and restore runtime enforcement.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return err
+	}
+	defer func() {
+		_, restoreErr := conn.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+		if restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("store: restore foreign keys: %w", restoreErr))
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		name TEXT NOT NULL,
 		applied_at TEXT NOT NULL
@@ -31,15 +48,15 @@ func migrate(ctx context.Context, db *sql.DB, source fs.FS) error {
 		return fmt.Errorf("store: initialize migration history: %w", err)
 	}
 	for _, migration := range migrations {
-		if err := applyMigration(ctx, db, migration); err != nil {
+		if err := applyMigration(ctx, conn, migration); err != nil {
 			return fmt.Errorf("store: migration %s: %w", migration.name, err)
 		}
 	}
 	return nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
-	tx, err := db.BeginTx(ctx, nil)
+func applyMigration(ctx context.Context, conn *sql.Conn, migration migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -57,6 +74,17 @@ func applyMigration(ctx context.Context, db *sql.DB, migration migration) error 
 	}
 	if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
 		return err
+	}
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return err
+	}
+	invalid := rows.Next()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if invalid {
+		return errors.New("foreign key check failed")
 	}
 	if _, err := tx.ExecContext(ctx,
 		"INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",

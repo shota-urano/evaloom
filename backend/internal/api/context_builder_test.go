@@ -161,7 +161,9 @@ func TestContextBuilderUsesOnlyExecutionProjectAndTask(t *testing.T) {
 		 runner_id, base_branch, default_role, context_location, copy_allowlist, test_command,
 		 test_report_format, test_report_path, setup_command,
 		 allowed_operations, approval_policy, timeouts, created_at, updated_at FROM projects WHERE id = 'project-a'`,
-		`INSERT INTO tasks SELECT 'task-b', 'project-b', 'FOREIGN TASK', 'FOREIGN BODY', acceptance_criteria,
+		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
+		 task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
+		 SELECT 'task-b', 'project-b', 'FOREIGN TASK', 'FOREIGN BODY', acceptance_criteria,
 		 short_name, task_type, collaboration_mode, 'running', 'other-context', created_at, updated_at FROM tasks WHERE id = 'task-001'`,
 		`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		 VALUES ('foreign-execution', 'task-b', 1, 'fresh', 'preparing', '2026-10-26T00:00:00Z')`,
