@@ -182,7 +182,7 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 		t.Fatal(err)
 	}
 	if claim.Execution.TaskID != created.ID || claim.Execution.Seq != 1 || claim.Execution.Mode != "continue" || claim.Execution.ResumePoint != nil || claim.Previous != nil ||
-		claim.Task != (store.ClaimTask{Title: created.Title, Body: created.Body, AcceptanceCriteria: created.AcceptanceCriteria, ShortName: created.ShortName}) || !reflect.DeepEqual(claim.Project, project) ||
+		claim.Task != (store.ClaimTask{Title: created.Title, Body: created.Body, AcceptanceCriteria: created.AcceptanceCriteria, ShortName: created.ShortName}) || !reflect.DeepEqual(claim.Project.Project, project) ||
 		claim.Profile.HarnessID != pin.Harness || claim.Profile.Adapter != "codex" || claim.Profile.Version != pin.Version || claim.Profile.CommitSHA != pin.SHA ||
 		!reflect.DeepEqual(claim.Profile.Definition, profiles[1].Definition) {
 		t.Fatalf("response does not match stored input: %+v", claim)
