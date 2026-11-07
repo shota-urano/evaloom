@@ -41,6 +41,36 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	if m.port < 1 || m.port > 65535 || n.TaskID == "" {
 		return fmt.Errorf("notification: invalid macOS port or task ID")
 	}
+	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + "/tasks/" + url.PathEscape(n.TaskID)
+	return m.launch(ctx, title, body, taskURL)
+}
+
+// NotifyLinearPollFailing tells the owner that Linear polling keeps failing
+// (spec 15 6章). The body carries only the allowlisted classification and the
+// failure count; a click opens the Dashboard, whose error status shows the
+// polling state (spec 15 6章), because the alert has no task.
+func (m *MacOS) NotifyLinearPollFailing(ctx context.Context, class string, consecutiveFailures int) error {
+	switch class {
+	case "auth", "rate_limited", "network", "other":
+	default:
+		return errors.New("notification: unsupported Linear polling classification")
+	}
+	if consecutiveFailures < 1 {
+		return errors.New("notification: invalid Linear polling failure count")
+	}
+	if !filepath.IsAbs(m.helperPath) {
+		return fmt.Errorf("%w: invalid macOS helper path", ErrLaunchFailed)
+	}
+	if m.port < 1 || m.port > 65535 {
+		return fmt.Errorf("notification: invalid macOS port")
+	}
+	body := "Linear の照会が続けて失敗しています\n" + class + "\n" + strconv.Itoa(consecutiveFailures) + " 回連続"
+	return m.launch(ctx, "evaloom: Linear の照会が失敗", body, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
+}
+
+// launch runs the helper with the three fixed arguments and waits for its
+// result code.
+func (m *MacOS) launch(ctx context.Context, title, body, openURL string) error {
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -55,8 +85,7 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	}
 	defer os.RemoveAll(dir)
 	resultPath := filepath.Join(dir, "result")
-	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + "/tasks/" + url.PathEscape(n.TaskID)
-	cmd := exec.CommandContext(ctx, "/usr/bin/open", "-n", "-a", m.helperPath, "--args", title, body, taskURL)
+	cmd := exec.CommandContext(ctx, "/usr/bin/open", "-n", "-a", m.helperPath, "--args", title, body, openURL)
 	cmd.Env = append(os.Environ(), resultEnvironment+"="+resultPath)
 	if err := m.run(cmd); err != nil {
 		return fmt.Errorf("%w: %w", ErrLaunchFailed, err)

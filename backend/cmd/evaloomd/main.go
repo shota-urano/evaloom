@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -28,7 +31,55 @@ const (
 	defaultPort       = 8080
 	readHeaderTimeout = 5 * time.Second
 	shutdownTimeout   = 5 * time.Second
+	// linearRequestTimeout bounds one Linear HTTP request so a hung request
+	// cannot stall polling forever. It is an implementation limit, not a
+	// specification value.
+	linearRequestTimeout = 30 * time.Second
 )
+
+// newLinearPoller builds the Linear Poller started with the Control Plane
+// (spec 15 3.1). Tests replace it to avoid the real Linear API.
+// port is the actual bound port, used by the macOS alert to open the Dashboard.
+var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearintake.Poller, error) {
+	keyPath, err := linear.DefaultAPIKeyPath()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	client, err := linear.NewClient(&http.Client{Timeout: linearRequestTimeout}, linear.Endpoint, keyPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear alert home: %w", err)
+	}
+	poller := &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}
+	if alerter := linearPollAlerter(runtime.GOOS, home, port); alerter != nil {
+		poller.Alerter = alerter
+	}
+	return poller, nil
+}
+
+// macOSLinearAlerter sends the Linear polling alert (spec 15 6章) through the
+// same macOS helper as task notifications.
+type macOSLinearAlerter struct{ macOS *notification.MacOS }
+
+func (a macOSLinearAlerter) AlertLinearPollFailing(ctx context.Context, alert linearintake.Alert) error {
+	return a.macOS.NotifyLinearPollFailing(ctx, string(alert.Class), alert.ConsecutiveFailures)
+}
+
+// linearPollAlerter returns the macOS alerter on darwin and nil elsewhere,
+// like phase1NotificationChannels.
+func linearPollAlerter(goos, home string, port int) linearintake.Alerter {
+	if goos != "darwin" {
+		return nil
+	}
+	return macOSLinearAlerter{notification.NewMacOS(notificationHelperPath(home), port)}
+}
+
+func notificationHelperPath(home string) string {
+	return filepath.Join(home, "Applications", "Evaloom Notifications.app")
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -133,6 +184,21 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		cancelNotifications()
 		<-notificationsDone // Stop DB users before closing the connection.
 	}()
+	// Poll Linear once at startup and then at each interval (spec 15 3.1).
+	poller, err := newLinearPoller(db, logger, listener.Addr().(*net.TCPAddr).Port)
+	if err != nil {
+		return err
+	}
+	pollerCtx, cancelPoller := context.WithCancel(ctx)
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		poller.Run(pollerCtx)
+	}()
+	defer func() {
+		cancelPoller()
+		<-pollerDone // Stop DB users before closing the connection.
+	}()
 	served := make(chan error, 1)
 	recoveryStartedAt := time.Now().UTC()
 	go func() { served <- server.Serve(listener) }()
@@ -174,8 +240,7 @@ func phase1NotificationChannels(goos, home string, port int) []notification.Chan
 	if goos != "darwin" {
 		return nil
 	}
-	helper := filepath.Join(home, "Applications", "Evaloom Notifications.app")
-	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(helper, port)}}
+	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(notificationHelperPath(home), port)}}
 }
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {
