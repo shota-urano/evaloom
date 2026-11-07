@@ -33,7 +33,7 @@ confirmed_rev: 7149951
 Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Linear GraphQL API へ一定間隔で照会する。
 
 - 外から Mac mini に届く住所（公開 HTTPS エンドポイント、トンネル）を持たない。Webhook の登録、署名シークレット、署名の検証も無い。
-- Linear への接続は Control Plane から外へ向かう HTTPS だけで行う。認証は API キー（requirements 6.6）。置き場所は Q49。
+- Linear への接続は Control Plane から外へ向かう HTTPS だけで行う。認証は API キー（requirements 6.6）。キーは `~/.config/evaloom/linear-api-key`（権限 0600）に置き、Control Plane だけが読む（Q49、ファイル名は 2026-11-07 決定）。
 - 照会の間隔は1分とする案（Q43）。Linear の変化は最大でこの間隔だけ遅れて取り込まれる。開発タスクの開始が1分遅れても困らないため、この遅れを許容する（requirements 6.6）。
 - 照会は1本ずつ行う。前の照会が終わっていなければ次の照会を始めない。
 - Control Plane の起動時に1回照会し、その後は間隔ごとに照会する。Mac mini が止まっていた間に付いた `ai-ready` は、再開後の最初の照会で取り込む。
@@ -315,7 +315,7 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
 
 ## 9. 実装単位
 
-- [ ] （人間） Evaloom 専用の Linear ユーザーの API キーを作って Mac mini の `~/.config/evaloom/` に置く（Q49）
+- [ ] （人間） Evaloom 専用の Linear ユーザーの API キーを作って Mac mini の `~/.config/evaloom/linear-api-key`（権限 0600）に置く（Q49）
 - [ ] [Backend] Phase 2 のマイグレーション（projects の Linear 列、tasks の source・intake_block_cause と project_id の NULL 許可、linear_issue_states、linear_poll_teams、linear_issue_links）
   - 受け入れ基準: 既存の tasks の行が source=manual になる; UNIQUE(linear_team_id, linear_routing_label) と UNIQUE(linear_issue_id, attach_seq) が効く; source=manual で project_id が NULL の行を書けない; event_inbox の表が作られない
 - [ ] [Backend] Linear GraphQL クライアント（API キーの読み込み、対象 Team の ai-ready 付き Issue の一覧をページを読み切って取得、Issue の個別取得）
