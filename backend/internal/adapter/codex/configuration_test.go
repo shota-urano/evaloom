@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -39,12 +40,12 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 					t.Fatal(err)
 				}
 			default:
-				// Configure runs after copy creation and before the launch-boundary
+				// ResolveToolPermissions runs after copy creation and before the launch-boundary
 				// check. Mutate the actual copy, not its asserted manifest.
-				f.config.Configure = func(context.Context, adapter.HarnessRequest) ([]string, error) {
+				f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 					entries, err := os.ReadDir(filepath.Dir(f.settings.ConfigDir()))
 					if err != nil {
-						return nil, err
+						return json.RawMessage(`{}`), err
 					}
 					for _, entry := range entries {
 						if !strings.HasPrefix(entry.Name(), "harness-") || entry.Name() == filepath.Base(f.settings.ConfigDir()) {
@@ -78,7 +79,7 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 						if err != nil {
 							t.Error(err)
 						}
-						return nil, err
+						return json.RawMessage(`{}`), err
 					}
 					t.Error("copy not created before configuration")
 					return nil, errors.New("copy missing")
@@ -206,7 +207,7 @@ func TestCodexWorkingCopyLifetime(t *testing.T) {
 				return launch(ctx, env, args, out, errOut)
 			}
 			if mode == "policy_failure" {
-				f.config.Configure = func(context.Context, adapter.HarnessRequest) ([]string, error) {
+				f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 					return nil, errors.New("policy failed")
 				}
 			}

@@ -231,14 +231,14 @@ export EVALOOM_SECURITY_MODEL_IMAGE=evaloom-security-model:local
 export EVALOOM_SECURITY_MODEL_PROXY_IMAGE=evaloom-security-proxy:local
 export EVALOOM_SECURITY_MODEL_PROXY_BINARY="$model_test_tmp/proxy"
 
-# 次の6変数は、実行環境の秘密管理と採用CLIの設定に合わせて指定する。
+# モデルIDと認証は実行環境に合わせ、DESTINATIONSはAdapter内の定数と一致させる。
 # AUTH_JSONには本人が普段使う認証ではなく、Evaloom専用の認証JSONを渡す。
 export EVALOOM_SECURITY_CODEX_MODEL='<正式なモデルID>'
 export EVALOOM_SECURITY_CODEX_AUTH_JSON='<専用auth.jsonの内容>'
-export EVALOOM_SECURITY_CODEX_DESTINATIONS='<認証・モデル接続先host:portのカンマ区切り>'
+export EVALOOM_SECURITY_CODEX_DESTINATIONS='chatgpt.com:443,auth.openai.com:443,api.openai.com:443'
 export EVALOOM_SECURITY_CLAUDE_MODEL='<正式なモデルID>'
 export EVALOOM_SECURITY_CLAUDE_AUTH_JSON='<専用.credentials.jsonの内容>'
-export EVALOOM_SECURITY_CLAUDE_DESTINATIONS='<認証・モデル接続先host:portのカンマ区切り>'
+export EVALOOM_SECURITY_CLAUDE_DESTINATIONS='api.anthropic.com:443,console.anthropic.com:443,claude.ai:443'
 
 GOCACHE="$model_test_tmp/go-cache" go test -tags=security_model \
   ./internal/securitytest -run '^TestModelConfigurationIsolation$' \

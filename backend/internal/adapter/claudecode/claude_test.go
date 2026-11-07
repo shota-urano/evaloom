@@ -242,14 +242,14 @@ func newFixture(t *testing.T, mode string) *fixture {
 	}
 	f := &fixture{store: store, settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
 		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
-		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["shell"]},"executionConfiguration":{"adapter":"claude_code","args":[]}}`)},
+		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["Bash","Edit"]},"executionConfiguration":{"adapter":"claude_code","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
-	f.config = Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, CancelGrace: 30 * time.Millisecond, Configure: func(_ context.Context, req adapter.HarnessRequest) (json.RawMessage, error) {
-		if req.Profile.HarnessID != "harness" || !strings.Contains(string(req.Profile.Definition), "shell") {
+	f.config = Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, CancelGrace: 30 * time.Millisecond, ResolveToolPermissions: func(_ context.Context, req adapter.HarnessRequest) (json.RawMessage, error) {
+		if req.Profile.HarnessID != "harness" {
 			return nil, errors.New("policy unavailable")
 		}
-		return json.RawMessage(`{"permissions":{"allow":["Bash","Edit"],"deny":["WebFetch"]}}`), nil
+		return json.RawMessage(`{"deny":["WebFetch"]}`), nil
 	}, Launch: func(ctx context.Context, env adapter.SandboxEnv, args []string, out, errOut io.Writer) (sandbox.Process, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -396,7 +396,7 @@ func TestClaudeCodeConfigurationFailsClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "missing_policy":
-				f.config.Configure = nil
+				f.config.ResolveToolPermissions = nil
 			case "missing_config_home":
 				f.env.Env = map[string]string{}
 			case "bad_profile_args":
@@ -404,11 +404,11 @@ func TestClaudeCodeConfigurationFailsClosed(t *testing.T) {
 			case "bad_adapter":
 				f.request.Profile.Definition = json.RawMessage(`{"executionConfiguration":{"adapter":"codex"}}`)
 			case "policy_failure":
-				f.config.Configure = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+				f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 					return nil, errors.New("policy unavailable")
 				}
 			case "malformed_settings", "null_settings", "settings_path":
-				f.config.Configure = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
+				f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 					return json.RawMessage(map[string]string{"malformed_settings": `{"permissions":`, "null_settings": `null`, "settings_path": `"/untrusted/settings.json"`}[mode]), nil
 				}
 			case "no_launcher":

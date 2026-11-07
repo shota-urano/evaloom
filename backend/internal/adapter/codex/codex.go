@@ -10,7 +10,6 @@ import (
 	"io"
 	"maps"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,11 +37,11 @@ type Config struct {
 	// copy and closes that copy only after all Sandbox writers have stopped.
 	// Missing or mismatched configuration fails closed with config_error.
 	ResolveConfig func(adapter.SandboxEnv) (*harnessenv.Environment, error)
-	// Configure resolves Harness Tool Permissions using req.Profile.HarnessID
-	// and intersects them with Profile toolConfiguration. Return Codex TOML
-	// key=value overrides, or an error if the policy cannot be represented.
-	// A missing resolver fails closed: the request has no Tool Permissions.
-	Configure func(context.Context, adapter.HarnessRequest) ([]string, error)
+	// ResolveToolPermissions returns the claim-time Harness toolPermissions object.
+	// The common HarnessRequest intentionally has no such wire field. Runner
+	// supplies the pinned claim value; conversion belongs to this adapter.
+	// A missing resolver or malformed value fails closed before any CLI starts.
+	ResolveToolPermissions func(context.Context, adapter.HarnessRequest) (json.RawMessage, error)
 	// CancelGrace is supplied by Runner's cancellation policy (no Q15 default).
 	CancelGrace time.Duration
 }
@@ -161,7 +160,7 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 		close(s.done)
 		s.cancel()
 	}()
-	if h.config.Launch == nil || h.config.Configure == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
+	if h.config.Launch == nil || h.config.ResolveToolPermissions == nil || h.config.ResolveConfig == nil || h.config.ResolveAuthentication == nil || h.config.CancelGrace <= 0 ||
 		!filepath.IsAbs(env.ConfigDir) || env.Env["CODEX_HOME"] != env.ConfigDir || req.Profile.ModelID == "" {
 		return
 	}
@@ -198,17 +197,10 @@ func (h *harness) run(ctx context.Context, s *session, id adapter.SessionID, req
 	}
 	env.ConfigDir = working.ConfigDir()
 	env.Env["CODEX_HOME"] = env.ConfigDir
-	overrides, err := h.config.Configure(ctx, req)
-	if err != nil {
+	if err := h.configurePermissions(ctx, req); err != nil {
 		return
 	}
 	common := []string{"codex"}
-	for _, value := range overrides {
-		if !strings.Contains(value, "=") || strings.ContainsRune(value, 0) {
-			return
-		}
-		common = append(common, "-c", value)
-	}
 	// login status loads the dedicated config and checks saved CLI auth without
 	// invoking the model. A workload failure here is configuration, not execution.
 	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}

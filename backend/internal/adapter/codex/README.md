@@ -83,11 +83,16 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
   削除する。移動された生成ディレクトリは保持したハンドルで内容を消し、専用ルート内で
   同じ実体を探して削除する。元の名前に置かれた無関係なファイルは削除しない。
 - `ContainerLaunch`に既存の`ContainerConfig`と、Executionに対応する`SandboxSpec`の
-  解決関数を渡す。GitDir、ネットワークの許可先、資源制限は信頼されたRunnerが与える。
+  解決関数を渡す。GitDir、ネットワークポリシー、資源制限は信頼されたRunnerが与える。
+  `NetworkHarness`の許可先はAdapter内の定数で置き換える。Codexは
+  `chatgpt.com:443`、`auth.openai.com:443`、`api.openai.com:443`だけを渡す。
+  `NetworkNone`は全遮断のままにし、setup用ポリシーは拒否する。
   `CODEX_HOME`を環境変数の許可リストに含める。HOMEの隔離は既存Containerが行う。
-- `Config.Configure`でHarnessのTool PermissionsとProfileの`toolConfiguration`を照合し、
-  採用CLIで表現可能な設定だけをTOMLの`key=value`形式で返す。
-  不明なツール・表現できない権限はエラーにする。この関数を省略した場合も起動しない。
+- `Config.ResolveToolPermissions`でclaim時点のHarnessの`toolPermissions`をJSONオブジェクトとして返す。
+  変換はAdapterが行う。許可するキーは`deny`だけで、`{}`は追加の禁止なしを表す。
+  Profileの`toolConfiguration.allowedTools`と`deny`の両方が空なら起動する。
+  どちらかに要素があれば、Codex 0.163.0では表現できないため`config_error`にする。
+  未知キー、配列でない値、文字列でない要素、空文字、null、解決関数の欠落も起動前に拒否する。
 - `Config.CancelGrace`にはRunnerの中止猶予時間を渡す。既定値は追加しない。
 - `registry.Register("codex", codex.New(config))`で登録する。Runnerは登録名で解決する。
 - ログを消費し、停止後の結果を`Execution.HarnessResult`へ渡す。
@@ -111,9 +116,10 @@ preflightの異常終了、OOM、runtime障害を検証する。
 
 ## 仕様の穴と接続範囲
 
-共通のHarnessRequestにはHarnessのTool Permissionsが無く、そのJSONの内容と
-Codexのツール権限との対応も仕様には無い。新しい要求項目や独自のツール名は追加せず、
-`Config.Configure`を信頼された設定変換の境界にする。変換処理の提供が必要である。
+共通のHarnessRequestにはHarnessのTool Permissionsが無いため、要求項目は増やさず、
+`Config.ResolveToolPermissions`をclaimの固定値を受け取る内部境界として使う。
+起動コマンドとclaimの接続は後続タスクevaloom-1b9が行う。権限の形と変換規則は
+仕様08の3.8と仕様00のQ72に従い、Adapter内で検証する。
 Profileの`executionConfiguration.args`は、許可する追加引数が未定義なので、
 今回は空配列だけを受け付ける。設定を上書きするフラグを暗黙に許可しない。
 
@@ -142,3 +148,8 @@ Git作者名・メールアドレスの値は選んでいない。Runnerが専�
 起動方法とJSONL形式の参照先は
 [OpenAI公式の非対話実行ドキュメント](https://learn.chatgpt.com/docs/non-interactive-mode)と
 [CLIリファレンス](https://learn.chatgpt.com/docs/cli/reference)。
+
+`permissions_test.go`の`TestCodexToolPermissionsLaunchArguments`が空の権限での起動を、
+`TestCodexToolPermissionsRejectInvalidBeforeCLI`が非空・不正な権限でのCLI未起動と
+`config_error`を検証する。`TestContainerLaunchOnlyAdapterDestinations`はSandboxに渡す
+宛先の全件一致、GitHubの除外、呼び出し元の一覧の置き換え、実行間の独立性を検証する。

@@ -90,6 +90,8 @@ type Execution struct {
 	startedAt         time.Time
 	harnessWallTimeMS *int64
 	now               func() time.Time
+	// Read credentials are retained only for log exclusion, never Sandbox env.
+	logSecrets []string
 }
 
 // StageFunc performs one stage. A failure or block must return an error; the

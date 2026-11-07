@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,7 @@ func writeConfig(t *testing.T, endpoint string) string {
 		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
 		HarnessAuthFiles:        map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
 		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
-		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy"},
+		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 		CommitAuthor:            runner.CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
 		DefaultTimeouts:         runner.DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
 	}
@@ -175,6 +176,14 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 		edit func(map[string]any)
 	}
 	var cases []invalidConfig
+	for _, key := range []string{"container.cpus", "container.memoryMiB"} {
+		for _, value := range []int{0, -1} {
+			cases = append(cases, invalidConfig{"nonpositive/" + key + "/" + strconv.Itoa(value), func(config map[string]any) {
+				object, field := configObject(config, key)
+				object[field] = value
+			}})
+		}
+	}
 	for _, key := range []string{
 		"runnerId", "controlPlaneUrl", "tokenFile", "worktreeRoot", "dataDir", "harnessAuthFiles", "githubAppPrivateKeyFile",
 		"container", "container.runtimePath", "container.image", "container.proxyImage", "container.proxyBinary",

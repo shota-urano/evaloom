@@ -46,10 +46,6 @@ func TestCodexCLIHelper(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(os.Getenv("CODEX_HOME"), "auth.json")); err != nil {
 		os.Exit(1)
 	}
-	if !slices.Equal(args[:min(len(args), 2)], []string{"-c", "features.web_search_request=false"}) {
-		exit("policy override missing")
-	}
-	args = args[2:]
 	mode := os.Getenv("FAKE_MODE")
 	if strings.HasPrefix(mode, "refresh-") {
 		// Emit currently known credential JSON and its bare token before refreshing.
@@ -226,15 +222,15 @@ func newFixture(t *testing.T, mode string) *fixture {
 	}
 	f := &fixture{store: store, settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
 		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
-		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["shell"]},"executionConfiguration":{"adapter":"codex","args":[]}}`)},
+		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":[]},"executionConfiguration":{"adapter":"codex","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
 	f.config = Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
-		CancelGrace: 30 * time.Millisecond, Configure: func(_ context.Context, req adapter.HarnessRequest) ([]string, error) {
-			if req.Profile.HarnessID != "harness" || !strings.Contains(string(req.Profile.Definition), "shell") {
+		CancelGrace: 30 * time.Millisecond, ResolveToolPermissions: func(_ context.Context, req adapter.HarnessRequest) (json.RawMessage, error) {
+			if req.Profile.HarnessID != "harness" {
 				return nil, errors.New("policy unavailable")
 			}
-			return []string{"features.web_search_request=false"}, nil
+			return json.RawMessage(`{}`), nil
 		}, Launch: func(ctx context.Context, env adapter.SandboxEnv, args []string, out, errOut io.Writer) (sandbox.Process, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -404,7 +400,7 @@ func TestCodexConfigurationFailsClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "missing_policy":
-				f.config.Configure = nil
+				f.config.ResolveToolPermissions = nil
 			case "missing_config_home":
 				f.env.Env = map[string]string{}
 			case "bad_profile_args":
@@ -412,7 +408,7 @@ func TestCodexConfigurationFailsClosed(t *testing.T) {
 			case "bad_adapter":
 				f.request.Profile.Definition = json.RawMessage(`{"executionConfiguration":{"adapter":"claude_code"}}`)
 			case "policy_failure":
-				f.config.Configure = func(context.Context, adapter.HarnessRequest) ([]string, error) {
+				f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 					return nil, errors.New("policy unavailable")
 				}
 			case "no_launcher":

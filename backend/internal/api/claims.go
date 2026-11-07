@@ -80,8 +80,34 @@ func claimExecution(db *sql.DB, logger *slog.Logger, artifacts ArtifactConfig) h
 			baseline := claim.Worktree.Baseline
 			baseline.TestIDs = claimBaselineIDs(ctx, artifacts, baseline.TestRun)
 		}
+		claim.Execution.ResumeHarnessSummary = claimHarnessSummary(ctx, artifacts, claim.Execution.ID, claim.HarnessOutputArtifactID)
 		writeJSON(w, http.StatusOK, claim)
 	}
+}
+
+func claimHarnessSummary(ctx context.Context, config ArtifactConfig, executionID string, artifactID *string) *string {
+	if artifactID == nil || config.Store == nil {
+		return nil
+	}
+	artifact, file, err := config.Store.Open(ctx, executionID, *artifactID)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	if artifact.Kind != "harness_output" {
+		return nil
+	}
+	body, err := io.ReadAll(file)
+	if err != nil || !utf8.Valid(body) {
+		return nil
+	}
+	var result struct {
+		Summary *string `json:"summary"`
+	}
+	if json.Unmarshal(body, &result) != nil {
+		return nil
+	}
+	return result.Summary
 }
 
 func claimBaselineIDs(ctx context.Context, config ArtifactConfig, run model.TestRun) []string {
