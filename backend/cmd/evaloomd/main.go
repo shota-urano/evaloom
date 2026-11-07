@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -28,7 +31,27 @@ const (
 	defaultPort       = 8080
 	readHeaderTimeout = 5 * time.Second
 	shutdownTimeout   = 5 * time.Second
+	// linearRequestTimeout bounds one Linear HTTP request so a hung request
+	// cannot stall polling forever. It is an implementation limit, not a
+	// specification value.
+	linearRequestTimeout = 30 * time.Second
 )
+
+// newLinearPoller builds the Linear Poller started with the Control Plane
+// (spec 15 3.1). Tests replace it to avoid the real Linear API.
+var newLinearPoller = func(db *sql.DB, logger *slog.Logger) (*linearintake.Poller, error) {
+	keyPath, err := linear.DefaultAPIKeyPath()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	client, err := linear.NewClient(&http.Client{Timeout: linearRequestTimeout}, linear.Endpoint, keyPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	// No Alerter yet: the macOS helper only opens task detail URLs (spec 12
+	// 3.3), and a polling alert has no task. Alerts are logged meanwhile.
+	return &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}, nil
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -132,6 +155,21 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	defer func() {
 		cancelNotifications()
 		<-notificationsDone // Stop DB users before closing the connection.
+	}()
+	// Poll Linear once at startup and then at each interval (spec 15 3.1).
+	poller, err := newLinearPoller(db, logger)
+	if err != nil {
+		return err
+	}
+	pollerCtx, cancelPoller := context.WithCancel(ctx)
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		poller.Run(pollerCtx)
+	}()
+	defer func() {
+		cancelPoller()
+		<-pollerDone // Stop DB users before closing the connection.
 	}()
 	served := make(chan error, 1)
 	recoveryStartedAt := time.Now().UTC()
