@@ -26,6 +26,9 @@ type RepositoryInput struct {
 	Remote       string // Defaults to origin.
 	BaseBranch   string // Empty for a Harness, which has no Base Branch.
 	WorktreeRoot string
+	// Runner supplies a stage-scoped, authenticated read transport. Registry
+	// registration keeps the ordinary local validation path.
+	ReadRemote func(context.Context, string, ...string) ([]byte, error)
 }
 
 // Detail identifies the failed check using the API's field/reason format.
@@ -142,7 +145,15 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 		if _, err := repositoryGit(ctx, realPath, "check-ref-format", ref); err != nil {
 			return "", gitError(parentCtx, "baseBranch", "invalid_branch")
 		}
-		refs, err := repositoryGit(ctx, realPath, "ls-remote", "--exit-code", "--heads", "--refs", "--", remote, ref)
+		var refs string
+		var err error
+		if input.ReadRemote != nil {
+			var out []byte
+			out, err = input.ReadRemote(ctx, realPath, "ls-remote", "--heads", "--refs", "--", input.URL, ref)
+			refs = string(out)
+		} else {
+			refs, err = repositoryGit(ctx, realPath, "ls-remote", "--exit-code", "--heads", "--refs", "--", remote, ref)
+		}
 		if err != nil {
 			if parentCtx.Err() != nil {
 				return "", parentCtx.Err()
