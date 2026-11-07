@@ -201,6 +201,47 @@ func TestOpenRejectsInvalidMigrations(t *testing.T) {
 	}
 }
 
+func TestMigrateRestoresForeignKeysAfterFailure(t *testing.T) {
+	source := fstest.MapFS{
+		"1_create.sql": {Data: []byte(`CREATE TABLE parent (id INTEGER PRIMARY KEY);
+			CREATE TABLE child (parent_id INTEGER REFERENCES parent(id));
+			INSERT INTO parent VALUES (1); INSERT INTO child VALUES (1);`)},
+	}
+	db, err := open(context.Background(), filepath.Join(t.TempDir(), "evaloom.db"), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, failure := range []string{
+		`UPDATE child SET parent_id = 2;`,
+		`UPDATE child SET parent_id = 2; INSERT INTO missing_table VALUES (1);`,
+	} {
+		source["2_fail.sql"] = &fstest.MapFile{Data: []byte(failure)}
+		if err := migrate(context.Background(), db, source); err == nil {
+			t.Fatal("invalid migration succeeded")
+		}
+		var enabled, parentID int
+		if err := db.QueryRow("PRAGMA foreign_keys").Scan(&enabled); err != nil || enabled != 1 {
+			t.Fatalf("foreign_keys after failure = %d, err = %v; want 1", enabled, err)
+		}
+		if err := db.QueryRow("SELECT parent_id FROM child").Scan(&parentID); err != nil || parentID != 1 {
+			t.Fatalf("rolled-back reference = %d, err = %v; want 1", parentID, err)
+		}
+		_, err := db.Exec("UPDATE child SET parent_id = 2")
+		if err == nil || !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			t.Fatalf("runtime foreign key enforcement after failure: %v", err)
+		}
+		assertVersions(t, db, []int64{1})
+	}
+	// Retry on the same connection after correcting the unapplied migration.
+	source["2_fail.sql"] = &fstest.MapFile{Data: []byte(`INSERT INTO parent VALUES (2);
+		UPDATE child SET parent_id = 2;`)}
+	if err := migrate(context.Background(), db, source); err != nil {
+		t.Fatal(err)
+	}
+	assertVersions(t, db, []int64{1, 2})
+}
+
 func TestOpenReturnsErrors(t *testing.T) {
 	for _, path := range []string{"", ":memory:", t.TempDir(), filepath.Join(t.TempDir(), "missing", "evaloom.db")} {
 		t.Run(path, func(t *testing.T) {
