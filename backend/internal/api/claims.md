@@ -14,6 +14,23 @@
   直前のExecutionとそのworktreeから読み、未記録の各値はnullで返す。
 - Projectは既存のRegistry表現で返す。Profile定義とSHAは登録済み行から読み、
   Gitタグを再解決しない。Contextの固定は既存の準備工程のAPIで行う。
+- 3.3.2の追加項目はclaimのトランザクションで読む。`freshNumber`は同じタスクの
+  seq以下のfresh件数、`pullRequests`は現在より前のExecutionを番号ごとにまとめ、
+  最新のseq・ブランチを新しい順に返す。ProfileにはHarness行のrepo_pathと
+  tool_permissionsを載せる。
+- 再開点がある場合だけ、最新のcontinue判断を`resumeBlock`、同じExecutionの
+  Gate結果を作成順に`resumeGateResults`として返す。再開点がなければ、
+  再開用SHA・Block・検証実行はnull、Gate結果は空配列にする。
+- `worktree`のstatusと直前のExecutionの既知SHAを返す。準備完了は、最後の
+  復元開始より後の一致する`worktree_ready`と、setup成功または同じ準備での
+  setup不要記録を照合する。関連付け前の復元完了はresultの監査記録でも照合する。
+- Q69・Q73・Q74は00-overview.mdのQ表で2026-11-07に採用済み。
+  Q73の列・登録APIは03-registry.mdの別実装単位であり、現在のDBには列がない。
+  この実装ではclaim専用のProject表現で`setupAllowedHosts: []`を返す。
+- Q74の成果物IDはトランザクション内で読み、確定後に成果物ストアから
+  `summary`を読む。無い・読めない・形式が違う場合はnullでclaimを返す。
+  同じExecutionに複数の`harness_output`がある場合の選択規則は仕様にないため、
+  任意の1件を選ばず概要を取得できない場合としてnullにする。
 - 同じExecutionをBlockedから続行する場合は、保存済みのrole・Harness・Profileを使う。
   Profile定義は保存済みのProfile IDから読み、版とSHAはExecutionの列値を返す。
   再claimではRunnerとclaim時刻だけを更新する。初回かどうかはProfile IDが未保存かで判定し、
