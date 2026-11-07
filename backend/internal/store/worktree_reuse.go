@@ -76,9 +76,12 @@ const setupSkippedPrefix = "worktree-setup-not-required/"
 func WorktreeFilesReady(ctx context.Context, tx *sql.Tx, worktreeID string) (bool, error) {
 	var ready bool
 	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worktrees w
-		JOIN executions h ON h.worktree_id=w.id AND h.task_id=w.task_id AND h.runner_id=w.runner_id
+		JOIN executions h ON h.task_id=w.task_id AND h.runner_id=w.runner_id
 		JOIN execution_events ready ON ready.execution_id=h.id AND ready.type='worktree_ready'
-		WHERE w.id=? AND h.base_sha=w.base_sha AND h.branch_name=w.branch_name
+		WHERE w.id=? AND ((h.worktree_id=w.id AND h.base_sha=w.base_sha AND h.branch_name=w.branch_name)
+			OR EXISTS(SELECT 1 FROM audit_logs receipt WHERE receipt.target_type='execution' AND receipt.target_id=h.id
+				AND receipt.action='execution.result' AND json_extract(receipt.detail,'$.step')='worktree.restored'
+				AND json_extract(receipt.detail,'$.report.id')=w.id))
 		AND json_extract(ready.payload,'$.path')=w.path
 		AND json_extract(ready.payload,'$.branch')=w.branch_name
 		AND json_extract(ready.payload,'$.baseSha')=w.base_sha
