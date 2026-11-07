@@ -2,7 +2,7 @@
 // 3.2 and 6章). It queries every registered Team once at startup and then at
 // each interval, one round at a time, and records per-Team success or failure
 // in linear_poll_teams. What to do with the Issues read is delegated to an
-// IssueHandler (attach/detach decisions are a later task, spec 15 3.4).
+// IssueHandler; Intake (intake.go) decides attach and detach (spec 15 3.4).
 package linearintake
 
 import (
@@ -35,8 +35,8 @@ type Client interface {
 }
 
 // IssueHandler receives one Team's complete list after it has been read to
-// the last page. It is never called with a partial list (spec 15 3.2). The
-// attach/detach decision (spec 15 3.4 onward) implements this.
+// the last page. It is never called with a partial list (spec 15 3.2).
+// Intake implements it.
 type IssueHandler interface {
 	HandleTeamIssues(ctx context.Context, team store.LinearPollTeam, issues []linear.Issue) error
 }
