@@ -56,6 +56,8 @@ status: confirmed
 
 Phase 1 で作らない画面: Evaluations（16.5）、Improvements（16.6）、Collaborations（16.7）、Approvals（16.9）。
 
+Dashboard の通知失敗の一覧には、Phase 2 で Execution の無い契機の Linear コメントの送信の失敗（linear_outbox の行）も出る（2026-11-08 決定、Q82。[`12-notification.md`](./12-notification.md) 5章、[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2）。この項目は `eventId` と `executionId` が null で `outboxId` が入るため、画面は `outboxId` で項目を見分け、Execution の ID を表示しない。`reason` は channel=`linear` 用の値（16 の 3.4.2 の表、Q85）の説明を出す。
+
 ### 3.3 タスク詳細
 
 | 区画 | 内容 |
@@ -142,5 +144,7 @@ requirements 8.5「止まったタスクは、本人が変更内容を確認し�
   - 受け入れ基準: Finding が表示される; 続行の送信に表示中の headSha が含まれる; context_conflict では続行ボタンが出ない; 422 で読み直しを促す
 - [ ] [Frontend] Dashboard と Settings
   - 受け入れ基準: Runner の online / offline、実行中・待機中・Blocked の件数が表示される; 同時実行の上限が表示されるが変更できない
+- [ ] [Frontend] 通知失敗の一覧に linear_outbox の行（executionId が null、outboxId あり、channel=linear の reason）を表示する
+  - 受け入れ基準: eventId と executionId が null で outboxId が入った項目が、タスクの件名（タスク詳細へのリンク）、kind、channel=linear、reason、記録した時刻（createdAt）とともに Dashboard の通知失敗の一覧に表示される; executionId が null の項目で、Execution の ID の欄に null や undefined の文字が出ない; eventId が null の項目が複数あり、execution_events の項目と混ざっても、どの項目も欠けず重複せずに表示される; reason の auth・issue_removed・retries_exhausted・other に 16 の 3.4.2 の表に沿った説明が出る; 項目が応答の順（記録した時刻の新しい順、12 の 5章）のまま表示され、「さらに表示」で続きを読んでも欠けも重複も無い; コメントの本文とエラーの文字列を表示しない
 - [ ] [Frontend] Project の登録・編集に setup の許可宛先の入力欄
   - 受け入れ基準: Project の登録・編集の画面で `host:port` を複数入力でき、`setupAllowedHosts` として送られる; 何も入力しないと空配列が送られる; 編集の画面を開くと登録済みの値が入力欄に表示される; ワイルドカード、IP リテラル、ローカルの名前、ポートの無い値、同じ宛先の重複で返る 400 の `details`（field が `setupAllowedHosts`）が入力欄に表示される
