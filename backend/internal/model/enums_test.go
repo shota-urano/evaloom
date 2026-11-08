@@ -22,7 +22,7 @@ func TestSpecEnumValues(t *testing.T) {
 		}},
 		{"execution", decode[model.ExecutionStatus], []string{
 			"pending", "claimed", "preparing", "running", "verifying", "publishing",
-			"succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out",
+			"waiting_approval", "merging", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out",
 		}},
 		{"event", decode[model.ExecutionEventType], []string{
 			"status_changed", "log", "worktree_ready", "context_pinned", "harness_started",

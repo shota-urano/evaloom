@@ -25,18 +25,21 @@ func conflict(format string, args ...any) error {
 	return &ConflictError{Code: "conflict", Message: fmt.Sprintf(format, args...)}
 }
 
-// taskTransitions is exactly the Phase 1 table in spec 04, section 3.2.
+// taskTransitions is the Phase 1 table in spec 04, section 3.2, plus the
+// approval paths of spec 17 (3.3 PR created -> waiting_approval; 3.5.2 merged,
+// 3.6 rejected (Q57), closed or merged on GitHub (Q58) and cancelled).
 // A self-transition is not a task transition; Execution substeps are handled below.
 var taskTransitions = map[model.TaskStatus][]model.TaskStatus{
-	model.TaskReceived:  {model.TaskQueued},
-	model.TaskQueued:    {model.TaskRunning, model.TaskCancelled},
-	model.TaskRunning:   {model.TaskVerifying, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked},
-	model.TaskVerifying: {model.TaskCompleted, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked},
-	model.TaskBlocked:   {model.TaskQueued, model.TaskCancelled},
-	model.TaskFailed:    {model.TaskQueued},
-	model.TaskTimedOut:  {model.TaskQueued},
-	model.TaskCancelled: {model.TaskQueued},
-	model.TaskCompleted: {model.TaskQueued},
+	model.TaskReceived:        {model.TaskQueued},
+	model.TaskQueued:          {model.TaskRunning, model.TaskCancelled},
+	model.TaskRunning:         {model.TaskVerifying, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked},
+	model.TaskVerifying:       {model.TaskCompleted, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked, model.TaskWaitingApproval},
+	model.TaskWaitingApproval: {model.TaskCompleted, model.TaskFailed, model.TaskCancelled},
+	model.TaskBlocked:         {model.TaskQueued, model.TaskCancelled},
+	model.TaskFailed:          {model.TaskQueued},
+	model.TaskTimedOut:        {model.TaskQueued},
+	model.TaskCancelled:       {model.TaskQueued},
+	model.TaskCompleted:       {model.TaskQueued},
 }
 
 func ValidateTaskTransition(from, to model.TaskStatus) error {
@@ -48,20 +51,23 @@ func ValidateTaskTransition(from, to model.TaskStatus) error {
 	return conflict("task transition %q -> %q is not allowed", from, to)
 }
 
-// executionTasks is spec 02, section 5.2. Unknown values fail closed.
+// executionTasks is spec 02, section 5.2 and spec 17, section 3.9.
+// Unknown values fail closed.
 var executionTasks = map[model.ExecutionStatus]model.TaskStatus{
-	model.ExecutionPending:     model.TaskQueued,
-	model.ExecutionClaimed:     model.TaskRunning,
-	model.ExecutionPreparing:   model.TaskRunning,
-	model.ExecutionRunning:     model.TaskRunning,
-	model.ExecutionVerifying:   model.TaskVerifying,
-	model.ExecutionPublishing:  model.TaskVerifying,
-	model.ExecutionSucceeded:   model.TaskCompleted,
-	model.ExecutionBlocked:     model.TaskBlocked,
-	model.ExecutionFailed:      model.TaskFailed,
-	model.ExecutionInterrupted: model.TaskFailed,
-	model.ExecutionCancelled:   model.TaskCancelled,
-	model.ExecutionTimedOut:    model.TaskTimedOut,
+	model.ExecutionPending:         model.TaskQueued,
+	model.ExecutionClaimed:         model.TaskRunning,
+	model.ExecutionPreparing:       model.TaskRunning,
+	model.ExecutionRunning:         model.TaskRunning,
+	model.ExecutionVerifying:       model.TaskVerifying,
+	model.ExecutionPublishing:      model.TaskVerifying,
+	model.ExecutionWaitingApproval: model.TaskWaitingApproval,
+	model.ExecutionMerging:         model.TaskWaitingApproval,
+	model.ExecutionSucceeded:       model.TaskCompleted,
+	model.ExecutionBlocked:         model.TaskBlocked,
+	model.ExecutionFailed:          model.TaskFailed,
+	model.ExecutionInterrupted:     model.TaskFailed,
+	model.ExecutionCancelled:       model.TaskCancelled,
+	model.ExecutionTimedOut:        model.TaskTimedOut,
 }
 
 func TaskStatusForExecution(status model.ExecutionStatus) (model.TaskStatus, error) {
@@ -72,16 +78,23 @@ func TaskStatusForExecution(status model.ExecutionStatus) (model.TaskStatus, err
 }
 
 // executionTransitions follows the steps in spec 05, section 3.3 and the failure,
-// interruption, cancellation and resume paths in spec 04. Retries create another
+// interruption, cancellation and resume paths in spec 04, and the approval
+// paths in spec 17: a created PR waits for approval (3.3); approval starts the
+// merge (3.5.1); the merge succeeds or fails (3.5.2, 3.5.3); rejection (Q57),
+// a PR merged or closed on GitHub (Q58) and cancellation end the wait (3.6); a
+// consume that is refused for expiry or a changed head/target returns to the
+// wait so the owner can approve again (3.5.2, 3.6). Retries create another
 // Execution; they must never reopen a terminal Execution.
 var executionTransitions = map[model.ExecutionStatus][]model.ExecutionStatus{
-	model.ExecutionPending:    {model.ExecutionClaimed, model.ExecutionCancelled},
-	model.ExecutionClaimed:    {model.ExecutionPreparing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
-	model.ExecutionPreparing:  {model.ExecutionRunning, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
-	model.ExecutionRunning:    {model.ExecutionVerifying, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
-	model.ExecutionVerifying:  {model.ExecutionPublishing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
-	model.ExecutionPublishing: {model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
-	model.ExecutionBlocked:    {model.ExecutionPending, model.ExecutionCancelled},
+	model.ExecutionPending:         {model.ExecutionClaimed, model.ExecutionCancelled},
+	model.ExecutionClaimed:         {model.ExecutionPreparing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
+	model.ExecutionPreparing:       {model.ExecutionRunning, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
+	model.ExecutionRunning:         {model.ExecutionVerifying, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
+	model.ExecutionVerifying:       {model.ExecutionPublishing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
+	model.ExecutionPublishing:      {model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked, model.ExecutionWaitingApproval},
+	model.ExecutionWaitingApproval: {model.ExecutionMerging, model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled},
+	model.ExecutionMerging:         {model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled, model.ExecutionWaitingApproval},
+	model.ExecutionBlocked:         {model.ExecutionPending, model.ExecutionCancelled},
 }
 
 // ValidateExecutionTransition also accepts starting directly at an approved

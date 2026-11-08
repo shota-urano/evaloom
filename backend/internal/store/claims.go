@@ -11,7 +11,8 @@ import (
 )
 
 // Keep the active set identical for the global and per-Project limits (spec 04,
-// 3.3). Blocked and terminal Executions do not occupy a slot.
+// 3.3). Blocked, waiting_approval, merging (spec 17 3.9, Q59) and terminal
+// Executions do not occupy a slot.
 const activeExecutionStatuses = `('claimed', 'preparing', 'running', 'verifying', 'publishing')`
 
 var ErrClaimAssignmentMissing = errors.New("Project has no Default Harness assignment")

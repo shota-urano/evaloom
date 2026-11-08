@@ -39,6 +39,16 @@ func TestPersistedExecutionTransitions(t *testing.T) {
 		{"claimed", "publishing", "running", "verifying", "publish"},
 		{"preparing", "verifying", "running", "verifying", "gate2"},
 		{"preparing", "publishing", "running", "verifying", "publish"},
+		// Spec 17 3.3, 3.5, 3.6: approval waits, merges and their exits.
+		{"publishing", "waiting_approval", "verifying", "waiting_approval", ""},
+		{"waiting_approval", "merging", "waiting_approval", "waiting_approval", ""},
+		{"waiting_approval", "succeeded", "waiting_approval", "completed", ""},
+		{"waiting_approval", "failed", "waiting_approval", "failed", ""},
+		{"waiting_approval", "cancelled", "waiting_approval", "cancelled", ""},
+		{"merging", "succeeded", "waiting_approval", "completed", ""},
+		{"merging", "failed", "waiting_approval", "failed", ""},
+		{"merging", "cancelled", "waiting_approval", "cancelled", ""},
+		{"merging", "waiting_approval", "waiting_approval", "waiting_approval", ""},
 	}
 	for _, from := range []struct {
 		execution model.ExecutionStatus
@@ -98,6 +108,18 @@ func TestTransitionRejectsInvalidOrStaleRequestsWithoutChanges(t *testing.T) {
 		{"unknown target", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "unknown"}},
 		{"unknown source", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "unknown", ToExecution: "claimed"}},
 		{"reserved task", "planning", "pending", task.Transition{FromTask: "planning", FromExecution: "pending", ToExecution: "claimed"}},
+		// Spec 17: transitions outside the approval table are 409 conflicts.
+		{"approval before publish", "verifying", "verifying", task.Transition{FromTask: "verifying", FromExecution: "verifying", ToExecution: "waiting_approval"}},
+		{"merge without approval", "verifying", "publishing", task.Transition{FromTask: "verifying", FromExecution: "publishing", ToExecution: "merging"}},
+		{"waiting reclaimed", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "claimed"}},
+		{"waiting blocked", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "blocked"}},
+		{"waiting interrupted", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "interrupted"}},
+		{"waiting requeued", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "pending"}},
+		{"merging back to publish", "waiting_approval", "merging", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "publishing"}},
+		{"merging timed out", "waiting_approval", "merging", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "timed_out"}},
+		{"merged reopened", "completed", "succeeded", task.Transition{FromTask: "completed", FromExecution: "succeeded", ToExecution: "merging"}},
+		{"waiting duplicate", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "waiting_approval"}},
+		{"merging with stale task", "verifying", "merging", task.Transition{FromTask: "verifying", FromExecution: "merging", ToExecution: "succeeded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := lifecycleDB(t)
