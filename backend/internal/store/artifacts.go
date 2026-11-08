@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // Artifact describes a file whose StoragePath is relative to the configured
@@ -158,4 +160,32 @@ func (s *ArtifactStore) Open(ctx context.Context, executionID, id string) (Artif
 		return Artifact{}, nil, err
 	}
 	return artifact, file, nil
+}
+
+// HarnessSummaryTx reads HarnessResult.summary from the Execution's
+// harness_output artifact inside tx (linearoutbox.SummarySource). As for the
+// claim's resume summary (Q74), several or no artifacts, an unreadable file
+// or invalid JSON make the summary unavailable rather than failing tx.
+func (s *ArtifactStore) HarnessSummaryTx(ctx context.Context, tx *sql.Tx, executionID string) (string, bool) {
+	var path sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN count(*)=1 THEN min(storage_path) END
+		FROM artifacts WHERE execution_id=? AND kind='harness_output'`, executionID).Scan(&path); err != nil || !path.Valid {
+		return "", false
+	}
+	file, err := s.root.Open(path.String)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	body, err := io.ReadAll(file)
+	if err != nil || !utf8.Valid(body) {
+		return "", false
+	}
+	var result struct {
+		Summary *string `json:"summary"`
+	}
+	if json.Unmarshal(body, &result) != nil || result.Summary == nil {
+		return "", false
+	}
+	return *result.Summary, true
 }

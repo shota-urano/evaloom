@@ -88,14 +88,3 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 	}
 	return nil
 }
-
-// Body builds linear_outbox.body for t inside tx.
-//
-// Boundary: the comment body of spec 16 3.3 (the 6.4 items and secret
-// redaction) belongs to a later task. Until then the body carries only the
-// task ID shown in the management UI (3.3) and, at the end, the dedupe_key
-// used to match a comment whose send result is unknown (3.4). It never
-// contains harness output, logs or Runner paths.
-func Body(_ context.Context, _ *sql.Tx, t Trigger) (string, error) {
-	return fmt.Sprintf("Evaloom: %s\n管理画面のタスク ID: %s\n\n%s", t.Kind, t.TaskID, t.DedupeKey()), nil
-}

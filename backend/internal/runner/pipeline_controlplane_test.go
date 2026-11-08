@@ -31,6 +31,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -124,6 +125,20 @@ type productionPipelineFixture struct {
 	server                      *httptest.Server
 	cookie                      *http.Cookie
 	harnessOutputs              []harnessOutputAttempt
+	runnerToken, secretSummary  string
+}
+
+// secretSummaryHarness reports a summary chosen by the test, as a harness
+// that wrote secrets and paths into its summary would.
+type secretSummaryHarness struct {
+	adapter.Adapter
+	summary func() string
+}
+
+func (h *secretSummaryHarness) Result(id adapter.SessionID) (adapter.HarnessResult, error) {
+	result, err := h.Adapter.Result(id)
+	result.Summary = h.summary()
+	return result, err
 }
 
 type harnessOutputAttempt struct {
@@ -180,13 +195,19 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { files.Close() })
+	// As evaloomd: Linear comment bodies read 作業概要 from harness_output.
+	t.Cleanup(linearoutbox.SetSummarySource(files.HarnessSummaryTx))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := httptest.NewUnstartedServer(nil)
 	auth, err := api.NewOwnerAuth(f.db, logger, server.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.adapters.Register("dummy", pipelineHarness{Adapter: dummy.New(), start: func(ctx context.Context, req adapter.HarnessRequest, env adapter.SandboxEnv) error {
+	var harness adapter.Adapter = dummy.New()
+	if scenario == "linear_feedback" {
+		harness = &secretSummaryHarness{Adapter: harness, summary: func() string { return f.secretSummary }}
+	}
+	if err := f.adapters.Register("dummy", pipelineHarness{Adapter: harness, start: func(ctx context.Context, req adapter.HarnessRequest, env adapter.SandboxEnv) error {
 		f.harnessCalls++
 		deadline, ok := ctx.Deadline()
 		expected := time.Duration(f.config.DefaultTimeouts.HarnessSec) * time.Second
@@ -199,6 +220,9 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 		if scenario == "project_timeout" || scenario == "default_timeout" {
 			<-ctx.Done()
 			return ctx.Err()
+		}
+		if scenario == "linear_feedback" {
+			f.secretSummary = strings.Join([]string{"作業した", f.runnerToken, readCanary, req.Project.Workdir}, " ")
 		}
 		gate2Write(t, filepath.Join(req.Project.Workdir, "code"), "dummy committed change\n")
 		gate2Git(t, req.Project.Workdir, "add", "code")
@@ -280,6 +304,7 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	if err := os.WriteFile(f.config.TokenFile, []byte(token), 0600); err != nil {
 		t.Fatal(err)
 	}
+	f.runnerToken = token
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -320,6 +345,16 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	} {
 		if _, err := f.db.Exec(statement.query, statement.args...); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if scenario == "linear_feedback" {
+		for _, statement := range []string{
+			`UPDATE tasks SET source='linear' WHERE id='task-001'`,
+			`INSERT INTO linear_issue_links(id,linear_issue_id,issue_identifier,issue_url,team_id,task_id,attach_seq,created_at) VALUES('link-1','issue-1','ENG-1','https://linear.app/x/ENG-1','team-a','task-001',1,'now')`,
+		} {
+			if _, err := f.db.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	github := httptest.NewServer(http.HandlerFunc(f.github))

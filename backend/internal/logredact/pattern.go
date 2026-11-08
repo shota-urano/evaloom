@@ -1,25 +1,26 @@
-package runner
+package logredact
 
 import (
 	"bufio"
+	"io"
 	"regexp"
 	"strings"
-
-	"github.com/shota-urano/evaloom/backend/internal/logredact"
 )
 
-const redactionMarker = logredact.Marker
+const redactionMarker = Marker
 
 var (
 	authorizationPattern = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization[\t ]*:)[^\r\n]*`)
 	privateKeyPattern    = regexp.MustCompile(`-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----`)
 )
 
-// patternReader removes header values and PEM blocks before literal matching.
+// PatternReader removes the well-known secret forms of spec 05 3.5
+// (Authorization header values and PEM private key blocks) before literal
+// matching.
 // State belongs to one Read source, so stdout cannot close stderr's PEM block.
 // A missing END marker suppresses the remainder of that source, including on
 // read errors. Raw bytes are only held in memory, never spooled to disk.
-type patternReader struct {
+type PatternReader struct {
 	source     *bufio.Reader
 	pending    string
 	err        error
@@ -27,7 +28,15 @@ type patternReader struct {
 	changed    bool
 }
 
-func (r *patternReader) Read(p []byte) (int, error) {
+// NewPatternReader wraps one source. Use one reader per source.
+func NewPatternReader(source io.Reader) *PatternReader {
+	return &PatternReader{source: bufio.NewReader(source)}
+}
+
+// Changed reports whether any pattern was replaced so far.
+func (r *PatternReader) Changed() bool { return r.changed }
+
+func (r *PatternReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -46,7 +55,7 @@ func (r *patternReader) Read(p []byte) (int, error) {
 	return 0, r.err
 }
 
-func (r *patternReader) redactLine(line string) string {
+func (r *PatternReader) redactLine(line string) string {
 	var safe strings.Builder
 	for line != "" {
 		if r.privateEnd != "" {
