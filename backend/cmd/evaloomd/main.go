@@ -64,8 +64,9 @@ var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearin
 
 // newLinearFeedback builds the Worker that sends the Linear comments queued
 // in linear_outbox (spec 16 3.4). Tests replace it to avoid the real Linear
-// API. The key file is read only when a row is due.
-var newLinearFeedback = func(db *sql.DB, logger *slog.Logger) (*linearfeedback.Worker, error) {
+// API. The key file is read only when a row is due. port is the actual bound
+// port, used by the authentication error alert to open the Dashboard.
+var newLinearFeedback = func(db *sql.DB, logger *slog.Logger, port int) (*linearfeedback.Worker, error) {
 	keyPath, err := linear.DefaultAPIKeyPath()
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear feedback: %w", err)
@@ -74,7 +75,15 @@ var newLinearFeedback = func(db *sql.DB, logger *slog.Logger) (*linearfeedback.W
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear feedback: %w", err)
 	}
-	return &linearfeedback.Worker{DB: db, Client: client, Logger: logger, Interval: linearfeedback.DefaultInterval}, nil
+	worker := &linearfeedback.Worker{DB: db, Client: client, Logger: logger, Interval: linearfeedback.DefaultInterval}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear feedback alert home: %w", err)
+	}
+	if alerter := linearCommentAlerter(runtime.GOOS, home, port); alerter != nil {
+		worker.Alerter = alerter
+	}
+	return worker, nil
 }
 
 // linearPoller connects the Poller to Intake (spec 15 3.4), which starts
@@ -88,12 +97,26 @@ func linearPoller(db *sql.DB, client *linear.Client, logger *slog.Logger) *linea
 			Canceller: linearintake.TaskCanceller{}, Rechecker: starter, Logger: logger}}
 }
 
-// macOSLinearAlerter sends the Linear polling alert (spec 15 6章) through the
-// same macOS helper as task notifications.
+// macOSLinearAlerter sends the Linear polling alert (spec 15 6章) and the
+// Linear comment authentication alert (spec 16 3.4.3) through the same macOS
+// helper as task notifications. Both open the Dashboard (spec 12 3.5).
 type macOSLinearAlerter struct{ macOS *notification.MacOS }
 
 func (a macOSLinearAlerter) AlertLinearPollFailing(ctx context.Context, alert linearintake.Alert) error {
 	return a.macOS.NotifyLinearPollFailing(ctx, string(alert.Class), alert.ConsecutiveFailures)
+}
+
+func (a macOSLinearAlerter) AlertLinearCommentAuth(ctx context.Context) error {
+	return a.macOS.NotifyLinearCommentFailing(ctx, string(linear.ClassAuth))
+}
+
+// linearCommentAlerter returns the macOS alerter on darwin and nil elsewhere,
+// like linearPollAlerter.
+func linearCommentAlerter(goos, home string, port int) linearfeedback.AuthAlerter {
+	if goos != "darwin" {
+		return nil
+	}
+	return macOSLinearAlerter{notification.NewMacOS(notificationHelperPath(home), port)}
 }
 
 // linearPollAlerter returns the macOS alerter on darwin and nil elsewhere,
@@ -218,12 +241,18 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		cancelNotifications()
 		<-notificationsDone // Stop DB users before closing the connection.
 	}()
+	// One authentication error notification suppression shared by the Poller
+	// and the comment Worker: the same API key failing for queries and sends
+	// alerts once (spec 16 3.4.3, spec 12 3.5, Q84). It lives in the process,
+	// so a restart alerts again.
+	authGate := &linear.AuthAlertGate{}
 	// Poll Linear once at startup and then at each interval (spec 15 3.1).
 	poller, err := newLinearPoller(db, logger, listener.Addr().(*net.TCPAddr).Port)
 	if err != nil {
 		return err
 	}
 	poller.Settings = linearSettings
+	poller.AuthGate = authGate
 	pollerCtx, cancelPoller := context.WithCancel(ctx)
 	pollerDone := make(chan struct{})
 	go func() {
@@ -235,10 +264,11 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		<-pollerDone // Stop DB users before closing the connection.
 	}()
 	// Send the queued Linear comments with retries (spec 16 3.4).
-	feedback, err := newLinearFeedback(db, logger)
+	feedback, err := newLinearFeedback(db, logger, listener.Addr().(*net.TCPAddr).Port)
 	if err != nil {
 		return err
 	}
+	feedback.AuthGate = authGate
 	feedbackCtx, cancelFeedback := context.WithCancel(ctx)
 	feedbackDone := make(chan struct{})
 	go func() {
