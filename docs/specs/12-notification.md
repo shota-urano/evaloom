@@ -91,9 +91,11 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 | 契機 | 通知の種類 | 本文に含めるもの | クリックで開く URL |
 |---|---|---|---|
 | Linear の照会が5回続けて失敗した（[`15-linear-intake.md`](./15-linear-intake.md) 6章） | Linear の照会の失敗 | 失敗の分類（`auth` / `rate_limited` / `network` / `other`）と、続けて失敗した回数 | `http://127.0.0.1:<port>/` |
+| Linear コメントの送信が認証エラーで failed になった（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.3、2026-11-08 決定、Q84） | Linear コメントの送信の失敗 | 失敗の分類（`auth`） | `http://127.0.0.1:<port>/` |
 
 - 本文には、表の項目のほかに API キーの値、Linear の応答の本文、Team ID を入れない。
 - 1回の照会で複数の Team が失敗しても、通知は1回にまとめる。
+- Linear コメントの送信の認証エラーの通知は、取り込み側と同じ扱い・同じ抑止にする。認証エラーが続く間は1回だけ出し、送信が成功したら抑止を解く。送信 Worker の1回の処理で複数の行が認証エラーになっても1回にまとめる。本文に Issue の識別子とコメントの本文を入れない（16 の 3.4.3）。
 - この通知は Execution を持たないため、execution_events の `notification_sent` / `notification_failed`（3.4）には記録しない。送信に失敗したら Control Plane のログにだけ残す。照会の失敗そのものは Dashboard の取り込みの状況に出ている（[`15-linear-intake.md`](./15-linear-intake.md) 6章）。
 - 呼び出し方は 3.3 と同じ（`open -n -a <ヘルパーのパス> --args <件名> <本文> <URL>`）で、3つ目の引数に Dashboard の URL を渡す。
 
@@ -133,8 +135,9 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
 #### 通知失敗の一覧 API（Q41）
 
 - 対象: `execution_events` のうち `type = notification_failed` の行すべて。Execution・タスクの状態や、再実行の前か後かで絞らない。
-- 並び順: 新しい順（`execution_events.id` の降順）。
-- ページネーション: 01 の 5.3 の共通規約（`?limit=` 既定 50・上限 200、`?cursor=`、応答の `nextCursor`）に従う。
+- Phase 2 では、Execution の無い契機の Linear コメントの送信の失敗も対象にする（2026-11-08 決定、Q82）。linear_outbox のうち status=`failed` かつ execution_id が NULL の行である（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2）。Execution のある契機の Linear の失敗は execution_events の `notification_failed` として返し、linear_outbox の行からは返さない。
+- 並び順: 新しい順（`execution_events.id` の降順）。linear_outbox の行が混ざる Phase 2 では、記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順にし、同じ時刻の中は出所と ID で順を決める（案、Q82）。
+- ページネーション: 01 の 5.3 の共通規約（`?limit=` 既定 50・上限 200、`?cursor=`、応答の `nextCursor`）に従う。linear_outbox の行が混ざる場合、cursor は上の並び順の位置を表す値にし、2つの出所をまたいでも欠けも重複も出さない。
 - 応答:
 
 ```json
@@ -156,6 +159,7 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
 ```
 
 - `kind`・`channel`・`reason` は イベントの payload の値をそのまま返す（3.4）。エラーの文字列は返さない。
+- linear_outbox の行から返す項目は、`eventId` と `executionId` を null にし、`outboxId` に linear_outbox.id を入れる。`kind` は linear_outbox.kind、`channel` は `linear`、`reason` は linear_outbox.failure_reason、`createdAt` は linear_outbox.failed_at を返す。execution_events から返す項目の `outboxId` は null にする。コメントの本文は返さない。
 - 既読や解決済みの印は Phase 1 では持たない（記録は消さず、一覧に出し続ける）。
 
 ## 6. エラー処理
