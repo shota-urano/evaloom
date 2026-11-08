@@ -43,8 +43,17 @@ func runnerHeartbeat(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			WriteError(w, logger, err)
 			return
 		}
+		// Spec 17 3.6 (Q58): the Runner reads the PRs waiting for approval
+		// periodically. The heartbeat is the Runner's existing periodic call,
+		// so it also tells the Runner which of its PRs are waiting.
+		waiting, err := store.WaitingApprovals(r.Context(), db, runner)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, struct {
-			CancelExecutionIDs []string `json:"cancelExecutionIds"`
-		}{ids})
+			CancelExecutionIDs []string                `json:"cancelExecutionIds"`
+			WaitingApprovals   []store.WaitingApproval `json:"waitingApprovals"`
+		}{ids, waiting})
 	}
 }
