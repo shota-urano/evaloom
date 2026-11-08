@@ -1,6 +1,5 @@
 ---
-status: confirmed
-confirmed_rev: 7149951
+status: draft
 範囲: Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、Team + Label ルーティング、Linear からの自動タスク作成、ai-ready の取り外しと Issue のキャンセルによる中止
 ---
 
@@ -8,7 +7,7 @@ confirmed_rev: 7149951
 
 **親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend（設定画面は Frontend） ｜ **範囲**: requirements 8.2 の工程1〜4（イベント受信、確認、重複排除、プロジェクト特定）を Linear について行い、タスクを作る。Linear の変化は Evaloom から Linear API へ一定間隔で照会して取得する（ポーリング、requirements 6.6）。結果の返却は [`16-linear-feedback.md`](./16-linear-feedback.md)
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67）に載せている。
+この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67、Q76〜Q79）に載せている。
 
 ## 1. 目的
 
@@ -57,7 +56,8 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 
 ポーリングでは、Linear から「ラベルが付いた」という出来事は届かず、照会した時点の状態だけが分かる。そのため Evaloom は、前回の照会で `ai-ready` が付いていた Issue を linear_issue_states（3.8）に記録しておき、今回の照会結果と比べて付与と取り外しを判定する。
 
-- linear_issue_states は Issue ごとに1行で、`ai_ready`（前回の照会で付いていたか）、`attach_seq`（付与を検出した回数）、最後に見た更新時刻を持つ。
+- linear_issue_states は Issue ごとに1行で、`ai_ready`（前回の照会で付いていたか）、`attach_seq`（付与を検出した回数）、最後に見た更新時刻、削除済みの印（`removed_at`）を持つ。
+- Issue が削除・アーカイブされても行を消さない。削除済みの印を付け、`attach_seq` を保つ（3.4、Q78）。
 - 起動したかどうか、起動したタスクが終わったかどうかは linear_issue_links と tasks で判定する。linear_issue_states は「前回どう見えたか」だけを持つ。
 
 ### 3.4 付与・取り外しの判定（requirements 6.2）
@@ -66,8 +66,9 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 
 | 前回の記録 | 今回の一覧 | 判定 | 処理 |
 |---|---|---|---|
-| 行が無い、または `ai_ready=0` | ある（キャンセル以外） | 付与（起動） | attach_seq を1増やし、3.6 |
-| 行が無い、または `ai_ready=0` | ある（状態がキャンセル） | 何もしない（案） | 行を `ai_ready=1` にするだけで起動しない |
+| 行が無い、または `ai_ready=0` で削除済みの印が無い | ある（キャンセル以外） | 付与（起動） | attach_seq を1増やし、3.6 |
+| 行が無い、または `ai_ready=0` で削除済みの印が無い | ある（状態がキャンセル） | 何もしない（案） | 行を `ai_ready=1` にするだけで起動しない |
+| 削除済みの印がある（`removed_at` が入っている） | ある（状態を問わない） | 元に戻された（起動しない、Q78） | 行を `ai_ready=1` にし、`removed_at` を NULL に戻す。attach_seq は変えない。last_decision=`skipped_restored` |
 | `ai_ready=1` | ある（キャンセル以外） | 付いたまま（requirements 6.2「再び起動しない」） | 何もしない。保留中のタスクがあれば 3.6.3 |
 | `ai_ready=1` | ある（状態がキャンセル） | 中止 | 3.7（理由 `linear_issue_cancelled`） |
 | `ai_ready=1` | 無い | 消えた理由を確かめる | 下の「一覧から消えた Issue」 |
@@ -78,7 +79,7 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 |---|---|---|
 | `ai-ready` が外れていた | 取り外し（中止） | 3.7（理由 `linear_label_removed`）。行を `ai_ready=0` にする |
 | 状態がキャンセルになっていた | 中止 | 3.7（理由 `linear_issue_cancelled`） |
-| 削除・アーカイブされていた | 中止（案） | 3.7（理由 `linear_issue_removed`）。行を消す |
+| 削除・アーカイブされていた | 中止（案） | 3.7（理由 `linear_issue_removed`）。行を消さず、`ai_ready=0` にして `removed_at` に検出した時刻を入れる。attach_seq は保つ（Q78） |
 | 登録していない Team へ移っていた | 中止（案、Q67） | 3.7（理由 `linear_issue_moved`）。行を `ai_ready=0` にする |
 | 取り直しに失敗した | 決めない | 行を変えず、次の照会で再び確かめる |
 
@@ -86,7 +87,10 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 - 照会と照会の間（案では1分の間）に付けて外した、または外して付け直した変化は、Evaloom からは見えない。前者は何も起きず、後者は「付いたまま」として扱う（案、Q65）。
 - 最初の照会では前回の記録が無い。このとき、すでに `ai-ready` が付いている Issue をすべて「付与」とみなすと、導入前から付いている Issue を一斉に起動してしまう。そのため Team ごとの最初の照会では、一覧の Issue を `ai_ready=1` として記録するだけで起動しない（案、Q64）。Team ごとに最初の照会を終えたかどうかは linear_poll_teams（3.8）で持つ。本人がこれらの Issue を起動したいときは、`ai-ready` を外して付け直す。
 - Mac mini が止まっていた間に付いた `ai-ready` は、再開後の照会で「前回は付いていない、今回は付いている」になるため、通常の付与として起動する。止まっていた間に外された `ai-ready` も、同じく取り外しとして中止する。
-- `ai-ready` のラベル名と実行先ラベルの接頭辞 `repo:` は requirements 6.2 の推奨例である。全体設定で持ち、既定値をこの2つにする案とする（Q48）。
+- 削除・アーカイブされた Issue が元に戻され、`ai-ready` が付いたまま一覧に再び現れても起動しない（2026-11-08 決定、Q78）。Linear が自動でアーカイブするのは完了・キャンセル済みの Issue で、Evaloom はラベルを外さない（Q51）。そのため、終わった Issue を戻しただけで同じ作業をやり直さないようにする。最初の照会で起動しない扱い（Q64）とも揃える。行は `ai_ready=1` として記録するだけにする。
+- 元に戻した Issue をもう一度実行したいときは、本人が `ai-ready` を外して付け直す。外したことを照会で検出すると行が `ai_ready=0` になり、付け直しを検出すると attach_seq が1増える。冪等キー（3.5）が以前のタスクと変わるため、新しいタスクを作る。attach_seq を保つのは、行を消して attach_seq が 0 に戻ると、付け直しても以前のタスクと同じ冪等キーになり何も起きないためである。
+- Evaloom は `ai-ready` が付いている Issue だけを一覧で読む。そのため、本人が Issue を元に戻してから Evaloom が照会するまでの間に `ai-ready` を外した場合、Evaloom は元に戻されたことも外したことも見ていない。後で `ai-ready` を付け直すと、Evaloom から見えるのは「削除済みの印がある Issue が一覧に現れた」ことだけになるため、元に戻された場合と同じく起動しない（案、Q79）。本人は、Evaloom が一覧に現れたことを記録した後（`GET /api/linear/status` に出た後）に、もう一度外して付け直す。
+- `ai-ready` のラベル名と実行先ラベルの接頭辞 `repo:` は requirements 6.2 の推奨例である。全体設定で持ち、既定値をこの2つにする案とする（Q48）。全体設定の値は DB の settings（[`02-data-model.md`](./02-data-model.md) 3.4）に保存し、Control Plane を再起動しても保つ（2026-11-08 決定、Q76）。Linear Poller は照会の回の始めに設定を1回読み、その回の一覧の取得、取り外しの判定、ルーティングに同じ値を使う。設定を変えると次の回から効く。
 
 ### 3.5 重複排除（requirements 6.3, 15.2）
 
@@ -157,6 +161,7 @@ requirements は、ルーティングで保留したタスクと受け入れ条�
 - 対象は linear_issue_links で引いたタスクのうち、状態が `queued` / `running` / `verifying` / `blocked`（保留を含む）のもの。手順は本人の中止（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.5）と同じにし、audit_logs の actor は `system`、理由は 3.4 の表の値（`linear_label_removed` / `linear_issue_cancelled` / `linear_issue_removed` / `linear_issue_moved`）とする。
 - `waiting_approval` のタスクも中止する（案）。そのタスクの未使用の承認は無効にする（[`17-approval.md`](./17-approval.md) 3.6）。
 - 終端状態のタスクには何もしない。
+- Issue の削除・アーカイブによる中止でも、linear_issue_states の行は消さない。削除済みの印（`removed_at`）を付け、attach_seq を保つ（3.4、Q78）。元に戻されて一覧に再び現れても、この中止を取り消さず、新しいタスクも作らない。
 - 中止したことは Linear にコメントで返す（[`16-linear-feedback.md`](./16-linear-feedback.md)）。Issue が削除・アーカイブされていた場合は、送信が失敗として記録される（16 の 6章）。
 
 ### 3.8 データモデル（Phase 2 で追加）
@@ -200,11 +205,18 @@ requirements 17章の event_inbox（受信イベント）は Phase 2 では作�
 | ai_ready | INTEGER | 1 = 前回の照会で `ai-ready` が付いていた、0 = 付いていなかった |
 | attach_seq | INTEGER | 付与を検出した回数。3.5 の冪等キーに使う |
 | issue_updated_at | TEXT | 最後に見た Linear の更新時刻（3.6.3 の再判定に使う） |
-| last_decision | TEXT NULL | 最後の判定（`started` / `held` / `cancelled` / `skipped_active_task` / `skipped_initial` / `skipped_cancelled` など） |
+| last_decision | TEXT NULL | 最後の判定（`started` / `held` / `cancelled` / `skipped_active_task` / `skipped_initial` / `skipped_cancelled` / `skipped_restored` など） |
 | last_decision_at | TEXT NULL | |
 | first_seen_at / last_seen_at | TEXT | |
+| removed_at | TEXT NULL | 削除・アーカイブを検出した時刻（削除済みの印）。元に戻されて一覧に再び現れたら NULL に戻す（3.4、Q78） |
 
 - `ai_ready=0` の行は、中止の後に付け直しを検出するために残す（Q46）。保存期間は Q24 と合わせて決める。
+- 削除・アーカイブされた Issue の行も消さない。attach_seq を保ち、元に戻された後の付け直しで以前のタスクと同じ冪等キーにならないようにする（Q78）。
+- 既存の DB に removed_at の列を足すマイグレーションでは、既存の行を NULL にする。PR #66 の実装で削除・アーカイブ時にすでに消えた行は戻せない。
+
+#### settings（全体設定、02 で定義）
+
+全体設定 `linear.triggerLabel` / `linear.routingLabelPrefix` は、[`02-data-model.md`](./02-data-model.md) 3.4 の settings に1キー1行で保存する（Q76）。行が無いキーは既定値（`ai-ready`、`repo:`）を使う。
 
 #### linear_poll_teams（追加）
 
@@ -271,9 +283,11 @@ Phase 2 の実装に入るときに、次の確定済みの仕様を書き換え
 |---|---|---|---|---|
 | GET | /api/linear/status | 本人用 | 照会の状況（Team ごとの最後に成功した時刻、失敗の分類、続けて失敗した回数）と、`ai-ready` が付いている Issue の一覧と最後の判定。管理画面で取り込みの状況を確かめるため | 追加案 |
 | PATCH | /api/projects/{id} | 本人用 | 既存の更新 API に `linearTeamId` / `linearRoutingLabel` を追加 | 追加案 |
-| GET / PATCH | /api/settings | 本人用 | 既存の全体設定に `linear.triggerLabel` / `linear.routingLabelPrefix` を追加（Q48） | 追加案 |
+| GET / PATCH | /api/settings | 本人用 | 既存の全体設定に `linear.triggerLabel` / `linear.routingLabelPrefix` を追加（Q48）。値は settings（02 の 3.4）に保存し、再起動後も保つ（Q76） | 追加案 |
 
 - 応答の形とエラー形式は [`01-architecture.md`](./01-architecture.md) 5.3 に従う。
+- `PATCH /api/settings` は `linear` の中の指定したキーだけを置き換え、省略したキーは残す。未知のキー（`linear` 以外のトップレベルのキー、`linear` の中の2つ以外のキー）は 400 にする。値が null・空文字列・空白だけのときは 400（`linear.<key>` / `required`）にする。1つでも拒否したら何も変えず、settings にも audit_logs にも書かない（Q76）。
+- 値を変えたら、変わったキーごとに audit_logs へ1行書く（actor `owner`、action `settings.update`、target_type `settings`、target_id はキー、detail は変更前後の値）。settings の更新と audit_logs の書き込みは1つのトランザクションで行う（Q76）。
 - タスクの API（`GET /api/tasks` 等）の応答に `source`、`intakeBlockCause`、`linear`（識別子と URL）を足す。
 - Linear から Evaloom へ届く要求は無い。外から呼ばれる API は追加しない。
 
@@ -284,8 +298,9 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
 | 状況 | 処理 |
 |---|---|
 | 照会の途中（ページの途中を含む）で Linear API が失敗 | その回の照会を捨て、判定もしない。linear_poll_teams の last_error と consecutive_failures を更新し、次の間隔で照会し直す |
-| 続けて失敗した回数が上限（5回。1分おきの照会で5分にあたる。2026-11-08 決定）を超えた | Dashboard のエラー状況に出し、macOS 通知で本人に知らせる（案）。照会は続ける |
+| 5回続けて失敗した（1分おきの照会で5分にあたる。2026-11-08 決定） | Dashboard のエラー状況に出し、macOS 通知で本人に知らせる（案）。照会は続ける |
 | API キーのファイルが無い・読めない・権限が 0600 でない | 照会を始めない。対象のすべての Team の last_error を `auth` にし、Dashboard の取り込み状況に出す。理由（ファイルが無い・権限が違う）は値を含めずにログにも出す（2026-11-08 決定） |
+| settings に保存した値が空・空白だけ、または読めない | そのキーは既定値を使い、Control Plane のログに出す（Q76）。照会は止めない |
 | Linear API の認証エラー | last_error=`auth`。API キーの値はログに出さない。macOS 通知で本人に知らせる（案）。照会は間隔ごとに続ける |
 | レート制限に掛かった | last_error=`rate_limited`。Linear が返す再開の目安まで照会を止める |
 | 一覧から消えた Issue の取り直しに失敗 | その Issue の行を変えず、次の照会で再び確かめる。ほかの Issue の判定は進める |
@@ -332,6 +347,10 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
   - 受け入れ基準: 保留中のタスクの Issue で実行先ラベルを直し、更新時刻が進んだ状態で照会すると、同じタスクが queued になり Execution が1つできる; 更新時刻が変わらない照会では再判定しない; 保留の理由が変わらなければ何も起きない; 保留していないタスクの Issue の更新では何も起きない
 - [ ] [Backend] Linear 起因の中止（3.7）
   - 受け入れ基準: ai-ready を外した Issue の照会で queued・running・blocked のタスクが中止の経路に入る; Issue のキャンセル、削除・アーカイブでも同じになる; completed のタスクは変わらない; audit_logs の actor が system で、理由が 3.4 の表の値になる
+- [ ] [Backend] 削除・アーカイブした Issue の記録を残す（3.4、3.7、3.8 の removed_at、Q78）
+  - 受け入れ基準: removed_at の列を足すマイグレーションで既存の行が NULL になる; 削除・アーカイブを検出すると中止の経路に入り、linear_issue_states の行が残って ai_ready=0・removed_at が入り、attach_seq が変わらない; その Issue が ai-ready 付きのまま一覧に再び現れると、行が ai_ready=1・removed_at が NULL・last_decision=skipped_restored になり、タスクも Execution も作られない; 状態がキャンセルのまま再び現れても同じになる; その後に ai-ready を外した照会で ai_ready=0 になり、付け直した照会で attach_seq が1増えて新しい冪等キーのタスクができる; 削除済みの印が無い行の付与・取り外しの判定は変わらない
+- [ ] [Backend] 全体設定（linear.triggerLabel / linear.routingLabelPrefix）を settings に保存する（3.4、5章、02 の 3.4、Q76）
+  - 受け入れ基準: PATCH /api/settings で変えた値が、Control Plane を再起動した後の GET /api/settings と Linear Poller の照会に使われる; settings に行が無いキーは既定値（ai-ready、repo:）になる; 値を変えると変わったキーごとに audit_logs に settings.update の行が1つでき、detail に変更前後の値が入る; 同じ値で PATCH しても audit_logs に行ができない; 未知のキー、null・空文字列・空白だけの値は 400 になり、settings と audit_logs が変わらない; 2つのキーのうち1つが不正な PATCH では、正しいほうのキーも変わらない; settings に空の値を直接書いた DB で起動すると、そのキーは既定値で照会しログに出る
 - [ ] [Backend] `GET /api/linear/status` と、Project・全体設定の API への Linear 項目の追加
   - 受け入れ基準: Team ごとの最後に成功した時刻と失敗の分類、ai-ready が付いている Issue と最後の判定が返る; 同じ Team とラベルの組を2つ目の Project に登録すると 409; 応答に API キーの値が含まれない
 - [ ] [Frontend] Project 登録・編集に Linear Team ID と実行先ラベル、Settings にトリガーのラベル名と接頭辞、Dashboard に Linear の取り込みの状況

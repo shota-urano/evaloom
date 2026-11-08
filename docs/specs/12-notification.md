@@ -1,5 +1,5 @@
 ---
-status: confirmed
+status: draft
 範囲: タスクの完了・失敗・Blocked・タイムアウトの macOS 通知と、通知経路を後から足せる送信口
 ---
 
@@ -33,7 +33,7 @@ status: confirmed
 
 `cancelled` は本人の操作の結果なので通知しない（案）。
 
-通知をクリックしたら管理画面のタスク詳細を開く（3.3 の方式で実現する）。
+通知をクリックしたら管理画面のタスク詳細を開く（3.3 の方式で実現する）。タスクを持たない通知（3.5）は、クリックで Dashboard（`/`）を開く。
 
 ### 3.2 送信口
 
@@ -62,7 +62,7 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 |---|---|
 | 作り | Swift の macOS アプリ（Info.plist に `LSUIElement` を指定し、Dock に出さない）。`UNUserNotificationCenter` で通知を出す |
 | 呼び出し方 | `evaloomd` の macOS 用 Notifier が `/usr/bin/open -n -a <ヘルパーのパス> --args <件名> <本文> <タスク詳細の URL>` で起動する。ヘルパーは通知を出したあと一定時間待ってから終了する |
-| クリック時 | ヘルパーが通知の応答を受け取り、`NSWorkspace` でタスク詳細の URL（`http://127.0.0.1:<port>/tasks/<taskId>`）を既定のブラウザで開く |
+| クリック時 | ヘルパーが通知の応答を受け取り、`NSWorkspace` でタスク詳細の URL（`http://127.0.0.1:<port>/tasks/<taskId>`）を既定のブラウザで開く。タスクを持たない通知では Dashboard の URL（`http://127.0.0.1:<port>/`）を開く。開いてよい URL は 3.6 の許可範囲に限る |
 | 置き場所 | `~/Applications/` 配下。`/tmp` に置いたヘルパーは許可を求める画面が出ないまま拒否されたため |
 | 署名 | アドホック署名（`codesign --sign -`）。Developer ID は不要だった |
 | 初回の許可 | 本人がシステム設定の「通知」でヘルパーの通知を1回許可する。許可していない間は、登録はエラーにならないが表示されない（`requestAuthorization` が許可なしを返す）。この状態を Notifier のエラーとして扱い、3.4 の失敗の記録に回す |
@@ -82,6 +82,35 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 | `launch_failed` | ヘルパーを起動できない（パスが無い・`open` が失敗した） |
 | `timeout` | ヘルパーの結果を待つ間に時間切れになった |
 | `other` | 上のどれにも当てはまらない失敗 |
+
+### 3.5 Dashboard を開く通知（Phase 2、2026-11-08 決定、Q77）
+
+タスクに結び付かない出来事を知らせる通知は、クリックで管理画面の Dashboard（`/`）を開く。Dashboard のエラー状況に、その出来事の状況が出ているためである。
+
+| 契機 | 通知の種類 | 本文に含めるもの | クリックで開く URL |
+|---|---|---|---|
+| Linear の照会が5回続けて失敗した（[`15-linear-intake.md`](./15-linear-intake.md) 6章） | Linear の照会の失敗 | 失敗の分類（`auth` / `rate_limited` / `network` / `other`）と、続けて失敗した回数 | `http://127.0.0.1:<port>/` |
+
+- 本文には、表の項目のほかに API キーの値、Linear の応答の本文、Team ID を入れない。
+- 1回の照会で複数の Team が失敗しても、通知は1回にまとめる。
+- この通知は Execution を持たないため、execution_events の `notification_sent` / `notification_failed`（3.4）には記録しない。送信に失敗したら Control Plane のログにだけ残す。照会の失敗そのものは Dashboard の取り込みの状況に出ている（[`15-linear-intake.md`](./15-linear-intake.md) 6章）。
+- 呼び出し方は 3.3 と同じ（`open -n -a <ヘルパーのパス> --args <件名> <本文> <URL>`）で、3つ目の引数に Dashboard の URL を渡す。
+
+### 3.6 ヘルパーが開いてよい URL の許可範囲（Q77）
+
+ヘルパーは、渡された URL が次の条件をすべて満たすときだけ通知を出す。満たさなければ通知を出さず、結果を `invalid_arguments` として終了する。クリックの応答を受けたときも、通知に保存した URL を同じ条件で検査し直し、満たさなければ開かない。
+
+| 項目 | 条件 |
+|---|---|
+| スキーム | `http` だけ |
+| ホスト | `127.0.0.1` だけ（`localhost` などの別名は拒否する） |
+| ポート | 指定があり、1〜65535 |
+| ユーザー名・パスワード | 無い |
+| クエリ・フラグメント | 無い |
+| パス | `/tasks/<taskId>`（`<taskId>` は空でない）か、`/` だけ。ほかのパスは拒否する |
+
+- 許可範囲を変えるときは、この表と evaloomd の Notifier が渡す URL を一緒に変える。
+- 配置済みのヘルパーは、作り直して配置し直すまで古い許可範囲のままになる。Dashboard の URL を受け付けないヘルパーは 3.5 の通知を `invalid_arguments` で拒否する。
 
 ## 4. 設定値・確定値
 
@@ -157,5 +186,8 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
   - 受け入れ基準: launchd から起動した evaloomd から、本人のデスクトップに通知が表示される; 通知の本文にタスクの件名・ID・分類以外の内容が入らない
 - [ ] [Backend] 通知失敗の記録
   - 受け入れ基準: Notifier がエラーを返してもタスクの状態が変わらず、失敗が execution_events に残る
+- [ ] [Backend] ヘルパーが開いてよい URL の許可範囲の検査とテスト（3.5、3.6、Q77）
+  - 受け入れ基準: `http://127.0.0.1:<port>/tasks/<taskId>` と `http://127.0.0.1:<port>/` を受け付ける; `/tasks/`（taskId が空）と `/settings`、`https`、`localhost`、`127.0.0.2`、ポートの無い URL・0・65536、ユーザー名付き、クエリ付き、フラグメント付きの URL を拒否する; 拒否した URL では通知を出さず結果が invalid_arguments になる; クリック時に保存した URL が条件を満たさなければ開かない; Linear の照会の失敗の通知で evaloomd が渡す URL が `http://127.0.0.1:<port>/` で、本文が分類と回数だけになる; 上記の受け付けと拒否をテストで確かめる
+- [ ] （人間） 通知ヘルパーを作り直して Mac mini に配置し直す（3.3 の手順、backend/launchd/README.md）。配置済みのヘルパーは 3.5 の通知を拒否するため
 - [ ] [Backend] 通知失敗の一覧 API（Q41）
   - 受け入れ基準: 複数の Execution に記録した notification_failed がすべて新しい順に返る; notification_failed 以外のイベントは返らない; limit を超える件数は nextCursor で続きを取れ、欠けも重複も無い; 応答に taskId と taskTitle が入り、エラーの文字列は入らない; Runner のトークンでは 403 になる
