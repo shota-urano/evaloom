@@ -224,6 +224,7 @@ func TestExecutionTriggerKinds(t *testing.T) {
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked, "blocked"},
 		{model.TaskQueued, model.ExecutionPending, model.ExecutionCancelled, "cancelled"},
 		{model.TaskBlocked, model.ExecutionBlocked, model.ExecutionCancelled, "cancelled"},
+		{model.TaskVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval"},
 		{model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed, ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionVerifying, ""},
 		{model.TaskVerifying, model.ExecutionVerifying, model.ExecutionPublishing, ""},
@@ -298,5 +299,33 @@ func mustExec(t *testing.T, db execer, statement string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(statement, args...); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// spec 17 3.3 step 4, spec 16 3.2/3.3: a Linear task waiting for approval
+// gets one comment naming the required approval, and a refused consume that
+// returns the same Execution to the wait does not comment again.
+func TestWaitingApprovalCommentNamesRequiredApprovalOnce(t *testing.T) {
+	db := outboxDB(t)
+	setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing)
+	mustExec(t, db, `INSERT INTO approvals (id, task_id, execution_id, operation, target, content_version, params_hash, status, created_at)
+		VALUES ('approval-1', 'linear-1', 'linear-1-e1', 'merge_pull_request',
+		'{"repository":"owner/repo","prNumber":12,"baseBranch":"main","headBranch":"evaloom/linear-1-test"}', ?, ?, 'pending', ?)`,
+		strings.Repeat("a", 40), strings.Repeat("d", 64), testTime)
+	transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval)
+	transition(t, db, "linear-1", model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionMerging)
+	transition(t, db, "linear-1", model.TaskWaitingApproval, model.ExecutionMerging, model.ExecutionWaitingApproval)
+	rows := outboxRows(t, db)
+	if len(rows) != 1 || rows[0].kind != "waiting_approval" || rows[0].dedupeKey != "linear-1:waiting_approval:linear-1-e1" {
+		t.Fatalf("outbox rows = %+v; want one waiting_approval", rows)
+	}
+	for _, want := range []string{
+		"- 実行ステータス: Waiting Approval\n",
+		"- 必要な承認事項: PR のマージ（merge_pull_request）。対象 owner/repo #12（evaloom/linear-1-test → main）\n",
+		"- 承認・却下は管理画面で本人が行う\n",
+	} {
+		if !strings.Contains(rows[0].body, want) {
+			t.Errorf("body lacks %q:\n%s", want, rows[0].body)
+		}
 	}
 }

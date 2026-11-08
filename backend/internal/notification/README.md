@@ -8,6 +8,7 @@ Runnerの結果報告、Context Builderのfailed・blocked、heartbeatのbootId�
 起動時の途絶回収はこの関数を共有する。状態・要求・イベント・監査記録の
 トランザクションが失敗した場合、通知要求も取り消される。
 `cancelled`では要求を作らない。
+仕様17の3.3により`waiting_approval`（承認待ち）でも要求を作る。macOSの題名は「evaloom: 承認待ち」。
 
 送信には`notification.Notifier`を使う。`Notify(ctx, Notification) error`は
 エラーを返せる。Control Planeは`Channel{Name, Notifier}`で送信先を登録し、

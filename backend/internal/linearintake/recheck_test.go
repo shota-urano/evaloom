@@ -323,3 +323,27 @@ func TestHeldTaskGuards(t *testing.T) {
 		t.Fatal("updated a task that is not held")
 	}
 }
+
+// spec 15 3.6.3 (Q81): a marked Issue that left the list is decided by 3.4
+// and 3.7, and the recheck mark is cleared with that decision.
+func TestRecheckMarkClearedWhenIssueLeavesList(t *testing.T) {
+	f := newRecheckFixture(t)
+	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at = ? WHERE linear_issue_id = '1'`,
+		stamp(base)); err != nil {
+		t.Fatal(err)
+	}
+	f.mustRound(t) // the Issue is gone: deleted (stubFetcher answers not found)
+	var mark, removed sql.NullString
+	var decision string
+	if err := f.db.QueryRow(`SELECT recheck_requested_at, removed_at, last_decision
+		FROM linear_issue_states WHERE linear_issue_id = '1'`).Scan(&mark, &removed, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if mark.Valid || !removed.Valid || decision != string(DecisionCancelled) {
+		t.Fatalf("mark = %+v, removed = %+v, decision = %s; want NULL, removed, cancelled", mark, removed, decision)
+	}
+	if n := recheckAudits(t, f.db, held.id); n != 0 {
+		t.Fatalf("recheck audits = %d; a removed Issue is not rechecked", n)
+	}
+}

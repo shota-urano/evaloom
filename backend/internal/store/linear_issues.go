@@ -25,16 +25,21 @@ type LinearIssueState struct {
 	// RemovedAt is the removed mark (spec 15 3.8, Q78): when the Issue was
 	// found deleted or archived. Empty: NULL, the Issue is not marked.
 	RemovedAt string
+	// RecheckRequestedAt is the recheck mark (spec 15 3.6.3, 3.8, Q81): when
+	// an Evaloom setting change asked to redo the held task's decision.
+	// Empty: NULL, no recheck requested.
+	RecheckRequestedAt string
 }
 
 const linearIssueStateColumns = `linear_issue_id, issue_identifier, team_id, ai_ready, attach_seq,
 	issue_updated_at, coalesce(last_decision, ''), coalesce(last_decision_at, ''), first_seen_at, last_seen_at,
-	coalesce(removed_at, '')`
+	coalesce(removed_at, ''), coalesce(recheck_requested_at, '')`
 
 func scanLinearIssueState(row interface{ Scan(...any) error }) (LinearIssueState, error) {
 	var s LinearIssueState
 	err := row.Scan(&s.LinearIssueID, &s.IssueIdentifier, &s.TeamID, &s.AIReady, &s.AttachSeq,
-		&s.IssueUpdatedAt, &s.LastDecision, &s.LastDecisionAt, &s.FirstSeenAt, &s.LastSeenAt, &s.RemovedAt)
+		&s.IssueUpdatedAt, &s.LastDecision, &s.LastDecisionAt, &s.FirstSeenAt, &s.LastSeenAt, &s.RemovedAt,
+		&s.RecheckRequestedAt)
 	return s, err
 }
 
@@ -79,19 +84,20 @@ func ListAttachedLinearIssues(ctx context.Context, db *sql.DB, teamID string) ([
 }
 
 // SaveLinearIssueState inserts or replaces the row. first_seen_at is kept
-// from an existing row. An empty RemovedAt clears the removed mark.
+// from an existing row. An empty RemovedAt clears the removed mark and an
+// empty RecheckRequestedAt clears the recheck mark.
 func SaveLinearIssueState(ctx context.Context, tx *sql.Tx, s LinearIssueState) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO linear_issue_states (linear_issue_id, issue_identifier,
 		team_id, ai_ready, attach_seq, issue_updated_at, last_decision, last_decision_at, first_seen_at, last_seen_at,
-		removed_at)
-		VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), ?, ?, nullif(?, ''))
+		removed_at, recheck_requested_at)
+		VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), ?, ?, nullif(?, ''), nullif(?, ''))
 		ON CONFLICT (linear_issue_id) DO UPDATE SET issue_identifier = excluded.issue_identifier,
 			team_id = excluded.team_id, ai_ready = excluded.ai_ready, attach_seq = excluded.attach_seq,
 			issue_updated_at = excluded.issue_updated_at, last_decision = excluded.last_decision,
 			last_decision_at = excluded.last_decision_at, last_seen_at = excluded.last_seen_at,
-			removed_at = excluded.removed_at`,
+			removed_at = excluded.removed_at, recheck_requested_at = excluded.recheck_requested_at`,
 		s.LinearIssueID, s.IssueIdentifier, s.TeamID, s.AIReady, s.AttachSeq, s.IssueUpdatedAt,
-		s.LastDecision, s.LastDecisionAt, s.FirstSeenAt, s.LastSeenAt, s.RemovedAt)
+		s.LastDecision, s.LastDecisionAt, s.FirstSeenAt, s.LastSeenAt, s.RemovedAt, s.RecheckRequestedAt)
 	if err != nil {
 		return fmt.Errorf("store: save linear issue state: %w", err)
 	}
@@ -221,6 +227,39 @@ func ListHeldLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]Hel
 		return nil, err
 	}
 	return held, nil
+}
+
+// LinearRecheck selects the held tasks an Evaloom setting change may release
+// (spec 15 3.6.3, the table of setting changes, Q81).
+type LinearRecheck struct {
+	// ProjectID is the changed Project: its config_missing_assignment tasks
+	// are selected.
+	ProjectID string
+	// Routing is true when the Project's linear_team_id or
+	// linear_routing_label changed: every routing_unknown_label and
+	// routing_team_mismatch task is selected as well.
+	Routing bool
+}
+
+// MarkLinearRecheck puts the recheck mark (recheck_requested_at) on the
+// linear_issue_states rows of the Issues whose held task the change selects.
+// It runs in the transaction that writes the setting, so a rolled-back write
+// leaves no mark. An existing mark keeps its earlier time. Tasks held for
+// routing_multiple_labels, routing_no_label or missing_acceptance_criteria
+// depend only on the Issue and are never marked.
+func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE linear_issue_states
+		SET recheck_requested_at = coalesce(recheck_requested_at, ?)
+		WHERE linear_issue_id IN (SELECT l.linear_issue_id FROM linear_issue_links l
+			JOIN tasks t ON t.id = l.task_id
+			WHERE t.source = 'linear' AND t.status = 'blocked' AND (
+				(t.intake_block_cause = 'config_missing_assignment' AND t.project_id = ?)
+				OR (? AND t.intake_block_cause IN ('routing_unknown_label', 'routing_team_mismatch'))))`,
+		at, change.ProjectID, change.Routing)
+	if err != nil {
+		return fmt.Errorf("store: mark linear recheck: %w", err)
+	}
+	return nil
 }
 
 // UpdateHeldLinearTask writes the redone 3.6 decision to a held task (spec 15

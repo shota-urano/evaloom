@@ -219,7 +219,7 @@ PY
 ヘルパーは`LSUIElement`を指定してDockに出さず、`UNUserNotificationCenter`で
 通知する。クリック時は通知に保存したタスクURLを`NSWorkspace`で開く。
 URLは`http://127.0.0.1:<port>/tasks/<taskId>`に限定する。
-ただしLinearの照会が続けて失敗したときの通知（仕様15の6章）はタスクを持たないため、
+ただしLinearの照会の失敗の通知（仕様15の6章）とLinearコメントの送信の認証エラーの通知（仕様16の3.4.3）はタスクを持たないため、
 Dashboardの`http://127.0.0.1:<port>/`（パスが`/`だけ）も受け付ける。それ以外のURLは拒否する。
 許可範囲（仕様12の3.6）の検査は`notification-helper/URLPolicy.swift`にあり、起動時の引数とクリック時に
 通知へ保存したURLの両方を検査する。起動時に拒否したURLでは通知を出さず、結果を`invalid_arguments`にする。

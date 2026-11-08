@@ -326,6 +326,13 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	if scenario == "resume" {
 		command = `if grep -q dummy code; then printf '%s' '<testsuite><testcase name="existing"/></testsuite>' > report.xml; else printf '%s' '<testsuite><testcase name="existing"/><testcase name="removed"/></testsuite>' > report.xml; fi`
 	}
+	// Spec 17 3.3: by default a published PR waits for approval. The Linear
+	// body scenario checks the succeeded comment, so it excludes PR merges
+	// from approval and completes on the PR as in Phase 1.
+	policy := `{"mergePullRequest":"require_approval","version":1}`
+	if scenario == "linear_feedback" {
+		policy = `{"mergePullRequest":"direct_push","version":1}`
+	}
 	timeouts := "{}"
 	if scenario == "project_timeout" {
 		timeouts = `{"harnessSec":1}`
@@ -336,7 +343,7 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 		query string
 		args  []any
 	}{
-		{`INSERT INTO projects(id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,allowed_operations,approval_policy,timeouts,setup_command,test_command,test_report_format,test_report_path,created_at,updated_at) VALUES('project','Project',?,?,'mac-mini','main','developer','AGENTS.md','["copied.txt","absent.txt"]','{}','{}',?,?,?,'junit_xml','report.xml','now','now')`, []any{f.source, readURL, timeouts, setup, command}},
+		{`INSERT INTO projects(id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,allowed_operations,approval_policy,timeouts,setup_command,test_command,test_report_format,test_report_path,created_at,updated_at) VALUES('project','Project',?,?,'mac-mini','main','developer','AGENTS.md','["copied.txt","absent.txt"]','{}',?,?,?,?,'junit_xml','report.xml','now','now')`, []any{f.source, readURL, policy, timeouts, setup, command}},
 		{`INSERT INTO tasks(id,project_id,title,body,acceptance_criteria,short_name,task_type,collaboration_mode,status,idempotency_key,created_at,updated_at) VALUES('task-001','project','Pipeline','body','verified push','pipeline','development','solo','queued','pipeline','now','now')`, nil},
 		{`INSERT INTO harnesses(id,name,specialty,supported_tasks,adapter,repo_path,repo_url,supported_models,available_tools,tool_permissions,contract_version,created_at,updated_at) VALUES('h','Harness','developer','["development"]','dummy',?,'','[]','[]','{}','1','now','now')`, []any{f.source}},
 		{`INSERT INTO harness_profiles(id,harness_id,version,commit_sha,tag_name,definition,definition_hash,model_id,operation_status,registered_at) VALUES('p','h','1.0.0',?,'v1',?,?,'fixture','provisional','now')`, []any{profileSHA, definition, hex.EncodeToString(hash[:])}},
@@ -497,8 +504,23 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	if err := f.db.QueryRow(`SELECT status,base_sha,branch_name,worktree_id,harness_session_id,verified_sha,pushed_sha,pr_number,pr_url FROM executions WHERE id=?`, logExecution).Scan(&status, &base, &branch, &worktreeID, &session, &verified, &pushed, &pr, &prURL); err != nil {
 		t.Fatal(err)
 	}
-	if status != "succeeded" || base == "" || worktreeID == "" || session == "" || verified == "" || pushed != verified || pr != 1 || prURL != "https://github.com/owner/repo/pull/1" || !strings.HasSuffix(branch, "-r1") {
-		t.Fatalf("execution %s %s %s %s %s %s %s %d %s", status, base, branch, worktreeID, session, verified, pushed, pr, prURL)
+	var policy, taskStatus string
+	if err := f.db.QueryRow(`SELECT json_extract(p.approval_policy,'$.mergePullRequest'),t.status FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id='task-001'`).Scan(&policy, &taskStatus); err != nil {
+		t.Fatal(err)
+	}
+	// Spec 17 3.3: with require_approval the published PR waits for approval.
+	want, wantTask := "waiting_approval", "waiting_approval"
+	if policy == "direct_push" {
+		want, wantTask = "succeeded", "completed"
+	}
+	if status != want || taskStatus != wantTask || base == "" || worktreeID == "" || session == "" || verified == "" || pushed != verified || pr != 1 || prURL != "https://github.com/owner/repo/pull/1" || !strings.HasSuffix(branch, "-r1") {
+		t.Fatalf("execution %s/%s %s %s %s %s %s %s %d %s", status, taskStatus, base, branch, worktreeID, session, verified, pushed, pr, prURL)
+	}
+	var approvals int
+	if err := f.db.QueryRow(`SELECT count(*) FROM approvals WHERE execution_id=? AND status='pending' AND content_version=?
+		AND json_extract(target,'$.repository')='owner/repo' AND json_extract(target,'$.prNumber')=1 AND json_extract(target,'$.headBranch')=?`,
+		logExecution, pushed, branch).Scan(&approvals); err != nil || approvals != map[bool]int{true: 1, false: 0}[want == "waiting_approval"] {
+		t.Fatalf("pending approvals %d %v", approvals, err)
 	}
 	if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/"+branch); got != verified {
 		t.Fatalf("remote %s != verified %s", got, verified)

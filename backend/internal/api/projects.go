@@ -124,7 +124,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		}
 		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
 			ContextLocation: "AGENTS.md", SetupAllowedHosts: []string{}, CopyAllowlist: []string{},
-			AllowedOperations: map[string]any{}, ApprovalPolicy: map[string]any{}, Timeouts: map[string]int{},
+			AllowedOperations: map[string]any{}, ApprovalPolicy: defaultApprovalPolicy(), Timeouts: map[string]int{},
 		}}
 		if !create {
 			var err error
@@ -226,6 +226,9 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		if err == nil {
 			err = store.PruneLinearPollTeams(r.Context(), tx)
 		}
+		if err == nil && !create {
+			err = markLinearRecheck(r.Context(), tx, before.ProjectSettings, after, now)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: action, TargetType: "project", TargetID: id,
@@ -244,6 +247,19 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			Warnings []string `json:"warnings"`
 		}{after, warnings})
 	}
+}
+
+// markLinearRecheck puts the recheck mark on the Issues of the held tasks a
+// Project update may release (spec 15 3.6.3, the table of setting changes,
+// Q81), in the update's transaction. An update that leaves linear_team_id,
+// linear_routing_label and default_role unchanged marks nothing.
+func markLinearRecheck(ctx context.Context, tx *sql.Tx, before model.ProjectSettings, after model.Project, at string) error {
+	routing := !reflect.DeepEqual(before.LinearTeamID, after.LinearTeamID) ||
+		!reflect.DeepEqual(before.LinearRoutingLabel, after.LinearRoutingLabel)
+	if !routing && before.DefaultRole == after.DefaultRole {
+		return nil
+	}
+	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID, Routing: routing}, at)
 }
 
 func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
@@ -270,6 +286,9 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 		if field.value != nil && strings.TrimSpace(*field.value) == "" {
 			return nil, invalid(field.name, "required")
 		}
+	}
+	if err := validateApprovalPolicy(p.ApprovalPolicy); err != nil {
+		return nil, err
 	}
 	for _, seconds := range []string{"setupSec", "harnessSec", "testSec"} {
 		if n, ok := p.Timeouts[seconds]; ok && n <= 0 {
@@ -311,6 +330,34 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 		}
 	}
 	return warnings, nil
+}
+
+// defaultApprovalPolicy is the Phase 2 approval policy a Project gets when
+// registration omits approvalPolicy (spec 17 3.2, Q60): PR merges need the
+// owner's approval. The number is a json.Number like values read back from
+// the store, so a registered Project compares equal to its stored form.
+func defaultApprovalPolicy() map[string]any {
+	return map[string]any{"version": json.Number("1"), "mergePullRequest": "require_approval"}
+}
+
+// validateApprovalPolicy accepts only the spec 17 3.2 shape
+// {"version": 1, "mergePullRequest": "require_approval" | "direct_push"}.
+// Only the PR merge can be taken out of approval, so any other key, a
+// missing key, or an unknown value is a 400 (requirements 15.3).
+func validateApprovalPolicy(policy map[string]any) error {
+	for key := range policy {
+		if key != "version" && key != "mergePullRequest" {
+			return invalid("approvalPolicy", "invalid")
+		}
+	}
+	if version, ok := policy["version"].(json.Number); !ok || version.String() != "1" {
+		return invalid("approvalPolicy.version", "invalid")
+	}
+	switch policy["mergePullRequest"] {
+	case "require_approval", "direct_push":
+		return nil
+	}
+	return invalid("approvalPolicy.mergePullRequest", "invalid")
 }
 
 // validSetupHost accepts only a lowercase DNS host name and a port 1-65535

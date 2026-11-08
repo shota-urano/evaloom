@@ -26,6 +26,7 @@ type FormValues = {
   testReportFormat: string
   testReportPath: string
   setupCommand: string
+  setupAllowedHosts: string
   copyAllowlist: string
   allowedOperations: string
   approvalPolicy: string
@@ -46,6 +47,7 @@ const FIELDS = [
   'testReportFormat',
   'testReportPath',
   'setupCommand',
+  'setupAllowedHosts',
   'copyAllowlist',
   'allowedOperations',
   'approvalPolicy',
@@ -69,9 +71,11 @@ const EMPTY: FormValues = {
   testReportFormat: '',
   testReportPath: '',
   setupCommand: '',
+  setupAllowedHosts: '',
   copyAllowlist: '',
   allowedOperations: '{}',
-  approvalPolicy: '{}',
+  // 17 3.2（Q60）の形だけを Backend が受け付ける。既定は PR マージを承認対象に残す。
+  approvalPolicy: JSON.stringify({ version: 1, mergePullRequest: 'require_approval' }, null, 2),
   linearTeamId: '',
   linearRoutingLabel: '',
   'timeouts.setupSec': '',
@@ -93,6 +97,7 @@ function toValues(project: Project): FormValues {
     testReportFormat: project.testReportFormat ?? '',
     testReportPath: project.testReportPath ?? '',
     setupCommand: project.setupCommand ?? '',
+    setupAllowedHosts: project.setupAllowedHosts.join('\n'),
     copyAllowlist: project.copyAllowlist.join('\n'),
     allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
     approvalPolicy: JSON.stringify(project.approvalPolicy, null, 2),
@@ -156,6 +161,8 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
       testReportFormat: optional(values.testReportFormat),
       testReportPath: optional(values.testReportPath),
       setupCommand: optional(values.setupCommand),
+      // 何も入力しなければ空配列を送る（null は 400、backend/internal/api/projects.md）。
+      setupAllowedHosts: lines(values.setupAllowedHosts),
       copyAllowlist: lines(values.copyAllowlist),
       allowedOperations,
       approvalPolicy,
@@ -326,6 +333,14 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
             spellCheck={false}
             hint="worktree 内のパス。"
             {...bind('testReportPath')}
+          />
+          <TextAreaField
+            label={L.setupAllowedHosts}
+            rows={3}
+            spellCheck={false}
+            placeholder={'registry.npmjs.org:443\nproxy.golang.org:443'}
+            hint="セットアップコマンドの実行中だけ接続を許す宛先を、host:port で1行に1つ。ワイルドカード・IP アドレス・localhost などのローカルの名前・ポートの無い値は使えません。空欄なら setup もネットワークに接続しません。"
+            {...bind('setupAllowedHosts')}
           />
           <TextAreaField
             label={L.copyAllowlist}

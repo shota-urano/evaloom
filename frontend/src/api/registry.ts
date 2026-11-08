@@ -18,6 +18,8 @@ export type ProjectSettings = {
   testReportFormat: string | null
   testReportPath: string | null
   setupCommand: string | null
+  /** setup の許可宛先（`host:port` の一覧、03-registry 3.3.1、Q87）。空配列なら setup もネットワークを全遮断する。 */
+  setupAllowedHosts: string[]
   copyAllowlist: string[]
   allowedOperations: Record<string, unknown>
   approvalPolicy: Record<string, unknown>

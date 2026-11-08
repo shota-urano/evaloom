@@ -70,6 +70,25 @@ func (m *MacOS) NotifyLinearPollFailing(ctx context.Context, class string, conse
 	return m.launch(ctx, "evaloom: Linear の照会が失敗", body, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
 }
 
+// NotifyLinearCommentFailing tells the owner that a Linear comment could not
+// be sent (spec 16 3.4.3, spec 12 3.5, Q84). Only an authentication error
+// alerts, so the only accepted classification is auth. The body is the
+// classification alone: never the API key, a Linear response, the Issue
+// identifier or the comment body. A click opens the Dashboard, because the
+// alert has no task.
+func (m *MacOS) NotifyLinearCommentFailing(ctx context.Context, class string) error {
+	if class != "auth" {
+		return errors.New("notification: unsupported Linear comment classification")
+	}
+	if !filepath.IsAbs(m.helperPath) {
+		return fmt.Errorf("%w: invalid macOS helper path", ErrLaunchFailed)
+	}
+	if m.port < 1 || m.port > 65535 {
+		return fmt.Errorf("notification: invalid macOS port")
+	}
+	return m.launch(ctx, "evaloom: Linear コメントの送信が失敗", class, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
+}
+
 // launch runs the helper with the three fixed arguments and waits for its
 // result code.
 func (m *MacOS) launch(ctx context.Context, title, body, openURL string) error {
@@ -133,13 +152,15 @@ func macOSContent(n Notification) (string, string, error) {
 		title = "evaloom: 失敗"
 	case model.ExecutionBlocked:
 		title = "evaloom: 対応が必要"
+	case model.ExecutionWaitingApproval:
+		title = "evaloom: 承認待ち"
 	default:
 		return "", "", errors.New("notification: unsupported macOS notification status")
 	}
 	classification := string(n.Status)
 	if n.Status == model.ExecutionBlocked && n.BlockCause != "" && n.BlockCause.Validate() == nil {
 		classification = string(n.BlockCause)
-	} else if n.Status != model.ExecutionSucceeded && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
+	} else if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
 		classification = string(n.ErrorClass)
 	}
 	return title, n.Title + "\n" + n.TaskID + "\n" + classification, nil

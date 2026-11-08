@@ -79,7 +79,7 @@ func TestListNotificationFailuresAcrossTasksAndRetriesNewestFirst(t *testing.T) 
 		if execution == third {
 			taskID, title = "task-002", "別タスク"
 		}
-		want = append([]notificationFailureResponse{{id, execution, taskID, title, kind, channel, reason, created}}, want...)
+		want = append([]notificationFailureResponse{{&id, &execution, nil, taskID, title, kind, channel, reason, created}}, want...)
 		appendStreamEvent(t, f, execution, `{"text":"PRIVATE-LOG-ERROR"}`)
 	}
 	// Every other event type must be excluded, including sent notifications.
@@ -106,7 +106,7 @@ func TestListNotificationFailuresAcrossTasksAndRetriesNewestFirst(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, item := range shape.Items {
-		if len(item) != 8 {
+		if len(item) != 9 || string(item["outboxId"]) != "null" {
 			t.Fatalf("unexpected response fields: %v", item)
 		}
 	}
@@ -126,8 +126,8 @@ func TestListNotificationFailuresAcrossTasksAndRetriesNewestFirst(t *testing.T) 
 				break
 			}
 			decoded, err := base64.RawURLEncoding.DecodeString(*page.NextCursor)
-			last := page.Items[len(page.Items)-1].EventID
-			if err != nil || string(decoded) != fmt.Sprintf("notification-failures\n%d", last) {
+			last := *page.Items[len(page.Items)-1].EventID
+			if err != nil || string(decoded) != fmt.Sprintf("notification-failures\n2026-11-01T00:00:00.000Z|e|%d", last) {
 				t.Fatalf("invalid cursor %q: %v", decoded, err)
 			}
 			query = fmt.Sprintf("?limit=%d&cursor=%s", limit, url.QueryEscape(*page.NextCursor))
@@ -168,7 +168,12 @@ func TestListNotificationFailuresRejectsInvalidPagination(t *testing.T) {
 		assertAuthError(t, status, body, 400, ValidationFailed)
 	}
 	for _, raw := range []string{"tasks\ntask-001", "notification-failures\n0", "notification-failures\n-1",
-		"notification-failures\n+1", "notification-failures\n1.5", "notification-failures\nabc", "notification-failures\n9223372036854775808"} {
+		"notification-failures\n+1", "notification-failures\n1.5", "notification-failures\nabc", "notification-failures\n9223372036854775808",
+		"notification-failures\n2026-11-01T00:00:00.000Z|e|0", "notification-failures\n2026-11-01T00:00:00.000Z|e|-1",
+		"notification-failures\n2026-11-01T00:00:00.000Z|e|+1", "notification-failures\n2026-11-01T00:00:00.000Z|e|9223372036854775808",
+		"notification-failures\n2026-11-01T00:00:00.000Z|x|1", "notification-failures\n2026-11-01T00:00:00.000Z|o|",
+		"notification-failures\n2026-11-01T00:00:00Z|e|1", "notification-failures\n2026-13-01T00:00:00.000Z|e|1",
+		"notification-failures\n2026-11-01T00:00:00.000Z|e"} {
 		token := base64.RawURLEncoding.EncodeToString([]byte(raw))
 		status, body := projectRequest(t, f, "GET", notificationFailurePath+"?cursor="+token, nil)
 		requireProjectError(t, status, body, 400, ValidationFailed, "cursor", "invalid")
@@ -188,7 +193,7 @@ func TestListNotificationFailuresCursorExcludesNewerInsertions(t *testing.T) {
 	}
 	appendNotificationFailure(t, f, streamExecution, "failed", "macos", "launch_failed")
 	tail := requireNotificationFailures(t, f, "?limit=2&cursor="+url.QueryEscape(*first.NextCursor))
-	if len(tail.Items) != 1 || tail.Items[0].EventID != oldest || tail.NextCursor != nil {
+	if len(tail.Items) != 1 || *tail.Items[0].EventID != oldest || tail.NextCursor != nil {
 		t.Fatalf("new insertion changed continuation: %+v", tail)
 	}
 }
@@ -241,7 +246,7 @@ func TestListNotificationFailuresFromDispatcher(t *testing.T) {
 		t.Fatal("expected transport failure")
 	}
 	page := requireNotificationFailures(t, f, "")
-	if len(page.Items) != 1 || page.Items[0].ExecutionID != executionID || page.Items[0].Kind != "failed" ||
+	if len(page.Items) != 1 || *page.Items[0].ExecutionID != executionID || page.Items[0].Kind != "failed" ||
 		page.Items[0].Channel != "fake" || page.Items[0].Reason != "permission_denied" {
 		t.Fatalf("dispatcher failure missing: %+v", page)
 	}

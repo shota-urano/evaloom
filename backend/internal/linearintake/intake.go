@@ -60,7 +60,8 @@ type Canceller interface {
 
 // HeldRechecker re-runs the 3.6 decision for a held task (spec 15 3.6.3). It
 // is called inside tx for an Issue that stays attached and whose updatedAt
-// is newer than the recorded one; it must not create a new task. It returns
+// is newer than the recorded one or that carries the recheck mark of an
+// Evaloom setting change (Q81); it must not create a new task. It returns
 // the new last_decision (DecisionStarted or DecisionHeld), or "" when nothing
 // changed (no held task, or the same cause), which keeps the previous one.
 type HeldRechecker interface {
@@ -145,6 +146,10 @@ func (in *Intake) handleListed(ctx context.Context, team store.LinearPollTeam, i
 		next.IssueIdentifier, next.TeamID = issue.Identifier, issue.TeamID
 		next.IssueUpdatedAt, next.LastSeenAt = stamp(issue.UpdatedAt), now
 		decide := func(d Decision) { next.LastDecision, next.LastDecisionAt = string(d), now }
+		// The recheck mark (3.6.3, Q81) is consumed by this decision in the
+		// same transaction, whichever row of the 3.4 table applies.
+		marked := prev.RecheckRequestedAt != ""
+		next.RecheckRequestedAt = ""
 
 		switch {
 		case prev.RemovedAt != "":
@@ -193,8 +198,10 @@ func (in *Intake) handleListed(ctx context.Context, team store.LinearPollTeam, i
 			}
 		default:
 			// Still attached: body, label or state edits never start again
-			// (requirements 6.2). Only a held task may be rechecked (3.6.3).
-			if in.Rechecker != nil && newer(issue.UpdatedAt, prev.IssueUpdatedAt) {
+			// (requirements 6.2). Only a held task may be rechecked (3.6.3):
+			// when the Issue was updated, or when an Evaloom setting change
+			// marked it (Q81), using the Issue as listed in this round.
+			if in.Rechecker != nil && (marked || newer(issue.UpdatedAt, prev.IssueUpdatedAt)) {
 				d, err := in.Rechecker.RecheckHeldTask(ctx, tx, issue)
 				if err != nil {
 					return err
@@ -231,6 +238,7 @@ func (in *Intake) handleMissing(ctx context.Context, issueID string) error {
 		now := in.stamp()
 		next := prev
 		next.LastDecision, next.LastDecisionAt = string(DecisionCancelled), now
+		next.RecheckRequestedAt = "" // the Issue left the list: 3.4 and 3.7 decide (3.6.3, Q81)
 		if !removed {
 			next.IssueIdentifier, next.IssueUpdatedAt, next.LastSeenAt = issue.Identifier, stamp(issue.UpdatedAt), now
 		}
@@ -246,7 +254,14 @@ func (in *Intake) handleMissing(ctx context.Context, issueID string) error {
 			next.AIReady = false
 		case issue.Canceled():
 			if prev.LastDecision == string(DecisionCancelled) {
-				return nil // already stopped; not every round
+				// Already stopped; not every round. Only a recheck mark
+				// is cleared (3.6.3, Q81).
+				if prev.RecheckRequestedAt == "" {
+					return nil
+				}
+				cleared := prev
+				cleared.RecheckRequestedAt = ""
+				return store.SaveLinearIssueState(ctx, tx, cleared)
 			}
 			reason = ReasonIssueCancelled
 		default:
