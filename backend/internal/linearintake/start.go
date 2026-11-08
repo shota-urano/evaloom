@@ -18,9 +18,8 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
-// DefaultRoutingLabelPrefix is the default prefix of routing labels (spec 15
-// 3.4, Q48). The global setting linear.routingLabelPrefix is added by a later
-// task.
+// DefaultRoutingLabelPrefix is the default of the global setting
+// linear.routingLabelPrefix (spec 15 3.4, Q48).
 const DefaultRoutingLabelPrefix = "repo:"
 
 // BlockCause is a value of tasks.intake_block_cause (spec 15 3.6 and 3.8).
@@ -50,7 +49,7 @@ type Routing struct {
 // (Linear Project is never used, requirements 6.1), acceptance criteria
 // extraction and task creation (spec 15 3.6).
 type TaskStarter struct {
-	RoutingLabelPrefix string // empty: DefaultRoutingLabelPrefix
+	RoutingLabelPrefix string // empty: the Poller's round settings, then DefaultRoutingLabelPrefix
 	Now                func() time.Time
 }
 
@@ -62,7 +61,7 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 	r := Routing{Criteria: criteria}
 	prefix := s.RoutingLabelPrefix
 	if prefix == "" {
-		prefix = DefaultRoutingLabelPrefix
+		prefix = roundLabels(ctx).RoutingLabelPrefix
 	}
 	var labels []string
 	for _, label := range issue.Labels {

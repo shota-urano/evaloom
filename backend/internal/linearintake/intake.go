@@ -75,7 +75,7 @@ type Intake struct {
 	Starter      Starter
 	Canceller    Canceller
 	Rechecker    HeldRechecker // nil: held tasks are not rechecked
-	TriggerLabel string        // empty: DefaultTriggerLabel
+	TriggerLabel string        // empty: the Poller's round settings, then DefaultTriggerLabel
 	Logger       *slog.Logger
 	Now          func() time.Time
 }
@@ -209,7 +209,7 @@ func (in *Intake) handleMissing(ctx context.Context, issueID string) error {
 	}
 	label := in.TriggerLabel
 	if label == "" {
-		label = DefaultTriggerLabel
+		label = roundLabels(ctx).TriggerLabel
 	}
 	return in.inTx(ctx, func(tx *sql.Tx) error {
 		prev, ok, err := store.GetLinearIssueState(ctx, tx, issueID)

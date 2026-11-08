@@ -72,9 +72,11 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 	polled := make(chan string, 1)
 	original := newLinearPoller
 	t.Cleanup(func() { newLinearPoller = original })
+	var poller *linearintake.Poller
 	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
 		// An interval far longer than the test isolates the startup poll.
-		return &linearintake.Poller{DB: db, Client: startupPollClient{polled}, Logger: logger, Interval: time.Hour}, nil
+		poller = &linearintake.Poller{DB: db, Client: startupPollClient{polled}, Logger: logger, Interval: time.Hour}
+		return poller, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -84,6 +86,11 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 	case team := <-polled:
 		if team != "team-a" {
 			t.Fatalf("polled team = %q", team)
+		}
+		// The Poller reads the label settings served by /api/settings
+		// (spec 15 5章); run sets them before starting it.
+		if settings, ok := poller.Settings.(*linearintake.LabelSettings); !ok || settings.LinearLabels() != linearintake.DefaultLabels() {
+			t.Fatalf("poller settings = %#v", poller.Settings)
 		}
 	case <-ctx.Done():
 		t.Fatal("Control Plane did not poll Linear at startup")

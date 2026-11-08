@@ -70,9 +70,25 @@ func InsertInitialExecution(ctx context.Context, tx *sql.Tx, id, taskID, created
 // Execution (highest seq) and the newest PR URL reported by any Execution.
 type TaskSummary struct {
 	model.Task
+	TaskOrigin
 	LatestExecution *ExecutionSummary
 	PRURL           *string
 }
+
+// TaskOrigin is where a task came from (spec 15 3.8 and 5章): source, the
+// intake hold cause, and the linked Linear Issue's identifier and URL.
+type TaskOrigin struct {
+	Source           string
+	IntakeBlockCause *string
+	LinearIdentifier *string
+	LinearURL        *string
+}
+
+// taskOriginColumns reads TaskOrigin for tasks aliased t. A task has at most
+// one link (UNIQUE(task_id)).
+const taskOriginColumns = `t.source, t.intake_block_cause,
+	(SELECT issue_identifier FROM linear_issue_links WHERE task_id = t.id),
+	(SELECT issue_url FROM linear_issue_links WHERE task_id = t.id)`
 
 type ExecutionSummary struct {
 	ID         string
@@ -93,6 +109,7 @@ type TaskFilter struct {
 func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64, limit int) ([]TaskSummary, error) {
 	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
+		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class,
 		(SELECT pr_url FROM executions WHERE task_id = t.id AND pr_url IS NOT NULL ORDER BY seq DESC LIMIT 1)
 		FROM tasks t
@@ -113,6 +130,7 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 		var errorClass, prURL sql.NullString
 		if err := rows.Scan(&s.ID, &s.ProjectID, &s.Title, &s.Body, &s.AcceptanceCriteria,
 			&s.ShortName, &s.TaskType, &s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
+			&s.Source, &s.IntakeBlockCause, &s.LinearIdentifier, &s.LinearURL,
 			&executionID, &seq, &mode, &status, &errorClass, &prURL); err != nil {
 			return nil, err
 		}

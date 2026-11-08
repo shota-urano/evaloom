@@ -49,14 +49,17 @@ func GetLinearIssueState(ctx context.Context, tx *sql.Tx, issueID string) (state
 }
 
 // ListAttachedLinearIssues returns the rows of teamID that carried the
-// trigger label in the previous poll (ai_ready=1), ordered by Issue ID.
+// trigger label in the previous poll (ai_ready=1), ordered by Issue ID. An
+// empty teamID returns the rows of every Team (owner status view, spec 15
+// 5章), ordered by Team and Issue ID.
 func ListAttachedLinearIssues(ctx context.Context, db *sql.DB, teamID string) ([]LinearIssueState, error) {
 	rows, err := db.QueryContext(ctx, `SELECT `+linearIssueStateColumns+`
-		FROM linear_issue_states WHERE team_id = ? AND ai_ready = 1 ORDER BY linear_issue_id`, teamID)
+		FROM linear_issue_states WHERE (? = '' OR team_id = ?) AND ai_ready = 1
+		ORDER BY team_id, linear_issue_id`, teamID, teamID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list attached linear issues: %w", err)
 	}
-	var states []LinearIssueState
+	states := []LinearIssueState{}
 	for rows.Next() {
 		state, err := scanLinearIssueState(rows)
 		if err != nil {

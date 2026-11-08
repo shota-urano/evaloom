@@ -9,6 +9,7 @@ import (
 	"net/url"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -33,13 +34,20 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 }
 
 // NewHandlerWithArtifacts uses only Control Plane supplied storage and limits.
+// The Linear label settings start at their defaults and are not shared.
 func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithSettings(db, logger, auth, web, contexts, artifacts, linearintake.NewLabelSettings(), registries...)
+}
+
+// NewHandlerWithSettings serves GET/PATCH /api/settings from settings, which
+// the Control Plane shares with its Linear Poller (spec 15 5章).
+func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, settings LinearSettings, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters, artifacts)))
+	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters, artifacts, settings)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger, artifacts)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
@@ -57,8 +65,11 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 	return auth.boundary(mux, false)
 }
 
-func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, artifacts ArtifactConfig) http.Handler {
+func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, artifacts ArtifactConfig, settings LinearSettings) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/settings", getSettings(settings))
+	mux.HandleFunc("PATCH /api/settings", patchSettings(settings, logger))
+	mux.HandleFunc("GET /api/linear/status", getLinearStatus(db, logger))
 	mux.HandleFunc("GET /api/tasks", listTasks(db, logger))
 	mux.HandleFunc("GET /api/notification-failures", listNotificationFailures(db, logger))
 	mux.HandleFunc("POST /api/tasks", createTask(db, logger))

@@ -9,6 +9,7 @@ import (
 
 type TaskDetail struct {
 	model.Task
+	TaskOrigin
 	Executions []TaskExecution
 }
 
@@ -27,6 +28,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 	result := TaskDetail{Executions: []TaskExecution{}}
 	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
+		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class, e.profile_version, e.profile_commit_sha,
 		e.started_at, e.finished_at, e.pr_url
 		FROM tasks t LEFT JOIN executions e ON e.task_id = t.id
@@ -41,6 +43,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 		var seq sql.NullInt64
 		if err := rows.Scan(&result.ID, &result.ProjectID, &result.Title, &result.Body, &result.AcceptanceCriteria,
 			&result.ShortName, &result.TaskType, &result.CollaborationMode, &result.Status, &result.CreatedAt, &result.UpdatedAt,
+			&result.Source, &result.IntakeBlockCause, &result.LinearIdentifier, &result.LinearURL,
 			&executionID, &seq, &mode, &status, &e.ErrorClass, &e.ProfileVersion, &e.ProfileCommitSHA,
 			&e.StartedAt, &e.FinishedAt, &e.PRURL); err != nil {
 			return result, err

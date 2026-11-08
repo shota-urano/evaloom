@@ -35,7 +35,16 @@ export type Task = {
 export type ExecutionSummary = { id: string; seq: number; mode: string; status: string; errorClass: string | null }
 
 /** GET /api/tasks の要素。prUrl は PR を作った Execution のうち最新のものの URL。 */
-export type TaskSummary = Task & { latestExecution: ExecutionSummary | null; prUrl: string | null }
+export type TaskSummary = Task & {
+  latestExecution: ExecutionSummary | null
+  prUrl: string | null
+  /** 15-linear-intake 5章。`manual` / `linear`。 */
+  source?: 'manual' | 'linear'
+  /** 15-linear-intake 3.6 の保留の理由。保留していなければ null。 */
+  intakeBlockCause?: string | null
+  /** Linear 起因のタスクの Issue の識別子と URL。手動作成のタスクは null。 */
+  linear?: { identifier: string; url: string } | null
+}
 
 export type TaskFilter = { status?: string; projectId?: string }
 

@@ -19,6 +19,11 @@ type ProjectSettings struct {
 	AllowedOperations map[string]any `json:"allowedOperations"`
 	ApprovalPolicy    map[string]any `json:"approvalPolicy"`
 	Timeouts          map[string]int `json:"timeouts"`
+	// LinearTeamID and LinearRoutingLabel route Linear Issues to this Project
+	// (spec 15 3.6, 3.8). A Project with either one null is never run from
+	// Linear.
+	LinearTeamID       *string `json:"linearTeamId"`
+	LinearRoutingLabel *string `json:"linearRoutingLabel"`
 }
 
 type Project struct {

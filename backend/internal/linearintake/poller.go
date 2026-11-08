@@ -20,8 +20,8 @@ import (
 // DefaultInterval is the polling interval (spec 15 3.1 and 4章, Q43).
 const DefaultInterval = time.Minute
 
-// DefaultTriggerLabel is the default trigger label name (spec 15 3.4, Q48).
-// The global setting linear.triggerLabel is added by a later task.
+// DefaultTriggerLabel is the default of the global setting
+// linear.triggerLabel (spec 15 3.4, Q48).
 const DefaultTriggerLabel = "ai-ready"
 
 // FailureAlertThreshold is the consecutive failure count at which the owner
@@ -61,8 +61,11 @@ type Poller struct {
 	Alerter      Alerter      // nil: alerts are only logged
 	Logger       *slog.Logger
 	Interval     time.Duration // zero: DefaultInterval
-	TriggerLabel string        // empty: DefaultTriggerLabel
-	Now          func() time.Time
+	TriggerLabel string        // empty: Settings, then DefaultTriggerLabel
+	// Settings supplies the global label settings, read once per round and
+	// passed to Handler through the context. nil: TriggerLabel and defaults.
+	Settings LabelSource
+	Now      func() time.Time
 
 	mu sync.Mutex // one round at a time (spec 15 3.1)
 	// alerted holds Teams already alerted in their current failure streak, so
@@ -134,9 +137,12 @@ func (p *Poller) PollOnce(ctx context.Context) (Result, error) {
 		}
 		return result, errs
 	}
+	if p.Settings != nil {
+		ctx = withRoundLabels(ctx, p.Settings.LinearLabels())
+	}
 	label := p.TriggerLabel
 	if label == "" {
-		label = DefaultTriggerLabel
+		label = roundLabels(ctx).TriggerLabel
 	}
 	for _, team := range teams {
 		issues, err := p.Client.ListReadyIssues(ctx, team.TeamID, label)

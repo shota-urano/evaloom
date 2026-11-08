@@ -20,7 +20,8 @@ type projectReader interface {
 const projectColumns = `id, name, local_repo_path, git_remote_url, runner_id,
 	base_branch, default_role, review_role, context_location, test_command,
 	test_report_format, test_report_path, setup_command, copy_allowlist,
-	allowed_operations, approval_policy, timeouts, created_at, updated_at`
+	allowed_operations, approval_policy, timeouts, linear_team_id, linear_routing_label,
+	created_at, updated_at`
 
 func scanProject(row interface{ Scan(...any) error }) (model.Project, error) {
 	var p model.Project
@@ -28,7 +29,7 @@ func scanProject(row interface{ Scan(...any) error }) (model.Project, error) {
 	err := row.Scan(&p.ID, &p.Name, &p.LocalRepoPath, &p.GitRemoteURL, &p.RunnerID,
 		&p.BaseBranch, &p.DefaultRole, &p.ReviewRole, &p.ContextLocation, &p.TestCommand,
 		&p.TestReportFormat, &p.TestReportPath, &p.SetupCommand, &copies,
-		&operations, &policy, &timeouts, &p.CreatedAt, &p.UpdatedAt)
+		&operations, &policy, &timeouts, &p.LinearTeamID, &p.LinearRoutingLabel, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, err
 	}
@@ -97,18 +98,19 @@ func SaveProject(ctx context.Context, tx *sql.Tx, p model.Project, create bool) 
 		}
 		args = append(args, string(encoded))
 	}
-	args = append(args, p.CreatedAt, p.UpdatedAt, p.ID)
+	args = append(args, p.LinearTeamID, p.LinearRoutingLabel, p.CreatedAt, p.UpdatedAt, p.ID)
 	statement := `UPDATE projects SET name=?, local_repo_path=?, git_remote_url=?, runner_id=?,
 		base_branch=?, default_role=?, review_role=?, context_location=?, test_command=?,
 		test_report_format=?, test_report_path=?, setup_command=?, copy_allowlist=?,
 		allowed_operations=?, approval_policy=?, timeouts=?,
-		created_at=?, updated_at=? WHERE id=?`
+		linear_team_id=?, linear_routing_label=?, created_at=?, updated_at=? WHERE id=?`
 	if create {
 		statement = `INSERT INTO projects (name, local_repo_path, git_remote_url, runner_id,
 			base_branch, default_role, review_role, context_location, test_command,
 			test_report_format, test_report_path, setup_command, copy_allowlist,
-			allowed_operations, approval_policy, timeouts, created_at, updated_at, id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			allowed_operations, approval_policy, timeouts, linear_team_id, linear_routing_label,
+			created_at, updated_at, id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	}
 	_, err := tx.ExecContext(ctx, statement, args...)
 	var constraint *sqlite.Error
@@ -116,4 +118,15 @@ func SaveProject(ctx context.Context, tx *sql.Tx, p model.Project, create bool) 
 		return ErrProjectConflict
 	}
 	return err
+}
+
+// LinearRouteTaken reports whether a Project other than exceptID already
+// registers the Team and routing label pair (spec 15 3.8,
+// UNIQUE(linear_team_id, linear_routing_label)). It is read inside the
+// saving transaction so the API can answer 409 with the field.
+func LinearRouteTaken(ctx context.Context, tx *sql.Tx, teamID, label, exceptID string) (bool, error) {
+	var taken bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM projects
+		WHERE linear_team_id = ? AND linear_routing_label = ? AND id <> ?)`, teamID, label, exceptID).Scan(&taken)
+	return taken, err
 }

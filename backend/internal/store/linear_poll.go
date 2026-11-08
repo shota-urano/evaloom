@@ -19,6 +19,20 @@ type LinearPollTeam struct {
 	ConsecutiveFailures int
 }
 
+const registeredLinearTeams = `SELECT DISTINCT linear_team_id FROM projects
+	WHERE linear_team_id IS NOT NULL AND linear_team_id <> ''`
+
+// PruneLinearPollTeams removes the rows of Teams no Project registers any
+// more (spec 15 3.8, Q64). The Project API calls it in the transaction that
+// removes or changes a linear_team_id, so registering the Team again before
+// the next poll still starts over from the first poll.
+func PruneLinearPollTeams(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM linear_poll_teams WHERE team_id NOT IN (`+registeredLinearTeams+`)`); err != nil {
+		return fmt.Errorf("store: remove unregistered linear poll teams: %w", err)
+	}
+	return nil
+}
+
 // SyncLinearPollTeams returns the Teams to poll: every distinct non-empty
 // projects.linear_team_id (spec 15 3.2, one entry even when several Projects
 // share a Team). Rows are created for newly registered Teams and removed for
@@ -33,13 +47,11 @@ func SyncLinearPollTeams(ctx context.Context, db *sql.DB) (_ []LinearPollTeam, e
 			tx.Rollback()
 		}
 	}()
-	const registered = `SELECT DISTINCT linear_team_id FROM projects
-		WHERE linear_team_id IS NOT NULL AND linear_team_id <> ''`
-	if _, err = tx.ExecContext(ctx, `DELETE FROM linear_poll_teams WHERE team_id NOT IN (`+registered+`)`); err != nil {
-		return nil, fmt.Errorf("store: remove unregistered linear poll teams: %w", err)
+	if err = PruneLinearPollTeams(ctx, tx); err != nil {
+		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO linear_poll_teams (team_id, consecutive_failures)
-		SELECT linear_team_id, 0 FROM (`+registered+`) WHERE true
+		SELECT linear_team_id, 0 FROM (`+registeredLinearTeams+`) WHERE true
 		ON CONFLICT (team_id) DO NOTHING`); err != nil {
 		return nil, fmt.Errorf("store: add linear poll teams: %w", err)
 	}
@@ -111,4 +123,28 @@ func RecordLinearPollFailure(ctx context.Context, db *sql.DB, teamID, class stri
 		return before, after, false, err
 	}
 	return before, after, true, nil
+}
+
+// ListLinearPollTeams reads linear_poll_teams without changing it, for the
+// owner's status view (spec 15 5章).
+func ListLinearPollTeams(ctx context.Context, db *sql.DB) ([]LinearPollTeam, error) {
+	rows, err := db.QueryContext(ctx, `SELECT team_id, baseline_done_at IS NOT NULL,
+		coalesce(last_success_at, ''), coalesce(last_error, ''), consecutive_failures
+		FROM linear_poll_teams ORDER BY team_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list linear poll teams: %w", err)
+	}
+	teams := []LinearPollTeam{}
+	for rows.Next() {
+		var team LinearPollTeam
+		if err := rows.Scan(&team.TeamID, &team.BaselineDone, &team.LastSuccessAt, &team.LastError, &team.ConsecutiveFailures); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		teams = append(teams, team)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return teams, nil
 }
