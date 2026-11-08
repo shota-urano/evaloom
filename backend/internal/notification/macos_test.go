@@ -188,7 +188,7 @@ func TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard(t *testing.
 	m.run = func(cmd *exec.Cmd) error {
 		launched = true
 		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear の照会が失敗",
-			"Linear の照会が続けて失敗しています\nnetwork\n5 回連続", "http://127.0.0.1:49123/"}
+			"network\n5 回連続", "http://127.0.0.1:49123/"}
 		if !reflect.DeepEqual(cmd.Args, want) {
 			t.Fatalf("command = %q; want %q", cmd.Args, want)
 		}
