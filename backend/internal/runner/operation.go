@@ -104,12 +104,29 @@ func (r *Runner) ExecuteMerge(ctx, reportCtx context.Context, claim Claim, githu
 	case errors.Is(err, publisher.ErrMergeContentChanged):
 		report.ErrorMessage = mergeFailureContentChanged
 	case errors.Is(err, publisher.ErrMergeUnknown):
-		// Spec 17 3.5.3: do not request the merge again.
-		report.ErrorMessage = mergeFailureUnknown
+		// Spec 17 3.5.3: do not request the merge again; read the PR again.
+		if sha, merged := reconcileMerge(ctx, github, repository, target.PRNumber, consumed.ContentVersion); merged {
+			report = ExecutionResult{FromStatus: model.ExecutionMerging, Status: model.ExecutionSucceeded, MergeCommitSHA: sha}
+		} else {
+			report.ErrorMessage = mergeFailureUnknown
+		}
 	default:
 		report.ErrorMessage = mergeFailureRejected
 	}
 	return r.ReportResult(reportCtx, claim.Execution.ID, report)
+}
+
+// reconcileMerge is spec 17 3.5.3: after a merge request whose result is
+// unknown, read the PR once more (never request the merge again). Only a PR
+// that is merged with the approved head (content_version) and a readable
+// merge commit counts as merged. An open PR, an unreadable PR, and every
+// other state are reported as merge_unknown so that the owner checks GitHub.
+func reconcileMerge(ctx context.Context, github publisher.Merger, repository string, number int, contentVersion string) (string, bool) {
+	state, err := github.PullRequest(ctx, repository, number)
+	if err != nil || !state.Merged || state.HeadSHA != contentVersion || !operationSHA.MatchString(state.MergeCommitSHA) {
+		return "", false
+	}
+	return state.MergeCommitSHA, true
 }
 
 type consumeResponse struct {

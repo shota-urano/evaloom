@@ -55,10 +55,10 @@ func TestGitHubPullRequestReadsHeadBaseAndState(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/repos/owner/repo/pulls/7" {
 			t.Fatalf("request %s %s", r.Method, r.URL.Path)
 		}
-		return reply(200, `{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"closed","merged":true,"head":{"sha":"`+head+`"},"base":{"ref":"main"}}`), nil
+		return reply(200, `{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"closed","merged":true,"merge_commit_sha":"`+strings.Repeat("c", 40)+`","head":{"sha":"`+head+`"},"base":{"ref":"main"}}`), nil
 	})
 	got, err := client.PullRequest(context.Background(), mergeRepo, 7)
-	if err != nil || got != (publisher.PullRequestStatus{HeadSHA: head, BaseBranch: "main", Open: false, Merged: true}) {
+	if err != nil || got != (publisher.PullRequestStatus{HeadSHA: head, BaseBranch: "main", Open: false, Merged: true, MergeCommitSHA: strings.Repeat("c", 40)}) {
 		t.Fatalf("state = %+v %v", got, err)
 	}
 }

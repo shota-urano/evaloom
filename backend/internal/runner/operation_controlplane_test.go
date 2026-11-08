@@ -42,6 +42,13 @@ type operationFixture struct {
 	prOpen    bool
 	mergeCode int // HTTP status of the merge answer
 	merges    []map[string]string
+	prMerged  bool
+	prReads   int
+	// dropMerge cuts the connection instead of answering the merge request
+	// (spec 17 3.5.3). mergeApplies says whether GitHub merged before that.
+	dropMerge    bool
+	mergeApplies bool
+	failReread   bool // the PR cannot be read after the first read
 }
 
 const operationMergeCommit = "1111111111111111111111111111111111111111"
@@ -150,18 +157,39 @@ func (f *operationFixture) github(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls/1":
+		f.prReads++
+		if f.failReread && f.prReads > 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		state := "open"
 		if !f.prOpen {
 			state = "closed"
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"number": 1, "html_url": "https://github.com/owner/repo/pull/1", "state": state, "merged": false,
-			"head": map[string]any{"sha": f.prHead, "ref": "evaloom/task-001-merge"}, "base": map[string]string{"ref": "main"}})
+		pr := map[string]any{"number": 1, "html_url": "https://github.com/owner/repo/pull/1", "state": state, "merged": f.prMerged,
+			"head": map[string]any{"sha": f.prHead, "ref": "evaloom/task-001-merge"}, "base": map[string]string{"ref": "main"}}
+		if f.prMerged {
+			pr["merge_commit_sha"] = operationMergeCommit
+		}
+		_ = json.NewEncoder(w).Encode(pr)
 	case r.Method == http.MethodPut && r.URL.Path == "/repos/owner/repo/pulls/1/merge":
 		var input map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			f.t.Error("invalid merge body")
 		}
 		f.merges = append(f.merges, input)
+		if f.dropMerge {
+			if f.mergeApplies {
+				f.prMerged, f.prOpen = true, false
+			}
+			connection, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				f.t.Error(err)
+				return
+			}
+			connection.Close()
+			return
+		}
 		w.WriteHeader(f.mergeCode)
 		if f.mergeCode == http.StatusOK {
 			_ = json.NewEncoder(w).Encode(map[string]any{"sha": operationMergeCommit, "merged": true, "message": "merged"})
@@ -293,5 +321,62 @@ func TestMergeRefusedByGitHubForHeadMismatch(t *testing.T) {
 	if err := f.db.QueryRow(`SELECT error_class, error_message FROM executions WHERE id=?`, operationExecution).Scan(&class, &message); err != nil ||
 		class != "publish_failed" || message != "content_changed" {
 		t.Fatalf("error %s/%s %v", class, message, err)
+	}
+}
+
+// Acceptance (spec 17 9章, 3.5.3): the connection of the merge request is cut
+// before GitHub answers. The Git Publisher does not request the merge again;
+// it reads the PR once more. A PR merged with content_version is a success,
+// a PR still open is publish_failed (merge_unknown).
+func TestUnknownMergeResultReadsPullRequestAgainWithoutSecondMerge(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		applies, unreadable      bool
+		execution, task, message string
+	}{
+		{"merged", true, false, "succeeded", "completed", ""},
+		{"still open", false, false, "failed", "failed", "merge_unknown"},
+		{"unreadable", true, true, "failed", "failed", "merge_unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationFixture(t)
+			f.dropMerge, f.mergeApplies, f.failReread = true, tc.applies, tc.unreadable
+			if err := f.run(); err != nil {
+				t.Fatal(err)
+			}
+			if merges := f.mergeRequests(); len(merges) != 1 || merges[0]["sha"] != f.content {
+				t.Fatalf("merge requests = %v; want exactly one", merges)
+			}
+			f.mu.Lock()
+			reads := f.prReads
+			f.mu.Unlock()
+			// One read before consume (3.5.2 step 1) and one after the lost answer.
+			if reads != 2 {
+				t.Fatalf("PR reads = %d; want 2", reads)
+			}
+			if execution, task, approval, reason := f.state(); execution != tc.execution || task != tc.task || approval != "consumed" || reason != "" {
+				t.Fatalf("state = %s/%s/%s/%s", execution, task, approval, reason)
+			}
+			var class, message sql.NullString
+			var result string
+			if err := f.db.QueryRow(`SELECT e.error_class, e.error_message, a.result FROM executions e JOIN approvals a ON a.execution_id=e.id WHERE a.id=?`, f.approvalID).
+				Scan(&class, &message, &result); err != nil {
+				t.Fatal(err)
+			}
+			if tc.message == "" {
+				if class.String != "" || message.String != "" || !strings.Contains(result, operationMergeCommit) {
+					t.Fatalf("success recorded as %q/%q result %s", class.String, message.String, result)
+				}
+			} else if class.String != "publish_failed" || message.String != tc.message || !strings.Contains(result, tc.message) {
+				t.Fatalf("failure recorded as %q/%q result %s", class.String, message.String, result)
+			}
+			// A later claim offers nothing: the consumed approval is not reused.
+			if claim, err := f.process.claim(context.Background()); err != nil || claim != nil {
+				t.Fatalf("claim after merge = %+v %v; want no work", claim, err)
+			}
+			if merges := f.mergeRequests(); len(merges) != 1 {
+				t.Fatalf("merge requests after reclaim = %d; want 1", len(merges))
+			}
+		})
 	}
 }
