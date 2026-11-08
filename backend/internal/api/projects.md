@@ -11,9 +11,15 @@
   `baseBranch`、`defaultRole`が必要。IDは既存のslug検証を使う。
   `contextLocation`の省略値は`AGENTS.md`で、Phase 1ではこの値だけを受け付ける。
   `reviewRole`はPhase 5まで使わないためnullだけを受け付ける。
-- nullable列の省略値はnull、配列は`[]`、設定オブジェクトは`{}`。
-  `allowedOperations`と`approvalPolicy`はオブジェクトとして保存・表示する。
-  内部キーやポリシーの実行効果は追加しない。
+- nullable列の省略値はnull、配列は`[]`、`allowedOperations`は`{}`。
+  `allowedOperations`はオブジェクトとして保存・表示し、内部キーの実行効果は追加しない。
+- `approvalPolicy`は仕様17の3.2（Q60）の形
+  `{"version": 1, "mergePullRequest": "require_approval" | "direct_push"}`だけを受け付ける。
+  ほかのキー・キーの欠け・未知の値は400（fieldは`approvalPolicy`、`approvalPolicy.version`、
+  `approvalPolicy.mergePullRequest`、reasonは`invalid`。reasonは仕様が決めていないので`timeouts`に合わせた）。
+  登録で省略すると`require_approval`になる。既存の値はマイグレーション0020でこの形でなければ
+  `require_approval`にする。変更は`project.update`の監査記録のbefore/afterに残る。
+  Runnerトークンはこの本人用APIに届かない（403、`auth.reject`）。
 - `timeouts`は`setupSec`・`harnessSec`・`testSec`だけを受け付ける。
   指定値は正の整数とし、キーを省略した工程は仕様05の3.6に従って全体設定を継承する。
   今回は全体設定やタイムアウト実行処理を追加しない。

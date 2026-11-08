@@ -36,7 +36,7 @@ func TestSetupAllowedHostsMigrationDefaultsExistingProjectsToEmpty(t *testing.T)
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20})
 	if got := migrationRows(t, db, `SELECT setup_allowed_hosts FROM projects`); !reflect.DeepEqual(got, [][]any{{"[]"}}) {
 		t.Fatalf("setup_allowed_hosts of existing rows = %#v, want []", got)
 	}

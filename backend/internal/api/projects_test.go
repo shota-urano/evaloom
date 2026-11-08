@@ -190,13 +190,13 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	input := projectInput(t, "project-a")
 	input["testCommand"], input["setupCommand"] = "go test ./...", "go mod download"
 	input["copyAllowlist"] = []string{"fixtures/data.json"}
-	input["allowedOperations"], input["approvalPolicy"] = map[string]any{"read": true}, map[string]any{"publish": "ask"}
+	input["allowedOperations"], input["approvalPolicy"] = map[string]any{"read": true}, map[string]any{"version": 1, "mergePullRequest": "require_approval"}
 	input["timeouts"] = map[string]int{"setupSec": 60, "harnessSec": 600, "testSec": 120}
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
 	patch := map[string]any{"testCommand": "go test -race ./...", "setupCommand": nil,
 		"copyAllowlist": []string{"fixtures/next.json"}, "allowedOperations": map[string]any{"write": true},
-		"approvalPolicy": map[string]any{"publish": "deny"}, "timeouts": map[string]int{"testSec": 180}}
+		"approvalPolicy": map[string]any{"version": 1, "mergePullRequest": "direct_push"}, "timeouts": map[string]int{"testSec": 180}}
 	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", patch)
 	after := requireProject(t, status, body, 200)
 	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.LocalRepoPath != before.LocalRepoPath || after.Name != before.Name ||
@@ -228,7 +228,7 @@ func TestProjectsPolicyNumbersSurviveReadsAndUnrelatedUpdates(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
 	const large = "9007199254740993"
-	input["approvalPolicy"] = map[string]any{"value": json.Number(large)}
+	input["allowedOperations"] = map[string]any{"value": json.Number(large)}
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	requireProject(t, status, body, 201)
 	for _, method := range []string{"GET", "PATCH", "GET"} {
