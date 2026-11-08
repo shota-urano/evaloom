@@ -25,7 +25,8 @@ const DefaultInterval = time.Minute
 const DefaultTriggerLabel = "ai-ready"
 
 // FailureAlertThreshold is the consecutive failure count at which the owner
-// is alerted (spec 15 6章, decided 2026-11-08).
+// is alerted when the failure at that count is not auth (spec 15 6章,
+// decided 2026-11-08, Q86).
 const FailureAlertThreshold = 5
 
 // Client is the subset of *linear.Client the Poller uses.
@@ -41,8 +42,9 @@ type IssueHandler interface {
 	HandleTeamIssues(ctx context.Context, team store.LinearPollTeam, issues []linear.Issue) error
 }
 
-// Alert tells the owner that polling keeps failing. It carries only the
-// classification and count, never the API key or a response body.
+// Alert tells the owner that polling keeps failing, or that it hit an
+// authentication error (spec 12 3.5). It carries only the classification
+// and count, never the API key, a response body or a Team ID.
 type Alert struct {
 	Class               linear.ErrorClass
 	ConsecutiveFailures int
@@ -66,11 +68,17 @@ type Poller struct {
 	// passed to Handler through the context. nil: TriggerLabel and defaults.
 	Settings LabelSource
 	Now      func() time.Time
+	// AuthGate is the authentication error notification suppression shared
+	// with the Linear comment Worker (spec 16 3.4.3, Q84). nil: the Poller
+	// uses a gate of its own.
+	AuthGate *linear.AuthAlertGate
 
 	mu sync.Mutex // one round at a time (spec 15 3.1)
 	// alerted holds Teams already alerted in their current failure streak, so
-	// one streak produces one notification. It is cleared by a success.
+	// one streak produces one "5 failures" notification. It is cleared by a
+	// success. Authentication errors never use it (Q86).
 	alerted map[string]bool
+	ownGate *linear.AuthAlertGate
 }
 
 // Result summarizes one round.
@@ -150,6 +158,11 @@ func (p *Poller) PollOnce(ctx context.Context) (Result, error) {
 			// Shutdown is not a Linear failure; leave the row unchanged.
 			return result, errs
 		}
+		if err == nil {
+			// A Team's query succeeded, so the key is valid again: lift the
+			// shared suppression (spec 16 3.4.3 step 4).
+			p.gate().Release()
+		}
 		if err != nil {
 			class := linear.ClassOf(err)
 			p.logger().Warn("linear poll failed", "team", team.TeamID, "class", string(class))
@@ -179,17 +192,26 @@ func (p *Poller) PollOnce(ctx context.Context) (Result, error) {
 	return result, errs
 }
 
-// recordFailure stores the failure and decides whether it warrants an alert:
-// the streak reached the threshold, or the Team just started failing auth
-// (spec 15 6章). Each streak alerts at most once.
+// recordFailure stores the failure and decides whether it warrants an alert
+// (spec 15 6章, spec 12 3.5, Q84, Q86):
+//   - An authentication error (including an unusable key file) alerts only
+//     through the suppression shared with the comment Worker, never through
+//     the Team's streak.
+//   - Any other failure alerts when the Team's streak reaches the threshold,
+//     once per streak.
 func (p *Poller) recordFailure(ctx context.Context, teamID string, class linear.ErrorClass) (*Alert, error) {
 	before, after, ok, err := store.RecordLinearPollFailure(ctx, p.DB, teamID, string(class))
 	if err != nil || !ok {
 		return nil, err
 	}
+	if class == linear.ClassAuth {
+		if !p.gate().Acquire() {
+			return nil, nil
+		}
+		return &Alert{Class: class, ConsecutiveFailures: after.ConsecutiveFailures}, nil
+	}
 	reached := before.ConsecutiveFailures < FailureAlertThreshold && after.ConsecutiveFailures >= FailureAlertThreshold
-	becameAuth := class == linear.ClassAuth && before.LastError != string(linear.ClassAuth)
-	if (!reached && !becameAuth) || p.alerted[teamID] {
+	if !reached || p.alerted[teamID] {
 		return nil, nil
 	}
 	if p.alerted == nil {
@@ -199,14 +221,29 @@ func (p *Poller) recordFailure(ctx context.Context, teamID string, class linear.
 	return &Alert{Class: class, ConsecutiveFailures: after.ConsecutiveFailures}, nil
 }
 
+// gate returns the shared suppression, or the Poller's own when none is set.
+// It is called with p.mu held.
+func (p *Poller) gate() *linear.AuthAlertGate {
+	if p.AuthGate != nil {
+		return p.AuthGate
+	}
+	if p.ownGate == nil {
+		p.ownGate = &linear.AuthAlertGate{}
+	}
+	return p.ownGate
+}
+
 // alert sends at most one notification per round, however many Teams failed.
+// An authentication alert wins: the shared suppression is already held for
+// it, so dropping it would leave the owner without the alert (Q84).
 func (p *Poller) alert(ctx context.Context, alerts []Alert) {
 	if len(alerts) == 0 {
 		return
 	}
 	alert := alerts[0]
 	for _, a := range alerts[1:] {
-		if a.ConsecutiveFailures > alert.ConsecutiveFailures {
+		aAuth, alertAuth := a.Class == linear.ClassAuth, alert.Class == linear.ClassAuth
+		if (aAuth && !alertAuth) || (aAuth == alertAuth && a.ConsecutiveFailures > alert.ConsecutiveFailures) {
 			alert = a
 		}
 	}

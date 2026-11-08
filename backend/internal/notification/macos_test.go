@@ -215,3 +215,38 @@ func TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard(t *testing.
 		t.Fatalf("permission denied err = %v", err)
 	}
 }
+
+// 受け入れ基準: 送信が認証エラーで failed になると、Dashboard の URL
+// （http://127.0.0.1:<port>/）を開く通知が出る。本文は送信の失敗であることと
+// 分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が
+// 入らない（spec 16 3.4.3、12 3.5）。
+func TestMacOSLinearCommentAlertShowsOnlyAuthAndOpensDashboard(t *testing.T) {
+	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
+	var launched bool
+	m.run = func(cmd *exec.Cmd) error {
+		launched = true
+		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear コメントの送信が失敗",
+			"auth", "http://127.0.0.1:49123/"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("command = %q; want %q", cmd.Args, want)
+		}
+		return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+	}
+	if err := m.NotifyLinearCommentFailing(context.Background(), "auth"); err != nil || !launched {
+		t.Fatalf("alert err = %v, launched = %v", err, launched)
+	}
+	// Any other value (which could carry a key, a response body, an Issue
+	// identifier or a comment) never reaches the helper.
+	launched = false
+	for _, class := range []string{"lin_api_SECRET", "ENG-1", "", "network", "issue_removed"} {
+		if err := m.NotifyLinearCommentFailing(context.Background(), class); err == nil || launched {
+			t.Fatalf("%q accepted: err=%v launched=%v", class, err, launched)
+		}
+	}
+	m.run = func(cmd *exec.Cmd) error {
+		return os.WriteFile(helperResultPath(t, cmd), []byte("permission_denied"), 0o600)
+	}
+	if err := m.NotifyLinearCommentFailing(context.Background(), "auth"); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("permission denied err = %v", err)
+	}
+}
