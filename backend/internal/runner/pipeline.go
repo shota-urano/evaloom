@@ -604,6 +604,14 @@ func (p *claimPipeline) publish(ctx context.Context, e *Execution) error {
 				p.deps.delivery.branch = e.Claim.Project.BaseBranch
 			}
 		})
+		// A fallback to the PR path (3.7.1 step 2, 3.7.3) pushes the task
+		// branch: its remote mismatch audit must name that branch again.
+		cfg.Push.CheckCancellation = func(ctx context.Context) error {
+			if p.deps.delivery != nil {
+				p.deps.delivery.branch = e.BranchName
+			}
+			return p.runner.Heartbeat(ctx)
+		}
 	}
 	cfg.Report = publisher.Report{ExecutionID: e.Claim.Execution.ID, TaskID: e.Claim.Execution.TaskID, Title: e.Claim.Task.Title,
 		AcceptanceCriteria: e.Claim.Task.AcceptanceCriteria, Summary: e.HarnessResult.Summary, HarnessID: e.Claim.Profile.HarnessID,

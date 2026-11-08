@@ -164,3 +164,7 @@ Control Plane の publish-check で中止要求と承認ポリシーの現在値
 `ErrPolicyChanged` を返すと PR を作る経路へ切り替え、ほかのエラーは push しない（Fail Closed）。
 pushed_sha は Execution の作業ブランチ名で記録する。作業ブランチは push しない。
 詳細と仕様に無い値は `internal/api/approvals.md` の「push 直前の確認（publish-check）と直接 push」。
+
+Base Branch が開始点より先へ進んでいて push が拒否されたとき（3.7.3）は、リモートの Base Branch が
+verified_sha の祖先でないことを確かめて `ErrNotFastForward` とし、強制 push せずに PR を作る経路へ切り替える。
+詳細は `internal/api/approvals.md` の「直接 push で fast-forward できないとき（3.7.3）」。
