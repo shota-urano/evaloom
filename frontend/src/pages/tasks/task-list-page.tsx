@@ -14,7 +14,9 @@ import { Link } from '@/lib/link'
 import type { NavigationState } from '@/lib/router'
 import { cn } from '@/lib/utils'
 import { useLiveTaskList } from './live'
+import { heldCause, intakeBlockCauseLabel } from './intake'
 import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskDetailPath, taskStatusLabel } from './labels'
+import { LinearIssueLink } from './linear-issue-link'
 
 // 状態は色だけでなく文字でも示す（13 3.5）。色は補助。
 const STATUS_TONES: Record<string, string> = {
@@ -59,6 +61,17 @@ function LatestExecution({ task }: { task: TaskSummary }) {
     <div>
       <span className="font-mono text-xs">#{execution.seq}</span> <span className="font-mono text-xs">{execution.status}</span>
       {execution.errorClass ? <div className="text-destructive font-mono text-xs">{execution.errorClass}</div> : null}
+    </div>
+  )
+}
+
+/** 取り込みで保留しているタスクの理由（15-linear-intake 3.6）。状態は色でなく文字で示す。 */
+function HeldReason({ task }: { task: TaskSummary }) {
+  const cause = heldCause(task)
+  if (!cause) return null
+  return (
+    <div className="mt-1 max-w-72 text-xs" data-testid="held-reason">
+      保留の理由: {intakeBlockCauseLabel(cause)}
     </div>
   )
 }
@@ -181,14 +194,25 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                     <div className="text-muted-foreground font-mono text-xs">
                       {task.id} · {task.shortName}
                     </div>
+                    {task.source === 'linear' && task.linear ? (
+                      <div className="text-xs">
+                        <span className="text-muted-foreground">Linear </span>
+                        <LinearIssueLink task={task} className="font-mono underline underline-offset-4" />
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3">
                     <TaskStatusBadge status={task.status} />
+                    <HeldReason task={task} />
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <Link to={`/projects/${encodeURIComponent(task.projectId)}`} className="underline-offset-4 hover:underline">
-                      {projectName.get(task.projectId) ?? task.projectId}
-                    </Link>
+                    {task.projectId ? (
+                      <Link to={`/projects/${encodeURIComponent(task.projectId)}`} className="underline-offset-4 hover:underline">
+                        {projectName.get(task.projectId) ?? task.projectId}
+                      </Link>
+                    ) : (
+                      <span className="text-muted-foreground">なし</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <LatestExecution task={task} />

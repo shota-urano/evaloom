@@ -367,3 +367,101 @@ describe('タスク詳細', () => {
     expect(screen.getByRole('button', { name: '再実行（継続）' })).toBeInTheDocument()
   })
 })
+
+/** Linear から取り込んで保留したタスク（15-linear-intake 3.6）。Execution が無く、Project が決まっていないことがある。 */
+function heldTask(cause: string, extra: Partial<TaskDetail> = {}): TaskDetail {
+  return {
+    ...taskWith('blocked', []),
+    projectId: '',
+    acceptanceCriteria: '',
+    shortName: 'eng-123',
+    source: 'linear',
+    intakeBlockCause: cause,
+    linear: { identifier: 'ENG-123', url: 'https://linear.app/acme/issue/ENG-123/login' },
+    ...extra,
+  }
+}
+
+describe('Linear 起因のタスク', () => {
+  it('source=linear のタスクは概要に Issue の識別子とリンクを出す', async () => {
+    const item = history(E1, 1, 'pending', { startedAt: null, profileVersion: null, profileCommitSha: null })
+    TASK = { ...taskWith('queued', [item]), source: 'linear', intakeBlockCause: null, linear: { identifier: 'ENG-7', url: 'https://linear.app/acme/issue/ENG-7' } }
+    EXECUTIONS = { [E1]: detailOf(item) }
+    renderTask()
+    const link = await screen.findByRole('link', { name: 'ENG-7' })
+    expect(link).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-7')
+    expect(link).toHaveAttribute('target', '_blank')
+    // 保留していないタスクは今までどおり中止できる。
+    expect(screen.getByRole('button', { name: '停止（中止）' })).toBeInTheDocument()
+    expect(screen.queryByTestId('held-review')).not.toBeInTheDocument()
+  })
+
+  it('手動作成のタスクには Linear Issue の行を出さない', async () => {
+    const item = history(E1, 1, 'pending', { startedAt: null, profileVersion: null, profileCommitSha: null })
+    TASK = { ...taskWith('queued', [item]), source: 'manual', intakeBlockCause: null, linear: null }
+    EXECUTIONS = { [E1]: detailOf(item) }
+    renderTask()
+    await screen.findByRole('heading', { name: 'ログイン画面' })
+    expect(screen.queryByText('Linear Issue')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('linear-issue-link')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['routing_multiple_labels', '実行先ラベルが2つ以上ある'],
+    ['routing_unknown_label', '実行先ラベルが登録されていない'],
+    ['routing_team_mismatch', 'ラベルは登録済みだが、Issue の Team がその Project の Team と違う'],
+    ['routing_no_label', '実行先ラベルが1つも無い'],
+    ['missing_acceptance_criteria', '受け入れ条件が書かれていない'],
+    ['config_missing_assignment', 'Project の default_role に割り当てが無い'],
+  ])('保留中（%s）は理由を文字で出し、続行・再実行を出さずに中止だけを出す', async (cause, label) => {
+    TASK = heldTask(cause)
+    EXECUTIONS = {}
+    const { calls } = renderTask()
+    const held = await screen.findByTestId('held-review')
+    expect(within(held).getByTestId('held-cause')).toHaveTextContent(label)
+    expect(within(held).getByTestId('held-cause')).toHaveTextContent(cause)
+    expect(within(held).getByRole('button', { name: '中止する' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /続行/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /再実行/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '停止（中止）' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /中止/ })).toHaveLength(1)
+    // Project が決まっていないので Project を読みに行かない。
+    expect(calls.some((c) => c.url.startsWith('/api/projects'))).toBe(false)
+    expect(screen.getByRole('link', { name: 'ENG-123' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-123/login')
+  })
+
+  it('保留中のタスクを中止すると cancel を送り、中止済みになって再実行も出さない', async () => {
+    TASK = heldTask('routing_unknown_label')
+    EXECUTIONS = {}
+    const cancels: Recorded[] = []
+    renderTask((request) => {
+      if (request.url === '/api/tasks/task-001/cancel') {
+        cancels.push(request)
+        TASK = { ...TASK, status: 'cancelled' }
+        return new Response(null, { status: 204 })
+      }
+      return undefined
+    })
+    await userEvent.click(await within(await screen.findByTestId('held-review')).findByRole('button', { name: '中止する' }))
+    expect(await screen.findByText('中止を受け付けました。')).toBeInTheDocument()
+    expect(cancels).toHaveLength(1)
+    expect(cancels[0].method).toBe('POST')
+    await waitFor(() => expect(screen.queryByTestId('held-review')).not.toBeInTheDocument())
+    expect(screen.getByText('Cancelled')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /再実行/ })).not.toBeInTheDocument()
+  })
+
+  it('保留中のタスクの中止が 409 なら状態が変わったことを表示して読み直す', async () => {
+    TASK = heldTask('routing_no_label')
+    EXECUTIONS = {}
+    let gets = 0
+    renderTask((request) => {
+      if (request.url === '/api/tasks/task-001' && request.method === 'GET') gets += 1
+      if (request.url === '/api/tasks/task-001/cancel') return apiError(409, 'conflict', 'Task state does not allow cancel')
+      return undefined
+    })
+    await userEvent.click(await within(await screen.findByTestId('held-review')).findByRole('button', { name: '中止する' }))
+    expect(await screen.findByText('状態が変わりました')).toBeInTheDocument()
+    await waitFor(() => expect(gets).toBeGreaterThanOrEqual(2))
+  })
+})
