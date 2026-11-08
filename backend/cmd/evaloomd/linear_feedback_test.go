@@ -32,6 +32,10 @@ func (c commentClient) Issue(context.Context, string) (linear.Issue, error) {
 	return linear.Issue{}, nil
 }
 
+func (c commentClient) IssueComments(context.Context, string) ([]linear.Comment, error) {
+	return nil, nil
+}
+
 // The Control Plane starts the Linear comment Worker (spec 16 3.4 step 2),
 // which sends a pending linear_outbox row and records it as sent.
 func TestRunStartsLinearFeedbackWorker(t *testing.T) {

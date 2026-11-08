@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,6 +45,11 @@ type Error struct {
 	// ResetAt is the restart hint Linear returned for rate limiting (spec 15
 	// 6章). Zero when Linear gave none.
 	ResetAt time.Time
+	// OutcomeUnknown is set when the request may have reached Linear but no
+	// response was read: the connection broke or timed out after it was
+	// opened (spec 16 3.4, 6章 "送った結果が分からない"). A failure to
+	// connect, and every failure that Linear answered, leave it false.
+	OutcomeUnknown bool
 }
 
 func (e *Error) Error() string { return "linear: " + e.Op + " failed: " + string(e.Class) }
@@ -288,6 +294,91 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (strin
 	return data.CommentCreate.Comment.ID, nil
 }
 
+// OutcomeUnknown reports whether err is a failed request that may still have
+// taken effect in Linear (see Error.OutcomeUnknown).
+func OutcomeUnknown(err error) bool {
+	var linearErr *Error
+	return errors.As(err, &linearErr) && linearErr.OutcomeUnknown
+}
+
+// Comment is the subset of a Linear comment used to match a comment whose
+// send result is unknown (spec 16 3.4).
+type Comment struct {
+	ID   string
+	Body string
+}
+
+const commentPageSize = 50
+
+const issueCommentsQuery = `query EvaloomIssueComments($id: String!, $first: Int!, $after: String) {
+  issue(id: $id) { id comments(first: $first, after: $after) { nodes { id body } pageInfo { hasNextPage endCursor } } }
+}`
+
+// IssueComments returns every comment on the Issue issueID, reading all
+// pages (spec 16 3.4, 5: the read before a resend). If any page fails, no
+// list is returned: a partial list could miss the comment and cause a
+// duplicate. ErrIssueNotFound is returned when Linear has no such Issue.
+func (c *Client) IssueComments(ctx context.Context, issueID string) ([]Comment, error) {
+	const op = "list comments"
+	if issueID == "" {
+		return nil, &Error{Op: op, Class: ClassOther}
+	}
+	key, err := c.key()
+	if err != nil {
+		return nil, err
+	}
+	var all []Comment
+	var after *string
+	seen := map[string]bool{}
+	for {
+		var data struct {
+			Issue *struct {
+				ID       string `json:"id"`
+				Comments *struct {
+					Nodes []struct {
+						ID   string  `json:"id"`
+						Body *string `json:"body"`
+					} `json:"nodes"`
+					PageInfo struct {
+						HasNextPage bool    `json:"hasNextPage"`
+						EndCursor   *string `json:"endCursor"`
+					} `json:"pageInfo"`
+				} `json:"comments"`
+			} `json:"issue"`
+		}
+		vars := map[string]any{"id": issueID, "first": commentPageSize, "after": after}
+		if err := c.do(ctx, op, key, issueCommentsQuery, vars, &data); err != nil {
+			return nil, err
+		}
+		if data.Issue == nil {
+			return nil, ErrIssueNotFound
+		}
+		if data.Issue.ID != issueID || data.Issue.Comments == nil {
+			return nil, &Error{Op: op, Class: ClassOther}
+		}
+		for _, node := range data.Issue.Comments.Nodes {
+			if node.ID == "" {
+				return nil, &Error{Op: op, Class: ClassOther}
+			}
+			comment := Comment{ID: node.ID}
+			if node.Body != nil {
+				comment.Body = *node.Body
+			}
+			all = append(all, comment)
+		}
+		if !data.Issue.Comments.PageInfo.HasNextPage {
+			return all, nil
+		}
+		cursor := data.Issue.Comments.PageInfo.EndCursor
+		// A missing or repeated cursor would loop forever or skip pages.
+		if cursor == nil || *cursor == "" || seen[*cursor] {
+			return nil, &Error{Op: op, Class: ClassOther}
+		}
+		seen[*cursor] = true
+		after = cursor
+	}
+}
+
 // CheckKey reports whether the key file is usable without sending anything.
 // The Poller calls it before a round so that no query is started when the
 // file is missing or not 0600 (spec 15 6章). The value is discarded and only
@@ -334,12 +425,17 @@ func (c *Client) do(ctx context.Context, op, key, query string, vars map[string]
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fail(ClassNetwork)
+		var opErr *net.OpError
+		if errors.As(err, &opErr) && opErr.Op == "dial" {
+			// No connection was made, so nothing reached Linear.
+			return fail(ClassNetwork)
+		}
+		return &Error{Op: op, Class: ClassNetwork, OutcomeUnknown: true}
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, responseMaxBytes+1))
 	if err != nil {
-		return fail(ClassNetwork)
+		return &Error{Op: op, Class: ClassNetwork, OutcomeUnknown: true}
 	}
 	if len(raw) > responseMaxBytes {
 		return fail(ClassOther)

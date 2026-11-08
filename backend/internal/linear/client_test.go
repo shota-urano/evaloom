@@ -333,3 +333,72 @@ func TestDefaultAPIKeyPath(t *testing.T) {
 		t.Fatalf("path=%q err=%v", path, err)
 	}
 }
+
+// Spec 16 3.4: a connection that breaks before the response leaves the
+// result unknown; a refused connection does not (nothing reached Linear).
+func TestCreateCommentOutcomeUnknownOnlyAfterConnecting(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		decode(t, r)
+		requests.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close() // Cut the connection before any response.
+	}))
+	defer server.Close()
+	var logs bytes.Buffer
+	client := newClient(t, server, writeKey(t, 0o600), &logs)
+	_, err := client.CreateComment(context.Background(), "issue-1", "body")
+	if !linear.OutcomeUnknown(err) || linear.ClassOf(err) != linear.ClassNetwork {
+		t.Fatalf("cut connection: got %v; want network with unknown outcome", err)
+	}
+	if n := requests.Load(); n != 1 {
+		t.Fatalf("requests = %d; want 1 (a comment must not be retried by the transport)", n)
+	}
+
+	server.Close() // Now the connection is refused.
+	_, err = client.CreateComment(context.Background(), "issue-1", "body")
+	if linear.OutcomeUnknown(err) || linear.ClassOf(err) != linear.ClassNetwork {
+		t.Fatalf("refused connection: got %v; want network with a known outcome", err)
+	}
+	assertNoKey(t, logs.String(), err.Error())
+}
+
+func TestIssueCommentsReadsAllPages(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req := decode(t, r)
+		if !strings.Contains(req.Query, "comments") || req.Variables["id"] == nil {
+			t.Errorf("unexpected query %q", req.Query)
+		}
+		switch {
+		case req.Variables["id"] == "gone":
+			fmt.Fprint(w, `{"data":{"issue":null}}`)
+		case req.Variables["id"] == "loop":
+			fmt.Fprint(w, `{"data":{"issue":{"id":"loop","comments":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"c"}}}}}`)
+		case req.Variables["after"] == nil:
+			fmt.Fprint(w, `{"data":{"issue":{"id":"issue-1","comments":{"nodes":[{"id":"c1","body":"a"}],"pageInfo":{"hasNextPage":true,"endCursor":"p2"}}}}}`)
+		case req.Variables["after"] == "p2":
+			fmt.Fprint(w, `{"data":{"issue":{"id":"issue-1","comments":{"nodes":[{"id":"c2","body":"b\nkey"}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}`)
+		default:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	var logs bytes.Buffer
+	client := newClient(t, server, writeKey(t, 0o600), &logs)
+	comments, err := client.IssueComments(context.Background(), "issue-1")
+	if err != nil || len(comments) != 2 || comments[0] != (linear.Comment{ID: "c1", Body: "a"}) ||
+		comments[1] != (linear.Comment{ID: "c2", Body: "b\nkey"}) {
+		t.Fatalf("comments = %+v, %v", comments, err)
+	}
+	if _, err := client.IssueComments(context.Background(), "gone"); !errors.Is(err, linear.ErrIssueNotFound) {
+		t.Fatalf("want ErrIssueNotFound, got %v", err)
+	}
+	if _, err := client.IssueComments(context.Background(), "loop"); linear.ClassOf(err) != linear.ClassOther {
+		t.Fatalf("repeated cursor must fail, got %v", err)
+	}
+	assertNoKey(t, logs.String())
+}

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -58,6 +59,9 @@ type Client interface {
 	// Issue re-reads the Issue after a failed send, to tell a deleted or
 	// archived Issue from a temporary failure (6章).
 	Issue(ctx context.Context, id string) (linear.Issue, error)
+	// IssueComments reads the Issue's comments before a resend whose
+	// previous result is unknown (3.4, 6章).
+	IssueComments(ctx context.Context, issueID string) ([]linear.Comment, error)
 }
 
 // Worker sends pending linear_outbox rows oldest first (3.4 step 2).
@@ -69,6 +73,34 @@ type Worker struct {
 	// Now is the clock; nil uses time.Now. Tests advance it to pass the
 	// retry delays.
 	Now func() time.Time
+
+	mu sync.Mutex
+	// notDelivered holds the outbox IDs whose last send this Worker saw
+	// fail with a known result (Linear answered, or no connection was
+	// made). Only these rows are resent without reading the Issue's
+	// comments first. A row that is missing here (its last send broke
+	// before the response, or it was tried before this process started)
+	// is checked against Linear before it is sent again (3.4, 6章).
+	notDelivered map[string]bool
+}
+
+func (w *Worker) setNotDelivered(id string, known bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !known {
+		delete(w.notDelivered, id)
+		return
+	}
+	if w.notDelivered == nil {
+		w.notDelivered = map[string]bool{}
+	}
+	w.notDelivered[id] = true
+}
+
+func (w *Worker) isNotDelivered(id string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.notDelivered[id]
 }
 
 func (w *Worker) now() time.Time {
@@ -157,24 +189,83 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 
 // send makes one attempt for r. A Linear failure is handled here (retry or
 // failed) and logged; only DB errors and shutdown are returned.
+//
+// A row that was tried before and whose last result is not known to be "not
+// delivered" is first matched against the Issue's comments by dedupe_key
+// (3.4, 6章). If the comment is there it is not sent again and the row is
+// recorded as sent with that comment's ID. If the comments cannot be read,
+// nothing is sent (a resend could duplicate the comment) and the read
+// failure counts as the attempt's failure.
 func (w *Worker) send(ctx context.Context, r outboxRow) error {
+	if r.attempts > 0 && !w.isNotDelivered(r.id) {
+		commentID, err := w.findSent(ctx, r)
+		if err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			return w.failAttempt(ctx, r, err, "linear comments not read before resend")
+		}
+		if commentID != "" {
+			w.logger().Info("linear comment already on the Issue; not sent again", "outbox_id", r.id,
+				"task_id", r.taskID, "kind", r.kind)
+			w.setNotDelivered(r.id, false)
+			return w.markSent(ctx, r, commentID, r.attempts)
+		}
+	}
 	commentID, sendErr := w.Client.CreateComment(ctx, r.issueID, r.body)
 	if sendErr == nil {
-		return w.markSent(ctx, r, commentID)
+		w.setNotDelivered(r.id, false)
+		return w.markSent(ctx, r, commentID, r.attempts+1)
 	}
 	if ctx.Err() != nil {
 		// Shutdown interrupted the send: it is not counted as an attempt.
+		w.setNotDelivered(r.id, false)
 		return sendErr
 	}
+	w.setNotDelivered(r.id, !linear.OutcomeUnknown(sendErr))
+	return w.failAttempt(ctx, r, sendErr, "linear comment not sent")
+}
+
+// findSent returns the ID of the Issue's comment that carries r's
+// dedupe_key on its last line (linearoutbox.Body), or "" when there is none.
+func (w *Worker) findSent(ctx context.Context, r outboxRow) (string, error) {
+	comments, err := w.Client.IssueComments(ctx, r.issueID)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range comments {
+		if lastLineIs(c.Body, r.dedupeKey) {
+			return c.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// lastLineIs reports whether the last non-blank line of body is key. Linear
+// returns comment bodies as Markdown and may escape characters such as "_"
+// with a backslash, so backslashes are removed before comparing.
+func lastLineIs(body, key string) bool {
+	body = strings.TrimRight(body, " \t\r\n")
+	if i := strings.LastIndexByte(body, '\n'); i >= 0 {
+		body = body[i+1:]
+	}
+	return strings.TrimSpace(strings.ReplaceAll(body, `\`, "")) == key
+}
+
+// failAttempt counts a failed attempt for r: auth errors and removed Issues
+// fail at once (6章), the 5th failure fails, and otherwise the row waits
+// for the next retry delay (3.4 step 4).
+func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, message string) error {
 	attempts := r.attempts + 1
-	class := linear.ClassOf(sendErr)
-	w.logger().Warn("linear comment not sent", "outbox_id", r.id, "task_id", r.taskID,
-		"kind", r.kind, "attempt", attempts, "class", string(class))
+	class := linear.ClassOf(failure)
+	w.logger().Warn(message, "outbox_id", r.id, "task_id", r.taskID,
+		"kind", r.kind, "attempt", attempts, "class", string(class),
+		"outcome_unknown", linear.OutcomeUnknown(failure))
 	switch {
 	case class == linear.ClassAuth:
 		// 6章: an authentication error is not retried.
 		return w.markFailed(ctx, r, attempts, "auth")
-	case w.issueRemoved(ctx, r.issueID):
+	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
 		// 6章: a deleted or archived Issue fails with reason=other and does
 		// not affect the task.
 		return w.markFailed(ctx, r, attempts, "issue_removed")
@@ -198,13 +289,13 @@ func (w *Worker) issueRemoved(ctx context.Context, issueID string) bool {
 	return err == nil && (issue.Archived || issue.Trashed)
 }
 
-func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string) error {
+func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, attempts int) error {
 	// The comment exists in Linear now: record it even during shutdown.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'sent', attempts = ?, next_attempt_at = NULL,
 		linear_comment_id = ?, sent_at = ? WHERE id = ? AND status = 'pending'`,
-		[]any{r.attempts + 1, commentID, w.now().Format(time.RFC3339Nano), r.id},
+		[]any{attempts, commentID, w.now().Format(time.RFC3339Nano), r.id},
 		model.EventNotificationSent, map[string]string{"kind": r.kind, "channel": Channel})
 }
 
@@ -213,6 +304,7 @@ func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string) er
 // reasons for the macOS helper only, and 6章 names "other" for removed
 // Issues. cause goes only to the Control Plane log.
 func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, cause string) error {
+	w.setNotDelivered(r.id, false) // The row is final; forget it.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	w.logger().Error("linear comment failed", "outbox_id", r.id, "task_id", r.taskID,

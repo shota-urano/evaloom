@@ -39,6 +39,20 @@ type fakeLinear struct {
 	commentBody   string
 	issueBody     string
 	authHeaders   []string
+
+	// cutCreates is how many commentCreate requests to answer by closing
+	// the connection before any response; postBeforeCut makes Linear keep
+	// the comment of such a request anyway (the result is then unknown to
+	// Evaloom, spec 16 3.4).
+	cutCreates    int
+	postBeforeCut bool
+	// posted holds the comments on the Issue, returned by the comment read.
+	posted []linear.Comment
+	// commentReads counts comment reads; commentsStatus != 0 fails them.
+	commentReads   int
+	commentsStatus int
+	// log records "create" and "read" in request order.
+	log []string
 }
 
 func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +70,37 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(req.Query, "commentCreate"):
 		f.comments = append(f.comments, req.Variables)
+		f.log = append(f.log, "create")
+		if f.cutCreates > 0 {
+			f.cutCreates--
+			if f.postBeforeCut {
+				f.posted = append(f.posted, linear.Comment{ID: "comment-cut", Body: req.Variables["body"].(string)})
+			}
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				conn.Close()
+			}
+			return
+		}
+		if f.commentStatus == http.StatusOK && strings.Contains(f.commentBody, `"success":true`) {
+			f.posted = append(f.posted, linear.Comment{ID: "comment-1", Body: req.Variables["body"].(string)})
+		}
 		w.WriteHeader(f.commentStatus)
 		io.WriteString(w, f.commentBody)
+	case strings.Contains(req.Query, "EvaloomIssueComments"):
+		f.commentReads++
+		f.log = append(f.log, "read")
+		if f.commentsStatus != 0 {
+			w.WriteHeader(f.commentsStatus)
+			return
+		}
+		nodes := []map[string]string{{"id": "other", "body": "a comment by the owner"}}
+		for _, c := range f.posted {
+			nodes = append(nodes, map[string]string{"id": c.ID, "body": c.Body})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issue": map[string]any{
+			"id": req.Variables["id"], "comments": map[string]any{"nodes": nodes,
+				"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}}})
 	case strings.Contains(req.Query, "EvaloomIssue"):
 		f.issueReads++
 		io.WriteString(w, f.issueBody)
@@ -294,6 +337,11 @@ func TestFailingServerRetriesThenFails(t *testing.T) {
 	if n := fake.commentCount(); n != 5 {
 		t.Fatalf("commentCreate requests = %d; want 5", n)
 	}
+	// Linear answered every failure, so the result was known and the
+	// comments were not read before the resends (3.4).
+	if fake.commentReads != 0 {
+		t.Fatalf("comment reads = %d; want 0 after known failures", fake.commentReads)
+	}
 	events := notificationEvents(t, db)
 	if len(events) != 1 || events[0].kind != "notification_failed" || events[0].payload["channel"] != "linear" ||
 		events[0].payload["kind"] != "succeeded" || events[0].payload["reason"] != "other" || len(events[0].payload) != 3 {
@@ -435,5 +483,117 @@ func TestRowsSentOldestFirst(t *testing.T) {
 	sendDue(t, worker)
 	if len(fake.comments) != 2 || !strings.HasSuffix(fake.comments[0]["body"].(string), "linear-1:intake_blocked:routing") {
 		t.Fatalf("comments = %v; want the older row first", fake.comments)
+	}
+}
+
+// 受け入れ基準: 応答の前に接続を切るテストで、再送の前にコメントの有無を読み、
+// すでにあれば再送しない（spec 16 3.4, 6章）。Linear keeps the comment but the
+// connection is cut before the response.
+func TestCutConnectionCommentAlreadyPostedIsNotResent(t *testing.T) {
+	fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false),
+		cutCreates: 1, postBeforeCut: true}
+	db, worker, c, _ := setup(t, fake)
+	before := taskStates(t, db)
+
+	sendDue(t, worker)
+	r := outboxRow(t, db, dedupeKey)
+	if r.status != "pending" || r.attempts != 1 || fake.commentCount() != 1 {
+		t.Fatalf("after the cut send: row = %+v, creates = %d; want pending with 1 attempt", r, fake.commentCount())
+	}
+	c.advance(time.Minute) // The 1 minute retry delay (3.4 step 4).
+	sendDue(t, worker)
+	c.advance(time.Hour)
+	sendDue(t, worker)
+
+	if fake.commentReads != 1 || strings.Join(fake.log, ",") != "create,read" {
+		t.Fatalf("requests = %v; want the comments read once and no resend", fake.log)
+	}
+	if n := len(fake.posted); n != 1 {
+		t.Fatalf("comments on the Issue = %d; want 1", n)
+	}
+	r = outboxRow(t, db, dedupeKey)
+	if r.status != "sent" || r.commentID.String != "comment-cut" || r.attempts != 1 || !r.sentAt.Valid || r.nextAttemptAt.Valid {
+		t.Fatalf("row = %+v; want sent with the found comment ID", r)
+	}
+	events := notificationEvents(t, db)
+	if len(events) != 1 || events[0].kind != "notification_sent" || events[0].payload["channel"] != "linear" {
+		t.Fatalf("events = %+v", events)
+	}
+	if after := taskStates(t, db); after != before {
+		t.Fatalf("task states changed: before %+v, after %+v", before, after)
+	}
+}
+
+// The connection is cut before Linear keeps the comment: the read finds no
+// comment with the dedupe_key, so the comment is sent again, once.
+func TestCutConnectionCommentMissingIsResentAfterRead(t *testing.T) {
+	fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false), cutCreates: 1}
+	db, worker, c, _ := setup(t, fake)
+	// Another Evaloom comment of the same task with a different dedupe_key
+	// must not match (only the last line counts).
+	fake.posted = []linear.Comment{{ID: "older", Body: "body\n" + dedupeKey + "-other"}}
+
+	sendDue(t, worker)
+	c.advance(time.Minute)
+	sendDue(t, worker)
+
+	if strings.Join(fake.log, ",") != "create,read,create" {
+		t.Fatalf("requests = %v; want read before the resend", fake.log)
+	}
+	r := outboxRow(t, db, dedupeKey)
+	if r.status != "sent" || r.commentID.String != "comment-1" || r.attempts != 2 {
+		t.Fatalf("row = %+v; want sent on the 2nd attempt", r)
+	}
+}
+
+// When the comments cannot be read, nothing is resent (it could duplicate
+// the comment); the read failure counts as the attempt's failure and the
+// next retry reads again.
+func TestCutConnectionUnreadableCommentsAreNotResent(t *testing.T) {
+	fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false),
+		cutCreates: 1, postBeforeCut: true, commentsStatus: http.StatusInternalServerError}
+	db, worker, c, _ := setup(t, fake)
+
+	sendDue(t, worker)
+	c.advance(time.Minute)
+	sendDue(t, worker)
+	r := outboxRow(t, db, dedupeKey)
+	if fake.commentCount() != 1 || r.status != "pending" || r.attempts != 2 {
+		t.Fatalf("after a failed read: creates = %d, row = %+v; want no resend, 2 attempts", fake.commentCount(), r)
+	}
+	next, err := time.Parse(time.RFC3339Nano, r.nextAttemptAt.String)
+	if err != nil || !next.Equal(c.t.Add(2*time.Minute)) {
+		t.Fatalf("next_attempt_at = %v; want 2 minutes later", r.nextAttemptAt)
+	}
+
+	fake.commentsStatus = 0
+	c.advance(2 * time.Minute)
+	sendDue(t, worker)
+	if strings.Join(fake.log, ",") != "create,read,read" {
+		t.Fatalf("requests = %v", fake.log)
+	}
+	if r := outboxRow(t, db, dedupeKey); r.status != "sent" || r.commentID.String != "comment-cut" {
+		t.Fatalf("row = %+v; want sent with the found comment ID", r)
+	}
+}
+
+// A row tried before this process started (evaloomd restarted) has an
+// unknown last result, so the comments are read before it is sent again.
+func TestRetriedRowAfterRestartIsCheckedFirst(t *testing.T) {
+	fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false),
+		cutCreates: 1, postBeforeCut: true}
+	db, worker, c, _ := setup(t, fake)
+	sendDue(t, worker)
+
+	restarted := &linearfeedback.Worker{DB: db, Client: worker.Client, Logger: worker.Logger, Now: c.now}
+	c.advance(time.Minute)
+	if err := restarted.SendDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(fake.log, ",") != "create,read" {
+		t.Fatalf("requests = %v", fake.log)
+	}
+	if r := outboxRow(t, db, dedupeKey); r.status != "sent" || r.commentID.String != "comment-cut" {
+		t.Fatalf("row = %+v", r)
 	}
 }
