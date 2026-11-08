@@ -153,6 +153,12 @@ func TestResultConcurrentAndReplayedStopsRequestNotificationOnce(t *testing.T) {
 				from = "publishing"
 			}
 			f, token, id, _ := resultFixture(t, from)
+			if target == "succeeded" {
+				// Spec 17 3.3 turns a PR of a require_approval Project into an
+				// approval wait (approval_pending_test.go); this test keeps the
+				// succeeded stop by excluding PR merges from approval.
+				setApprovalPolicy(t, f, "project-a", "direct_push")
+			}
 			before := readResultSnapshot(t, f, id)
 			input := resultBody(from, target)
 			input["harnessHeadSha"] = strings.Repeat("b", 40)
