@@ -44,7 +44,7 @@ status: confirmed
 |---|---|---|---|
 | Dashboard | Runner 状態、実行中タスク、待機中タスク、Blocked のタスク、エラー状況（失敗・通知失敗） | `GET /api/runners`, `GET /api/tasks`, `GET /api/notification-failures` | requirements 16.1 |
 | Projects 一覧 | 登録済みプロジェクト、割り当て中の Harness と版 | `GET /api/projects` | 16.2 |
-| Project 登録・編集 | Project ID、名称、パス、Git URL、Runner、Base Branch、テストコマンド、レポート形式と出力パス、セットアップコマンド、コピー許可リスト、タイムアウト、許可操作、承認ポリシー | `POST /api/projects`, `PATCH /api/projects/{id}` | 16.2 |
+| Project 登録・編集 | Project ID、名称、パス、Git URL、Runner、Base Branch、テストコマンド、レポート形式と出力パス、セットアップコマンド、setup の許可宛先（`host:port` の一覧、[`03-registry.md`](./03-registry.md) 3.3.1、Q87）、コピー許可リスト、タイムアウト、許可操作、承認ポリシー | `POST /api/projects`, `PATCH /api/projects/{id}` | 16.2 |
 | Project 詳細 | 上記の表示、役割ごとの Harness Profile 割り当て、Project Context（固定対象の `AGENTS.md` の説明のみ） | `GET /api/projects/{id}`, `POST /api/projects/{id}/harnesses` | 16.2 |
 | Harnesses 一覧 | Harness、Adapter、使用中プロジェクト | `GET /api/harnesses`, `GET /api/projects` | 16.3 |
 | Harness 登録・編集 | ID、名称、専門分野、Adapter、リポジトリ、対応モデル、利用可能ツール、Tool Permissions | `POST /api/harnesses`, `PATCH /api/harnesses/{id}` | 16.3 |
@@ -146,3 +146,5 @@ requirements 8.5「止まったタスクは、本人が変更内容を確認し�
   - 受け入れ基準: Runner の online / offline、実行中・待機中・Blocked の件数が表示される; 同時実行の上限が表示されるが変更できない
 - [ ] [Frontend] 通知失敗の一覧に linear_outbox の行（executionId が null、outboxId あり、channel=linear の reason）を表示する
   - 受け入れ基準: eventId と executionId が null で outboxId が入った項目が、タスクの件名（タスク詳細へのリンク）、kind、channel=linear、reason、記録した時刻（createdAt）とともに Dashboard の通知失敗の一覧に表示される; executionId が null の項目で、Execution の ID の欄に null や undefined の文字が出ない; eventId が null の項目が複数あり、execution_events の項目と混ざっても、どの項目も欠けず重複せずに表示される; reason の auth・issue_removed・retries_exhausted・other に 16 の 3.4.2 の表に沿った説明が出る; 項目が応答の順（記録した時刻の新しい順、12 の 5章）のまま表示され、「さらに表示」で続きを読んでも欠けも重複も無い; コメントの本文とエラーの文字列を表示しない
+- [ ] [Frontend] Project の登録・編集に setup の許可宛先の入力欄
+  - 受け入れ基準: Project の登録・編集の画面で `host:port` を複数入力でき、`setupAllowedHosts` として送られる; 何も入力しないと空配列が送られる; 編集の画面を開くと登録済みの値が入力欄に表示される; ワイルドカード、IP リテラル、ローカルの名前、ポートの無い値、同じ宛先の重複で返る 400 の `details`（field が `setupAllowedHosts`）が入力欄に表示される
