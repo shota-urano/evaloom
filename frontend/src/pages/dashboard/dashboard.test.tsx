@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ApiClient } from '@/api/client'
 import type { Project, Runner } from '@/api/registry'
@@ -56,6 +56,19 @@ const failure = (eventId: number, taskId: string, reason = 'permission_denied', 
   channel: 'macos',
   reason,
   createdAt: '2026-11-01T00:00:00Z',
+})
+
+/** linear_outbox の行から返す項目（12 5、16 3.4.2、Q82）。eventId と executionId が null で outboxId が入る。 */
+const outboxFailure = (outboxId: string, taskId: string, reason = 'auth', kind = 'intake_blocked', createdAt = '2026-11-01T00:00:00Z'): NotificationFailure => ({
+  eventId: null,
+  executionId: null,
+  outboxId,
+  taskId,
+  taskTitle: `件名 ${taskId}`,
+  kind,
+  channel: 'linear',
+  reason,
+  createdAt,
 })
 
 /** GET /api/notification-failures の応答（12 5。最後のページの nextCursor は null）。 */
@@ -262,5 +275,113 @@ describe('Dashboard（13 3.2）', () => {
     expect(await within(await screen.findByTestId('linear-status')).findByTestId('api-error')).toHaveTextContent('サーバーでエラーが発生しました')
     expect(within(screen.getByTestId('linear-poll-failures')).getByTestId('api-error')).toBeVisible()
     expect(screen.getByTestId('task-count-running')).toHaveTextContent('実行中2件')
+  })
+})
+
+describe('Dashboard の通知失敗: linear_outbox の行（13 3.2、16 3.4.2、Q82）', () => {
+  it('eventId と executionId が null の項目を、件名のリンク・kind・channel=linear・reason・記録した時刻とともに出し、Execution の ID を出さない', async () => {
+    renderDashboard((request) =>
+      request.url === '/api/notification-failures'
+        ? failurePage([outboxFailure('ob-1', 'task-003', 'issue_removed', 'missing_acceptance_criteria', '2026-11-08T01:02:03Z')])
+        : undefined,
+    )
+    const failures = await screen.findByRole('list', { name: '通知失敗' })
+    const item = within(failures).getByRole('listitem')
+    expect(item).toHaveAttribute('data-source', 'linear_outbox')
+    expect(within(item).getByRole('link', { name: '件名 task-003' })).toHaveAttribute('href', '/tasks/task-003')
+    expect(item).toHaveTextContent('Issue が削除・アーカイブされていた')
+    expect(item).toHaveTextContent('reason: issue_removed')
+    expect(item).toHaveTextContent('kind: missing_acceptance_criteria')
+    expect(item).toHaveTextContent('channel: linear')
+    const time = within(item).getByText(new Date('2026-11-08T01:02:03Z').toLocaleString('ja-JP'))
+    expect(time).toHaveAttribute('datetime', '2026-11-08T01:02:03Z')
+    expect(item.textContent).not.toMatch(/null|undefined/)
+    expect(within(item).queryByTestId('notification-failure-execution')).toBeNull()
+    expect(item).not.toHaveTextContent('ob-1')
+    expect(screen.getByTestId('notification-failure-count')).toHaveTextContent('通知失敗1件')
+  })
+
+  it('channel=linear の reason の4つの値に、16 3.4.2 の表に沿った説明を出す', async () => {
+    renderDashboard((request) =>
+      request.url === '/api/notification-failures'
+        ? failurePage([
+            outboxFailure('ob-4', 'task-001', 'auth'),
+            outboxFailure('ob-3', 'task-002', 'issue_removed'),
+            outboxFailure('ob-2', 'task-003', 'retries_exhausted'),
+            outboxFailure('ob-1', 'task-004', 'other'),
+          ])
+        : undefined,
+    )
+    const items = within(await screen.findByRole('list', { name: '通知失敗' })).getAllByRole('listitem')
+    expect(items.map((item) => item.querySelector('.text-sm')?.firstChild?.textContent)).toEqual([
+      'Linear API の認証エラー',
+      'Issue が削除・アーカイブされていた',
+      '一時的な失敗が続き、5回目も失敗した',
+      'その他の失敗',
+    ])
+  })
+
+  it('eventId が null の項目が複数あり execution_events の項目と混ざっても、応答の順のまま欠けず重複せずに出し、「さらに表示」の続きも同じ', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const first = [
+      outboxFailure('ob-3', 'task-001', 'auth', 'intake_blocked', '2026-11-08T00:05:00Z'),
+      failure(12, 'task-002', 'timeout', 'failed'),
+      outboxFailure('ob-2', 'task-003', 'retries_exhausted', 'cancelled', '2026-11-08T00:03:00Z'),
+      outboxFailure('ob-1', 'task-004', 'other', 'missing_acceptance_criteria', '2026-11-08T00:02:00Z'),
+    ]
+    const second = [
+      failure(11, 'task-005', 'permission_denied', 'succeeded'),
+      outboxFailure('ob-0', 'task-006', 'issue_removed', 'intake_blocked', '2026-11-08T00:00:30Z'),
+      // outboxId と eventId の値が同じ文字でも別の項目として出す。
+      { ...failure(10, 'task-007', 'other', 'blocked'), outboxId: null },
+      outboxFailure('10', 'task-008', 'auth', 'intake_blocked', '2026-11-08T00:00:10Z'),
+    ]
+    try {
+      renderDashboard((request) => {
+        if (request.url === '/api/notification-failures') return failurePage(first, 'c1')
+        if (request.url === '/api/notification-failures?cursor=c1') return failurePage(second, null)
+        return undefined
+      })
+      const failures = await screen.findByRole('list', { name: '通知失敗' })
+      const titles = () => within(failures).getAllByRole('link').map((link) => link.textContent)
+      expect(titles()).toEqual(first.map((f) => f.taskTitle))
+      expect(within(failures).getAllByRole('listitem').map((li) => li.getAttribute('data-source'))).toEqual([
+        'linear_outbox',
+        'execution_event',
+        'linear_outbox',
+        'linear_outbox',
+      ])
+
+      await userEvent.click(screen.getByRole('button', { name: 'さらに表示' }))
+      expect(await within(failures).findByRole('link', { name: '件名 task-008' })).toBeVisible()
+      expect(titles()).toEqual([...first, ...second].map((f) => f.taskTitle))
+      expect(screen.getByTestId('notification-failure-count')).toHaveTextContent('通知失敗8件')
+      expect(screen.queryByRole('button', { name: 'さらに表示' })).toBeNull()
+      // Execution の ID は execution_events の項目にだけ出し、null や undefined の文字は出ない。
+      expect(within(failures).getAllByTestId('notification-failure-execution').map((el) => el.textContent)).toEqual([
+        ' · e-task-002',
+        ' · e-task-005',
+        ' · e-task-007',
+      ])
+      expect(failures.textContent).not.toMatch(/null|undefined/)
+      // 同じ key の警告（項目の欠け・重複の原因）が出ていない。
+      expect(consoleError.mock.calls.some((args) => String(args[0]).includes('same key'))).toBe(false)
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('コメントの本文とエラーの文字列を表示しない', async () => {
+    // API は返さない（12 5）が、余分な欄が来ても画面に出さない。
+    const leaked = {
+      ...outboxFailure('ob-1', 'task-003', 'auth'),
+      body: 'COMMENT-BODY-SECRET',
+      error: 'ERROR-TEXT-SECRET 401 Unauthorized',
+    } as NotificationFailure
+    renderDashboard((request) => (request.url === '/api/notification-failures' ? failurePage([leaked]) : undefined))
+    const failures = await screen.findByRole('list', { name: '通知失敗' })
+    expect(within(failures).getByRole('link', { name: '件名 task-003' })).toBeVisible()
+    expect(failures).not.toHaveTextContent('COMMENT-BODY-SECRET')
+    expect(failures).not.toHaveTextContent('ERROR-TEXT-SECRET')
   })
 })
