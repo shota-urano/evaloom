@@ -8,7 +8,7 @@ confirmed_rev: 9dc6232
 
 **親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: requirements 8.2 の工程15（結果返却）を Linear について行う。受信とタスク作成は [`15-linear-intake.md`](./15-linear-intake.md)
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q49, Q51, Q52, Q86）に載せている。2026-11-08 に本人が決めた点は Q80、Q82〜Q85 に載せている。
+この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q49, Q51, Q52）に載せている。2026-11-08 に本人が決めた点は Q80、Q82〜Q86 に載せている。
 
 ## 1. 目的
 
@@ -128,7 +128,8 @@ Worker が Linear API の認証エラーで行を failed にしたら、macOS �
   4. 取り込みの照会（どれか1つの Team）か、コメントの送信のどちらかが1回成功したら抑止を解く。どちらも同じ API キーで認証するため、どちらかの成功はキーが有効に戻ったことを示す。解いた後にまた認証エラーになったら、もう一度出す。
   5. Linear が認証を通したうえで返した失敗（Issue が削除・アーカイブされていた、など）は成功ではないため、抑止を解かない。
 - 抑止の状態はプロセスの中に持つ。再起動の後に認証エラーになったら、もう一度出す。
-- 取り込み側の「5回続けて失敗した」通知（15 の 6章）は Team ごとの抑止のまま残す。認証エラーの通知との分け方と、API キーのファイルが無い・読めない場合を共通の抑止に含めるかは案とし、Q86 に載せる（案: 認証エラーの通知は共通の抑止だけで決め、5回続けて失敗した通知は5回目の失敗の分類が `auth` 以外のときだけ出す。キーのファイルが無い・読めない・権限が 0600 でない場合も認証エラーとして共通の抑止に含める）。
+- 認証エラーの通知は、この共通の抑止だけで扱う（2026-11-08 決定、Q86）。取り込み側の「5回続けて失敗した」通知（15 の 6章）は、5回目の失敗の分類が `auth` 以外のときだけ Team ごとの抑止で出す。5回目の失敗の分類が `auth` のときは、5回続けて失敗した通知を出さず、共通の抑止に従う認証エラーの通知だけにする。
+- API キーのファイルが無い・読めない・権限が 0600 でない場合も認証エラーとして扱い、共通の抑止に含める（2026-11-08 決定、Q86。取り込み側の扱いは 15 の 6章）。
 
 ### 3.5 循環トリガーの防止（requirements 6.4, 15.2）
 
@@ -243,4 +244,4 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 - [ ] [Backend] Execution の無い契機の送信の失敗を linear_outbox に記録し、通知失敗の一覧 API に出す（3.4.2、3.7、12 の 5章、Q82）
   - 受け入れ基準: execution_id・failure_reason・failed_at を足すマイグレーションで、既存の行の execution_id が dedupe_key の対象の Execution で埋まり、Execution の無い行は NULL、すでに failed の行は failure_reason が other で failed_at が created_at になる; Execution の契機の行を書くと execution_id が入り、intake_blocked・missing_acceptance_criteria・保留したタスクの中止の行では NULL になる; intake_blocked・missing_acceptance_criteria・保留したタスクの中止の送信が上限で failed になると、GET /api/notification-failures に taskId・taskTitle・kind・channel=linear・reason が入った項目が出て、eventId と executionId が null、outboxId が入る; Execution のある契機の失敗は execution_events の項目として1回だけ出て、outbox の行から二重に出ない; macOS 通知の失敗と Linear の失敗が混ざった一覧が記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順に並び、cursor でページを続けて読んで欠けも重複も無い; Linear の失敗の reason が、認証エラーで auth、Issue が削除・アーカイブされていたときに issue_removed、5回目も失敗したときに retries_exhausted、それ以外で other になり、notification_failed の reason と linear_outbox の failure_reason が同じ値になる（Q85）; 応答にエラーの文字列とコメントの本文が入らない
 - [ ] [Backend] Linear コメントの送信の認証エラーで macOS 通知を出す（3.4.3、12 の 3.5、Q84）
-  - 受け入れ基準: 送信が認証エラーで failed になると、Dashboard の URL（http://127.0.0.1:<port>/）を開く通知が1回出る; 本文が送信の失敗であることと分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が入らない; 1回の処理で複数の行が認証エラーになっても通知は1回; 認証エラーの通知の抑止を Linear Poller と送信 Worker で共通の1つにする（Poller の認証エラーの通知も、Team ごとの抑止ではなくこの共通の抑止で決める）; 照会と送信の両方が認証エラーになっても、通知は先に検出した側の1回だけ出る; 照会と送信が同時に認証エラーを検出しても通知は1回; 認証エラーが続く間はもう出ず、照会（どれか1つの Team）か送信のどちらかが1回成功した後にまた認証エラーになると、もう一度出る; Linear が認証を通したうえで返した失敗（issue_removed など）では抑止が解けない; 通知の送信に失敗してもタスクと outbox の行は変わらず、execution_events に notification_sent / notification_failed が書かれない
+  - 受け入れ基準: 送信が認証エラーで failed になると、Dashboard の URL（http://127.0.0.1:<port>/）を開く通知が1回出る; 本文が送信の失敗であることと分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が入らない; 1回の処理で複数の行が認証エラーになっても通知は1回; 認証エラーの通知の抑止を Linear Poller と送信 Worker で共通の1つにする（Poller の認証エラーの通知も、Team ごとの抑止ではなくこの共通の抑止で決める）; 照会と送信の両方が認証エラーになっても、通知は先に検出した側の1回だけ出る; 照会と送信が同時に認証エラーを検出しても通知は1回; 認証エラーが続く間はもう出ず、照会（どれか1つの Team）か送信のどちらかが1回成功した後にまた認証エラーになると、もう一度出る; Linear が認証を通したうえで返した失敗（issue_removed など）では抑止が解けない; 通知の送信に失敗してもタスクと outbox の行は変わらず、execution_events に notification_sent / notification_failed が書かれない; 照会の5回目の失敗の分類が auth のときは Team ごとの「5回続けて失敗した」通知が出ず、通知は共通の抑止に従う認証エラーの通知だけになる（Q86）; 5回目の失敗の分類が auth 以外（rate_limited・network・other）のときは、Team ごとの抑止で「5回続けて失敗した」通知が1回出る（Q86）; API キーのファイルが無い・読めない・権限が 0600 でないときも認証エラーとして共通の抑止で通知が1回出て、その後に照会か送信が認証エラーになっても、どちらかが1回成功するまで通知は出ない（Q86）
