@@ -8,7 +8,7 @@ confirmed_rev: 8c99c84
 
 **親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend（設定画面は Frontend） ｜ **範囲**: requirements 8.2 の工程1〜4（イベント受信、確認、重複排除、プロジェクト特定）を Linear について行い、タスクを作る。Linear の変化は Evaloom から Linear API へ一定間隔で照会して取得する（ポーリング、requirements 6.6）。結果の返却は [`16-linear-feedback.md`](./16-linear-feedback.md)
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67、Q76〜Q79、Q81）に載せている。
+この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67、Q76〜Q79、Q81、Q84、Q86）に載せている。
 
 ## 1. 目的
 
@@ -319,7 +319,7 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
 | 5回続けて失敗した（1分おきの照会で5分にあたる。2026-11-08 決定） | Dashboard のエラー状況に出し、macOS 通知で本人に知らせる（案）。照会は続ける |
 | API キーのファイルが無い・読めない・権限が 0600 でない | 照会を始めない。対象のすべての Team の last_error を `auth` にし、Dashboard の取り込み状況に出す。理由（ファイルが無い・権限が違う）は値を含めずにログにも出す（2026-11-08 決定） |
 | settings に保存した値が空・空白だけ、または読めない | そのキーは既定値を使い、Control Plane のログに出す（Q76）。照会は止めない |
-| Linear API の認証エラー | last_error=`auth`。API キーの値はログに出さない。macOS 通知で本人に知らせる（案）。照会は間隔ごとに続ける |
+| Linear API の認証エラー | last_error=`auth`。API キーの値はログに出さない。macOS 通知（[`12-notification.md`](./12-notification.md) 3.5 の Dashboard を開く通知）で本人に知らせる。通知の抑止は送信側（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.3 の送信 Worker）と共通の1つで、照会と送信の両方が認証エラーになっても通知は1回だけ出し、照会（どれか1つの Team）か送信のどちらかが1回成功したら解く（2026-11-08 決定、Q84）。5回続けて失敗した通知との分け方は案とし、Q86 に載せる。照会は間隔ごとに続ける |
 | レート制限に掛かった | last_error=`rate_limited`。Linear が返す再開の目安まで照会を止める |
 | 一覧から消えた Issue の取り直しに失敗 | その Issue の行を変えず、次の照会で再び確かめる。ほかの Issue の判定は進める |
 | タスク作成のトランザクションが失敗 | その Issue の linear_issue_states を変えない。次の照会で同じ判定をやり直す（3.5） |
