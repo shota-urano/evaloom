@@ -254,6 +254,40 @@ func (c *Client) Issue(ctx context.Context, id string) (Issue, error) {
 	return issue, nil
 }
 
+const commentCreateMutation = `mutation EvaloomCommentCreate($issueId: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueId, body: $body }) { success comment { id } }
+}`
+
+// CreateComment adds a comment with body to the Issue issueID and returns the
+// comment ID Linear assigned (spec 16 3.4 step 2-3). The body is sent as is;
+// the caller has already removed secrets (spec 16 3.3).
+func (c *Client) CreateComment(ctx context.Context, issueID, body string) (string, error) {
+	const op = "create comment"
+	if issueID == "" || body == "" {
+		return "", &Error{Op: op, Class: ClassOther}
+	}
+	key, err := c.key()
+	if err != nil {
+		return "", err
+	}
+	var data struct {
+		CommentCreate *struct {
+			Success bool `json:"success"`
+			Comment *struct {
+				ID string `json:"id"`
+			} `json:"comment"`
+		} `json:"commentCreate"`
+	}
+	if err := c.do(ctx, op, key, commentCreateMutation, map[string]any{"issueId": issueID, "body": body}, &data); err != nil {
+		return "", err
+	}
+	if data.CommentCreate == nil || !data.CommentCreate.Success || data.CommentCreate.Comment == nil ||
+		data.CommentCreate.Comment.ID == "" {
+		return "", &Error{Op: op, Class: ClassOther}
+	}
+	return data.CommentCreate.Comment.ID, nil
+}
+
 // CheckKey reports whether the key file is usable without sending anything.
 // The Poller calls it before a round so that no query is started when the
 // file is missing or not 0600 (spec 15 6章). The value is discarded and only
