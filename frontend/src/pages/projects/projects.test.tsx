@@ -24,6 +24,7 @@ const PROJECT: Project = {
   testReportFormat: null,
   testReportPath: null,
   setupCommand: null,
+  setupAllowedHosts: [],
   copyAllowlist: ['config/test.json'],
   allowedOperations: {},
   approvalPolicy: {},
@@ -108,6 +109,8 @@ describe('プロジェクトの登録', () => {
       testReportFormat: null,
       testReportPath: null,
       setupCommand: null,
+      // 何も入力しなければ空配列（13 3.2、03-registry 3.3.1）。
+      setupAllowedHosts: [],
       copyAllowlist: ['config/test.json', '.env.test'],
       allowedOperations: {},
       approvalPolicy: {},
@@ -203,6 +206,75 @@ describe('プロジェクトの登録', () => {
     expect(await within(fieldOf('Base Branch')).findByText('見つかりません')).toBeVisible()
     expect(screen.getByRole('alert')).toHaveTextContent('Base Branch: 見つかりません')
     expect(within(fieldOf('テストのタイムアウト（秒）')).queryByText('範囲外の値です')).toBeNull()
+  })
+})
+
+describe('setup の許可宛先（03-registry 3.3.1、Q87）', () => {
+  async function fillRequired() {
+    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
+    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
+    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
+    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
+    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
+  }
+
+  it('登録では host:port を1行に1つ入力でき、空行と前後の空白を除いた配列で送り、詳細画面に表示する', async () => {
+    const hosts = ['registry.npmjs.org:443', 'proxy.golang.org:443']
+    const fake = renderAt('/projects/_new', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
+      if (request.method === 'POST') return json(201, { ...PROJECT, setupAllowedHosts: hosts, warnings: [] })
+      return json(200, { ...PROJECT, setupAllowedHosts: hosts })
+    })
+    await fillRequired()
+    await userEvent.type(screen.getByLabelText('setup の許可宛先'), '  registry.npmjs.org:443 {enter}{enter}proxy.golang.org:443{enter}')
+    await userEvent.click(screen.getByRole('button', { name: '登録' }))
+    expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
+    const body = JSON.parse(fake.calls.find((c) => c.method === 'POST')?.body ?? '')
+    expect(body.setupAllowedHosts).toEqual(hosts)
+    expect(screen.getByText('registry.npmjs.org:443')).toBeVisible()
+    expect(screen.getByText('proxy.golang.org:443')).toBeVisible()
+  })
+
+  it('編集では登録済みの値を1行に1つ入力欄に出し、変更した値を送る。全部消すと空配列を送る', async () => {
+    const fake = renderAt('/projects/alpha/edit', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
+      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
+      return json(200, { ...PROJECT, setupAllowedHosts: ['registry.npmjs.org:443', 'github.com:443'] })
+    })
+    const input = await screen.findByLabelText('setup の許可宛先')
+    expect(input).toHaveValue('registry.npmjs.org:443\ngithub.com:443')
+    await userEvent.type(input, '{enter}proxy.golang.org:443')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    const patches = () => fake.calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body ?? ''))
+    expect(patches()[0].setupAllowedHosts).toEqual(['registry.npmjs.org:443', 'github.com:443', 'proxy.golang.org:443'])
+
+    await userEvent.click(screen.getByRole('link', { name: '編集' }))
+    await userEvent.clear(await screen.findByLabelText('setup の許可宛先'))
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    expect(patches()[1].setupAllowedHosts).toEqual([])
+  })
+
+  it.each([
+    ['invalid_format', 'host:port の形式で入力してください（ワイルドカード・IP アドレス・localhost などのローカルの名前・ポートの無い値は使えません）'],
+    ['duplicate', '同じ宛先（host:port）が2回以上入力されています'],
+  ])('400 の details（field が setupAllowedHosts、reason が %s）は入力欄に出す', async (reason, message) => {
+    const fake = renderAt('/projects/_new', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      return apiError(400, 'validation_failed', 'invalid', [{ field: 'setupAllowedHosts', reason }])
+    })
+    await fillRequired()
+    await userEvent.type(screen.getByLabelText('setup の許可宛先'), 'github.com:443{enter}github.com:443')
+    await userEvent.click(screen.getByRole('button', { name: '登録' }))
+    expect(await within(fieldOf('setup の許可宛先')).findByText(message)).toBeVisible()
+    expect(screen.getByLabelText('setup の許可宛先')).toHaveAttribute('aria-invalid', 'true')
+    // 一覧（どの項目にも当たらない details）には出さない。
+    expect(screen.getByRole('alert')).not.toHaveTextContent('setupAllowedHosts')
+    expect(window.location.pathname).toBe('/projects/_new')
+    expect(JSON.parse(fake.calls.find((c) => c.method === 'POST')?.body ?? '').setupAllowedHosts).toEqual(['github.com:443', 'github.com:443'])
   })
 })
 

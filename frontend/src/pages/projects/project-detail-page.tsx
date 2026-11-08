@@ -55,6 +55,7 @@ function SettingsCard({ project }: { project: Project }) {
           <Row label={L.testReportFormat}>{mono(project.testReportFormat)}</Row>
           <Row label={L.testReportPath}>{mono(project.testReportPath)}</Row>
           <Row label={L.setupCommand}>{mono(project.setupCommand)}</Row>
+          <Row label={L.setupAllowedHosts}>{list(project.setupAllowedHosts)}</Row>
           <Row label={L.copyAllowlist}>{list(project.copyAllowlist)}</Row>
           {TIMEOUT_KEYS.map((key) => (
             <Row key={key} label={TIMEOUT_LABELS[key]}>
