@@ -366,11 +366,11 @@ func TestFailingServerRetriesThenFails(t *testing.T) {
 	}
 	events := notificationEvents(t, db)
 	if len(events) != 1 || events[0].kind != "notification_failed" || events[0].payload["channel"] != "linear" ||
-		events[0].payload["kind"] != "succeeded" || events[0].payload["reason"] != "other" || len(events[0].payload) != 3 {
+		events[0].payload["kind"] != "succeeded" || events[0].payload["reason"] != "retries_exhausted" || len(events[0].payload) != 3 {
 		t.Fatalf("events = %+v", events)
 	}
 	// GET /api/notification-failures reads these events (spec 16 5).
-	failures, err := store.ListNotificationFailures(context.Background(), db, 0, 10)
+	failures, err := store.ListNotificationFailures(context.Background(), db, nil, 10)
 	if err != nil || len(failures) != 1 || failures[0].Channel != "linear" || failures[0].TaskID != "linear-1" {
 		t.Fatalf("notification failures = %+v, %v", failures, err)
 	}
@@ -407,9 +407,9 @@ func TestAuthErrorFailsWithoutRetry(t *testing.T) {
 	}
 }
 
-// 6章: a deleted or archived Issue fails with reason=other and does not
-// affect the task.
-func TestRemovedIssueFailsWithReasonOther(t *testing.T) {
+// 6章: a deleted or archived Issue fails with reason=issue_removed (Q85)
+// and does not affect the task.
+func TestRemovedIssueFailsWithReasonIssueRemoved(t *testing.T) {
 	gqlError := `{"errors":[{"message":"Entity not found","extensions":{"code":"INVALID_INPUT"}}]}`
 	for name, issueBody := range map[string]string{
 		"deleted":  `{"data":{"issue":null}}`,
@@ -431,7 +431,7 @@ func TestRemovedIssueFailsWithReasonOther(t *testing.T) {
 				t.Fatalf("row = %+v; want failed after 1 attempt", r)
 			}
 			events := notificationEvents(t, db)
-			if len(events) != 1 || events[0].kind != "notification_failed" || events[0].payload["reason"] != "other" ||
+			if len(events) != 1 || events[0].kind != "notification_failed" || events[0].payload["reason"] != "issue_removed" ||
 				events[0].payload["channel"] != "linear" {
 				t.Fatalf("events = %+v", events)
 			}

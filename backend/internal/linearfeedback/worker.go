@@ -31,6 +31,18 @@ import (
 // for Linear comments (spec 16 5).
 const Channel = "linear"
 
+// The notification_failed reasons for channel=linear, also written to
+// linear_outbox.failure_reason (spec 16 3.4.2, Q85). ReasonOther is for a
+// failure none of the others describes; the Worker's own failures are
+// always one of the first three, so today only rows migrated by 0018 carry
+// it.
+const (
+	ReasonAuth             = "auth"
+	ReasonIssueRemoved     = "issue_removed"
+	ReasonRetriesExhausted = "retries_exhausted"
+	ReasonOther            = "other"
+)
+
 // MaxAttempts and RetryDelays are the retry policy of spec 16 3.4 and 4
 // (Q80, decided 2026-11-08): at most 5 sends, waiting 1, 2, 4 and 8 minutes
 // after the 1st to 4th failures. The 5th failure marks the row failed.
@@ -114,6 +126,9 @@ func (w *Worker) Run(ctx context.Context) {
 type outboxRow struct {
 	id, taskID, issueID, kind, dedupeKey, body string
 	attempts                                   int
+	// executionID is linear_outbox.execution_id, "" for triggers without
+	// an Execution (3.4.2, 3.7).
+	executionID string
 	// outcomeUnknown is linear_outbox.outcome_unknown (3.4.1, 3.7).
 	outcomeUnknown bool
 }
@@ -150,16 +165,18 @@ func (w *Worker) SendDue(ctx context.Context) error {
 
 func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 	var r outboxRow
+	var executionID sql.NullString
 	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, body, attempts,
-		outcome_unknown != 0 FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		outcome_unknown != 0, execution_id FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY created_at, id LIMIT 1`, w.now().Format(timeLayout)).Scan(
-		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown)
+		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	r.executionID = executionID.String
 	return &r, nil
 }
 
@@ -263,13 +280,13 @@ func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, me
 	switch {
 	case class == linear.ClassAuth:
 		// 6章: an authentication error is not retried.
-		return w.markFailed(ctx, r, attempts, unknown, "auth")
+		return w.markFailed(ctx, r, attempts, unknown, ReasonAuth)
 	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
-		// 6章: a deleted or archived Issue fails with reason=other and does
-		// not affect the task.
-		return w.markFailed(ctx, r, attempts, unknown, "issue_removed")
+		// 6章: a deleted or archived Issue fails at once and does not
+		// affect the task.
+		return w.markFailed(ctx, r, attempts, unknown, ReasonIssueRemoved)
 	case attempts >= MaxAttempts:
-		return w.markFailed(ctx, r, attempts, unknown, "retries_exhausted")
+		return w.markFailed(ctx, r, attempts, unknown, ReasonRetriesExhausted)
 	default:
 		next := w.now().Add(RetryDelays[attempts-1]).Format(timeLayout)
 		_, err := w.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE linear_outbox
@@ -299,18 +316,18 @@ func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, at
 		model.EventNotificationSent, map[string]string{"kind": r.kind, "channel": Channel})
 }
 
-// markFailed sets status=failed and writes notification_failed. The payload
-// reason is "other" for every Linear failure: spec 12 3.4 defines the other
-// reasons for the macOS helper only, and 6章 names "other" for removed
-// Issues. cause goes only to the Control Plane log.
-func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, unknown bool, cause string) error {
+// markFailed sets status=failed with failure_reason and failed_at, and
+// writes notification_failed with the same reason (3.4.2, Q85). Both happen
+// in one transaction. The error text goes nowhere but the log class.
+func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, unknown bool, reason string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	w.logger().Error("linear comment failed", "outbox_id", r.id, "task_id", r.taskID,
-		"kind", r.kind, "attempts", attempts, "cause", cause)
+		"kind", r.kind, "attempts", attempts, "reason", reason)
 	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'failed', attempts = ?, next_attempt_at = NULL,
-		outcome_unknown = ? WHERE id = ? AND status = 'pending'`, []any{attempts, flag(unknown), r.id},
-		model.EventNotificationFailed, map[string]string{"kind": r.kind, "channel": Channel, "reason": "other"})
+		outcome_unknown = ?, failure_reason = ?, failed_at = ? WHERE id = ? AND status = 'pending'`,
+		[]any{attempts, flag(unknown), reason, w.now().Format(time.RFC3339Nano), r.id},
+		model.EventNotificationFailed, map[string]string{"kind": r.kind, "channel": Channel, "reason": reason})
 }
 
 // finish updates the row and writes the event in one transaction. The event
@@ -330,39 +347,21 @@ func (w *Worker) finish(ctx context.Context, r outboxRow, update string, args []
 	if n, err := result.RowsAffected(); err != nil || n != 1 {
 		return errors.Join(err, fmt.Errorf("linearfeedback: outbox row %s is no longer pending", r.id))
 	}
-	executionID, err := eventExecution(ctx, tx, r)
-	if err != nil {
-		return err
-	}
-	if executionID != "" {
+	// linear_outbox.execution_id decides where the outcome is recorded
+	// (3.4.2, Q82). Intake holds and the cancellation of a held task have
+	// no Execution: a failure is listed from the row itself (status=failed,
+	// failure_reason, failed_at), so no event is written and the same
+	// failure is never recorded twice.
+	if r.executionID != "" {
 		raw, _ := json.Marshal(payload)
-		if _, err := store.AppendExecutionEvent(ctx, tx, executionID, event, raw); err != nil {
+		if _, err := store.AppendExecutionEvent(ctx, tx, r.executionID, event, raw); err != nil {
 			return err
 		}
 	} else {
-		// execution_events needs an Execution. Intake holds and the
-		// cancellation of a held task have none, so their outcome is kept
-		// in linear_outbox.status and the Control Plane log only.
 		w.logger().Info("linear comment outcome has no Execution for an event", "outbox_id", r.id,
 			"task_id", r.taskID, "kind", r.kind, "event", string(event))
 	}
 	return tx.Commit()
-}
-
-// eventExecution returns the Execution the event belongs to: the target of
-// the dedupe_key <task_id>:<kind>:<target> when it is an Execution of the
-// row's task (Execution triggers), or "" otherwise.
-func eventExecution(ctx context.Context, tx *sql.Tx, r outboxRow) (string, error) {
-	target, ok := strings.CutPrefix(r.dedupeKey, r.taskID+":"+r.kind+":")
-	if !ok || target == "" {
-		return "", nil
-	}
-	var id string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM executions WHERE id = ? AND task_id = ?`, target, r.taskID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return id, err
 }
 
 // flag is the INTEGER value of a boolean column.

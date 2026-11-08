@@ -200,3 +200,77 @@ func TestMissingCriteriaHoldAsksOnce(t *testing.T) {
 		t.Fatalf("outbox = %v", got)
 	}
 }
+
+// outboxExecutionIDs returns the task's linear_outbox rows as kind ->
+// execution_id ("" for NULL).
+func outboxExecutionIDs(t *testing.T, db *sql.DB, taskID string) map[string]string {
+	t.Helper()
+	rows, err := db.Query(`SELECT kind, execution_id FROM linear_outbox WHERE task_id = ?`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var kind string
+		var executionID sql.NullString
+		if err := rows.Scan(&kind, &executionID); err != nil {
+			t.Fatal(err)
+		}
+		got[kind] = executionID.String
+		if executionID.Valid && executionID.String == "" {
+			t.Fatalf("%s: execution_id is an empty string, not NULL", kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// 受け入れ基準 (spec 16 3.4.2, 3.7, Q82): Execution の契機の行を書くと
+// execution_id が入り、intake_blocked・missing_acceptance_criteria・保留した
+// タスクの中止の行では NULL になる。
+func TestOutboxExecutionIDByTrigger(t *testing.T) {
+	f := newRecheckFixture(t)
+	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	if got := outboxExecutionIDs(t, f.db, held.id); len(got) != 1 || got["intake_blocked"] != "" {
+		t.Fatalf("intake_blocked execution_id = %v", got)
+	}
+	if n := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE kind = 'intake_blocked' AND execution_id IS NULL`); n != 1 {
+		t.Fatalf("intake_blocked rows with NULL execution_id = %d", n)
+	}
+
+	f2 := newRecheckFixture(t)
+	issue := routedIssue("1", "repo:one")
+	issue.Description = "no criteria"
+	held2 := f2.hold(t, issue, CauseMissingAcceptanceCriteria)
+	if n := countRows(t, f2.db, `SELECT count(*) FROM linear_outbox WHERE task_id = '`+held2.id+`'
+		AND kind = 'missing_acceptance_criteria' AND execution_id IS NULL`); n != 1 {
+		t.Fatalf("missing_acceptance_criteria rows with NULL execution_id = %d (%v)", n, outboxExecutionIDs(t, f2.db, held2.id))
+	}
+
+	for _, state := range []string{"held", "queued", "blocked"} {
+		t.Run(state, func(t *testing.T) {
+			f := newCancelFixture(t)
+			issue, taskID := f.attach(t, state)
+			detachTriggers[0].run(t, f, issue)
+			want := ""
+			if state != "held" {
+				if err := f.db.QueryRow(`SELECT id FROM executions WHERE task_id = ?`, taskID).Scan(&want); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := outboxExecutionIDs(t, f.db, taskID)
+			if got["cancelled"] != want {
+				t.Fatalf("cancelled execution_id = %q; want %q (%v)", got["cancelled"], want, got)
+			}
+			if state == "held" {
+				if n := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE task_id = '`+taskID+`'
+					AND kind = 'cancelled' AND execution_id IS NULL`); n != 1 {
+					t.Fatalf("held cancellation rows with NULL execution_id = %d", n)
+				}
+			}
+		})
+	}
+}

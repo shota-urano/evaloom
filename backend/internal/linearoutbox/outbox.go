@@ -39,6 +39,13 @@ type Trigger struct {
 	TaskID   string
 	Kind     Kind
 	TargetID string
+	// ExecutionID is linear_outbox.execution_id: the Execution of the
+	// trigger, or "" for triggers without one (intake_blocked,
+	// missing_acceptance_criteria, the cancellation of a held task). The
+	// Worker writes notification_failed only for rows with an Execution;
+	// failed rows without one are listed from linear_outbox (spec 16 3.4.2,
+	// Q82).
+	ExecutionID string
 	// RoutingLabelPrefix is the routing label prefix (spec 15 3.4) the
 	// intake decision used. Only intake hold comments show it; it is not
 	// part of the dedupe_key.
@@ -74,6 +81,13 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 	if !issueID.Valid {
 		return fmt.Errorf("linearoutbox: linear task %s has no linked Issue", t.TaskID)
 	}
+	if t.ExecutionID != "" {
+		var owner string
+		err := tx.QueryRowContext(ctx, `SELECT task_id FROM executions WHERE id = ?`, t.ExecutionID).Scan(&owner)
+		if err != nil || owner != t.TaskID {
+			return errors.Join(err, fmt.Errorf("linearoutbox: execution %s is not of task %s", t.ExecutionID, t.TaskID))
+		}
+	}
 	body, err := Body(ctx, tx, t)
 	if err != nil {
 		return err
@@ -83,10 +97,11 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 	if err != nil {
 		return err
 	}
+	executionID := sql.NullString{String: t.ExecutionID, Valid: t.ExecutionID != ""}
 	_, err = tx.ExecContext(ctx, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind,
-		dedupe_key, body, status, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)
+		dedupe_key, body, status, attempts, created_at, execution_id) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
 		ON CONFLICT (dedupe_key) DO NOTHING`,
-		id.String(), t.TaskID, issueID.String, t.Kind, t.DedupeKey(), body, now.Format(time.RFC3339Nano))
+		id.String(), t.TaskID, issueID.String, t.Kind, t.DedupeKey(), body, now.Format(time.RFC3339Nano), executionID)
 	if err != nil {
 		return fmt.Errorf("linearoutbox: insert: %w", err)
 	}
