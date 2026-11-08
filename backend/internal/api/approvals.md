@@ -93,3 +93,16 @@
     `runner:<id>/execution.result` の監査記録は既存の遷移関数で同じトランザクションに保存する。
 - 仕様に無いため、ここで決めた値：claim の応答の `operation` の形、`mergeCommitSha` の項目名、
   失敗理由 `merge_rejected`、GitHub の拒否時に Execution を `failed` にすること。
+
+## マージの結果が分からないときの照合（Runner）
+
+正本は17の3.5.3。マージ要求に応答が無い・5xx・読めない応答のとき、Git Publisherは
+マージを再び要求せず、PRを1回だけ読み直す（`GET /repos/{repo}/pulls/{n}`）。
+
+- マージ済みで、headのSHAがcontent_versionと一致し、`merge_commit_sha`が40桁または64桁なら、
+  その値を`mergeCommitSha`として`succeeded`を報告する。
+- 開いたまま・読めないときは`failed`・`publish_failed`・`merge_unknown`を報告する。
+- 仕様の表に無い状態（マージ済みだがheadがcontent_versionと違う、閉じていてマージされていない、
+  マージ済みだが`merge_commit_sha`が読めない）も、仕様に無いため安全側の`merge_unknown`にした。
+  `succeeded`の報告には`mergeCommitSha`が必須のため、マージ commit を読めないときは成功として報告できない。
+- 読み直しは再試行しない（1回だけ）。

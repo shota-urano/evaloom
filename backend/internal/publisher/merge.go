@@ -30,6 +30,9 @@ type PullRequestStatus struct {
 	BaseBranch string
 	Open       bool
 	Merged     bool
+	// MergeCommitSHA is the merge commit of a merged PR, empty when the PR
+	// is not merged or GitHub did not give a full SHA (spec 17 3.5.3).
+	MergeCommitSHA string
 }
 
 // Merger is the GitHub boundary of the approved merge.
@@ -60,7 +63,11 @@ func (g *GitHub) PullRequest(ctx context.Context, repositoryURL string, number i
 		!strings.EqualFold(pr.URL, "https://github.com/"+repo+"/pull/"+strconv.Itoa(number)) {
 		return PullRequestStatus{}, ErrPullRequest
 	}
-	return PullRequestStatus{HeadSHA: pr.Head.SHA, BaseBranch: pr.Base.Ref, Open: pr.State == "open", Merged: *pr.Merged}, nil
+	status := PullRequestStatus{HeadSHA: pr.Head.SHA, BaseBranch: pr.Base.Ref, Open: pr.State == "open", Merged: *pr.Merged}
+	if status.Merged && fullSHA.MatchString(pr.MergeCommitSHA) {
+		status.MergeCommitSHA = pr.MergeCommitSHA
+	}
+	return status, nil
 }
 
 // Merge sends one merge request with sha as the required PR head (spec 17

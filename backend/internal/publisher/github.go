@@ -43,7 +43,10 @@ type githubPR struct {
 	URL    string `json:"html_url"`
 	State  string `json:"state"`
 	Merged *bool  `json:"merged"`
-	Head   struct {
+	// MergeCommitSHA is GitHub's merge_commit_sha; read only for a merged
+	// PR (spec 17 3.5.3).
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Head           struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
 		Repo struct {
