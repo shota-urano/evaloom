@@ -5,19 +5,7 @@ import UserNotifications
 private let registrationTimeout: TimeInterval = 30
 private let responseLifetime: TimeInterval = 60
 
-// Accepts only http://127.0.0.1:<port>/tasks/<taskId> (task notifications)
-// or exactly http://127.0.0.1:<port>/ (the Dashboard, for Linear polling
-// alerts that have no task). Every other URL is rejected.
-private func taskURL(_ value: String) -> URL? {
-    guard let parts = URLComponents(string: value),
-          parts.scheme == "http", parts.host == "127.0.0.1",
-          let port = parts.port, (1...65535).contains(port),
-          parts.user == nil, parts.password == nil,
-          parts.query == nil, parts.fragment == nil,
-          parts.path == "/" || (parts.path.hasPrefix("/tasks/") && parts.path.count > "/tasks/".count)
-    else { return nil }
-    return parts.url
-}
+// The URL allowlist (spec 12 3.6) lives in URLPolicy.swift.
 
 final class NotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var deadline: Timer?
@@ -59,7 +47,7 @@ final class NotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotific
             }
             return
         }
-        guard args.count == 4, let url = taskURL(args[3]) else {
+        guard let url = launchURL(args) else {
             fail("invalid_arguments")
             return
         }
@@ -82,7 +70,7 @@ final class NotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotific
                 let content = UNMutableNotificationContent()
                 content.title = args[1]
                 content.body = args[2]
-                content.userInfo = ["taskURL": url.absoluteString]
+                content.userInfo = [notificationURLKey: url.absoluteString]
                 let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
                 center.add(request) { error in
                     DispatchQueue.main.async {
@@ -118,9 +106,8 @@ final class NotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotific
         // Use the notification's URL, so concurrent helper instances cannot
         // accidentally open a different task. Dismissal does not open a browser.
         DispatchQueue.main.async {
-            if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-               let value = response.notification.request.content.userInfo["taskURL"] as? String,
-               let url = taskURL(value) {
+            if let url = clickURL(actionIdentifier: response.actionIdentifier,
+                                  userInfo: response.notification.request.content.userInfo) {
                 NSWorkspace.shared.open(url)
             }
             completionHandler()

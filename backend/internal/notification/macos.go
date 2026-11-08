@@ -64,7 +64,9 @@ func (m *MacOS) NotifyLinearPollFailing(ctx context.Context, class string, conse
 	if m.port < 1 || m.port > 65535 {
 		return fmt.Errorf("notification: invalid macOS port")
 	}
-	body := "Linear の照会が続けて失敗しています\n" + class + "\n" + strconv.Itoa(consecutiveFailures) + " 回連続"
+	// The title names the event; the body is only the class and the count
+	// (spec 12 3.5), never an API key, a Linear response or a Team ID.
+	body := class + "\n" + strconv.Itoa(consecutiveFailures) + " 回連続"
 	return m.launch(ctx, "evaloom: Linear の照会が失敗", body, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
 }
 
