@@ -21,6 +21,7 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
 	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearfeedback"
 	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
@@ -58,6 +59,21 @@ var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearin
 		poller.Alerter = alerter
 	}
 	return poller, nil
+}
+
+// newLinearFeedback builds the Worker that sends the Linear comments queued
+// in linear_outbox (spec 16 3.4). Tests replace it to avoid the real Linear
+// API. The key file is read only when a row is due.
+var newLinearFeedback = func(db *sql.DB, logger *slog.Logger) (*linearfeedback.Worker, error) {
+	keyPath, err := linear.DefaultAPIKeyPath()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear feedback: %w", err)
+	}
+	client, err := linear.NewClient(&http.Client{Timeout: linearRequestTimeout}, linear.Endpoint, keyPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear feedback: %w", err)
+	}
+	return &linearfeedback.Worker{DB: db, Client: client, Logger: logger, Interval: linearfeedback.DefaultInterval}, nil
 }
 
 // linearPoller connects the Poller to Intake (spec 15 3.4), which starts
@@ -214,6 +230,21 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	defer func() {
 		cancelPoller()
 		<-pollerDone // Stop DB users before closing the connection.
+	}()
+	// Send the queued Linear comments with retries (spec 16 3.4).
+	feedback, err := newLinearFeedback(db, logger)
+	if err != nil {
+		return err
+	}
+	feedbackCtx, cancelFeedback := context.WithCancel(ctx)
+	feedbackDone := make(chan struct{})
+	go func() {
+		defer close(feedbackDone)
+		feedback.Run(feedbackCtx)
+	}()
+	defer func() {
+		cancelFeedback()
+		<-feedbackDone // Stop DB users before closing the connection.
 	}()
 	served := make(chan error, 1)
 	recoveryStartedAt := time.Now().UTC()

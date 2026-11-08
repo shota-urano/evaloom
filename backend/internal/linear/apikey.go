@@ -1,5 +1,6 @@
 // Package linear is the Control Plane's Linear GraphQL client (spec 15, 3.1,
-// 3.2 and 5). It only reads Issues; it never reads comments or attachments.
+// 3.2 and 5; spec 16 5). It reads Issues and creates comments (spec 16 3.4);
+// it never reads comments or attachments.
 // The API key value is held only for the duration of one request and never
 // appears in errors, logs or values meant for the database.
 package linear
