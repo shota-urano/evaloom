@@ -13,6 +13,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -171,11 +172,28 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		AttachSeq: attachSeq, CreatedAt: stamp}); err != nil {
 		return "", err
 	}
+	// After the link: the outbox row needs the linked Issue.
+	if r.Cause != "" {
+		if err := enqueueHold(ctx, tx, created.ID, r.Cause); err != nil {
+			return "", err
+		}
+	}
 	if _, err := store.RecordAuditLog(ctx, tx, store.AuditLog{Actor: "system", Action: "task.create",
 		TargetType: "task", TargetID: created.ID, Detail: detail}); err != nil {
 		return "", err
 	}
 	return decision, nil
+}
+
+// enqueueHold writes the hold comment of spec 16 3.2 for a held task in the
+// hold's transaction. The cause is the dedupe target, so the same cause is
+// commented once per task (3.5 rule 3).
+func enqueueHold(ctx context.Context, tx *sql.Tx, taskID string, cause BlockCause) error {
+	kind := linearoutbox.KindIntakeBlocked
+	if cause == CauseMissingAcceptanceCriteria {
+		kind = linearoutbox.KindMissingAcceptanceCriteria
+	}
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: kind, TargetID: string(cause)})
 }
 
 func newID(now time.Time) (string, error) {

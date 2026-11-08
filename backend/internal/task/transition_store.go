@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -76,7 +77,31 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 	if err := updateTask(ctx, tx, change.TaskID, change.FromTask, toTask); err != nil {
 		return err
 	}
-	return recordTransitionEffects(ctx, tx, change.ExecutionID, change.ToExecution)
+	if err := recordTransitionEffects(ctx, tx, change.ExecutionID, change.ToExecution); err != nil {
+		return err
+	}
+	return recordLinearOutbox(ctx, tx, change.TaskID, change.ExecutionID, change.ToExecution)
+}
+
+// recordLinearOutbox writes the spec 16 3.2 comment for an Execution
+// transition of a Linear task in the same transaction (3.4 step 1). Unlike
+// spec 12, cancellation is included. The Execution ID is the dedupe target,
+// so one Execution comments once per kind, as notification_requests does.
+func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID string, status model.ExecutionStatus) error {
+	var kind linearoutbox.Kind
+	switch status {
+	case model.ExecutionSucceeded:
+		kind = linearoutbox.KindSucceeded
+	case model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut:
+		kind = linearoutbox.KindFailed
+	case model.ExecutionBlocked:
+		kind = linearoutbox.KindBlocked
+	case model.ExecutionCancelled:
+		kind = linearoutbox.KindCancelled
+	default:
+		return nil
+	}
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: kind, TargetID: executionID})
 }
 
 // Shared by Runner results, Context Builder failures and owner/system paths.
