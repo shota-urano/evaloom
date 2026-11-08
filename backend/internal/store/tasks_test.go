@@ -176,7 +176,7 @@ func TestTaskAndExecutionStatusConstraints(t *testing.T) {
 		{
 			table: "executions", id: "execution-1",
 			allowed: []string{"pending", "claimed", "preparing", "running", "verifying", "publishing",
-				"succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out"},
+				"waiting_approval", "merging", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out"},
 			invalid: []string{"unknown", "", "Running", "completed", "queued", "succeeded "},
 			insert: func(db *sql.DB, id string, status any) (sql.Result, error) {
 				// Each accepted row gets a separate task so sequence uniqueness

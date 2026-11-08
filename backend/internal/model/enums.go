@@ -57,27 +57,31 @@ func (v *TaskStatus) UnmarshalJSON(data []byte) error {
 	return decodeEnum(data, v)
 }
 
-// ExecutionStatus represents execution states in spec 02, section 5.2.
+// ExecutionStatus represents execution states in spec 02, section 5.2, plus the
+// Phase 2 approval states in spec 17, section 3.9.
 type ExecutionStatus string
 
 const (
-	ExecutionPending     ExecutionStatus = "pending"
-	ExecutionClaimed     ExecutionStatus = "claimed"
-	ExecutionPreparing   ExecutionStatus = "preparing"
-	ExecutionRunning     ExecutionStatus = "running"
-	ExecutionVerifying   ExecutionStatus = "verifying"
-	ExecutionPublishing  ExecutionStatus = "publishing"
-	ExecutionSucceeded   ExecutionStatus = "succeeded"
-	ExecutionBlocked     ExecutionStatus = "blocked"
-	ExecutionFailed      ExecutionStatus = "failed"
-	ExecutionInterrupted ExecutionStatus = "interrupted"
-	ExecutionCancelled   ExecutionStatus = "cancelled"
-	ExecutionTimedOut    ExecutionStatus = "timed_out"
+	ExecutionPending    ExecutionStatus = "pending"
+	ExecutionClaimed    ExecutionStatus = "claimed"
+	ExecutionPreparing  ExecutionStatus = "preparing"
+	ExecutionRunning    ExecutionStatus = "running"
+	ExecutionVerifying  ExecutionStatus = "verifying"
+	ExecutionPublishing ExecutionStatus = "publishing"
+	// Phase 2 approval states (spec 17, 3.9). Neither is terminal.
+	ExecutionWaitingApproval ExecutionStatus = "waiting_approval"
+	ExecutionMerging         ExecutionStatus = "merging"
+	ExecutionSucceeded       ExecutionStatus = "succeeded"
+	ExecutionBlocked         ExecutionStatus = "blocked"
+	ExecutionFailed          ExecutionStatus = "failed"
+	ExecutionInterrupted     ExecutionStatus = "interrupted"
+	ExecutionCancelled       ExecutionStatus = "cancelled"
+	ExecutionTimedOut        ExecutionStatus = "timed_out"
 )
 
 func (v ExecutionStatus) Validate() error {
 	switch v {
-	case ExecutionPending, ExecutionClaimed, ExecutionPreparing, ExecutionRunning, ExecutionVerifying, ExecutionPublishing, ExecutionSucceeded, ExecutionBlocked, ExecutionFailed, ExecutionInterrupted, ExecutionCancelled, ExecutionTimedOut:
+	case ExecutionPending, ExecutionClaimed, ExecutionPreparing, ExecutionRunning, ExecutionVerifying, ExecutionPublishing, ExecutionWaitingApproval, ExecutionMerging, ExecutionSucceeded, ExecutionBlocked, ExecutionFailed, ExecutionInterrupted, ExecutionCancelled, ExecutionTimedOut:
 		return nil
 	default:
 		return fmt.Errorf("invalid ExecutionStatus %q", v)

@@ -15,22 +15,24 @@ var taskStates = []model.TaskStatus{
 
 var executionStates = []model.ExecutionStatus{
 	"pending", "claimed", "preparing", "running", "verifying", "publishing",
-	"succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out", "", "unknown",
+	"waiting_approval", "merging", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out", "", "unknown",
 }
 
 func TestTaskTransitionsMatchSpec04Section32(t *testing.T) {
-	// Every cell, including reserved Phase 2 states and self-transitions, is
-	// checked against the specification, independently of the production table.
+	// Every cell, including reserved states and self-transitions, is checked
+	// against the specification, independently of the production table.
+	// waiting_approval follows spec 17 3.3, 3.5.2 and 3.6 (Q57, Q58).
 	allowed := map[model.TaskStatus][]model.TaskStatus{
-		"received":  {"queued"},
-		"queued":    {"running", "cancelled"},
-		"running":   {"verifying", "failed", "timed_out", "cancelled", "blocked"},
-		"verifying": {"failed", "timed_out", "cancelled", "blocked", "completed"},
-		"blocked":   {"queued", "cancelled"},
-		"failed":    {"queued"},
-		"timed_out": {"queued"},
-		"cancelled": {"queued"},
-		"completed": {"queued"},
+		"received":         {"queued"},
+		"queued":           {"running", "cancelled"},
+		"running":          {"verifying", "failed", "timed_out", "cancelled", "blocked"},
+		"verifying":        {"failed", "timed_out", "cancelled", "blocked", "completed", "waiting_approval"},
+		"waiting_approval": {"completed", "failed", "cancelled"},
+		"blocked":          {"queued", "cancelled"},
+		"failed":           {"queued"},
+		"timed_out":        {"queued"},
+		"cancelled":        {"queued"},
+		"completed":        {"queued"},
 	}
 	for _, from := range taskStates {
 		for _, to := range taskStates {
@@ -55,6 +57,7 @@ func TestExecutionTaskMappingMatchesSpec02Section52(t *testing.T) {
 	}{
 		{"pending", "queued"}, {"claimed", "running"}, {"preparing", "running"},
 		{"running", "running"}, {"verifying", "verifying"}, {"publishing", "verifying"},
+		{"waiting_approval", "waiting_approval"}, {"merging", "waiting_approval"},
 		{"succeeded", "completed"}, {"blocked", "blocked"}, {"failed", "failed"},
 		{"interrupted", "failed"}, {"cancelled", "cancelled"}, {"timed_out", "timed_out"},
 	} {
@@ -78,8 +81,14 @@ func TestExecutionTransitionTable(t *testing.T) {
 		"preparing":  {"running", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
 		"running":    {"verifying", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
 		"verifying":  {"publishing", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
-		"publishing": {"succeeded", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
+		"publishing": {"succeeded", "failed", "interrupted", "timed_out", "cancelled", "blocked", "waiting_approval"},
 		"blocked":    {"pending", "cancelled"},
+		// Spec 17: approval starts the merge (3.5.1); merged, rejected (Q57),
+		// merged or closed on GitHub (Q58) and cancelled end the wait (3.6).
+		"waiting_approval": {"merging", "succeeded", "failed", "cancelled"},
+		// Merged or failed (3.5.2, 3.5.3), cancelled, or back to the wait when
+		// consume is refused (expired, head or target changed).
+		"merging": {"succeeded", "failed", "cancelled", "waiting_approval"},
 	}
 	for _, resume := range []string{"", "gate2", "gate3", "publish"} {
 		for _, from := range executionStates {

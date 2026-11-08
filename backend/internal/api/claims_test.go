@@ -373,7 +373,7 @@ func TestClaimCountsAllActiveStatesAndReleasesBlockedAndTerminalSlots(t *testing
 			}
 		})
 	}
-	for _, state := range []string{"blocked", "succeeded", "failed", "interrupted", "cancelled", "timed_out"} {
+	for _, state := range []string{"blocked", "waiting_approval", "merging", "succeeded", "failed", "interrupted", "cancelled", "timed_out"} {
 		t.Run(state, func(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, state, first.Execution.ID); err != nil {
 				t.Fatal(err)
@@ -390,6 +390,67 @@ func TestClaimCountsAllActiveStatesAndReleasesBlockedAndTerminalSlots(t *testing
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// Spec 17 3.3, 3.9 (Q59): waiting_approval and merging Executions occupy
+// neither the global limit of 2 nor their Project's slot.
+func TestClaimDoesNotCountApprovalStatesTowardEitherLimit(t *testing.T) {
+	f, token, _ := claimFixture(t)
+	claimNext := func() store.Claim {
+		t.Helper()
+		status, body := requestClaim(t, f, token)
+		return requireClaim(t, status, body)
+	}
+	waitingA := createClaimTask(t, f, "project-a", "waiting-a")
+	mergingB := createClaimTask(t, f, "project-b", "merging-b")
+	pendingA := createClaimTask(t, f, "project-a", "pending-a")
+	pendingB := createClaimTask(t, f, "project-b", "pending-b")
+	pendingC := createClaimTask(t, f, "project-a", "pending-c")
+	for i, id := range []string{waitingA.ID, mergingB.ID, pendingA.ID, pendingB.ID, pendingC.ID} {
+		if _, err := f.db.Exec(`UPDATE executions SET created_at = ? WHERE task_id = ?`, fmt.Sprintf("202%d-01-01T00:00:00Z", i), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []struct{ task, status string }{{waitingA.ID, "waiting_approval"}, {mergingB.ID, "merging"}} {
+		claim := claimNext()
+		if claim.Execution.TaskID != want.task {
+			t.Fatalf("claimed %s; want %s", claim.Execution.TaskID, want.task)
+		}
+		if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, want.status, claim.Execution.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.Exec(`UPDATE tasks SET status = 'waiting_approval' WHERE id = ?`, want.task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Both Projects hold an approval-state Execution and none is active: if
+	// either state counted, project-a (and then the global limit) would block.
+	first := claimNext()
+	if first.Execution.TaskID != pendingA.ID {
+		t.Fatalf("project-a with a waiting_approval Execution was not claimable: %+v", first.Execution)
+	}
+	second := claimNext()
+	if second.Execution.TaskID != pendingB.ID {
+		t.Fatalf("project-b with a merging Execution was not claimable: %+v", second.Execution)
+	}
+	// Now exactly the two claimed Executions are active: the global limit holds.
+	status, body := requestClaim(t, f, token)
+	if status != 204 || len(body) != 0 {
+		t.Fatalf("third claim status=%d body=%s; want 204 at the global limit", status, body)
+	}
+	var active, approval int
+	if err := f.db.QueryRow(`SELECT
+		count(*) FILTER (WHERE status = 'claimed'),
+		count(*) FILTER (WHERE status IN ('waiting_approval', 'merging')) FROM executions`).Scan(&active, &approval); err != nil {
+		t.Fatal(err)
+	}
+	if active != 2 || approval != 2 {
+		t.Fatalf("claimed=%d approval-state=%d; want 2 and 2", active, approval)
+	}
+	var pendingCStatus string
+	if err := f.db.QueryRow(`SELECT status FROM executions WHERE task_id = ?`, pendingC.ID).Scan(&pendingCStatus); err != nil || pendingCStatus != "pending" {
+		t.Fatalf("pending-c status=%q err=%v", pendingCStatus, err)
 	}
 }
 
