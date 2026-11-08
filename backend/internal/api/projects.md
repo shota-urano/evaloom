@@ -72,5 +72,6 @@
   - ローカル名: ラベルが1つだけの名前（ローカルの検索ドメインで解決されるため）と、
     最後のラベルが`localhost`（RFC 6761）、`local`（mDNS、RFC 6762）、
     `internal`（`host.docker.internal`など）の名前。仕様が列挙していないので、ここで安全側に決めた。
-- 重複した要素は拒否も除去もしない。
+- 同じ`host:port`を2回以上含む値は400と`setupAllowedHosts / duplicate`で拒否する（Q87）。
+  除去はしない。reason の値は仕様が決めていないので、`linearRoutingLabel / duplicate`に合わせた。
 - 変更は既存の`project.update`の監査記録の`before`・`after`に入る。

@@ -286,6 +286,15 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 			return nil, invalid("setupAllowedHosts", "invalid_format")
 		}
 	}
+	// spec 03 3.3.1 (Q87): the same host:port listed twice is rejected, not
+	// deduplicated. Elements are already exact lowercase host:port strings.
+	seenHosts := make(map[string]struct{}, len(p.SetupAllowedHosts))
+	for _, host := range p.SetupAllowedHosts {
+		if _, seen := seenHosts[host]; seen {
+			return nil, invalid("setupAllowedHosts", "duplicate")
+		}
+		seenHosts[host] = struct{}{}
+	}
 	warnings := []string{}
 	for _, name := range p.CopyAllowlist {
 		if name == "" || filepath.IsAbs(name) || strings.Contains(name, "..") || strings.ContainsAny(name, "*?[]\\\x00") {
