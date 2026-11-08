@@ -5,7 +5,8 @@ import type { ApiClient } from '@/api/client'
 import { linearStatus } from '@/api/linear'
 import { registry } from '@/api/registry'
 import {
-  NOTIFICATION_FAILURE_REASONS,
+  notificationFailureKey,
+  notificationFailureReasonLabel,
   notificationFailures,
   type NotificationFailure,
 } from '@/api/notification-failures'
@@ -117,12 +118,18 @@ function useNotificationFailures(api: ApiClient): NotificationState {
   }
 }
 
-/** エラー状況のうち通知失敗（12 3.4・5・6節）。全 Execution の notification_failed を新しい順に出す。 */
+/**
+ * エラー状況のうち通知失敗（12 3.4・5・6節）。全 Execution の notification_failed と、Execution の無い契機の
+ * Linear コメントの送信の失敗（linear_outbox の行、16 3.4.2、Q82）を、応答の順（記録した時刻の新しい順）のまま出す。
+ * linear_outbox の行は outboxId で見分け、Execution の ID を出さない（13 3.2）。
+ */
 function NotificationFailures({ state }: { state: NotificationState }) {
   return (
     <div className="grid gap-2" data-testid="notification-failures" aria-busy={state.loading || state.loadingMore || undefined}>
       <h3 className="text-sm font-semibold">通知失敗</h3>
-      <p className="text-muted-foreground text-xs">すべての Execution の notification_failed を新しい順に表示します。</p>
+      <p className="text-muted-foreground text-xs">
+        すべての Execution の notification_failed と、Execution の無い契機の Linear コメントの送信の失敗を、記録した時刻の新しい順に表示します。
+      </p>
       <ApiErrorAlert error={state.error} />
       {state.items === undefined ? (
         state.error ? null : <Loading />
@@ -130,23 +137,27 @@ function NotificationFailures({ state }: { state: NotificationState }) {
         <p className="text-muted-foreground text-sm">通知失敗はありません。</p>
       ) : (
         <ul className="divide-y" aria-label="通知失敗">
-          {state.items.map((failure) => (
-            <li key={failure.eventId} className="py-2">
-              <Link to={taskDetailPath(failure.taskId)} className="font-medium underline-offset-4 hover:underline">
-                {failure.taskTitle || failure.taskId}
-              </Link>
-              <div className="text-sm">
-                {NOTIFICATION_FAILURE_REASONS[failure.reason] ?? '通知に失敗'}
-                <span className="text-muted-foreground font-mono text-xs">
-                  {' '}
-                  （reason: {failure.reason || '不明'} · kind: {failure.kind || '不明'} · channel: {failure.channel || '不明'}）
-                </span>
-              </div>
-              <div className="text-muted-foreground font-mono text-xs">
-                <time dateTime={failure.createdAt}>{new Date(failure.createdAt).toLocaleString('ja-JP')}</time> · {failure.executionId}
-              </div>
-            </li>
-          ))}
+          {state.items.map((failure) => {
+            const fromOutbox = failure.outboxId != null
+            return (
+              <li key={notificationFailureKey(failure)} className="py-2" data-source={fromOutbox ? 'linear_outbox' : 'execution_event'}>
+                <Link to={taskDetailPath(failure.taskId)} className="font-medium underline-offset-4 hover:underline">
+                  {failure.taskTitle || failure.taskId}
+                </Link>
+                <div className="text-sm">
+                  {notificationFailureReasonLabel(failure) ?? '通知に失敗'}
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {' '}
+                    （reason: {failure.reason || '不明'} · kind: {failure.kind || '不明'} · channel: {failure.channel || '不明'}）
+                  </span>
+                </div>
+                <div className="text-muted-foreground font-mono text-xs">
+                  <time dateTime={failure.createdAt}>{new Date(failure.createdAt).toLocaleString('ja-JP')}</time>
+                  {!fromOutbox && failure.executionId ? <span data-testid="notification-failure-execution"> · {failure.executionId}</span> : null}
+                </div>
+              </li>
+            )
+          })}
         </ul>
       )}
       {state.hasMore ? (
