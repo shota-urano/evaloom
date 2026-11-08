@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 052abd9
 範囲: タスクの完了・失敗・Blocked・タイムアウトの macOS 通知と、通知経路を後から足せる送信口
 ---
 

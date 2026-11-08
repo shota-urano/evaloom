@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 8c99c84
 範囲: Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、Team + Label ルーティング、Linear からの自動タスク作成、ai-ready の取り外しと Issue のキャンセルによる中止
 ---
 
