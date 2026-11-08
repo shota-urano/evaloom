@@ -101,7 +101,8 @@ func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID str
 	default:
 		return nil
 	}
-	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: kind, TargetID: executionID})
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: kind, TargetID: executionID,
+		ExecutionID: executionID})
 }
 
 // Shared by Runner results, Context Builder failures and owner/system paths.
