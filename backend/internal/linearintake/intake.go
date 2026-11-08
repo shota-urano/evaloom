@@ -23,6 +23,7 @@ const (
 	DecisionSkippedActiveTask Decision = "skipped_active_task"
 	DecisionSkippedInitial    Decision = "skipped_initial"
 	DecisionSkippedCancelled  Decision = "skipped_cancelled"
+	DecisionSkippedRestored   Decision = "skipped_restored"
 )
 
 // CancelReason is the audit reason of a Linear-caused cancellation (spec 15
@@ -146,6 +147,14 @@ func (in *Intake) handleListed(ctx context.Context, team store.LinearPollTeam, i
 		decide := func(d Decision) { next.LastDecision, next.LastDecisionAt = string(d), now }
 
 		switch {
+		case prev.RemovedAt != "":
+			// A deleted or archived Issue came back, cancelled or not:
+			// record it as attached without starting (3.4, Q78). attach_seq
+			// is kept, so removing and re-adding ai-ready later starts a
+			// task with a new idempotency key.
+			next.AIReady = true
+			next.RemovedAt = ""
+			decide(DecisionSkippedRestored)
 		case !next.AIReady && !team.BaselineDone:
 			// First poll of the Team: record only, never start (3.4, Q64).
 			next.AIReady = true
@@ -172,8 +181,11 @@ func (in *Intake) handleListed(ctx context.Context, team store.LinearPollTeam, i
 			decide(d)
 		case issue.Canceled():
 			// Still attached but cancelled: stop once, not every round. An
-			// Issue first seen cancelled (skipped_cancelled) never started.
-			if d := Decision(prev.LastDecision); d != DecisionCancelled && d != DecisionSkippedCancelled {
+			// Issue first seen cancelled (skipped_cancelled) never started,
+			// and a restored Issue (skipped_restored) was already stopped
+			// when it was removed (3.7) and started nothing since.
+			if d := Decision(prev.LastDecision); d != DecisionCancelled && d != DecisionSkippedCancelled &&
+				d != DecisionSkippedRestored {
 				if err := in.Canceller.CancelLinearTasks(ctx, tx, issue.ID, ReasonIssueCancelled); err != nil {
 					return err
 				}
@@ -225,7 +237,10 @@ func (in *Intake) handleMissing(ctx context.Context, issueID string) error {
 		var reason CancelReason
 		switch {
 		case removed || issue.Archived || issue.Trashed:
+			// Keep the row with the removed mark and attach_seq (3.4, Q78).
 			reason = ReasonIssueRemoved
+			next.AIReady = false
+			next.RemovedAt = now
 		case !slices.Contains(issue.Labels, label):
 			reason = ReasonLabelRemoved
 			next.AIReady = false
@@ -250,9 +265,6 @@ func (in *Intake) handleMissing(ctx context.Context, issueID string) error {
 		}
 		if err := in.Canceller.CancelLinearTasks(ctx, tx, issueID, reason); err != nil {
 			return err
-		}
-		if reason == ReasonIssueRemoved {
-			return store.DeleteLinearIssueState(ctx, tx, issueID)
 		}
 		return store.SaveLinearIssueState(ctx, tx, next)
 	})

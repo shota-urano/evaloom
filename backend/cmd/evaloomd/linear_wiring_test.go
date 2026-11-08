@@ -33,6 +33,12 @@ func (l *fakeLinear) set(id string, issue map[string]any) {
 	l.issues[id] = issue
 }
 
+func (l *fakeLinear) remove(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.issues, id)
+}
+
 func (l *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query     string         `json:"query"`
@@ -49,7 +55,8 @@ func (l *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(req.Query, "EvaloomReadyIssues"):
 		nodes := []any{}
 		for _, issue := range l.issues {
-			if issue["team"].(map[string]any)["id"] == req.Variables["teamId"] && hasLabel(issue, req.Variables["label"]) {
+			if issue["team"].(map[string]any)["id"] == req.Variables["teamId"] && hasLabel(issue, req.Variables["label"]) &&
+				issue["archivedAt"] == nil {
 				nodes = append(nodes, issue)
 			}
 		}
@@ -211,5 +218,112 @@ func TestLinearPollerWiringStartsRechecksAndCancels(t *testing.T) {
 	}
 	if actor != "system" || reason != "linear_label_removed" {
 		t.Fatalf("cancel audit = %s %s", actor, reason)
+	}
+}
+
+// The production wiring keeps a deleted Issue's linear_issue_states row
+// (spec 15 3.4, 3.7, Q78): deleting cancels the task and marks the row,
+// restoring records it as skipped_restored without a task, and removing and
+// re-adding ai-ready starts a task with a new idempotency key.
+func TestLinearPollerWiringKeepsRemovedIssueRecord(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	setupLinearProject(t, db)
+
+	fake := &fakeLinear{issues: map[string]map[string]any{}}
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	keyPath := filepath.Join(t.TempDir(), "linear-api-key")
+	if err := os.WriteFile(keyPath, []byte("test-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client, err := linear.NewClient(server.Client(), server.URL+"/graphql", keyPath, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller := linearPoller(db, client, logger)
+	poll := func() {
+		t.Helper()
+		if _, err := poller.PollOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type stateRow struct {
+		aiReady   bool
+		seq       int
+		decision  string
+		removedAt sql.NullString
+	}
+	readState := func() stateRow {
+		t.Helper()
+		var row stateRow
+		if err := db.QueryRow(`SELECT ai_ready, attach_seq, last_decision, removed_at FROM linear_issue_states
+			WHERE linear_issue_id = 'issue-1'`).Scan(&row.aiReady, &row.seq, &row.decision, &row.removedAt); err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	counts := func() (tasks, executions int) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT (SELECT count(*) FROM tasks), (SELECT count(*) FROM executions)`).
+			Scan(&tasks, &executions); err != nil {
+			t.Fatal(err)
+		}
+		return tasks, executions
+	}
+	taskStatus := func(key string) string {
+		t.Helper()
+		var status string
+		if err := db.QueryRow(`SELECT status FROM tasks WHERE idempotency_key = ?`, key).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+
+	poll() // first poll of team-a: baseline only
+	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	body := "## Acceptance Criteria\n- login works"
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at, "ai-ready", "repo:p"))
+	poll()
+	if got := taskStatus("linear:issue-1:1"); got != "queued" {
+		t.Fatalf("first task = %s", got)
+	}
+
+	fake.remove("issue-1") // deleted in Linear
+	poll()
+	if got := taskStatus("linear:issue-1:1"); got != "cancelled" {
+		t.Fatalf("task after delete = %s", got)
+	}
+	if got := readState(); got.aiReady || got.seq != 1 || !got.removedAt.Valid {
+		t.Fatalf("row after delete = %+v, want ai_ready=0 attach_seq 1 removed_at set", got)
+	}
+	tasks, executions := counts()
+
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(time.Minute), "ai-ready", "repo:p")) // restored
+	poll()
+	if got := readState(); !got.aiReady || got.seq != 1 || got.removedAt.Valid || got.decision != "skipped_restored" {
+		t.Fatalf("row after restore = %+v", got)
+	}
+	if gotTasks, gotExecutions := counts(); gotTasks != tasks || gotExecutions != executions {
+		t.Fatalf("restore created tasks/executions: %d/%d, want %d/%d", gotTasks, gotExecutions, tasks, executions)
+	}
+
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(2*time.Minute), "repo:p"))
+	poll()
+	if got := readState(); got.aiReady || got.seq != 1 {
+		t.Fatalf("row after removing ai-ready = %+v", got)
+	}
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(3*time.Minute), "ai-ready", "repo:p"))
+	poll()
+	if got := readState(); !got.aiReady || got.seq != 2 || got.decision != "started" {
+		t.Fatalf("row after re-adding ai-ready = %+v", got)
+	}
+	if got := taskStatus("linear:issue-1:2"); got != "queued" {
+		t.Fatalf("new task = %s", got)
 	}
 }
