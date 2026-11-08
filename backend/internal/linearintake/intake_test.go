@@ -148,21 +148,22 @@ type stateRow struct {
 	decision  string
 	decidedAt string
 	updatedAt string
+	removedAt string
 }
 
 func readState(t *testing.T, db *sql.DB, id string) (stateRow, bool) {
 	t.Helper()
 	var s stateRow
-	var decision, decidedAt sql.NullString
-	err := db.QueryRow(`SELECT ai_ready, attach_seq, team_id, last_decision, last_decision_at, issue_updated_at
-		FROM linear_issue_states WHERE linear_issue_id = ?`, id).Scan(&s.aiReady, &s.seq, &s.teamID, &decision, &decidedAt, &s.updatedAt)
+	var decision, decidedAt, removedAt sql.NullString
+	err := db.QueryRow(`SELECT ai_ready, attach_seq, team_id, last_decision, last_decision_at, issue_updated_at, removed_at
+		FROM linear_issue_states WHERE linear_issue_id = ?`, id).Scan(&s.aiReady, &s.seq, &s.teamID, &decision, &decidedAt, &s.updatedAt, &removedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, false
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.decision, s.decidedAt = decision.String, decidedAt.String
+	s.decision, s.decidedAt, s.removedAt = decision.String, decidedAt.String, removedAt.String
 	return s, true
 }
 
@@ -341,8 +342,8 @@ func TestMissingIssuesAreRefetched(t *testing.T) {
 		t.Fatalf("cancelled: %+v", s)
 	}
 	for _, id := range []string{"deleted", "archived"} {
-		if _, ok := readState(t, f.db, id); ok {
-			t.Fatalf("%s: row kept after delete/archive", id)
+		if s := mustState(t, f.db, id); s.aiReady || s.removedAt != base.Format(time.RFC3339Nano) || s.seq != 1 {
+			t.Fatalf("%s: %+v, want ai_ready=0, removed_at set, attach_seq kept", id, s)
 		}
 	}
 	if s := mustState(t, f.db, "moved"); s.aiReady || s.teamID != "team-unregistered" {

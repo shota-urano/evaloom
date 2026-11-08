@@ -3,12 +3,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -23,8 +25,46 @@ func getJSON(t *testing.T, f *authFixture, path string) (int, []byte) {
 	return f.request(t, "GET", path, true, "", nil)
 }
 
+// settingsState is the settings table and the settings.update audit rows.
+type settingsState struct {
+	rows   map[string]string
+	audits []string
+}
+
+func readSettingsState(t *testing.T, db *sql.DB) settingsState {
+	t.Helper()
+	state := settingsState{rows: map[string]string{}}
+	rows, err := db.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			t.Fatal(err)
+		}
+		state.rows[key] = value
+	}
+	rows.Close()
+	rows, err = db.Query(`SELECT actor || ' ' || target_type || ' ' || target_id || ' ' || detail FROM audit_logs
+		WHERE action = 'settings.update' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var audit string
+		if err := rows.Scan(&audit); err != nil {
+			t.Fatal(err)
+		}
+		state.audits = append(state.audits, audit)
+	}
+	return state
+}
+
 func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	f := newAuthFixture(t)
+	// No settings rows: the defaults (spec 15 3.4).
 	status, body := getJSON(t, f, "/api/settings")
 	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"repo:"}}`+"\n" {
 		t.Fatalf("GET status=%d body=%s", status, body)
@@ -38,12 +78,42 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	if status != 200 {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}
-	// The Poller reads the same settings object.
-	if got := f.settings.LinearLabels(); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "to:"}) {
+	// The Poller reads the same settings.
+	if got := f.settings.LinearLabels(context.Background()); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "to:"}) {
 		t.Fatalf("shared settings = %+v", got)
 	}
 	if status, body = getJSON(t, f, "/api/settings"); string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
 		t.Fatalf("GET after PATCH status=%d body=%s", status, body)
+	}
+	// One settings.update row per changed key, with the values before and
+	// after (spec 15 5章, Q76).
+	want := settingsState{
+		rows: map[string]string{"linear.triggerLabel": `"go"`, "linear.routingLabelPrefix": `"to:"`},
+		audits: []string{
+			`owner settings linear.triggerLabel {"after":"go","before":"ai-ready"}`,
+			`owner settings linear.routingLabelPrefix {"after":"to:","before":"repo:"}`,
+		},
+	}
+	if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
+		t.Fatalf("state = %+v; want %+v", got, want)
+	}
+	// The same values again: 200 and no audit row.
+	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"triggerLabel": "go", "routingLabelPrefix": "to:"}})
+	if status != 200 || string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
+		t.Fatalf("same-value PATCH status=%d body=%s", status, body)
+	}
+	if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
+		t.Fatalf("same-value PATCH changed state: %+v", got)
+	}
+	// Changing both keys at once writes one row per key.
+	status, _ = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"triggerLabel": "go2", "routingLabelPrefix": "to:"}})
+	if status != 200 {
+		t.Fatalf("PATCH status=%d", status)
+	}
+	want.rows["linear.triggerLabel"] = `"go2"`
+	want.audits = append(want.audits, `owner settings linear.triggerLabel {"after":"go2","before":"go"}`)
+	if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
+		t.Fatalf("state = %+v; want %+v", got, want)
 	}
 
 	for _, test := range []struct {
@@ -53,22 +123,43 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	}{
 		{"null label", map[string]any{"linear": map[string]any{"triggerLabel": nil}}, "linear.triggerLabel", "required"},
 		{"blank label", map[string]any{"linear": map[string]any{"triggerLabel": " "}}, "linear.triggerLabel", "required"},
+		{"empty label", map[string]any{"linear": map[string]any{"triggerLabel": ""}}, "linear.triggerLabel", "required"},
 		{"empty prefix", map[string]any{"linear": map[string]any{"routingLabelPrefix": ""}}, "linear.routingLabelPrefix", "required"},
+		{"blank prefix", map[string]any{"linear": map[string]any{"routingLabelPrefix": "\t "}}, "linear.routingLabelPrefix", "required"},
+		{"null prefix", map[string]any{"linear": map[string]any{"routingLabelPrefix": nil}}, "linear.routingLabelPrefix", "required"},
 		{"number", map[string]any{"linear": map[string]any{"routingLabelPrefix": 1}}, "linear.routingLabelPrefix", "invalid"},
 		{"unknown linear key", map[string]any{"linear": map[string]any{"pollInterval": "1m"}}, "body", "invalid_json"},
 		{"unknown top-level key", map[string]any{"concurrency": map[string]any{}}, "body", "invalid_json"},
+		{"unknown key beside a valid one", map[string]any{"linear": map[string]any{"triggerLabel": "new", "x": "y"}}, "body", "invalid_json"},
+		{"unknown top-level key beside linear", map[string]any{"linear": map[string]any{"triggerLabel": "new"}, "x": 1}, "body", "invalid_json"},
 		{"linear not an object", map[string]any{"linear": "ai-ready"}, "linear", "invalid"},
 		{"linear null", map[string]any{"linear": nil}, "linear", "invalid"},
 		// A rejected key leaves the valid key of the same request unapplied.
 		{"partly invalid", map[string]any{"linear": map[string]any{"triggerLabel": "new", "routingLabelPrefix": ""}}, "linear.routingLabelPrefix", "required"},
+		{"partly invalid trigger", map[string]any{"linear": map[string]any{"triggerLabel": nil, "routingLabelPrefix": "new:"}}, "linear.triggerLabel", "required"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			status, body := projectRequest(t, f, "PATCH", "/api/settings", test.body)
 			requireProjectError(t, status, body, 400, ValidationFailed, test.field, test.reason)
-			if got := f.settings.LinearLabels(); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "to:"}) {
+			if got := f.settings.LinearLabels(context.Background()); got != (linearintake.Labels{TriggerLabel: "go2", RoutingLabelPrefix: "to:"}) {
 				t.Fatalf("settings changed by a rejected PATCH: %+v", got)
 			}
+			if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
+				t.Fatalf("rejected PATCH changed the settings or audit_logs: %+v", got)
+			}
 		})
+	}
+}
+
+// A settings row holding an empty value is served as the default.
+func TestSettingsEmptyStoredValueIsServedAsDefault(t *testing.T) {
+	f := newAuthFixture(t)
+	if _, err := f.db.Exec(`INSERT INTO settings (key, value, updated_at) VALUES ('linear.routingLabelPrefix', '" "', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	status, body := getJSON(t, f, "/api/settings")
+	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"repo:"}}`+"\n" {
+		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 }
 
