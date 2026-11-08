@@ -19,6 +19,7 @@ export const PROJECT_LABELS = {
   testReportFormat: 'テストレポートの形式',
   testReportPath: 'テストレポートの出力パス',
   setupCommand: 'セットアップコマンド',
+  setupAllowedHosts: 'setup の許可宛先',
   copyAllowlist: 'コピー許可リスト',
   allowedOperations: '許可操作',
   approvalPolicy: '承認ポリシー',
