@@ -135,3 +135,40 @@ Runnerが承認待ちのPRを定期的に読んで照合する。
 - 仕様に無いため、ここで決めた値：照合の間隔（1分。heartbeatのたびではなく、前回の照合から1分経った
   heartbeatの後に1回）、heartbeatの応答の`waitingApprovals`の形、失敗理由`pull_request_closed`、
   イベントの`reason`の`pull_request_merged` / `pull_request_closed`。
+
+## push 直前の確認（publish-check）と直接 push
+
+正本は17の3.7・5章・6章。
+
+- `POST /api/executions/{id}/publish-check`（Runner用）。入力は空のJSON（`{}`）。ほかの項目は400。
+  応答は200で `{"cancelRequested": <bool>, "approvalPolicy": {"version": 1, "mergePullRequest": "require_approval" | "direct_push"}}`。
+  - `cancelRequested` は Execution の `cancel_requested_at` の有無（heartbeat の中止要求と同じ値）。
+  - `approvalPolicy` は呼び出した時点の Project の値。保存値が3.2の形で `direct_push`（version 1）のときだけ
+    `direct_push` を返し、ほかの値・読めない値は既定の `require_approval` を返す（直接 push の側へ倒さない）。
+  - Execution の `runner_id` と違う Runner は403（`execution_runner_mismatch`、`auth.reject` の監査記録）。
+    本人のセッションは403（6章）。Execution が無ければ404。最新の `publishing` でなければ409。
+  - 状態・イベント・監査記録は変えない（読むだけ）。
+- Runner（`internal/runner/publish_check.go`、`internal/publisher/publish.go`）:
+  - claim の `project.approvalPolicy.mergePullRequest` が `direct_push` のときだけ直接 push を試みる。
+    claim の値が `require_approval` なら publish-check を呼ばず、従来どおり PR を作る（3.7.1 の2「違えば安全側」）。
+  - 直接 push では、ローカルの確認（push 先の ref、HEAD と verified_sha の一致、作業ツリー）の後、
+    push の直前の最後の確認として publish-check を1回呼ぶ。再試行しない。
+    届かない・200以外・読めない応答なら push しない（`failed`・`publish_failed`）。
+    `cancelRequested` なら Execution を中止する。現在値が `direct_push` でなければ PR を作る経路へ切り替える。
+  - push 先の ref は、`evaloom/` で始まるブランチに加えて、直接 push のときだけ Project の Base Branch と
+    完全に一致する名前を許す（3.7.1 の4）。`git push <remote> <verified_sha>:refs/heads/<base_branch>` を
+    強制なしで1回送り、リモートの Base Branch の SHA が verified_sha と一致することを確かめる。
+  - 一致したら既存の工程内報告（`publishing` のまま `pushedSha`・`branchName`）で pushed_sha を記録し、
+    PR を検索も作成もせずに `succeeded` を報告する。PR が無いため Control Plane は承認待ちを作らず、
+    Execution は `succeeded`、タスクは `completed` になる。
+- 仕様に無いため、ここで決めた値:
+  - publish-check の入力（空のJSON）と応答の形（`cancelRequested`・`approvalPolicy`）。
+  - 直接 push の後の `pushed` の報告の `branchName` は Execution の `branch_name`（`evaloom/...`）とした。
+    既存の結果API が `branchName` を executions.branch_name と照合する（不一致は422）ため。
+    push 先が Base Branch だったことは、PR が無いことと Project の承認ポリシーから分かる。
+  - 3.7.2 の4（作業ブランチを push するか）：push しない。作業ブランチは Runner のクローンに残る。
+    外部への書き込みを Base Branch への1回に限るため。
+  - PR を作る経路（claim の時点で `require_approval`、または publish-check で切り替えた場合）の
+    push 直前の中止確認は、従来どおり heartbeat を使う。5章の「heartbeat の応答を使っていた確認を置き換える案」は、
+    直接 push の経路だけで適用した。
+- fast-forward できないとき（3.7.3）は本タスクの範囲外。現時点では push が拒否されて `publish_failed` になる。

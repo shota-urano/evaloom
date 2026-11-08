@@ -29,6 +29,10 @@ var (
 	ErrHeadMismatch            = errors.New("publisher: HEAD is not the verified commit")
 	ErrDirtyWorktree           = errors.New("publisher: worktree has uncommitted changes")
 	ErrGit                     = errors.New("publisher: git inspection failed")
+	// ErrPolicyChanged is returned by a direct push check when the Project's
+	// current approval policy is no longer direct_push (spec 17 3.7.1 step 2).
+	// Publish then takes the PR path instead of pushing to the Base Branch.
+	ErrPolicyChanged = errors.New("publisher: approval policy is no longer direct_push")
 )
 
 // ErrorClass maps publisher errors to the Execution error class. A rerun Block
@@ -67,13 +71,22 @@ type Target struct {
 // it cancels ctx when the Control Plane requests cancellation. Any failure,
 // including an unreachable Control Plane, means the caller must not push.
 func CheckBeforePush(ctx context.Context, target Target, checkCancellation func(context.Context) error) error {
+	return checkBeforePush(ctx, target, "", checkCancellation)
+}
+
+// checkBeforePush is CheckBeforePush with the spec 17 3.7.1 step 4 ref rule:
+// directPushBase is the Project's Base Branch when the approval policy is
+// direct_push, and empty otherwise. Only then may the target be that exact
+// branch. A check returning ErrPolicyChanged is passed through so the caller
+// can switch to the PR path; every other check failure means "do not push".
+func checkBeforePush(ctx context.Context, target Target, directPushBase string, checkCancellation func(context.Context) error) error {
 	if checkCancellation == nil {
 		return fmt.Errorf("publisher: cancellation check is required")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := checkBranchName(ctx, target); err != nil {
+	if err := checkBranchName(ctx, target, directPushBase); err != nil {
 		return err
 	}
 	if err := checkWorktree(ctx, target); err != nil {
@@ -83,6 +96,9 @@ func CheckBeforePush(ctx context.Context, target Target, checkCancellation func(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if errors.Is(checkErr, ErrPolicyChanged) {
+		return ErrPolicyChanged
+	}
 	if checkErr != nil {
 		// The check's own error may echo URLs or responses; keep only the cause.
 		return ErrControlPlaneUnavailable
@@ -90,9 +106,11 @@ func CheckBeforePush(ctx context.Context, target Target, checkCancellation func(
 	return nil
 }
 
-func checkBranchName(ctx context.Context, target Target) error {
+func checkBranchName(ctx context.Context, target Target, directPushBase string) error {
 	name := target.BranchName
-	if !strings.HasPrefix(name, BranchPrefix) || len(name) == len(BranchPrefix) {
+	namespaced := strings.HasPrefix(name, BranchPrefix) && len(name) > len(BranchPrefix)
+	// The Base Branch is allowed only by exact match, and only for direct_push.
+	if !namespaced && (directPushBase == "" || name != directPushBase) {
 		return ErrBranchName
 	}
 	// Reject names Git would not store verbatim (for example "..", "@{" or a

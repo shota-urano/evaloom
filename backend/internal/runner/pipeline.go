@@ -595,6 +595,16 @@ func (p *claimPipeline) publish(ctx context.Context, e *Execution) error {
 	}
 	cfg.Push.RepositoryURL, cfg.Push.CheckCancellation = e.Claim.Project.GitRemoteURL, p.runner.Heartbeat
 	cfg.BaseBranch, cfg.ReportContext = e.Claim.Project.BaseBranch, e.control.ReportContext
+	// Spec 17 3.7: only a Project that was direct_push at claim time tries the
+	// direct push; publish-check re-reads the policy right before the push and
+	// a changed value takes the PR path (3.7.1 step 2).
+	if claimDirectPush(e.Claim) {
+		cfg.DirectPushCheck = p.runner.directPushCheck(e.Claim.Execution.ID, func() {
+			if p.deps.delivery != nil {
+				p.deps.delivery.branch = e.Claim.Project.BaseBranch
+			}
+		})
+	}
 	cfg.Report = publisher.Report{ExecutionID: e.Claim.Execution.ID, TaskID: e.Claim.Execution.TaskID, Title: e.Claim.Task.Title,
 		AcceptanceCriteria: e.Claim.Task.AcceptanceCriteria, Summary: e.HarnessResult.Summary, HarnessID: e.Claim.Profile.HarnessID,
 		HarnessVersion: p.definition.HarnessVersion, ProfileVersion: e.Claim.Profile.Version, ProfileCommitSHA: e.Claim.Profile.CommitSHA,
