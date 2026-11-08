@@ -138,7 +138,7 @@ func (p *Poller) PollOnce(ctx context.Context) (Result, error) {
 		return result, errs
 	}
 	if p.Settings != nil {
-		ctx = withRoundLabels(ctx, p.Settings.LinearLabels())
+		ctx = withRoundLabels(ctx, p.Settings.LinearLabels(ctx))
 	}
 	label := p.TriggerLabel
 	if label == "" {
