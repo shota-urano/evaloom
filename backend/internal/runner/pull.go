@@ -146,6 +146,7 @@ func (runner *Runner) Run(ctx context.Context, execute func(context.Context, Cla
 		// failed initial heartbeat. Existing work continues on network errors.
 		err := runner.Heartbeat(ctx)
 		if err == nil && ctx.Err() == nil {
+			runner.startApprovalCheck(ctx, &workers, onError)
 			err = runner.claimAndStart(ctx, execute, &workers)
 		}
 		if ctx.Err() != nil {

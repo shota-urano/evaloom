@@ -124,8 +124,12 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if execution.Status == model.ExecutionMerging {
-			err = saveMergeResult(r, tx, execution, runner, input)
+		if execution.Status == model.ExecutionMerging || execution.Status == model.ExecutionWaitingApproval {
+			if execution.Status == model.ExecutionMerging {
+				err = saveMergeResult(r, tx, execution, runner, input)
+			} else {
+				err = saveApprovalWaitResult(r, tx, execution, runner, input)
+			}
 			if err == nil {
 				err = tx.Commit()
 			}

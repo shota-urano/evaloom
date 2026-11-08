@@ -132,3 +132,13 @@ func (s *ReadSession) Output(ctx context.Context, directory string, args ...stri
 	}
 	return out, nil
 }
+
+// PullRequest reads a PR's head SHA, base branch and open/merged state with a
+// read-only installation token (spec 17 3.6: the periodic check of a PR
+// waiting for approval needs no write permission).
+func (r *Reader) PullRequest(ctx context.Context, repositoryURL string, number int) (PullRequestStatus, error) {
+	if r == nil || r.app == nil {
+		return PullRequestStatus{}, ErrPRConfiguration
+	}
+	return r.app.PullRequest(ctx, repositoryURL, number)
+}

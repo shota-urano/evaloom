@@ -106,3 +106,32 @@
   マージ済みだが`merge_commit_sha`が読めない）も、仕様に無いため安全側の`merge_unknown`にした。
   `succeeded`の報告には`mergeCommitSha`が必須のため、マージ commit を読めないときは成功として報告できない。
 - 読み直しは再試行しない（1回だけ）。
+
+## 承認待ちのPRの定期照合（Runner）
+
+正本は17の3.6とQ58。承認待ちの間に本人がGitHubでPRを直接マージ・クローズした場合を、
+Runnerが承認待ちのPRを定期的に読んで照合する。
+
+- 承認待ちのPRの一覧：Runnerの既存の定期処理であるheartbeatの応答に`waitingApprovals`を足した。
+  要素は`executionId`・`taskId`・`target`（Executionの最新のmerge承認のtarget）・`project`
+  （claimの`project`と同じ形）。対象は呼び出し元のRunnerが実行した、最新で`waiting_approval`の
+  Execution（タスクも`waiting_approval`）。`merging`は含めない（承認済みの操作がconsumeの前にPRを
+  読み、対象が変わっていれば`waiting_approval`へ戻すため、次の照合で拾われる）。
+- PRの読み取り：Git Publisherの読み取り専用のinstallation token（contents・pull_requestsはread）で
+  `GET /repos/{repo}/pulls/{n}`を読む。マージの権限は使わない。読めないPRは次の照合で読み直す。
+  Runnerが処理中のExecution（承認済みの操作を含む）は読まない。
+- 照合の結果は既存の`POST /api/executions/{id}/result`で`fromStatus=waiting_approval`から報告する。
+  - マージ済み：`status=succeeded`、`mergeCommitSha`（40桁または64桁の小文字16進、必須）。
+    Executionは`succeeded`、タスクは`completed`。
+  - マージされずに閉じた：`status=failed`、`errorMessage=pull_request_closed`、`errorClass`は送らない。
+    Executionとタスクは`failed`。02の5.4に該当する`error_class`が無いため、Q57の`approval_rejected`と
+    同じく`error_class`は空のまま`error_message`に入れる。
+  - 開いたままなら報告しない。
+  - どちらも、未使用（pending / approved）の承認を`invalidated`（target_changed）にし、
+    `system/approval.invalidate`の監査記録を残す。状態遷移・通知要求・`status_changed`イベント
+    （reason `pull_request_merged` / `pull_request_closed`）・`runner:<id>/execution.result`の監査記録
+    （`reason`、マージなら`mergeCommitSha`）を同じ`BEGIN IMMEDIATE`のトランザクションで保存する。
+  - 他の項目は400。merge承認の無いExecution、最新でないExecution、`waiting_approval`以外からの報告は409。
+- 仕様に無いため、ここで決めた値：照合の間隔（1分。heartbeatのたびではなく、前回の照合から1分経った
+  heartbeatの後に1回）、heartbeatの応答の`waitingApprovals`の形、失敗理由`pull_request_closed`、
+  イベントの`reason`の`pull_request_merged` / `pull_request_closed`。
