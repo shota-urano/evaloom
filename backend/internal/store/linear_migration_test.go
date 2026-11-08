@@ -63,7 +63,7 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 		if got := migrationRows(t, db, `SELECT linear_team_id, linear_routing_label FROM projects`); !reflect.DeepEqual(got, [][]any{{nil, nil}}) {
 			t.Fatalf("migrated routing = %#v", got)
 		}
-		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
 		if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 			t.Fatalf("foreign key violations = %#v", violations)
 		}
@@ -320,7 +320,7 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
 }
 
 // TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria checks 0011: an
@@ -417,7 +417,7 @@ func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
 	if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 		t.Fatalf("foreign key violations = %#v", violations)
 	}
@@ -467,7 +467,7 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -518,11 +518,77 @@ func TestLinearIssueRecheckRequestedAtMigrationLeavesExistingRowsNull(t *testing
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
 	if got := migrationRows(t, db, `SELECT recheck_requested_at FROM linear_issue_states ORDER BY 1`); !reflect.DeepEqual(got, [][]any{{nil}, {nil}}) {
 		t.Fatalf("recheck_requested_at of existing rows = %#v, want NULL", got)
 	}
+}
+
+// 受け入れ基準: outcome_unknown の列を足すマイグレーションで、pending かつ
+// attempts が1以上の行が 1、それ以外の行が 0 になる (spec 16 3.4.1, 3.7, Q83).
+// 0017 is applied to a database that already holds linear_outbox rows.
+func TestLinearOutboxOutcomeUnknownMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := readMigrations(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, migration := range migrations {
+		if migration.version < 17 {
+			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
+		}
+	}
+	db, err := open(context.Background(), path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	for _, row := range []struct {
+		id, status string
+		attempts   int
+	}{
+		{"o1-pending-0", "pending", 0},
+		{"o2-pending-1", "pending", 1},
+		{"o3-pending-4", "pending", 4},
+		{"o4-sent-0", "sent", 0},
+		{"o5-sent-2", "sent", 2},
+		{"o6-failed-5", "failed", 5},
+	} {
+		mustTaskExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind, dedupe_key, body,
+			status, attempts, created_at) VALUES (?, 'task-001', 'issue-a', 'succeeded', ?, 'body', ?, ?, ?)`,
+			row.id, "key-"+row.id, row.status, row.attempts, registryTime)
+	}
+	query := `SELECT id, task_id, linear_issue_id, kind, dedupe_key, body, status, attempts, next_attempt_at,
+		linear_comment_id, created_at, sent_at FROM linear_outbox ORDER BY id`
+	before := migrationRows(t, db, query)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = openRegistry(t, path)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17})
+	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
+		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
+	}
+	want := [][]any{{"o1-pending-0", int64(0)}, {"o2-pending-1", int64(1)}, {"o3-pending-4", int64(1)},
+		{"o4-sent-0", int64(0)}, {"o5-sent-2", int64(0)}, {"o6-failed-5", int64(0)}}
+	if got := migrationRows(t, db, `SELECT id, outcome_unknown FROM linear_outbox ORDER BY id`); !reflect.DeepEqual(got, want) {
+		t.Fatalf("outcome_unknown after migration = %#v, want %#v", got, want)
+	}
+	// New rows default to 0 and only 0 / 1 are accepted.
+	mustTaskExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind, dedupe_key, body,
+		status, created_at) VALUES ('o7', 'task-001', 'issue-a', 'failed', 'key-o7', 'body', 'pending', ?)`, registryTime)
+	if got := migrationRows(t, db, `SELECT outcome_unknown FROM linear_outbox WHERE id = 'o7'`); !reflect.DeepEqual(got, [][]any{{int64(0)}}) {
+		t.Fatalf("default outcome_unknown = %#v, want 0", got)
+	}
+	_, err = db.Exec(`UPDATE linear_outbox SET outcome_unknown = 2 WHERE id = 'o7'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
 }

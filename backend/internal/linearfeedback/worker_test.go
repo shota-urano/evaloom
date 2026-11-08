@@ -53,6 +53,13 @@ type fakeLinear struct {
 	commentsStatus int
 	// log records "create" and "read" in request order.
 	log []string
+	// onCreate, when set, runs at the start of each commentCreate request
+	// (before f.mu is taken), e.g. to read the DB while the send is open.
+	onCreate func()
+	// holdCreate, when set, keeps each commentCreate request open until the
+	// client goes away; createStarted is signalled when one arrives.
+	holdCreate    bool
+	createStarted chan struct{}
 }
 
 func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +70,20 @@ func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+	if strings.Contains(req.Query, "commentCreate") {
+		if f.onCreate != nil {
+			f.onCreate()
+		}
+		if f.holdCreate {
+			f.mu.Lock()
+			f.comments = append(f.comments, req.Variables)
+			f.log = append(f.log, "create")
+			f.mu.Unlock()
+			f.createStarted <- struct{}{}
+			<-r.Context().Done()
+			return
+		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -188,19 +209,20 @@ func setup(t *testing.T, fake *fakeLinear) (*sql.DB, *linearfeedback.Worker, *cl
 }
 
 type row struct {
-	status        string
-	attempts      int
-	nextAttemptAt sql.NullString
-	commentID     sql.NullString
-	sentAt        sql.NullString
+	status         string
+	attempts       int
+	nextAttemptAt  sql.NullString
+	commentID      sql.NullString
+	sentAt         sql.NullString
+	outcomeUnknown int
 }
 
 func outboxRow(t *testing.T, db *sql.DB, dedupeKey string) row {
 	t.Helper()
 	var r row
-	if err := db.QueryRow(`SELECT status, attempts, next_attempt_at, linear_comment_id, sent_at
+	if err := db.QueryRow(`SELECT status, attempts, next_attempt_at, linear_comment_id, sent_at, outcome_unknown
 		FROM linear_outbox WHERE dedupe_key = ?`, dedupeKey).Scan(
-		&r.status, &r.attempts, &r.nextAttemptAt, &r.commentID, &r.sentAt); err != nil {
+		&r.status, &r.attempts, &r.nextAttemptAt, &r.commentID, &r.sentAt, &r.outcomeUnknown); err != nil {
 		t.Fatal(err)
 	}
 	return r
