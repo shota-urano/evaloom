@@ -124,7 +124,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		}
 		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
 			ContextLocation: "AGENTS.md", SetupAllowedHosts: []string{}, CopyAllowlist: []string{},
-			AllowedOperations: map[string]any{}, ApprovalPolicy: map[string]any{}, Timeouts: map[string]int{},
+			AllowedOperations: map[string]any{}, ApprovalPolicy: defaultApprovalPolicy(), Timeouts: map[string]int{},
 		}}
 		if !create {
 			var err error
@@ -287,6 +287,9 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 			return nil, invalid(field.name, "required")
 		}
 	}
+	if err := validateApprovalPolicy(p.ApprovalPolicy); err != nil {
+		return nil, err
+	}
 	for _, seconds := range []string{"setupSec", "harnessSec", "testSec"} {
 		if n, ok := p.Timeouts[seconds]; ok && n <= 0 {
 			return nil, invalid("timeouts."+seconds, "out_of_range")
@@ -327,6 +330,34 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 		}
 	}
 	return warnings, nil
+}
+
+// defaultApprovalPolicy is the Phase 2 approval policy a Project gets when
+// registration omits approvalPolicy (spec 17 3.2, Q60): PR merges need the
+// owner's approval. The number is a json.Number like values read back from
+// the store, so a registered Project compares equal to its stored form.
+func defaultApprovalPolicy() map[string]any {
+	return map[string]any{"version": json.Number("1"), "mergePullRequest": "require_approval"}
+}
+
+// validateApprovalPolicy accepts only the spec 17 3.2 shape
+// {"version": 1, "mergePullRequest": "require_approval" | "direct_push"}.
+// Only the PR merge can be taken out of approval, so any other key, a
+// missing key, or an unknown value is a 400 (requirements 15.3).
+func validateApprovalPolicy(policy map[string]any) error {
+	for key := range policy {
+		if key != "version" && key != "mergePullRequest" {
+			return invalid("approvalPolicy", "invalid")
+		}
+	}
+	if version, ok := policy["version"].(json.Number); !ok || version.String() != "1" {
+		return invalid("approvalPolicy.version", "invalid")
+	}
+	switch policy["mergePullRequest"] {
+	case "require_approval", "direct_push":
+		return nil
+	}
+	return invalid("approvalPolicy.mergePullRequest", "invalid")
 }
 
 // validSetupHost accepts only a lowercase DNS host name and a port 1-65535
