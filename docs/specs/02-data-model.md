@@ -1,6 +1,6 @@
 ---
 status: confirmed
-confirmed_rev: 84875c2
+confirmed_rev: 9f4787a
 範囲: 整合性アンカー。Phase 1 のテーブル、状態の列挙値、共通契約と Harness Profile のスキーマ
 ---
 
@@ -329,8 +329,27 @@ Phase 2 で追加するテーブル・列の下書き（status: draft）は、�
 
 - event_inbox、linear_issue_links、projects の Linear 列、tasks の source・intake_block_cause: [`15-linear-intake.md`](./15-linear-intake.md) 3.8（project_integrations は作らない案、Q50）
 - linear_outbox（追加）: [`16-linear-feedback.md`](./16-linear-feedback.md) 3.7
+- settings（追加、全体設定の保存先）: 本書 3.4（Q76）
 - approvals、executions.status の `waiting_approval` / `merging`: [`17-approval.md`](./17-approval.md) 3.9
 | models | 未定（Q19） | Phase 1 ロードマップに Model Registry が無い。Profile が Model ID を文字列で持つ |
+
+### 3.4 全体設定（settings、Phase 2 で追加）
+
+`GET/PATCH /api/settings`（[`01-architecture.md`](./01-architecture.md) 5.1）で扱う全体設定の保存先。Phase 1 には全体設定の表が無く、Phase 2 の Linear の全体設定（[`15-linear-intake.md`](./15-linear-intake.md) 3.4、5章）が最初の利用者になる。Control Plane を再起動しても値を保つ（2026-11-08 決定、Q76）。
+
+#### settings（追加）
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| key | TEXT PK | 設定のキー（例 `linear.triggerLabel`）。API の JSON の階層を `.` でつないだ名前 |
+| value | TEXT (JSON) | 値 |
+| updated_at | TEXT | 最後に変えた時刻 |
+
+- 1キー1行で持つ。行が無いキーは、そのキーを定めた仕様の既定値を使う。マイグレーションでは既定値の行を入れない。
+- 書いてよいキーは、仕様で定めたキーだけとする。現時点では `linear.triggerLabel`（既定 `ai-ready`）と `linear.routingLabelPrefix`（既定 `repo:`）の2つ（[`15-linear-intake.md`](./15-linear-intake.md) 3.4）。13 の Settings 画面にある既定のタイムアウトや通知先は、キーと値の形を各仕様で決めるまでこの表に足さない。
+- 未知のキーは API で 400 にし、この表に書かない。読み込むときに未知のキーの行があっても使わない。
+- 値が空・空白だけ、または型が合わない行は使わず、そのキーは既定値として扱い、Control Plane のログに出す（[`15-linear-intake.md`](./15-linear-intake.md) 6章）。
+- 値の変更は audit_logs に残す（action `settings.update`、target_type `settings`、target_id はキー、detail は変更前後の値）。settings と audit_logs の書き込みは1つのトランザクションで行う。秘密情報（API キーなど）はこの表に入れない（Linear の API キーはファイルに置く、[`15-linear-intake.md`](./15-linear-intake.md) 3.1）。
 
 ## 4. 設定値・確定値
 
