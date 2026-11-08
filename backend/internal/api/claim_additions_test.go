@@ -369,3 +369,21 @@ func TestClaimProjectSetupAllowedHostsMatchesRegistration(t *testing.T) {
 		t.Fatalf("wire setupAllowedHosts=%s", wire.Project["setupAllowedHosts"])
 	}
 }
+
+// spec 03 3.3.1 (Q87): a rejected duplicate update leaves the claim carrying
+// the last accepted (duplicate-free) value unchanged and in order.
+func TestClaimProjectSetupAllowedHostsAfterRejectedDuplicate(t *testing.T) {
+	f, token, _ := claimFixture(t)
+	hosts := []string{"proxy.golang.org:443", "registry.npmjs.org:443", "proxy.golang.org:8443"}
+	status, body := projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"setupAllowedHosts": hosts})
+	requireProject(t, status, body, 200)
+	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a",
+		map[string]any{"setupAllowedHosts": []string{"repo.packagist.org:443", "repo.packagist.org:443"}})
+	requireProjectError(t, status, body, 400, ValidationFailed, "setupAllowedHosts", "duplicate")
+	createClaimTask(t, f, "project-a", "setup-hosts-dup")
+	status, body = requestClaim(t, f, token)
+	claim := requireClaim(t, status, body)
+	if !reflect.DeepEqual(claim.Project.SetupAllowedHosts, hosts) {
+		t.Fatalf("claim setupAllowedHosts=%v; want %v", claim.Project.SetupAllowedHosts, hosts)
+	}
+}

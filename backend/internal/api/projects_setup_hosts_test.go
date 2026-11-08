@@ -147,3 +147,73 @@ func TestProjectsSetupAllowedHostsUpdateIsAudited(t *testing.T) {
 		t.Fatalf("audit setupAllowedHosts=%v; want %v", history, want)
 	}
 }
+
+// spec 03 3.3.1 (Q87): a setupAllowedHosts value that lists the same host:port
+// twice is 400 validation_failed with details field setupAllowedHosts on both
+// register and update; the project keeps its value and audit_logs gains no row.
+func TestProjectsSetupAllowedHostsRejectsDuplicateDestinations(t *testing.T) {
+	f := projectFixture(t)
+	input := projectInput(t, "project-a")
+	original := []string{"registry.npmjs.org:443"}
+	input["setupAllowedHosts"] = original
+	status, body := projectRequest(t, f, "POST", "/api/projects", input)
+	before := requireProject(t, status, body, 201)
+	auditRows := projectCount(t, f, "audit_logs")
+	var storedBefore string
+	if err := f.db.QueryRow(`SELECT setup_allowed_hosts FROM projects WHERE id = 'project-a'`).Scan(&storedBefore); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		hosts []string
+	}{
+		{"adjacent", []string{"registry.npmjs.org:443", "registry.npmjs.org:443"}},
+		{"separated", []string{"registry.npmjs.org:443", "proxy.golang.org:443", "registry.npmjs.org:443"}},
+		{"new-value-twice", []string{"repo.packagist.org:443", "repo.packagist.org:443"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := map[string]any{}
+			for key, value := range input {
+				request[key] = value
+			}
+			request["id"] = "project-b"
+			request["setupAllowedHosts"] = tc.hosts
+			status, body := projectRequest(t, f, "POST", "/api/projects", request)
+			requireProjectError(t, status, body, 400, ValidationFailed, "setupAllowedHosts", "duplicate")
+			status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"setupAllowedHosts": tc.hosts})
+			requireProjectError(t, status, body, 400, ValidationFailed, "setupAllowedHosts", "duplicate")
+		})
+	}
+	status, body = projectRequest(t, f, "GET", "/api/projects/project-a", nil)
+	if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, before) || !reflect.DeepEqual(got.SetupAllowedHosts, original) {
+		t.Fatalf("rejected duplicate changed project: %+v", got)
+	}
+	var storedAfter string
+	if err := f.db.QueryRow(`SELECT setup_allowed_hosts FROM projects WHERE id = 'project-a'`).Scan(&storedAfter); err != nil || storedAfter != storedBefore {
+		t.Fatalf("stored=%q want %q err=%v", storedAfter, storedBefore, err)
+	}
+	if n := projectCount(t, f, "projects"); n != 1 {
+		t.Fatalf("projects=%d; rejected register must not insert", n)
+	}
+	if n := projectCount(t, f, "audit_logs"); n != auditRows {
+		t.Fatalf("audit_logs=%d; want %d", n, auditRows)
+	}
+}
+
+// spec 03 3.3.1 (Q87): the same host on different ports is not a duplicate and
+// is stored as given, on register and update.
+func TestProjectsSetupAllowedHostsAcceptsSameHostOnDifferentPorts(t *testing.T) {
+	f := projectFixture(t)
+	input := projectInput(t, "project-a")
+	hosts := []string{"registry.npmjs.org:443", "registry.npmjs.org:8443"}
+	input["setupAllowedHosts"] = hosts
+	status, body := projectRequest(t, f, "POST", "/api/projects", input)
+	if p := requireProject(t, status, body, 201); !reflect.DeepEqual(p.SetupAllowedHosts, hosts) {
+		t.Fatalf("register setupAllowedHosts=%v; want %v", p.SetupAllowedHosts, hosts)
+	}
+	next := []string{"proxy.golang.org:443", "registry.npmjs.org:443", "proxy.golang.org:8443"}
+	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"setupAllowedHosts": next})
+	if p := requireProject(t, status, body, 200); !reflect.DeepEqual(p.SetupAllowedHosts, next) {
+		t.Fatalf("update setupAllowedHosts=%v; want %v", p.SetupAllowedHosts, next)
+	}
+}
