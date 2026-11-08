@@ -53,7 +53,8 @@ type PublishConfig struct {
 	// DirectPushCheck is set only when the claim-time approval policy is
 	// direct_push (spec 17 3.7). Publish then first tries to push the verified
 	// commit to BaseBranch without a PR, calling this check as the final
-	// pre-push confirmation instead of Push.CheckCancellation. The check asks
+	// pre-push confirmation instead of Push.CheckCancellation. When the Base
+	// Branch cannot be fast-forwarded (3.7.3), Publish takes the PR path. The check asks
 	// the Control Plane (publish-check) for the cancellation request and the
 	// current approval policy. It must return ErrPolicyChanged when the policy
 	// is no longer direct_push, and any other error when the Control Plane
@@ -83,10 +84,15 @@ func Publish(ctx context.Context, target Target, config PublishConfig) (Publicat
 	}
 	if config.DirectPushCheck != nil {
 		publication, err := publishDirect(ctx, target, config)
-		if !errors.Is(err, ErrPolicyChanged) {
+		if !errors.Is(err, ErrPolicyChanged) && !errors.Is(err, ErrNotFastForward) {
 			return publication, err
 		}
-		// The owner switched to require_approval: take the PR path (3.7.1).
+		// The owner switched to require_approval (3.7.1), or the Base Branch
+		// moved past the task's starting point (3.7.3): take the PR path for
+		// the owner's review. The verified commit is never forced onto the
+		// Base Branch. With direct_push still in effect the Control Plane
+		// opens no approval, so Evaloom never merges this PR; the owner
+		// merges it on GitHub.
 	}
 	sha, err := Push(ctx, target, config.Push)
 	if err != nil {

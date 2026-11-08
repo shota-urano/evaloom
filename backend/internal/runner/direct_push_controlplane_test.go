@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +87,63 @@ func TestProductionPipelineDirectPushCancellationDoesNotPush(t *testing.T) {
 	}
 	if refs := gate2Git(t, f.remote, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/"); refs != f.initialMain+" refs/heads/main" {
 		t.Fatalf("remote refs changed: %s", refs)
+	}
+}
+
+// 3.7.3: the remote Base Branch moved past the task's starting point before
+// the direct push. The Runner does not force the push; it takes the PR path.
+// The Base Branch keeps the other commit, the task branch carries
+// verified_sha and exactly one PR is created against the Base Branch. The
+// Project is still direct_push, so no approval is opened (Evaloom does not
+// merge this PR; the owner merges it on GitHub) and the task completes with
+// the PR recorded, as with Phase 1 publication.
+func TestProductionPipelineDirectPushNotFastForwardTakesPRPathWithoutForce(t *testing.T) {
+	f := newProductionPipelineFixture(t, "direct_push_not_fast_forward")
+	if err := f.execute(t); err != nil {
+		t.Fatal(err)
+	}
+	if f.advancedMain == "" || f.advancedMain == f.initialMain {
+		t.Fatal("fixture did not advance the remote Base Branch")
+	}
+	if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/main"); got != f.advancedMain {
+		t.Fatalf("remote main %s, want the advanced %s (forced push?)", got, f.advancedMain)
+	}
+	var status, taskStatus, branch, base, verified, pushed string
+	var errorClass sql.NullString
+	var pr sql.NullInt64
+	var prURL sql.NullString
+	if err := f.db.QueryRow(`SELECT e.status,t.status,e.branch_name,e.base_sha,e.verified_sha,e.pushed_sha,e.pr_number,e.pr_url,e.error_class
+		FROM executions e JOIN tasks t ON t.id=e.task_id WHERE e.id=?`, logExecution).
+		Scan(&status, &taskStatus, &branch, &base, &verified, &pushed, &pr, &prURL, &errorClass); err != nil {
+		t.Fatal(err)
+	}
+	if status != "succeeded" || taskStatus != "completed" || errorClass.Valid {
+		t.Fatalf("execution %s task %s class %v", status, taskStatus, errorClass)
+	}
+	if base != f.initialMain || verified == "" || verified == f.initialMain || pushed != verified {
+		t.Fatalf("base %s verified %s pushed %s", base, verified, pushed)
+	}
+	if !pr.Valid || pr.Int64 != 1 || prURL.String != "https://github.com/owner/repo/pull/1" {
+		t.Fatalf("PR %v %v", pr, prURL)
+	}
+	if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/"+branch); got != verified {
+		t.Fatalf("task branch %s != verified %s", got, verified)
+	}
+	if f.publishChecks != 1 || f.prSearches != 1 || f.prCalls != 1 || !strings.Contains(f.prBodies[0], "Gate 3: pass") {
+		t.Fatalf("checks/search/PR %d/%d/%d", f.publishChecks, f.prSearches, f.prCalls)
+	}
+	var approvals int
+	if err := f.db.QueryRow(`SELECT count(*) FROM approvals WHERE execution_id=?`, logExecution).Scan(&approvals); err != nil || approvals != 0 {
+		t.Fatalf("approvals %d %v", approvals, err)
+	}
+	for kind, want := range map[string]int{"pushed": 1, "pr_created": 1} {
+		var count int
+		if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE execution_id=? AND type=?`, logExecution, kind).Scan(&count); err != nil || count != want {
+			t.Fatalf("event %s count %d %v", kind, count, err)
+		}
+	}
+	var mismatches int
+	if err := f.db.QueryRow(`SELECT count(*) FROM audit_logs WHERE action LIKE '%mismatch%'`).Scan(&mismatches); err != nil || mismatches != 0 {
+		t.Fatalf("remote mismatch audits %d %v", mismatches, err)
 	}
 }

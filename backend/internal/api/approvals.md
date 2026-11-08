@@ -171,4 +171,26 @@ Runnerが承認待ちのPRを定期的に読んで照合する。
   - PR を作る経路（claim の時点で `require_approval`、または publish-check で切り替えた場合）の
     push 直前の中止確認は、従来どおり heartbeat を使う。5章の「heartbeat の応答を使っていた確認を置き換える案」は、
     直接 push の経路だけで適用した。
-- fast-forward できないとき（3.7.3）は本タスクの範囲外。現時点では push が拒否されて `publish_failed` になる。
+
+## 直接 push で fast-forward できないとき（3.7.3）
+
+正本は17の3.7.3（Q62）。
+
+- Base Branch への直接 push は強制なしで1回だけ送る。拒否されたら、リモートの Base Branch の SHA を読み直し、
+  それが存在し、verified_sha と違い、verified_sha の祖先でない（Runner のクローンに無い commit も祖先でないとみなす）
+  ときだけ「fast-forward できない」と判定する（`publisher.ErrNotFastForward`）。Git の出力の文言は解析しない。
+  それ以外の拒否（Base Branch がまだ祖先のままなど）は従来どおり `publish_failed`。
+- 判定したら、承認ポリシーが変わったとき（3.7.1 の2）と同じ PR を作る経路へ切り替える。作業ブランチを push し、
+  heartbeat で中止を確かめ、PR を1件作る。Base Branch は先に進んだ commit のまま（強制 push しない）。
+- 承認ポリシーは `direct_push` のままのため、Control Plane は承認待ちを作らない（既存の
+  `RequiresMergeApprovalTx`）。Evaloom はこの PR をマージせず、本人が GitHub でマージする。
+  Execution は `succeeded`、タスクは `completed`、`pr_number`・`pr_url` と `pr_created` が記録される（Phase 1 の公開と同じ）。
+- 新しい API・列・イベントは足していない。
+- 仕様に無いため、ここで決めた値:
+  - 切り替え後の Execution・タスクの状態（`succeeded`・`completed`、承認なし）。3.7.3 の「Evaloom はこの PR をマージしない」から、
+    承認待ち（`waiting_approval`）にはしない。3.6 の定期照合も merge 承認の無い Execution を扱わない。
+  - 切り替えたことを示す専用の記録（イベント・監査記録）は作らない。PR が有ることと Project の承認ポリシーから分かる。
+- 仕様の穴: fast-forward できないと判定した後、結果を報告するまでに本人が承認ポリシーを `require_approval` へ
+  変えると、Control Plane は報告の時点の値で承認待ちを作り、承認後に Evaloom がこの PR をマージし得る。
+  「承認ポリシーにかかわらず Evaloom はマージしない」を守るには、PR が 3.7.3 の切り替えで作られたことを
+  結果API で伝える項目が要るが、仕様に無いため足していない。

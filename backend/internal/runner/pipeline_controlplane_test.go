@@ -129,6 +129,8 @@ type productionPipelineFixture struct {
 	// publishChecks counts POST /api/executions/{id}/publish-check calls.
 	publishChecks, prSearches int
 	initialMain               string
+	// advancedMain is the remote Base Branch moved by another push (3.7.3).
+	advancedMain string
 }
 
 // secretSummaryHarness reports a summary chosen by the test, as a harness
@@ -247,6 +249,10 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 				if _, err := f.db.Exec(`UPDATE projects SET approval_policy='{"mergePullRequest":"require_approval","version":1}' WHERE id='project'`); err != nil {
 					t.Error(err)
 				}
+			case "direct_push_not_fast_forward":
+				// Someone else pushes to the Base Branch after the task started.
+				f.advancedMain = gate2Git(t, f.remote, "commit-tree", "-p", f.initialMain, "-m", "pushed by someone else", f.initialMain+"^{tree}")
+				gate2Git(t, f.remote, "update-ref", "refs/heads/main", f.advancedMain, f.initialMain)
 			case "direct_push_cancelled":
 				// The owner cancels the task right before the push.
 				if _, err := f.db.Exec(`UPDATE executions SET cancel_requested_at='2026-11-08T00:00:00Z' WHERE id=?`, logExecution); err != nil {
