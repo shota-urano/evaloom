@@ -345,3 +345,27 @@ func TestClaimPreparationCompleteRequiresMatchingReadyAndSetup(t *testing.T) {
 		})
 	}
 }
+
+// spec 04 3.3.1 / spec 03 3.3.1: the claim carries the registered
+// projects.setup_allowed_hosts unchanged, in order.
+func TestClaimProjectSetupAllowedHostsMatchesRegistration(t *testing.T) {
+	f, token, _ := claimFixture(t)
+	hosts := []string{"registry.npmjs.org:443", "repo.packagist.org:443", "proxy.golang.org:8443"}
+	status, body := projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"setupAllowedHosts": hosts})
+	requireProject(t, status, body, 200)
+	createClaimTask(t, f, "project-a", "setup-hosts")
+	status, body = requestClaim(t, f, token)
+	claim := requireClaim(t, status, body)
+	if !reflect.DeepEqual(claim.Project.SetupAllowedHosts, hosts) {
+		t.Fatalf("claim setupAllowedHosts=%v; want %v", claim.Project.SetupAllowedHosts, hosts)
+	}
+	var wire struct {
+		Project map[string]json.RawMessage `json:"project"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if string(wire.Project["setupAllowedHosts"]) != `["registry.npmjs.org:443","repo.packagist.org:443","proxy.golang.org:8443"]` {
+		t.Fatalf("wire setupAllowedHosts=%s", wire.Project["setupAllowedHosts"])
+	}
+}
