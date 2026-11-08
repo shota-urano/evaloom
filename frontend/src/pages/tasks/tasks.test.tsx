@@ -182,6 +182,31 @@ describe('Tasks 一覧', () => {
     expect(rows()[2]).toHaveTextContent('Queued')
   })
 
+  it('Linear 起因のタスクに Issue の識別子とリンクを出し、保留中のタスクには理由を文字で出す', async () => {
+    TASKS = [
+      task('task-005', '', 'blocked', {
+        source: 'linear',
+        intakeBlockCause: 'routing_multiple_labels',
+        linear: { identifier: 'ENG-9', url: 'https://linear.app/acme/issue/ENG-9' },
+        latestExecution: null,
+      }),
+      task('task-004', 'alpha', 'queued', { source: 'linear', intakeBlockCause: null, linear: { identifier: 'ENG-8', url: 'https://linear.app/acme/issue/ENG-8' } }),
+      ...TASKS.map((t) => ({ ...t, source: 'manual' as const, intakeBlockCause: null, linear: null })),
+    ]
+    renderAt('/tasks')
+    await screen.findByRole('table', { name: 'タスク' })
+    const [held, started, manual] = rows()
+    expect(within(held).getByRole('link', { name: 'ENG-9' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-9')
+    expect(held).toHaveTextContent('Blocked')
+    expect(within(held).getByTestId('held-reason')).toHaveTextContent('保留の理由: 実行先ラベルが2つ以上ある')
+    // Project が決まっていない保留のタスクは、プロジェクトを「なし」と出す。
+    expect(held.querySelectorAll('td')[2]).toHaveTextContent('なし')
+    expect(within(held).queryByRole('link', { name: /^\/projects/ })).not.toBeInTheDocument()
+    expect(within(started).getByRole('link', { name: 'ENG-8' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-8')
+    expect(within(started).queryByTestId('held-reason')).not.toBeInTheDocument()
+    expect(within(manual).queryByTestId('linear-issue-link')).not.toBeInTheDocument()
+  })
+
   it('状態とプロジェクトで絞り込め、条件は URL に残る', async () => {
     const fake = renderAt('/tasks')
     await screen.findByRole('table', { name: 'タスク' })

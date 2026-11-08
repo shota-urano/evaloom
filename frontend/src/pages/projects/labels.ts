@@ -23,6 +23,9 @@ export const PROJECT_LABELS = {
   allowedOperations: '許可操作',
   approvalPolicy: '承認ポリシー',
   contextLocation: 'Project Context',
+  // 15-linear-intake 3.8（requirements 5.1 の Linear Team ID・Linear Routing Label）
+  linearTeamId: 'Linear Team ID',
+  linearRoutingLabel: '実行先ラベル',
 } as const
 
 export const TIMEOUT_LABELS: Record<TimeoutKey, string> = {
@@ -40,8 +43,16 @@ export const REPOSITORY_CHECK_FIELDS: Record<string, string> = {
   worktreeRoot: 'runnerId',
 }
 
-/** 422 の一覧で details[].field を画面の名前で出すための表。 */
+/** 409 の Linear Team ID と実行先ラベルの組の重複（details は linearRoutingLabel / duplicate）→ フォームの項目。 */
+export const LINEAR_CONFLICT_FIELDS: Record<string, string> = {
+  linearTeamId: 'linearTeamId',
+  linearRoutingLabel: 'linearRoutingLabel',
+}
+
+/** 422・409 の一覧で details[].field を画面の名前で出すための表。 */
 export const REPOSITORY_CHECK_LABELS: Record<string, string> = {
+  linearTeamId: PROJECT_LABELS.linearTeamId,
+  linearRoutingLabel: PROJECT_LABELS.linearRoutingLabel,
   path: PROJECT_LABELS.localRepoPath,
   url: PROJECT_LABELS.gitRemoteUrl,
   baseBranch: PROJECT_LABELS.baseBranch,

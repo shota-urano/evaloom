@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 
-import { preconditionFieldErrors, type FieldErrors } from '@/api/errors'
+import { conflictFieldErrors, preconditionFieldErrors, type FieldErrors } from '@/api/errors'
 import { registry, TIMEOUT_KEYS, type Project, type ProjectInput, type Runner, type TimeoutKey } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
@@ -12,7 +12,7 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { navigate } from '@/lib/router'
 import { Loading, PageTitle } from '@/components/page'
-import { PROJECT_LABELS as L, REPOSITORY_CHECK_FIELDS, REPOSITORY_CHECK_LABELS, TIMEOUT_LABELS } from './labels'
+import { LINEAR_CONFLICT_FIELDS, PROJECT_LABELS as L, REPOSITORY_CHECK_FIELDS, REPOSITORY_CHECK_LABELS, TIMEOUT_LABELS } from './labels'
 
 type FormValues = {
   id: string
@@ -29,6 +29,8 @@ type FormValues = {
   copyAllowlist: string
   allowedOperations: string
   approvalPolicy: string
+  linearTeamId: string
+  linearRoutingLabel: string
 } & Record<`timeouts.${TimeoutKey}`, string>
 
 // サーバーの details[].field と同じ名前。400 の details をこの名前の項目へ出す（13 6節）。
@@ -47,6 +49,8 @@ const FIELDS = [
   'copyAllowlist',
   'allowedOperations',
   'approvalPolicy',
+  'linearTeamId',
+  'linearRoutingLabel',
   'timeouts',
   ...TIMEOUT_KEYS.map((key) => `timeouts.${key}` as const),
 ] as const
@@ -68,6 +72,8 @@ const EMPTY: FormValues = {
   copyAllowlist: '',
   allowedOperations: '{}',
   approvalPolicy: '{}',
+  linearTeamId: '',
+  linearRoutingLabel: '',
   'timeouts.setupSec': '',
   'timeouts.harnessSec': '',
   'timeouts.testSec': '',
@@ -90,6 +96,8 @@ function toValues(project: Project): FormValues {
     copyAllowlist: project.copyAllowlist.join('\n'),
     allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
     approvalPolicy: JSON.stringify(project.approvalPolicy, null, 2),
+    linearTeamId: project.linearTeamId ?? '',
+    linearRoutingLabel: project.linearRoutingLabel ?? '',
     'timeouts.setupSec': timeout('setupSec'),
     'timeouts.harnessSec': timeout('harnessSec'),
     'timeouts.testSec': timeout('testSec'),
@@ -152,6 +160,9 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
       allowedOperations,
       approvalPolicy,
       timeouts,
+      // 空欄は null で送って解除する（省略しても null 扱いなので、編集時も毎回送る。backend/internal/api/projects.md）。
+      linearTeamId: optional(values.linearTeamId),
+      linearRoutingLabel: optional(values.linearRoutingLabel),
     },
   }
 }
@@ -176,9 +187,17 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
   const [submitting, setSubmitting] = useState(false)
   const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
   const repositoryErrors = preconditionFieldErrors(error, REPOSITORY_CHECK_FIELDS)
+  const conflictErrors = conflictFieldErrors(error, LINEAR_CONFLICT_FIELDS)
+  // 409 に項目の details があるのは Linear Team ID と実行先ラベルの組の重複。読み直しても解消しないので、ボタンは出さない。
+  const linearConflict = Object.keys(conflictErrors).length > 0
 
   const errorsFor = (field: string) => {
-    const messages = [...(localErrors[field] ?? []), ...(fieldErrors[field] ?? []), ...(repositoryErrors[field] ?? [])]
+    const messages = [
+      ...(localErrors[field] ?? []),
+      ...(fieldErrors[field] ?? []),
+      ...(repositoryErrors[field] ?? []),
+      ...(conflictErrors[field] ?? []),
+    ]
     return messages.length > 0 ? messages : undefined
   }
   const bind = (field: keyof FormValues) => ({
@@ -215,7 +234,18 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
 
   return (
     <form className="grid gap-6" noValidate onSubmit={handleSubmit} aria-label={create ? 'プロジェクトの登録' : 'プロジェクトの編集'}>
-      <ApiErrorAlert error={error} unmatchedDetails={unmatched} onReload={reload} fieldLabels={REPOSITORY_CHECK_LABELS} />
+      <ApiErrorAlert
+        error={error}
+        unmatchedDetails={unmatched}
+        onReload={linearConflict ? undefined : reload}
+        fieldLabels={REPOSITORY_CHECK_LABELS}
+        title={linearConflict ? 'Linear の実行先が重複しています' : undefined}
+        description={
+          linearConflict
+            ? '同じ Linear Team ID と実行先ラベルの組は、1つのプロジェクトにしか登録できません。どちらかを変えてから保存してください。'
+            : undefined
+        }
+      />
 
       <Card>
         <CardHeader>
@@ -314,6 +344,26 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
               {...bind(`timeouts.${key}`)}
             />
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Linear 連携</CardTitle>
+          <CardDescription>
+            両方を設定すると、この Team の Issue のうち、この実行先ラベルが付いたものをこのプロジェクトで実行します。どちらかが空欄なら
+            Linear からは実行しません。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-2">
+          <TextField label={L.linearTeamId} autoComplete="off" spellCheck={false} {...bind('linearTeamId')} />
+          <TextField
+            label={L.linearRoutingLabel}
+            placeholder="repo:customer-system"
+            autoComplete="off"
+            spellCheck={false}
+            {...bind('linearRoutingLabel')}
+          />
         </CardContent>
       </Card>
 

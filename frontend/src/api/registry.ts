@@ -22,6 +22,9 @@ export type ProjectSettings = {
   allowedOperations: Record<string, unknown>
   approvalPolicy: Record<string, unknown>
   timeouts: Partial<Record<TimeoutKey, number>>
+  /** Linear Team ID と実行先ラベル（15-linear-intake 3.8・5章）。null は未設定。どちらかが null だと Linear から実行されない。 */
+  linearTeamId?: string | null
+  linearRoutingLabel?: string | null
 }
 
 export const TIMEOUT_KEYS = ['setupSec', 'harnessSec', 'testSec'] as const

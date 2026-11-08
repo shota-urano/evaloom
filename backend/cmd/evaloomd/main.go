@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -28,7 +31,66 @@ const (
 	defaultPort       = 8080
 	readHeaderTimeout = 5 * time.Second
 	shutdownTimeout   = 5 * time.Second
+	// linearRequestTimeout bounds one Linear HTTP request so a hung request
+	// cannot stall polling forever. It is an implementation limit, not a
+	// specification value.
+	linearRequestTimeout = 30 * time.Second
 )
+
+// newLinearPoller builds the Linear Poller started with the Control Plane
+// (spec 15 3.1). Tests replace it to avoid the real Linear API.
+// port is the actual bound port, used by the macOS alert to open the Dashboard.
+var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearintake.Poller, error) {
+	keyPath, err := linear.DefaultAPIKeyPath()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	client, err := linear.NewClient(&http.Client{Timeout: linearRequestTimeout}, linear.Endpoint, keyPath, logger)
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("evaloomd: linear alert home: %w", err)
+	}
+	poller := linearPoller(db, client, logger)
+	if alerter := linearPollAlerter(runtime.GOOS, home, port); alerter != nil {
+		poller.Alerter = alerter
+	}
+	return poller, nil
+}
+
+// linearPoller connects the Poller to Intake (spec 15 3.4), which starts
+// tasks with TaskStarter (3.6), rechecks held tasks with the same TaskStarter
+// (3.6.3) and cancels with TaskCanceller (3.7). client also re-reads the
+// Issues that left the list.
+func linearPoller(db *sql.DB, client *linear.Client, logger *slog.Logger) *linearintake.Poller {
+	starter := &linearintake.TaskStarter{}
+	return &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval,
+		Handler: &linearintake.Intake{DB: db, Fetcher: client, Starter: starter,
+			Canceller: linearintake.TaskCanceller{}, Rechecker: starter, Logger: logger}}
+}
+
+// macOSLinearAlerter sends the Linear polling alert (spec 15 6章) through the
+// same macOS helper as task notifications.
+type macOSLinearAlerter struct{ macOS *notification.MacOS }
+
+func (a macOSLinearAlerter) AlertLinearPollFailing(ctx context.Context, alert linearintake.Alert) error {
+	return a.macOS.NotifyLinearPollFailing(ctx, string(alert.Class), alert.ConsecutiveFailures)
+}
+
+// linearPollAlerter returns the macOS alerter on darwin and nil elsewhere,
+// like phase1NotificationChannels.
+func linearPollAlerter(goos, home string, port int) linearintake.Alerter {
+	if goos != "darwin" {
+		return nil
+	}
+	return macOSLinearAlerter{notification.NewMacOS(notificationHelperPath(home), port)}
+}
+
+func notificationHelperPath(home string) string {
+	return filepath.Join(home, "Applications", "Evaloom Notifications.app")
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -107,8 +169,12 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if err != nil {
 		return err
 	}
+	// The settings API and the Linear Poller share the label settings (spec
+	// 15 5章, Q48).
+	linearSettings := linearintake.NewLabelSettings()
 	server := &http.Server{
-		Handler:           api.NewHandlerWithArtifacts(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts),
+		Handler: api.NewHandlerWithSettings(db, logger, auth, web,
+			api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts, linearSettings),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -132,6 +198,22 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	defer func() {
 		cancelNotifications()
 		<-notificationsDone // Stop DB users before closing the connection.
+	}()
+	// Poll Linear once at startup and then at each interval (spec 15 3.1).
+	poller, err := newLinearPoller(db, logger, listener.Addr().(*net.TCPAddr).Port)
+	if err != nil {
+		return err
+	}
+	poller.Settings = linearSettings
+	pollerCtx, cancelPoller := context.WithCancel(ctx)
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		poller.Run(pollerCtx)
+	}()
+	defer func() {
+		cancelPoller()
+		<-pollerDone // Stop DB users before closing the connection.
 	}()
 	served := make(chan error, 1)
 	recoveryStartedAt := time.Now().UTC()
@@ -174,8 +256,7 @@ func phase1NotificationChannels(goos, home string, port int) []notification.Chan
 	if goos != "darwin" {
 		return nil
 	}
-	helper := filepath.Join(home, "Applications", "Evaloom Notifications.app")
-	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(helper, port)}}
+	return []notification.Channel{{Name: "macos", Notifier: notification.NewMacOS(notificationHelperPath(home), port)}}
 }
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {

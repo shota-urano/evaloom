@@ -224,7 +224,8 @@ func TestKeyFileProblemsStopBeforeQuery(t *testing.T) {
 			client := newClient(t, server, tc.path(t), &logs)
 			issues, listErr := client.ListReadyIssues(context.Background(), teamID, "ai-ready")
 			_, getErr := client.Issue(context.Background(), "issue-1")
-			for _, err := range []error{listErr, getErr} {
+			checkErr := client.CheckKey()
+			for _, err := range []error{listErr, getErr, checkErr} {
 				var keyErr *linear.KeyError
 				if !errors.As(err, &keyErr) || keyErr.Problem != tc.problem {
 					t.Fatalf("err = %v, want KeyError %q", err, tc.problem)
@@ -234,7 +235,7 @@ func TestKeyFileProblemsStopBeforeQuery(t *testing.T) {
 			if issues != nil || calls.Load() != 0 {
 				t.Fatalf("query started despite unusable key: calls=%d", calls.Load())
 			}
-			if strings.Count(logs.String(), "reason="+string(tc.problem)) != 2 {
+			if strings.Count(logs.String(), "reason="+string(tc.problem)) != 3 {
 				t.Fatalf("reason not logged for each refused query: %q", logs.String())
 			}
 			assertNoKey(t, logs.String(), string(linear.ClassOf(listErr)))

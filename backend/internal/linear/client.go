@@ -254,6 +254,15 @@ func (c *Client) Issue(ctx context.Context, id string) (Issue, error) {
 	return issue, nil
 }
 
+// CheckKey reports whether the key file is usable without sending anything.
+// The Poller calls it before a round so that no query is started when the
+// file is missing or not 0600 (spec 15 6章). The value is discarded and only
+// the reason is logged.
+func (c *Client) CheckKey() error {
+	_, err := c.key()
+	return err
+}
+
 // key reads the key file before every query. When the file is missing or
 // not 0600 the query is not started and the reason (never the value) is logged.
 func (c *Client) key() (string, error) {

@@ -6,6 +6,7 @@ import { ApiClient } from '@/api/client'
 import type { Project, Runner } from '@/api/registry'
 import type { TaskSummary } from '@/api/tasks'
 import type { NotificationFailure } from '@/api/notification-failures'
+import type { LinearStatus } from '@/api/linear'
 import { fakeEvents } from '@/test/fake-events'
 import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
 import App from '@/App'
@@ -70,6 +71,7 @@ function renderDashboard(handler: (request: Recorded) => Response | undefined = 
     if (request.url.startsWith('/api/projects')) return page(PROJECTS)
     if (request.url.startsWith('/api/tasks')) return page(TASKS)
     if (request.url.startsWith('/api/notification-failures')) return failurePage([])
+    if (request.url === '/api/linear/status') return json(200, { teams: [], issues: [] })
     return json(500, {})
   })
   render(<App api={new ApiClient(fake.fetch, fakeEvents().factory)} />)
@@ -209,5 +211,56 @@ describe('Dashboard（13 3.2）', () => {
     renderDashboard()
     expect(await screen.findByText('通知失敗はありません。')).toBeVisible()
     expect(screen.getByTestId('notification-failure-count')).toHaveTextContent('通知失敗0件')
+  })
+
+  it('照会の失敗が5回続いた Linear Team を、失敗の分類と最後に成功した時刻つきでエラー状況に出す（15 6章）', async () => {
+    const status: LinearStatus = {
+      teams: [
+        { teamId: 'team-down', lastSuccessAt: '2026-11-08T00:00:00Z', lastError: 'network', consecutiveFailures: 5 },
+        { teamId: 'team-new', lastSuccessAt: null, lastError: 'auth', consecutiveFailures: 7 },
+        { teamId: 'team-flaky', lastSuccessAt: '2026-11-08T00:05:00Z', lastError: 'rate_limited', consecutiveFailures: 4 },
+        { teamId: 'team-ok', lastSuccessAt: '2026-11-08T00:06:00Z', lastError: null, consecutiveFailures: 0 },
+      ],
+      issues: [{ linearIssueId: 'i1', issueIdentifier: 'ENG-123', teamId: 'team-ok', lastDecision: 'skipped_initial', lastDecisionAt: '2026-11-08T00:06:00Z' }],
+    }
+    renderDashboard((request) => (request.url === '/api/linear/status' ? json(200, status) : undefined))
+    const failures = await screen.findByRole('list', { name: 'Linear の照会の失敗' })
+    const items = within(failures).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('team-down')
+    expect(items[0]).toHaveTextContent('通信エラー（network）')
+    expect(items[0]).toHaveTextContent('5 回続けて失敗')
+    expect(items[0]).toHaveTextContent(`最後に成功した時刻: ${new Date('2026-11-08T00:00:00Z').toLocaleString('ja-JP')}`)
+    expect(within(items[0]).getByText(new Date('2026-11-08T00:00:00Z').toLocaleString('ja-JP'))).toHaveAttribute('datetime', '2026-11-08T00:00:00Z')
+    expect(items[1]).toHaveTextContent('認証エラー（auth）')
+    expect(items[1]).toHaveTextContent('最後に成功した時刻: まだ成功していません')
+    expect(items[1]).toHaveTextContent('linear-api-key')
+    expect(failures).not.toHaveTextContent('team-flaky')
+
+    // 取り込みの状況には、失敗の少ない Team も含めてすべて出す。
+    const teams = screen.getByRole('table', { name: 'Linear Team の照会の状況' })
+    expect(within(teams).getAllByRole('row').filter((row) => row.hasAttribute('data-team')).map((row) => row.getAttribute('data-team'))).toEqual([
+      'team-down',
+      'team-new',
+      'team-flaky',
+      'team-ok',
+    ])
+    expect(within(teams).getByRole('row', { name: /team-flaky/ })).toHaveTextContent('レート制限（rate_limited）')
+    const issues = screen.getByRole('table', { name: 'トリガーのラベルが付いている Issue' })
+    expect(issues).toHaveTextContent('ENG-123')
+    expect(issues).toHaveTextContent('最初の照会のため記録のみ（skipped_initial）')
+  })
+
+  it('照会の対象の Team が無ければその旨を出し、エラー状況には失敗を出さない', async () => {
+    renderDashboard()
+    expect(await screen.findByText(/照会の対象の Linear Team はありません。/)).toBeVisible()
+    expect(screen.getByText('続けて失敗している照会はありません。')).toBeVisible()
+  })
+
+  it('GET /api/linear/status が失敗しても、ほかの欄は表示し、Linear の欄にエラーを出す', async () => {
+    renderDashboard((request) => (request.url === '/api/linear/status' ? json(500, {}) : undefined))
+    expect(await within(await screen.findByTestId('linear-status')).findByTestId('api-error')).toHaveTextContent('サーバーでエラーが発生しました')
+    expect(within(screen.getByTestId('linear-poll-failures')).getByTestId('api-error')).toBeVisible()
+    expect(screen.getByTestId('task-count-running')).toHaveTextContent('実行中2件')
   })
 })

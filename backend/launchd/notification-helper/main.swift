@@ -5,13 +5,16 @@ import UserNotifications
 private let registrationTimeout: TimeInterval = 30
 private let responseLifetime: TimeInterval = 60
 
+// Accepts only http://127.0.0.1:<port>/tasks/<taskId> (task notifications)
+// or exactly http://127.0.0.1:<port>/ (the Dashboard, for Linear polling
+// alerts that have no task). Every other URL is rejected.
 private func taskURL(_ value: String) -> URL? {
     guard let parts = URLComponents(string: value),
           parts.scheme == "http", parts.host == "127.0.0.1",
           let port = parts.port, (1...65535).contains(port),
           parts.user == nil, parts.password == nil,
           parts.query == nil, parts.fragment == nil,
-          parts.path.hasPrefix("/tasks/"), parts.path.count > "/tasks/".count
+          parts.path == "/" || (parts.path.hasPrefix("/tasks/") && parts.path.count > "/tasks/".count)
     else { return nil }
     return parts.url
 }

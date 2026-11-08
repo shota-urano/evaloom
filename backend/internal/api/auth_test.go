@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/linearintake"
 )
 
 type authFixture struct {
@@ -28,6 +29,7 @@ type authFixture struct {
 	csrf     string
 	calls    atomic.Int32
 	logs     bytes.Buffer
+	settings *linearintake.LabelSettings
 }
 
 func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
@@ -36,7 +38,7 @@ func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
 
 func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
 	t.Helper()
-	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
+	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}, settings: linearintake.NewLabelSettings()}
 	f.server = httptest.NewUnstartedServer(nil)
 	var err error
 	f.auth, err = NewOwnerAuth(f.db, slog.New(slog.NewTextHandler(&f.logs, nil)), f.server.Listener.Addr().String())
@@ -58,7 +60,7 @@ func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConf
 	if configure != nil {
 		artifacts = configure(f.db)
 	}
-	mux.Handle("/", NewHandlerWithArtifacts(f.db, nil, f.auth, nil, config, artifacts, f.adapters))
+	mux.Handle("/", NewHandlerWithSettings(f.db, nil, f.auth, nil, config, artifacts, f.settings, f.adapters))
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)

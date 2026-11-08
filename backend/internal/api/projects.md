@@ -49,3 +49,12 @@
   `registry.repositoryValidationTimeout`に定数として置く。
   リモート検証が期限を超えたら既存の422と`baseBranch / remote_unavailable`を返す。
   要求のキャンセル時や期限到達時にはGitの通信子プロセスも終了する。
+
+## Linear 項目（仕様15の3.8・5章）
+
+- `linearTeamId`・`linearRoutingLabel`は nullable で、省略値は null。null で解除する。
+  空白だけの値は 400 と`<field> / required`で拒否する（Linear の Team やラベルに一致しないため）。
+- 別の Project と同じ Team とラベルの組は、保存のトランザクション内で確かめて 409 にし、
+  details に`linearRoutingLabel / duplicate`を返す。DB の UNIQUE 制約も残る。
+- 保存のトランザクションで、どの Project も登録しなくなった Team の linear_poll_teams の行を消す
+  （仕様15の3.8、Q64）。次の照会を待たずに消すので、すぐ登録し直しても最初の照会からやり直す。

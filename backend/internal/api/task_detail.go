@@ -39,7 +39,7 @@ func getTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		view := taskDetailView{
-			taskSummaryView: taskSummaryView{Task: detail.Task},
+			taskSummaryView: newTaskSummaryView(detail.Task, detail.TaskOrigin),
 			Executions:      make([]taskExecutionView, 0, len(detail.Executions)),
 		}
 		for _, e := range detail.Executions {

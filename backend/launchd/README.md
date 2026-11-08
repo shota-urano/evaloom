@@ -218,6 +218,10 @@ PY
 ヘルパーは`LSUIElement`を指定してDockに出さず、`UNUserNotificationCenter`で
 通知する。クリック時は通知に保存したタスクURLを`NSWorkspace`で開く。
 URLは`http://127.0.0.1:<port>/tasks/<taskId>`に限定する。
+ただしLinearの照会が続けて失敗したときの通知（仕様15の6章）はタスクを持たないため、
+Dashboardの`http://127.0.0.1:<port>/`（パスが`/`だけ）も受け付ける。それ以外のURLは拒否する。
+この通知の本文は分類（`auth`・`rate_limited`・`network`・`other`）と連続失敗回数だけとする。
+既に配置したヘルパーはこの変更を含まないため、作り直して配置し直す。
 通知登録後は60秒待って終了する。通知センターからのクリックでmacOSが再起動した
 場合も、通知を追加せず応答を受け付ける。
 

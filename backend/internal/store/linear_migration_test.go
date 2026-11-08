@@ -63,7 +63,7 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 		if got := migrationRows(t, db, `SELECT linear_team_id, linear_routing_label FROM projects`); !reflect.DeepEqual(got, [][]any{{nil, nil}}) {
 			t.Fatalf("migrated routing = %#v", got)
 		}
-		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
 		if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 			t.Fatalf("foreign key violations = %#v", violations)
 		}
@@ -320,5 +320,109 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+}
+
+// TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria checks 0011: an
+// empty acceptance_criteria is allowed only for source=linear held as
+// missing_acceptance_criteria (spec 15 3.8, decided 2026-11-08).
+func TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria(t *testing.T) {
+	db := openTaskTables(t)
+	insert := func(id string, project, source, cause any, criteria string) error {
+		_, err := db.Exec(`INSERT INTO tasks (`+legacyTaskColumns+`, source, intake_block_cause)
+			VALUES (?, ?, 'Title', 'Body', ?, 'change', 'development', 'solo', 'blocked', ?, ?, ?, ?, ?)`,
+			id, project, criteria, id, registryTime, registryTime, source, cause)
+		return err
+	}
+	for _, test := range []struct {
+		name           string
+		project        any
+		source, cause  any
+		constraintCode int
+	}{
+		{"manual", "project-a", "manual", nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"manual by default", "project-a", nil, nil, sqlite3.SQLITE_CONSTRAINT_NOTNULL},
+		{"manual with missing criteria cause", "project-a", "manual", "missing_acceptance_criteria", sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"linear not held", "project-a", "linear", nil, sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"linear held for routing", nil, "linear", "routing_no_label", sqlite3.SQLITE_CONSTRAINT_CHECK},
+		{"linear held for assignment", "project-a", "linear", "config_missing_assignment", sqlite3.SQLITE_CONSTRAINT_CHECK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assertRegistryConstraint(t, insert(test.name, test.project, test.source, test.cause, ""), test.constraintCode)
+		})
+	}
+	// Existing manual writers that omit source keep rejecting an empty value.
+	_, err := db.Exec(`INSERT INTO tasks (` + legacyTaskColumns + `)
+		VALUES ('omitted', 'project-a', 'Title', 'Body', '', 'change', 'development', 'solo', 'queued', 'omitted', 't', 't')`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	_, err = db.Exec(`UPDATE tasks SET acceptance_criteria = '' WHERE id = 'task-001'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+
+	for _, project := range []any{nil, "project-a"} {
+		id := fmt.Sprint("held-", project)
+		if err := insert(id, project, "linear", "missing_acceptance_criteria", ""); err != nil {
+			t.Fatalf("held linear task without criteria (project %v): %v", project, err)
+		}
+	}
+	var criteria string
+	if err := db.QueryRow(`SELECT acceptance_criteria FROM tasks WHERE id = 'held-<nil>'`).Scan(&criteria); err != nil || criteria != "" {
+		t.Fatalf("stored criteria = %q, err = %v", criteria, err)
+	}
+	// Releasing the hold requires criteria; the empty value cannot outlive it.
+	_, err = db.Exec(`UPDATE tasks SET intake_block_cause = NULL, status = 'queued' WHERE id = 'held-project-a'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+	mustTaskExec(t, db, `UPDATE tasks SET intake_block_cause = NULL, status = 'queued',
+		acceptance_criteria = 'tests pass' WHERE id = 'held-project-a'`)
+	if got := migrationRows(t, db, `SELECT name FROM sqlite_master WHERE name = 'tasks_acceptance_criteria'`); len(got) != 0 {
+		t.Fatalf("temporary table left = %#v", got)
+	}
+}
+
+// TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks applies 0011 to a
+// database that already holds Linear tasks and links from 0010.
+func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := readMigrations(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, migration := range migrations {
+		if migration.version < 11 {
+			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
+		}
+	}
+	db, err := open(context.Background(), path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	if _, err := insertLinearMigrationTask(db, "task-002", nil, "linear", "routing_unknown_label"); err != nil {
+		t.Fatal(err)
+	}
+	mustTaskExec(t, db, `INSERT INTO linear_issue_links
+		(id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
+		VALUES ('link-1', 'issue-a', 'ENG-1', 'https://example.invalid/ENG-1', 'team-a', 'task-002', 1, ?)`, registryTime)
+	query := "SELECT " + legacyTaskColumns + ", source, intake_block_cause FROM tasks ORDER BY id"
+	before := migrationRows(t, db, query)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = openRegistry(t, path)
+	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
+		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
+	}
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+	if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
+		t.Fatalf("foreign key violations = %#v", violations)
+	}
+	for _, id := range []string{"task-001", "task-002"} {
+		_, err := db.Exec(`DELETE FROM tasks WHERE id = ?`, id)
+		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY)
+	}
 }

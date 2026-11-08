@@ -31,6 +31,8 @@ const REASON_LABELS: Record<string, string> = {
   out_of_range: '範囲外の値です',
   // 04-task-lifecycle 3.1: Project の default_role に Harness の割り当てが無い（422）
   default_harness_missing: '既定の役割に Harness が割り当てられていません。プロジェクトの詳細画面で割り当ててください',
+  // 15-linear-intake 3.8: UNIQUE(linear_team_id, linear_routing_label)（409、backend/internal/api/projects.md）
+  duplicate: 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています',
 }
 
 /** details の reason（機械向けの語）を画面の文言にする。未知の語は原文を添えて出す。 */
@@ -110,8 +112,20 @@ export function splitFieldErrors(
  * mapping は details[].field → フォームの項目名。422 は ApiErrorAlert にも一覧するので、ここは項目側の表示用。
  */
 export function preconditionFieldErrors(error: unknown, mapping: Readonly<Record<string, string>>): FieldErrors {
+  return statusFieldErrors(error, 422, mapping)
+}
+
+/**
+ * 409 conflict の details（Linear Team ID と実行先ラベルの組の重複など）を、フォームの項目に対応づける。
+ * details の無い 409（ほかの操作で内容が変わった）は対象にしない。
+ */
+export function conflictFieldErrors(error: unknown, mapping: Readonly<Record<string, string>>): FieldErrors {
+  return statusFieldErrors(error, 409, mapping)
+}
+
+function statusFieldErrors(error: unknown, status: number, mapping: Readonly<Record<string, string>>): FieldErrors {
   const fieldErrors: FieldErrors = {}
-  if (!(error instanceof ApiError) || error.status !== 422) return fieldErrors
+  if (!(error instanceof ApiError) || error.status !== status) return fieldErrors
   for (const detail of error.details) {
     const field = mapping[detail.field]
     if (field) (fieldErrors[field] ??= []).push(reasonLabel(detail.reason))
