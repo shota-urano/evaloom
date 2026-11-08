@@ -69,7 +69,9 @@ type executionFacts struct {
 // It carries the requirements 6.4 items that apply to the trigger (3.2):
 // 実行ステータス, 実行担当ハーネス, 作業概要, 検証結果, PR URL, エラー情報.
 // 必要な承認事項 has no data source yet (spec 17 is not implemented), so the
-// waiting_approval body carries the status only.
+// waiting_approval body carries the status only. An intake hold carries the
+// reason and the fix instead (3.2); the missing-criteria hold also asks for
+// the criteria.
 //
 // It never reads log events, log artifacts or test output, and never writes
 // a path column. Free text written by the harness or the Runner (summary,
@@ -89,6 +91,8 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 	fmt.Fprintf(&b, "- 実行ステータス: %s\n", statusName(taskStatus))
 
 	switch t.Kind {
+	case KindIntakeBlocked, KindMissingAcceptanceCriteria:
+		writeHold(&b, t)
 	case KindSucceeded, KindFailed, KindBlocked, KindCancelled:
 		facts, ok, err := readExecution(ctx, tx, t)
 		if err != nil {
@@ -100,6 +104,51 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 	}
 	fmt.Fprintf(&b, "\n%s", t.DedupeKey())
 	return b.String(), nil
+}
+
+// holdTexts are the reason and the fix of each intake hold (spec 16 3.2,
+// spec 15 3.6). {prefix} is the routing label prefix.
+var holdTexts = map[string]struct{ reason, fix string }{
+	"routing_multiple_labels": {
+		"実行先ラベル（{prefix} で始まるラベル）が2つ以上付いているため、実行先を決められない",
+		"実行先ラベルを1つにする"},
+	"routing_unknown_label": {
+		"実行先ラベル（{prefix} で始まるラベル）が Evaloom に登録されていない",
+		"Evaloom に登録済みの実行先ラベルを付ける"},
+	"routing_team_mismatch": {
+		"実行先ラベル（{prefix} で始まるラベル）は登録済みだが、その Project の Linear Team がこの Issue の Team と違う",
+		"この Issue の Team で登録済みの実行先ラベルを付ける"},
+	"routing_no_label": {
+		"実行先ラベル（{prefix} で始まるラベル）が付いていない",
+		"Evaloom に登録済みの実行先ラベルを1つ付ける"},
+	"missing_acceptance_criteria": {
+		"Issue の本文に受け入れ条件が書かれていない",
+		"本文に「受け入れ条件」または「Acceptance Criteria」という見出し（例: `## 受け入れ条件`）を作り、その下に受け入れ条件を書く"},
+	"config_missing_assignment": {
+		"実行先の Project の default role にハーネスが割り当てられていない",
+		"管理画面で Project の default role にハーネスを割り当てる"},
+}
+
+// writeHold writes why the task is held at intake and how to fix it. The
+// trigger's target is the intake_block_cause. The text is fixed, so it
+// carries no secret.
+func writeHold(b *strings.Builder, t Trigger) {
+	label := "（" + t.RoutingLabelPrefix + " で始まるラベル）"
+	if t.RoutingLabelPrefix == "" {
+		label = ""
+	}
+	fill := func(s string) string { return strings.ReplaceAll(s, "（{prefix} で始まるラベル）", label) }
+	text, ok := holdTexts[t.TargetID]
+	if !ok {
+		fmt.Fprintf(b, "- 保留の理由: %s\n", t.TargetID)
+		return
+	}
+	if t.Kind == KindMissingAcceptanceCriteria {
+		b.WriteString("\n受け入れ条件の記入をお願いします。\n")
+	}
+	fmt.Fprintf(b, "- 保留の理由: %s\n", fill(text.reason))
+	fmt.Fprintf(b, "- 直し方: %s\n", fill(text.fix))
+	b.WriteString("- Issue を直すと、次の照会で Evaloom が判定をやり直す\n")
 }
 
 func statusName(status model.TaskStatus) string {

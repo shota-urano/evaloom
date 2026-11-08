@@ -39,6 +39,10 @@ type Trigger struct {
 	TaskID   string
 	Kind     Kind
 	TargetID string
+	// RoutingLabelPrefix is the routing label prefix (spec 15 3.4) the
+	// intake decision used. Only intake hold comments show it; it is not
+	// part of the dedupe_key.
+	RoutingLabelPrefix string
 }
 
 // DedupeKey is linear_outbox.dedupe_key (spec 16 3.7).
