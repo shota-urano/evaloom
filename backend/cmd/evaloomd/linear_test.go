@@ -89,7 +89,7 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 		}
 		// The Poller reads the label settings served by /api/settings
 		// (spec 15 5章); run sets them before starting it.
-		if settings, ok := poller.Settings.(*linearintake.LabelSettings); !ok || settings.LinearLabels() != linearintake.DefaultLabels() {
+		if settings, ok := poller.Settings.(*linearintake.LabelSettings); !ok || settings.LinearLabels(ctx) != linearintake.DefaultLabels() {
 			t.Fatalf("poller settings = %#v", poller.Settings)
 		}
 	case <-ctx.Done():

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,11 +16,11 @@ import (
 )
 
 // LinearSettings is the store of the global settings linear.triggerLabel and
-// linear.routingLabelPrefix (spec 15 5章, Q48), shared with the Linear
-// Poller. *linearintake.LabelSettings implements it.
+// linear.routingLabelPrefix (spec 15 5章, Q48, Q76), shared with the Linear
+// Poller. *linearintake.LabelSettings implements it with the settings table.
 type LinearSettings interface {
-	LinearLabels() linearintake.Labels
-	SetLinearLabels(linearintake.Labels)
+	LinearLabels(ctx context.Context) linearintake.Labels
+	UpdateLinearLabels(ctx context.Context, patch linearintake.LabelsPatch) (linearintake.Labels, error)
 }
 
 // settingsView is GET/PATCH /api/settings. Spec 15 5章 adds the linear
@@ -30,12 +31,13 @@ type settingsView struct {
 
 func getSettings(settings LinearSettings) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, settingsView{Linear: settings.LinearLabels()})
+		writeJSON(w, http.StatusOK, settingsView{Linear: settings.LinearLabels(r.Context())})
 	}
 }
 
 // patchSettings replaces the supplied keys of linear and keeps the omitted
-// ones. Unknown keys, null and blank values are rejected.
+// ones. Unknown keys, null and blank values are rejected before anything is
+// written, so one rejected key leaves every key unchanged (spec 15 5章, Q76).
 func patchSettings(settings LinearSettings, logger *slog.Logger) http.HandlerFunc {
 	var mu sync.Mutex // read-modify-write of concurrent PATCHes
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -44,9 +46,7 @@ func patchSettings(settings LinearSettings, logger *slog.Logger) http.HandlerFun
 			WriteError(w, logger, err)
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
-		labels := settings.LinearLabels()
+		var changes linearintake.LabelsPatch
 		for key, value := range patch {
 			if key != "linear" {
 				WriteError(w, logger, invalid("body", "invalid_json"))
@@ -58,12 +58,12 @@ func patchSettings(settings LinearSettings, logger *slog.Logger) http.HandlerFun
 				return
 			}
 			for name, raw := range linear {
-				var target *string
+				var target **string
 				switch name {
 				case "triggerLabel":
-					target = &labels.TriggerLabel
+					target = &changes.TriggerLabel
 				case "routingLabelPrefix":
-					target = &labels.RoutingLabelPrefix
+					target = &changes.RoutingLabelPrefix
 				default:
 					WriteError(w, logger, invalid("body", "invalid_json"))
 					return
@@ -80,10 +80,16 @@ func patchSettings(settings LinearSettings, logger *slog.Logger) http.HandlerFun
 					WriteError(w, logger, invalid(field, "required"))
 					return
 				}
-				*target = *text
+				*target = text
 			}
 		}
-		settings.SetLinearLabels(labels)
+		mu.Lock()
+		defer mu.Unlock()
+		labels, err := settings.UpdateLinearLabels(r.Context(), changes)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, settingsView{Linear: labels})
 	}
 }

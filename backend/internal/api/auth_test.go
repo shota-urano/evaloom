@@ -38,7 +38,8 @@ func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
 
 func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
 	t.Helper()
-	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}, settings: linearintake.NewLabelSettings()}
+	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
+	f.settings = linearintake.NewLabelSettings(f.db, nil)
 	f.server = httptest.NewUnstartedServer(nil)
 	var err error
 	f.auth, err = NewOwnerAuth(f.db, slog.New(slog.NewTextHandler(&f.logs, nil)), f.server.Listener.Addr().String())

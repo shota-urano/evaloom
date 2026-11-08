@@ -34,9 +34,9 @@ func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web
 }
 
 // NewHandlerWithArtifacts uses only Control Plane supplied storage and limits.
-// The Linear label settings start at their defaults and are not shared.
+// The Linear label settings are read from and written to db's settings table.
 func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, registries ...*adapter.Registry) http.Handler {
-	return NewHandlerWithSettings(db, logger, auth, web, contexts, artifacts, linearintake.NewLabelSettings(), registries...)
+	return NewHandlerWithSettings(db, logger, auth, web, contexts, artifacts, linearintake.NewLabelSettings(db, logger), registries...)
 }
 
 // NewHandlerWithSettings serves GET/PATCH /api/settings from settings, which

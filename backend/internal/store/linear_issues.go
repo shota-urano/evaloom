@@ -22,15 +22,19 @@ type LinearIssueState struct {
 	LastDecisionAt  string // empty: NULL
 	FirstSeenAt     string
 	LastSeenAt      string
+	// RemovedAt is the removed mark (spec 15 3.8, Q78): when the Issue was
+	// found deleted or archived. Empty: NULL, the Issue is not marked.
+	RemovedAt string
 }
 
 const linearIssueStateColumns = `linear_issue_id, issue_identifier, team_id, ai_ready, attach_seq,
-	issue_updated_at, coalesce(last_decision, ''), coalesce(last_decision_at, ''), first_seen_at, last_seen_at`
+	issue_updated_at, coalesce(last_decision, ''), coalesce(last_decision_at, ''), first_seen_at, last_seen_at,
+	coalesce(removed_at, '')`
 
 func scanLinearIssueState(row interface{ Scan(...any) error }) (LinearIssueState, error) {
 	var s LinearIssueState
 	err := row.Scan(&s.LinearIssueID, &s.IssueIdentifier, &s.TeamID, &s.AIReady, &s.AttachSeq,
-		&s.IssueUpdatedAt, &s.LastDecision, &s.LastDecisionAt, &s.FirstSeenAt, &s.LastSeenAt)
+		&s.IssueUpdatedAt, &s.LastDecision, &s.LastDecisionAt, &s.FirstSeenAt, &s.LastSeenAt, &s.RemovedAt)
 	return s, err
 }
 
@@ -75,28 +79,21 @@ func ListAttachedLinearIssues(ctx context.Context, db *sql.DB, teamID string) ([
 }
 
 // SaveLinearIssueState inserts or replaces the row. first_seen_at is kept
-// from an existing row.
+// from an existing row. An empty RemovedAt clears the removed mark.
 func SaveLinearIssueState(ctx context.Context, tx *sql.Tx, s LinearIssueState) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO linear_issue_states (linear_issue_id, issue_identifier,
-		team_id, ai_ready, attach_seq, issue_updated_at, last_decision, last_decision_at, first_seen_at, last_seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), ?, ?)
+		team_id, ai_ready, attach_seq, issue_updated_at, last_decision, last_decision_at, first_seen_at, last_seen_at,
+		removed_at)
+		VALUES (?, ?, ?, ?, ?, ?, nullif(?, ''), nullif(?, ''), ?, ?, nullif(?, ''))
 		ON CONFLICT (linear_issue_id) DO UPDATE SET issue_identifier = excluded.issue_identifier,
 			team_id = excluded.team_id, ai_ready = excluded.ai_ready, attach_seq = excluded.attach_seq,
 			issue_updated_at = excluded.issue_updated_at, last_decision = excluded.last_decision,
-			last_decision_at = excluded.last_decision_at, last_seen_at = excluded.last_seen_at`,
+			last_decision_at = excluded.last_decision_at, last_seen_at = excluded.last_seen_at,
+			removed_at = excluded.removed_at`,
 		s.LinearIssueID, s.IssueIdentifier, s.TeamID, s.AIReady, s.AttachSeq, s.IssueUpdatedAt,
-		s.LastDecision, s.LastDecisionAt, s.FirstSeenAt, s.LastSeenAt)
+		s.LastDecision, s.LastDecisionAt, s.FirstSeenAt, s.LastSeenAt, s.RemovedAt)
 	if err != nil {
 		return fmt.Errorf("store: save linear issue state: %w", err)
-	}
-	return nil
-}
-
-// DeleteLinearIssueState removes the row of an Issue that was deleted or
-// archived in Linear (spec 15 3.4).
-func DeleteLinearIssueState(ctx context.Context, tx *sql.Tx, issueID string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM linear_issue_states WHERE linear_issue_id = ?`, issueID); err != nil {
-		return fmt.Errorf("store: delete linear issue state: %w", err)
 	}
 	return nil
 }
