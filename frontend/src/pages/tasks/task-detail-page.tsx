@@ -23,7 +23,10 @@ import { cn } from '@/lib/utils'
 import { type ArtifactSource } from './block'
 import { BlockReview } from './block-review'
 import { ExecutionLog } from './execution-log'
+import { HeldReview } from './held-review'
+import { heldCause } from './intake'
 import { CANCELLABLE_TASK_STATUSES, RETRY_MODE_LABELS, RETRYABLE_TASK_STATUSES, TASKS_PATH } from './labels'
+import { LinearIssueLink } from './linear-issue-link'
 import { TaskStatusBadge } from './task-list-page'
 
 /** 成果物の一覧。成果物（artifacts）の一覧を返す本人用 API は仕様（01 5.1）に無いので、取得元を差し替えられるようにしておく。 */
@@ -64,6 +67,12 @@ function OverviewCard({ task, projectLink }: { task: TaskDetail; projectLink: Re
           <TaskStatusBadge status={task.status} />
         </Row>
         <Row label="プロジェクト">{projectLink}</Row>
+        {task.source === 'linear' && task.linear ? (
+          <Row label="Linear Issue">
+            <LinearIssueLink task={task} className="font-mono underline underline-offset-4" />{' '}
+            <span className="text-muted-foreground text-xs">{task.linear.url}</span>
+          </Row>
+        ) : null}
         <Row label="PR">
           {task.prUrl ? (
             <a href={task.prUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">
@@ -297,7 +306,9 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
   )
   // Execution ごとの最新の blocked イベント（Block の ID と原因）。
   const [blockEvents, setBlockEvents] = useState<Record<string, BlockedEvent>>({})
-  const project = useResource((signal) => (task.data ? registry.getProject(api, task.data.projectId, signal) : Promise.resolve(undefined)), `project:${task.data?.projectId ?? ''}`)
+  // 取り込みで保留したタスクは Project が決まっていないことがある（projectId が空、15 3.6）。
+  const projectId = task.data?.projectId ?? ''
+  const project = useResource((signal) => (projectId ? registry.getProject(api, projectId, signal) : Promise.resolve(undefined)), `project:${projectId}`)
 
   // 状態が進みうる Execution の status_changed で読み直す（13 3.5）。続けて届いた遷移はまとめて1回にする。
   const shown = useRef(executions)
@@ -363,12 +374,18 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
   }
 
   const data = task.data
-  const canCancel = CANCELLABLE_TASK_STATUSES.has(data.status)
-  const canRetry = RETRYABLE_TASK_STATUSES.has(data.status)
-  const projectLink = (
+  // 取り込みで保留したタスクは続行（再実行を含む）できず、中止だけを保留の確認に出す（15 3.6.3）。
+  const held = heldCause(data)
+  const canCancel = !held && CANCELLABLE_TASK_STATUSES.has(data.status)
+  // 保留のまま中止したタスクにも Execution が無く、再実行の元が無い（サーバーは 409 を返す）ので再実行を出さない。
+  const intakeOnly = Boolean(data.intakeBlockCause) && executions.length === 0
+  const canRetry = !held && !intakeOnly && RETRYABLE_TASK_STATUSES.has(data.status)
+  const projectLink = data.projectId ? (
     <Link to={`/projects/${encodeURIComponent(data.projectId)}`} className="underline-offset-4 hover:underline">
       {project.data?.name ?? data.projectId}
     </Link>
+  ) : (
+    none
   )
 
   return (
@@ -426,6 +443,8 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
           <Loading />
         )
       ) : null}
+
+      {held ? <HeldReview cause={held} busy={busy} onCancel={cancel} /> : null}
 
       <OverviewCard task={data} projectLink={projectLink} />
 
