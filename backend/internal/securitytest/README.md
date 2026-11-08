@@ -197,6 +197,25 @@ Blockedの6ケースではPublisherの呼び出しがゼロ、偽GitHubへのア
 
 GitHubには既存の偽HTTP APIを使い、テスト専用の`PullRequests`実装で接続する。既存の仕様上の穴として、push直後からPR作成前までに`pushed_sha`を永続化するRunner APIが無い。既存の`PublicationRecorder`境界に渡すテスト用Recorderは、既存DBの`executions.pushed_sha`と`branch_name`への書き込みを確定してから成功を返す。偽PR APIは作成要求の受信時点でDBを読み直し、状態が`publishing`、ブランチが対象と同じ、`pushed_sha`と`verified_sha`が空でなく一致していることを検証してからPRを作る。この確認が成功ケースで1回行われることも必須とし、最終result APIで初めてSHAを保存する実装では合格しない。最終状態とPR情報は引き続き既存result APIで保存する。新しい公開API、テーブル、列、製品の設定値は追加していない。
 
+## 承認の受け入れテスト（条件21・22、仕様17の9章）
+
+`runner.TestApprovalAcceptance`は通常の`make verify`で5ケースを実行する。仕様14のテスト群に、仕様17の承認を足したものである。
+各ケースは本番のパイプライン（実Runner、Control Planeの実ハンドラ、SQLite、テスト用bareリモート）で`require_approval`のProjectのPR 1を作り、Control Planeが作った`pending`の承認から始める。
+本人の承認・却下は本人用API（`/api/approvals`、`/decision`）にセッション・CSRF付きで送る。マージはclaimで受け取った承認済みの操作を、RunnerのGit Publisher（`ExecuteOperation`）が行う。
+
+テスト用GitHub（httptest）はPRの読み取りとマージ要求だけを足した。PRのhead SHAはbareリモートのタスクブランチの実際の値を返す。マージ要求は`sha`パラメータを実際のheadと照合し、違えば409を返す。一致すればbareリモートのmainにマージcommitを作る。
+マージ要求は受理・拒否にかかわらず全件を記録する。「マージされない」は、テスト用GitHubへのマージ要求が0件で、リモートのmainが変わらないことで確かめる。
+
+| ケース | 操作と確認 |
+|---|---|
+| `no_merge_without_approval` | 承認せずにRunnerにclaimを繰り返させ、仕事が渡らないことを確かめる。pendingの承認でマージを試みさせても、consumeが`not_approved`で断り、マージ要求は0件になる。最後に承認すると、同じ条件でマージ要求が1件になる（正の対照） |
+| `head_changed_after_approval` | 承認の後にPRのブランチへcommitを足す。consumeが`content_changed`で断り、マージ要求は0件、承認は`invalidated`、タスクは`waiting_approval`のままになる |
+| `head_changed_before_merge_request` | consumeの後、GitHubがshaを照合する直前にcommitを足す。マージ要求は1件届くが409で拒否され、mainは変わらない。承認は`invalidated(content_changed)`、タスクは`failed`になる |
+| `used_approval_merges_once` | 同じ承認済みの操作を並行に2回実行し、マージ要求が1件だけになる。マージ後のclaim、同じ操作の再実行、本人の再承認（409）でも2回目のマージ要求は出ない。`use_count`は1、`already_used`の消費記録は2件になる |
+| `expired_approval_does_not_merge` | 有効時間1秒で承認し、期限が過ぎてから実行する。consumeが`expired`で断り、マージ要求は0件、承認は`expired`になる |
+
+本番コード、公開API、テーブル、列、製品の設定値は追加・変更していない。
+
 ## 3.1 実CLIによる設定環境の分離テスト
 
 `TestModelConfigurationIsolation`は`security_model`タグを付けたときだけ実行する。

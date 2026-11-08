@@ -131,6 +131,9 @@ type productionPipelineFixture struct {
 	initialMain               string
 	// advancedMain is the remote Base Branch moved by another push (3.7.3).
 	advancedMain string
+	// pullRequest emulates GitHub's PR read and merge for PR 1 on the bare
+	// remote (approval acceptance, spec 17 3.5.2). Nil keeps them unexpected.
+	pullRequest *acceptancePullRequest
 }
 
 // secretSummaryHarness reports a summary chosen by the test, as a harness
@@ -460,6 +463,9 @@ func (f *productionPipelineFixture) github(w http.ResponseWriter, r *http.Reques
 		f.prBodies = append(f.prBodies, input["body"])
 		w.WriteHeader(201)
 		_ = json.NewEncoder(w).Encode(map[string]any{"number": 1, "html_url": "https://github.com/owner/repo/pull/1", "state": "open", "head": map[string]any{"ref": input["head"], "repo": map[string]string{"full_name": "owner/repo"}}, "base": map[string]string{"ref": input["base"]}})
+		return
+	}
+	if f.pullRequest != nil && f.pullRequest.serve(f, w, r) {
 		return
 	}
 	f.t.Errorf("unexpected GitHub %s %s", r.Method, r.URL.Path)
