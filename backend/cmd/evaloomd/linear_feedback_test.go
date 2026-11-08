@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,7 @@ func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 		return &linearintake.Poller{DB: db, Client: startupPollClient{make(chan string, 1)}, Logger: logger, Interval: time.Hour}, nil
 	}
 	created := make(chan [2]string, 1)
-	newLinearFeedback = func(db *sql.DB, logger *slog.Logger) (*linearfeedback.Worker, error) {
+	newLinearFeedback = func(db *sql.DB, logger *slog.Logger, _ int) (*linearfeedback.Worker, error) {
 		return &linearfeedback.Worker{DB: db, Client: commentClient{created}, Logger: logger, Interval: 10 * time.Millisecond}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -121,7 +122,7 @@ func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 // Production builds the Worker with the real Linear client and the default
 // interval; the key file is read only when a row is due.
 func TestDefaultLinearFeedbackUsesProductionConfiguration(t *testing.T) {
-	worker, err := newLinearFeedback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker, err := newLinearFeedback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), 8080)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	}
 	started := make(chan struct{})
 	created := make(chan [2]string, 1)
-	newLinearFeedback = func(db *sql.DB, logger *slog.Logger) (*linearfeedback.Worker, error) {
+	newLinearFeedback = func(db *sql.DB, logger *slog.Logger, _ int) (*linearfeedback.Worker, error) {
 		close(started)
 		return &linearfeedback.Worker{DB: db, Client: commentClient{created}, Logger: logger, Interval: 10 * time.Millisecond}, nil
 	}
@@ -217,5 +218,67 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("run: %v", err)
+	}
+}
+
+// On macOS the production Worker alerts an authentication error through the
+// macOS helper (spec 16 3.4.3); elsewhere it only logs.
+func TestDefaultLinearFeedbackAlertsThroughMacOS(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	worker, err := newLinearFeedback(nil, slog.New(slog.NewTextHandler(io.Discard, nil)), 49123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "darwin" {
+		if _, ok := worker.Alerter.(macOSLinearAlerter); !ok {
+			t.Fatalf("alerter = %T; want macOSLinearAlerter", worker.Alerter)
+		}
+	} else if worker.Alerter != nil {
+		t.Fatalf("alerter = %T; want nil off darwin", worker.Alerter)
+	}
+	alerter, ok := linearCommentAlerter("darwin", "/Users/owner", 49123).(macOSLinearAlerter)
+	if !ok || alerter.macOS == nil {
+		t.Fatalf("darwin alerter = %#v; want macOSLinearAlerter", alerter)
+	}
+	for _, goos := range []string{"linux", "windows"} {
+		if got := linearCommentAlerter(goos, "/unused", 8080); got != nil {
+			t.Fatalf("%s alerter = %#v; want nil", goos, got)
+		}
+	}
+}
+
+// 受け入れ基準: 認証エラーの通知の抑止を Linear Poller と送信 Worker で共通の
+// 1つにする（spec 16 3.4.3、Q84）。The Control Plane gives both the same gate.
+func TestRunSharesOneAuthAlertGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	originalPoller, originalFeedback := newLinearPoller, newLinearFeedback
+	t.Cleanup(func() { newLinearPoller, newLinearFeedback = originalPoller, originalFeedback })
+	var poller *linearintake.Poller
+	var worker *linearfeedback.Worker
+	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
+		poller = &linearintake.Poller{DB: db, Client: startupPollClient{make(chan string, 1)}, Logger: logger, Interval: time.Hour}
+		return poller, nil
+	}
+	started := make(chan struct{})
+	newLinearFeedback = func(db *sql.DB, logger *slog.Logger, _ int) (*linearfeedback.Worker, error) {
+		worker = &linearfeedback.Worker{DB: db, Client: commentClient{make(chan [2]string, 1)}, Logger: logger, Interval: time.Hour}
+		close(started)
+		return worker, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, []string{"-db", path, "-port", "0"}, io.Discard) }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("Control Plane did not start")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if poller.AuthGate == nil || poller.AuthGate != worker.AuthGate {
+		t.Fatalf("poller gate %p, worker gate %p; want one shared gate", poller.AuthGate, worker.AuthGate)
 	}
 }

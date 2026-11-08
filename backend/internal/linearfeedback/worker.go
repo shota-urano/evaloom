@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -75,6 +76,13 @@ type Client interface {
 	IssueComments(ctx context.Context, issueID string) ([]linear.Comment, error)
 }
 
+// AuthAlerter tells the owner that a comment could not be sent because of an
+// authentication error (spec 16 3.4.3, spec 12 3.5: the macOS notification
+// that opens the Dashboard). It carries nothing but the fact.
+type AuthAlerter interface {
+	AlertLinearCommentAuth(ctx context.Context) error
+}
+
 // Worker sends pending linear_outbox rows oldest first (3.4 step 2).
 type Worker struct {
 	DB       *sql.DB
@@ -84,9 +92,57 @@ type Worker struct {
 	// Now is the clock; nil uses time.Now. Tests advance it to pass the
 	// retry delays.
 	Now func() time.Time
+	// AuthGate is the authentication error notification suppression shared
+	// with the Linear Poller (3.4.3, Q84). nil: the Worker uses its own.
+	AuthGate *linear.AuthAlertGate
+	// Alerter delivers the authentication error notification. nil: it is
+	// only logged.
+	Alerter AuthAlerter
 	// The Worker keeps no per-row state in memory: whether a row must be
 	// matched against Linear before it is sent again is read from
 	// linear_outbox.outcome_unknown, so it survives a restart (3.4.1, Q83).
+
+	ownGateOnce sync.Once
+	ownGate     *linear.AuthAlertGate
+}
+
+// gate returns the shared suppression, or the Worker's own when none is set.
+func (w *Worker) gate() *linear.AuthAlertGate {
+	if w.AuthGate != nil {
+		return w.AuthGate
+	}
+	w.ownGateOnce.Do(func() { w.ownGate = &linear.AuthAlertGate{} })
+	return w.ownGate
+}
+
+// sendRound is the state of one SendDue call.
+type sendRound struct {
+	// alertAuth is set when this call took the shared suppression for an
+	// authentication error; the notification is sent once, at the end.
+	alertAuth bool
+}
+
+// authFailed records an authentication error. The suppression is checked
+// and taken in one step (3.4.3 step 3), so however many rows fail in this
+// call, and whatever the Poller detects at the same time, one notification
+// is sent.
+func (w *Worker) authFailed(round *sendRound) {
+	if w.gate().Acquire() {
+		round.alertAuth = true
+	}
+}
+
+// alertAuth sends the notification taken by authFailed. Its failure is only
+// logged (spec 12 3.5): it changes no task, no outbox row and writes no
+// execution event, because the notification has no Execution.
+func (w *Worker) alertAuth(ctx context.Context) {
+	w.logger().Warn("linear comment authentication failed; alerting the owner", "class", string(linear.ClassAuth))
+	if w.Alerter == nil {
+		return
+	}
+	if err := w.Alerter.AlertLinearCommentAuth(context.WithoutCancel(ctx)); err != nil {
+		w.logger().Error("linear comment auth alert failed", "error", err)
+	}
 }
 
 func (w *Worker) now() time.Time {
@@ -136,11 +192,19 @@ type outboxRow struct {
 // SendDue sends up to batchSize due rows, one at a time, oldest first. No
 // DB transaction is held while Linear is called. When the API key file is
 // unusable nothing is sent and the rows stay pending (as the Poller does,
-// spec 15 6章); the reason is logged by the client, never the key.
+// spec 15 6章); the reason is logged by the client, never the key. It counts
+// as an authentication error for the shared notification suppression
+// (spec 16 3.4.3, Q86).
 func (w *Worker) SendDue(ctx context.Context) error {
 	if w.DB == nil || w.Client == nil {
 		return errors.New("linearfeedback: worker needs a DB and a client")
 	}
+	var round sendRound
+	defer func() {
+		if round.alertAuth {
+			w.alertAuth(ctx)
+		}
+	}()
 	keyChecked := false
 	for range batchSize {
 		row, err := w.next(ctx)
@@ -149,6 +213,7 @@ func (w *Worker) SendDue(ctx context.Context) error {
 		}
 		if !keyChecked {
 			if err := w.Client.CheckKey(); err != nil {
+				w.authFailed(&round)
 				return nil
 			}
 			keyChecked = true
@@ -156,7 +221,7 @@ func (w *Worker) SendDue(ctx context.Context) error {
 		// Stop the batch on any error: if the row could not be updated it
 		// is still due, and sending it again in this batch would repeat
 		// the comment.
-		if err := w.send(ctx, *row); err != nil {
+		if err := w.send(ctx, *row, &round); err != nil {
 			return err
 		}
 	}
@@ -197,16 +262,18 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 // the row is recorded as sent with that comment's ID. If the comments cannot
 // be read, nothing is sent (a resend could duplicate the comment), the read
 // failure counts as the attempt's failure and outcome_unknown stays 1.
-func (w *Worker) send(ctx context.Context, r outboxRow) error {
+func (w *Worker) send(ctx context.Context, r outboxRow, round *sendRound) error {
 	if r.outcomeUnknown {
 		commentID, err := w.findSent(ctx, r)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
-			return w.failAttempt(ctx, r, err, "linear comments not read before resend", true)
+			return w.failAttempt(ctx, r, err, "linear comments not read before resend", true, round)
 		}
 		if commentID != "" {
+			// The comment was sent: the key is valid (3.4.3 step 4).
+			w.gate().Release()
 			w.logger().Info("linear comment already on the Issue; not sent again", "outbox_id", r.id,
 				"task_id", r.taskID, "kind", r.kind)
 			return w.markSent(ctx, r, commentID, r.attempts)
@@ -217,6 +284,9 @@ func (w *Worker) send(ctx context.Context, r outboxRow) error {
 	}
 	commentID, sendErr := w.Client.CreateComment(ctx, r.issueID, r.body)
 	if sendErr == nil {
+		// A send succeeded, so the key is valid again: lift the shared
+		// suppression (3.4.3 step 4).
+		w.gate().Release()
 		return w.markSent(ctx, r, commentID, r.attempts+1)
 	}
 	if ctx.Err() != nil {
@@ -224,7 +294,7 @@ func (w *Worker) send(ctx context.Context, r outboxRow) error {
 		// and outcome_unknown stays 1 so the next send checks first.
 		return sendErr
 	}
-	return w.failAttempt(ctx, r, sendErr, "linear comment not sent", linear.OutcomeUnknown(sendErr))
+	return w.failAttempt(ctx, r, sendErr, "linear comment not sent", linear.OutcomeUnknown(sendErr), round)
 }
 
 // markOutcomeUnknown commits outcome_unknown=1 before the comment is sent
@@ -271,7 +341,10 @@ func lastLineIs(body, key string) bool {
 // fail at once (6章), the 5th failure fails, and otherwise the row waits
 // for the next retry delay (3.4 step 4). unknown is the new
 // outcome_unknown: true when the attempt's result is not known (3.4.1).
-func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, message string, unknown bool) error {
+// A row failed for an authentication error alerts the owner through the
+// shared suppression (3.4.3); other failures, including those Linear
+// returned after authenticating, leave the suppression as it is.
+func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, message string, unknown bool, round *sendRound) error {
 	attempts := r.attempts + 1
 	class := linear.ClassOf(failure)
 	w.logger().Warn(message, "outbox_id", r.id, "task_id", r.taskID,
@@ -280,7 +353,11 @@ func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, me
 	switch {
 	case class == linear.ClassAuth:
 		// 6章: an authentication error is not retried.
-		return w.markFailed(ctx, r, attempts, unknown, ReasonAuth)
+		if err := w.markFailed(ctx, r, attempts, unknown, ReasonAuth); err != nil {
+			return err
+		}
+		w.authFailed(round)
+		return nil
 	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
 		// 6章: a deleted or archived Issue fails at once and does not
 		// affect the task.
