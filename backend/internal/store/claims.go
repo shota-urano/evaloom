@@ -56,11 +56,11 @@ type ClaimPullRequest struct {
 	Seq        int     `json:"seq"`
 }
 
-// Setup host registration is a separate spec 03 unit. Keep its claim boundary
-// closed until that Registry implementation supplies persisted destinations.
+// ClaimProject is the Project snapshot sent to the Runner. Its
+// setupAllowedHosts is projects.setup_allowed_hosts as registered (spec 04
+// 3.3.1, spec 03 3.3.1).
 type ClaimProject struct {
 	model.Project
-	SetupAllowedHosts []string `json:"setupAllowedHosts"`
 }
 
 type ClaimTask struct {
@@ -186,7 +186,6 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	if err != nil {
 		return nil, err
 	}
-	c.Project.SetupAllowedHosts = []string{}
 	c.Profile = ClaimProfile{HarnessID: harness.ID, Adapter: harness.Adapter,
 		Version: profile.Version, CommitSHA: profile.CommitSHA, Definition: profile.Definition,
 		HarnessRepoPath: harness.RepoPath, ToolPermissions: harness.ToolPermissions}
