@@ -31,6 +31,20 @@ func claimExecution(db *sql.DB, logger *slog.Logger, artifacts ArtifactConfig) h
 			return
 		}
 		defer tx.Rollback()
+		// Spec 17 3.5.1 step 2: an approved operation is a separate kind of
+		// work. Its Execution stays merging; consume decides whether it runs.
+		operation, err := store.NextOperationClaim(ctx, tx, runner)
+		if err == nil && operation != nil {
+			err = tx.Commit()
+			if err == nil {
+				writeJSON(w, http.StatusOK, operation)
+				return
+			}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
 		claim, err := store.NextClaim(ctx, tx, runner)
 		if errors.Is(err, store.ErrClaimAssignmentMissing) {
 			err = &Error{Code: PreconditionFailed, Message: err.Error(),
