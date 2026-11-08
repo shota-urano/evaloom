@@ -23,6 +23,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/linear"
 	"github.com/shota-urano/evaloom/backend/internal/linearfeedback"
 	"github.com/shota-urano/evaloom/backend/internal/linearintake"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/notification"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -171,6 +172,8 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 		}
 		defer func() { err = errors.Join(err, files.Close()) }()
 		artifacts = api.ArtifactConfig{Store: files, MaxBytes: *artifactMaxBytes}
+		// Linear comment bodies read 作業概要 from harness_output (spec 16 3.3).
+		defer linearoutbox.SetSummarySource(files.HarnessSummaryTx)()
 	}
 
 	// Bind only after database initialization succeeds. The host is deliberately

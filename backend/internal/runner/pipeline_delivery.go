@@ -12,6 +12,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/logredact"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/publisher"
 	"github.com/shota-urano/evaloom/backend/internal/worktree"
@@ -259,7 +260,14 @@ func (p *claimPipeline) harnessHead(ctx context.Context, e *Execution) error {
 	if err := p.runner.HarnessResultHandler()(ctx, e); err != nil {
 		return err
 	}
-	data, err := json.Marshal(e.HarnessResult)
+	// The stored summary leaves the Runner: the Control Plane puts it in
+	// Linear comments (spec 16 3.3) and resume PR bodies. Apply the log
+	// exclusion of spec 05 3.5 with the secrets this Runner holds. The
+	// in-memory result used by this Execution's publisher is unchanged.
+	output := *e.HarnessResult
+	summary, redacted := logredact.Text(output.Summary, append([]string{p.runner.token}, e.LogSecrets()...))
+	output.Summary = summary
+	data, err := json.Marshal(&output)
 	if err != nil {
 		return err
 	}
@@ -278,5 +286,5 @@ func (p *claimPipeline) harnessHead(ctx context.Context, e *Execution) error {
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		return fmt.Errorf("runner: save harness result failed")
 	}
-	return p.runner.deliverArtifact(ctx, LogArtifact{ID: id, ExecutionID: e.Claim.Execution.ID, Kind: "harness_output", Path: path})
+	return p.runner.deliverArtifact(ctx, LogArtifact{ID: id, ExecutionID: e.Claim.Execution.ID, Kind: "harness_output", Path: path, Redacted: redacted})
 }

@@ -152,10 +152,8 @@ func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.Co
 	if failure.conflict {
 		to, classification = model.ExecutionBlocked, string(model.BlockContextConflict)
 	}
-	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{TaskID: execution.TaskID, ExecutionID: execution.ID,
-		FromTask: execution.TaskStatus, FromExecution: execution.Status, ToExecution: to}); err != nil {
-		return err
-	}
+	// Write the classification and block first: the transition writes the
+	// Linear comment body from them in this transaction (spec 16 3.3).
 	if failure.conflict {
 		if err := store.SaveExecutionBlockTx(ctx, tx, store.ExecutionBlock{
 			ExecutionID: execution.ID, Cause: classification, HeadSHA: headSHA,
@@ -168,6 +166,10 @@ func recordContextBuildError(ctx context.Context, tx *sql.Tx, execution store.Co
 			classification, failure.Error(), execution.ID); err != nil {
 			return err
 		}
+	}
+	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{TaskID: execution.TaskID, ExecutionID: execution.ID,
+		FromTask: execution.TaskStatus, FromExecution: execution.Status, ToExecution: to}); err != nil {
+		return err
 	}
 	payload, _ := json.Marshal(map[string]string{"from": string(execution.Status), "to": string(to), "reason": classification})
 	_, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload)

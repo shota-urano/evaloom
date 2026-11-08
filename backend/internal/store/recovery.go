@@ -97,10 +97,12 @@ func interruptRunnerTx(ctx context.Context, tx *sql.Tx, runnerID, reason string)
 		return err
 	}
 	for _, change := range changes {
-		if err := task.TransitionExecutionTx(ctx, tx, change); err != nil {
+		// Classify first: the transition writes the Linear comment body from
+		// the classification in this transaction (spec 16 3.3).
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = 'interrupted', error_message = ? WHERE id = ?`, reason, change.ExecutionID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = 'interrupted', error_message = ? WHERE id = ?`, reason, change.ExecutionID); err != nil {
+		if err := task.TransitionExecutionTx(ctx, tx, change); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]string{"from": string(change.FromExecution), "to": "interrupted", "reason": reason})
