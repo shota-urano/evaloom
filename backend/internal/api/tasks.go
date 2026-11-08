@@ -148,8 +148,26 @@ type executionSummaryView struct {
 
 type taskSummaryView struct {
 	model.Task
-	LatestExecution *executionSummaryView `json:"latestExecution"`
-	PRURL           *string               `json:"prUrl"`
+	// Source, IntakeBlockCause and Linear are spec 15 5章's additions.
+	Source           string                `json:"source"`
+	IntakeBlockCause *string               `json:"intakeBlockCause"`
+	Linear           *taskLinearView       `json:"linear"`
+	LatestExecution  *executionSummaryView `json:"latestExecution"`
+	PRURL            *string               `json:"prUrl"`
+}
+
+// taskLinearView is the linked Linear Issue; null for manual tasks.
+type taskLinearView struct {
+	Identifier string `json:"identifier"`
+	URL        string `json:"url"`
+}
+
+func newTaskSummaryView(t model.Task, origin store.TaskOrigin) taskSummaryView {
+	view := taskSummaryView{Task: t, Source: origin.Source, IntakeBlockCause: origin.IntakeBlockCause}
+	if origin.LinearIdentifier != nil && origin.LinearURL != nil {
+		view.Linear = &taskLinearView{Identifier: *origin.LinearIdentifier, URL: *origin.LinearURL}
+	}
+	return view
 }
 
 // listTasks serves GET /api/tasks (13 3.2 Tasks 一覧). Optional filters are
@@ -214,7 +232,8 @@ func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		views := make([]taskSummaryView, 0, len(rows))
 		for _, row := range rows {
-			view := taskSummaryView{Task: row.Task, PRURL: row.PRURL}
+			view := newTaskSummaryView(row.Task, row.TaskOrigin)
+			view.PRURL = row.PRURL
 			if e := row.LatestExecution; e != nil {
 				view.LatestExecution = &executionSummaryView{e.ID, e.Seq, e.Mode, e.Status, e.ErrorClass}
 			}

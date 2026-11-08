@@ -134,7 +134,8 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 				return
 			}
 		}
-		settings, err := decodeSettings(before.ProjectSettings, patch, create, "reviewRole", "testCommand", "testReportFormat", "testReportPath", "setupCommand")
+		settings, err := decodeSettings(before.ProjectSettings, patch, create, "reviewRole", "testCommand", "testReportFormat", "testReportPath", "setupCommand",
+			"linearTeamId", "linearRoutingLabel")
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -200,6 +201,19 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, projectError(err))
 			return
 		}
+		// UNIQUE(linear_team_id, linear_routing_label) (spec 15 3.8): name the
+		// field so the form can show which value collided.
+		if settings.LinearTeamID != nil && settings.LinearRoutingLabel != nil {
+			taken, err := store.LinearRouteTaken(r.Context(), tx, *settings.LinearTeamID, *settings.LinearRoutingLabel, id)
+			if err == nil && taken {
+				err = &Error{Code: Conflict, Message: "Linear Team and routing label already registered to another Project",
+					Details: []Detail{{Field: "linearRoutingLabel", Reason: "duplicate"}}}
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		after := model.Project{ID: id, ProjectSettings: settings, CreatedAt: before.CreatedAt, UpdatedAt: now}
 		action, status := "project.update", http.StatusOK
@@ -209,6 +223,9 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			action, status, old = "project.register", http.StatusCreated, nil
 		}
 		err = store.SaveProject(r.Context(), tx, after, create)
+		if err == nil {
+			err = store.PruneLinearPollTeams(r.Context(), tx)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: action, TargetType: "project", TargetID: id,
@@ -243,6 +260,16 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 	}
 	if p.ReviewRole != nil {
 		return nil, invalid("reviewRole", "invalid")
+	}
+	// Clearing uses null; a blank value would never match a Linear Team or
+	// label and is rejected rather than stored.
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{{"linearTeamId", p.LinearTeamID}, {"linearRoutingLabel", p.LinearRoutingLabel}} {
+		if field.value != nil && strings.TrimSpace(*field.value) == "" {
+			return nil, invalid(field.name, "required")
+		}
 	}
 	for _, seconds := range []string{"setupSec", "harnessSec", "testSec"} {
 		if n, ok := p.Timeouts[seconds]; ok && n <= 0 {

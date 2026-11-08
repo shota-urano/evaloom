@@ -169,8 +169,12 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if err != nil {
 		return err
 	}
+	// The settings API and the Linear Poller share the label settings (spec
+	// 15 5章, Q48).
+	linearSettings := linearintake.NewLabelSettings()
 	server := &http.Server{
-		Handler:           api.NewHandlerWithArtifacts(db, logger, auth, web, api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts),
+		Handler: api.NewHandlerWithSettings(db, logger, auth, web,
+			api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts, linearSettings),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -200,6 +204,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if err != nil {
 		return err
 	}
+	poller.Settings = linearSettings
 	pollerCtx, cancelPoller := context.WithCancel(ctx)
 	pollerDone := make(chan struct{})
 	go func() {
