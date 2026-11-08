@@ -90,12 +90,14 @@ requirements 21章で詳細設計事項とされている。`evaloomd` は launc
 
 | 契機 | 通知の種類 | 本文に含めるもの | クリックで開く URL |
 |---|---|---|---|
-| Linear の照会が5回続けて失敗した（[`15-linear-intake.md`](./15-linear-intake.md) 6章） | Linear の照会の失敗 | 失敗の分類（`auth` / `rate_limited` / `network` / `other`）と、続けて失敗した回数 | `http://127.0.0.1:<port>/` |
+| Linear の照会が5回続けて失敗した、または照会が認証エラーになった（[`15-linear-intake.md`](./15-linear-intake.md) 6章。認証エラーは下の共通の抑止に従う、Q84） | Linear の照会の失敗 | 失敗の分類（`auth` / `rate_limited` / `network` / `other`）と、続けて失敗した回数 | `http://127.0.0.1:<port>/` |
 | Linear コメントの送信が認証エラーで failed になった（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.3、2026-11-08 決定、Q84） | Linear コメントの送信の失敗 | 失敗の分類（`auth`） | `http://127.0.0.1:<port>/` |
 
 - 本文には、表の項目のほかに API キーの値、Linear の応答の本文、Team ID を入れない。
 - 1回の照会で複数の Team が失敗しても、通知は1回にまとめる。
-- Linear コメントの送信の認証エラーの通知は、取り込み側と同じ扱い・同じ抑止にする。認証エラーが続く間は1回だけ出し、送信が成功したら抑止を解く。送信 Worker の1回の処理で複数の行が認証エラーになっても1回にまとめる。本文に Issue の識別子とコメントの本文を入れない（16 の 3.4.3）。
+- 認証エラーの通知の抑止は、取り込み側（Linear Poller）と送信側（送信 Worker）で共通の1つを持つ（2026-11-08 決定、Q84。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.3）。同じ API キーが無効になって照会と送信の両方が認証エラーになっても、表の2つの通知のうち先に検出した側の1回だけを出す。照会か送信のどちらかが1回成功したら抑止を解く。送信 Worker の1回の処理で複数の行が認証エラーになっても1回にまとめる。
+- 5回続けて失敗した通知と認証エラーの通知の分け方は案とし、Q86 に載せる。
+- Linear コメントの送信の失敗の通知の本文に、Issue の識別子とコメントの本文を入れない（16 の 3.4.3）。
 - この通知は Execution を持たないため、execution_events の `notification_sent` / `notification_failed`（3.4）には記録しない。送信に失敗したら Control Plane のログにだけ残す。照会の失敗そのものは Dashboard の取り込みの状況に出ている（[`15-linear-intake.md`](./15-linear-intake.md) 6章）。
 - 呼び出し方は 3.3 と同じ（`open -n -a <ヘルパーのパス> --args <件名> <本文> <URL>`）で、3つ目の引数に Dashboard の URL を渡す。
 
@@ -136,8 +138,8 @@ Linear コメントによる通知（requirements 8.8）は、Linear API キー�
 
 - 対象: `execution_events` のうち `type = notification_failed` の行すべて。Execution・タスクの状態や、再実行の前か後かで絞らない。
 - Phase 2 では、Execution の無い契機の Linear コメントの送信の失敗も対象にする（2026-11-08 決定、Q82）。linear_outbox のうち status=`failed` かつ execution_id が NULL の行である（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2）。Execution のある契機の Linear の失敗は execution_events の `notification_failed` として返し、linear_outbox の行からは返さない。
-- 並び順: 新しい順（`execution_events.id` の降順）。linear_outbox の行が混ざる Phase 2 では、記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順にし、同じ時刻の中は出所と ID で順を決める（案、Q82）。
-- ページネーション: 01 の 5.3 の共通規約（`?limit=` 既定 50・上限 200、`?cursor=`、応答の `nextCursor`）に従う。linear_outbox の行が混ざる場合、cursor は上の並び順の位置を表す値にし、2つの出所をまたいでも欠けも重複も出さない。
+- 並び順: 新しい順（`execution_events.id` の降順）。linear_outbox の行が混ざる Phase 2 では、記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順にし、同じ時刻の中は出所と ID で順を決める（2026-11-08 決定、Q82）。
+- ページネーション: 01 の 5.3 の共通規約（`?limit=` 既定 50・上限 200、`?cursor=`、応答の `nextCursor`）に従う。linear_outbox の行が混ざる場合、cursor は上の並び順の位置を表す値にし（2026-11-08 決定、Q82）、2つの出所をまたいでも欠けも重複も出さない。
 - 応答:
 
 ```json

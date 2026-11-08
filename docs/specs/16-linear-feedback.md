@@ -8,7 +8,7 @@ confirmed_rev: 9dc6232
 
 **親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: requirements 8.2 の工程15（結果返却）を Linear について行う。受信とタスク作成は [`15-linear-intake.md`](./15-linear-intake.md)
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q49, Q51, Q52, Q85）に載せている。2026-11-08 に本人が決めた点は Q80、Q82〜Q84 に載せている。
+この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q49, Q51, Q52, Q86）に載せている。2026-11-08 に本人が決めた点は Q80、Q82〜Q85 に載せている。
 
 ## 1. 目的
 
@@ -97,9 +97,10 @@ requirements 6.4 は「処理完了後」に返すとし、8.8 は「承認待�
 - Execution の無い契機（`intake_blocked`、`missing_acceptance_criteria`、保留したタスクの中止の `cancelled`）は execution_events に書けない。linear_outbox の行（status=`failed`、`failure_reason`、`failed_at`、3.7）を失敗の記録とし、一覧はこの行も返す。
 - どちらの契機かは、linear_outbox の `execution_id`（3.7）で決める。outbox の行を書くときに契機の Execution の ID を入れ、Execution の無い契機では NULL にする。Worker は execution_id が NULL でない行だけ `notification_failed` を書く。一覧は execution_id が NULL で status=`failed` の行を足す。同じ失敗を2回出さない。
 - failed にするときは、Worker が `failure_reason` に `notification_failed` の payload の reason と同じ値を、`failed_at` に failed にした時刻を書く。行の更新とイベントの書き込みは1つのトランザクションで行う。
-- 既存の DB に3つの列を足すマイグレーションでは、execution_id を、dedupe_key の対象（`<task_id>:<kind>:<対象の ID>` の対象の ID）がその行のタスクの Execution のときだけ埋め、それ以外は NULL にする。すでに failed の行は、failure_reason を `other`、failed_at を created_at にする（案。失敗した時刻と理由の記録が無いため）。
+- 既存の DB に3つの列を足すマイグレーションでは、execution_id を、dedupe_key の対象（`<task_id>:<kind>:<対象の ID>` の対象の ID）がその行のタスクの Execution のときだけ埋め、それ以外は NULL にする。すでに failed の行は、failure_reason を `other`、failed_at を created_at にする（2026-11-08 決定、Q82。失敗した時刻と理由の記録が無いため）。
+- 一覧に linear_outbox の行が混ざるときは、記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順に並べ、cursor はその並びの位置を表す値にする（2026-11-08 決定、Q82。[`12-notification.md`](./12-notification.md) 5章）。
 
-`notification_failed` の reason のうち channel=`linear` で使う値（案、Q85）:
+`notification_failed` の reason のうち channel=`linear` で使う値（2026-11-08 決定、Q85）:
 
 | `reason` | 当てはまる失敗 |
 |---|---|
@@ -108,19 +109,26 @@ requirements 6.4 は「処理完了後」に返すとし、8.8 は「承認待�
 | `retries_exhausted` | 一時的な失敗が続き、5回目も失敗した（3.4 の 4） |
 | `other` | 上のどれにも当てはまらない失敗 |
 
-- いまの実装（PR #69）は、Linear の失敗をすべて `other` にしている。[`12-notification.md`](./12-notification.md) 3.4 の分類が macOS 通知のヘルパーの失敗だけを想定しているためである。上の3つの値を [`02-data-model.md`](./02-data-model.md) 5.3 の列挙に足すかは Q85 で本人が決める。決まるまでは `other` のままにする。
+- この4つの値は [`02-data-model.md`](./02-data-model.md) 5.3 の列挙に channel=`linear` 用として載せる。[`12-notification.md`](./12-notification.md) 3.4 の分類は macOS 通知のヘルパーの失敗だけを想定しているため、Linear の失敗には使わない。
+- Worker は failed にした理由に合わせて、`notification_failed` の reason と linear_outbox の failure_reason に同じ値を書く。PR #69 の実装は Linear の失敗をすべて `other` にしているため、この表のとおりに分けるよう直す。
+- 既存の failed の行の failure_reason は、理由の記録が無いため `other` のままにする（上のマイグレーション）。
 - 値を足しても、payload にエラーの文字列を入れないこと（12 の 3.4）は変えない。
 
 #### 3.4.3 認証エラーの macOS 通知（2026-11-08 決定、Q84）
 
-Worker が Linear API の認証エラーで行を failed にしたら、macOS 通知で本人に知らせる。取り込み側の通知（[`15-linear-intake.md`](./15-linear-intake.md) 6章、[`12-notification.md`](./12-notification.md) 3.5 の Dashboard を開く通知）と同じ扱いと同じ抑止にする。
+Worker が Linear API の認証エラーで行を failed にしたら、macOS 通知で本人に知らせる。取り込み側の通知（[`15-linear-intake.md`](./15-linear-intake.md) 6章、[`12-notification.md`](./12-notification.md) 3.5 の Dashboard を開く通知）と同じ扱いにし、抑止は取り込み側と共通の1つを使う（2026-11-08 決定、Q84）。
 
 - 通知は 12 の 3.5 の Dashboard を開く通知として出す。クリックで `http://127.0.0.1:<port>/` を開く。
 - 本文には、Linear コメントの送信の失敗であることと失敗の分類（`auth`）だけを入れる。API キーの値、Linear の応答の本文、Issue の識別子、コメントの本文は入れない。
 - この通知は Execution を持たないため、execution_events の `notification_sent` / `notification_failed` には記録しない。通知の送信に失敗したら Control Plane のログにだけ残す（12 の 3.5）。認証エラーで failed になった行そのものは、3.4.2 のとおり通知失敗の一覧に出る。
-- 抑止: 認証エラーが続いている間、通知は1回だけ出す。Worker の1回の処理で複数の行が認証エラーになっても1回にまとめる。コメントの送信が1回成功したら抑止を解き、その後にまた認証エラーになったら、もう一度出す。取り込み側が、照会が認証エラーになった時点で1回出し、照会が成功するまで出さないのと同じである。
-- 抑止の状態は、取り込み側と同じくプロセスの中に持つ。再起動の後に認証エラーになったら、もう一度出す。
-- 取り込み側と送信側の抑止は別々に持つ（案、Q84）。API キーが無効になると、取り込みの照会と送信の両方が認証エラーになり、通知が2回（取り込みの失敗と、コメントの送信の失敗）出ることがある。
+- 抑止は「認証エラーの通知の抑止」1つを Control Plane が持ち、取り込み側の Linear Poller（[`15-linear-intake.md`](./15-linear-intake.md) 6章）と送信 Worker が共有する（2026-11-08 決定、Q84）。同じ API キーが無効になって照会と送信の両方が認証エラーになっても、通知は1回だけ出る。
+  1. 照会か送信のどちらかが認証エラーになったとき、抑止が掛かっていなければ通知を1回出し、抑止を掛ける。抑止が掛かっているときは出さない。
+  2. 通知は、先に認証エラーを検出した側の通知として出す。照会が先なら 12 の 3.5 の「Linear の照会の失敗」（分類 `auth`）、送信が先なら「Linear コメントの送信の失敗」（分類 `auth`）である。後から検出した側は抑止に従い、通知を出さない。
+  3. 抑止が掛かっているかを確かめて掛ける操作は1つの操作として行う。照会と送信が同時に認証エラーを検出しても、通知は1回になる。Worker の1回の処理で複数の行が認証エラーになっても1回にまとめる。
+  4. 取り込みの照会（どれか1つの Team）か、コメントの送信のどちらかが1回成功したら抑止を解く。どちらも同じ API キーで認証するため、どちらかの成功はキーが有効に戻ったことを示す。解いた後にまた認証エラーになったら、もう一度出す。
+  5. Linear が認証を通したうえで返した失敗（Issue が削除・アーカイブされていた、など）は成功ではないため、抑止を解かない。
+- 抑止の状態はプロセスの中に持つ。再起動の後に認証エラーになったら、もう一度出す。
+- 取り込み側の「5回続けて失敗した」通知（15 の 6章）は Team ごとの抑止のまま残す。認証エラーの通知との分け方と、API キーのファイルが無い・読めない場合を共通の抑止に含めるかは案とし、Q86 に載せる（案: 認証エラーの通知は共通の抑止だけで決め、5回続けて失敗した通知は5回目の失敗の分類が `auth` 以外のときだけ出す。キーのファイルが無い・読めない・権限が 0600 でない場合も認証エラーとして共通の抑止に含める）。
 
 ### 3.5 循環トリガーの防止（requirements 6.4, 15.2）
 
@@ -179,7 +187,8 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 | コメント送信の再試行 | 上限5回。間隔は1分・2分・4分・8分（倍にする）。5回目も失敗したら failed | Q80（2026-11-08 本人決定） |
 | 送信の失敗の表示 | Execution の無い契機の失敗も含め、すべて通知失敗の一覧に出す | Q82（2026-11-08 本人決定） |
 | 結果が分からない送信 | DB に残し、再起動の後も照合してから送る | Q83（2026-11-08 本人決定） |
-| 認証エラーの通知 | macOS 通知（Dashboard を開く）。取り込み側と同じ扱い・同じ抑止 | Q84（2026-11-08 本人決定） |
+| 認証エラーの通知 | macOS 通知（Dashboard を開く）。抑止は取り込み側と共通の1つで、同じ API キーの無効化で通知は1回。照会か送信のどちらかが成功したら解く | Q84（2026-11-08 本人決定） |
+| notification_failed の reason（channel=linear） | `auth` / `issue_removed` / `retries_exhausted` / `other` | Q85（2026-11-08 本人決定） |
 
 ## 5. インターフェース
 
@@ -193,9 +202,9 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 
 | 状況 | 処理 |
 |---|---|
-| Linear API の一時的な失敗 | 1分・2分・4分・8分の間隔で再試行する（3.4）。5回目も失敗したら failed と `notification_failed` |
-| Linear API の認証エラー | 再試行せず failed。macOS 通知（Dashboard を開く通知）で本人に知らせる。取り込み側と同じく、認証エラーが続く間は1回だけ出す（3.4.3、Q84）。API キーの値はログに出さない |
-| Issue が削除・アーカイブされていた | failed（reason=`other`。`issue_removed` を足すかは Q85）。タスクには影響させない |
+| Linear API の一時的な失敗 | 1分・2分・4分・8分の間隔で再試行する（3.4）。5回目も失敗したら failed と `notification_failed`（reason=`retries_exhausted`、Q85） |
+| Linear API の認証エラー | 再試行せず failed（reason=`auth`、Q85）。macOS 通知（Dashboard を開く通知）で本人に知らせる。抑止は取り込み側と共通の1つで、照会と送信の両方が認証エラーになっても通知は1回だけ出し、照会か送信のどちらかが成功したら解く（3.4.3、Q84）。API キーの値はログに出さない |
+| Issue が削除・アーカイブされていた | failed（reason=`issue_removed`、Q85）。タスクには影響させない |
 | 送った結果が分からない | outcome_unknown を 1 のまま残し、再起動の後も、Linear のコメントを読んで同じ dedupe_key のコメントが無いことを確かめてから再送する（3.4.1、Q83） |
 
 ## 7. スコープ外
@@ -232,6 +241,6 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 - [ ] [Backend] 結果が分からない送信の状態を linear_outbox に残し、再起動の後も照合してから送る（3.4.1、3.7 の outcome_unknown、Q83）
   - 受け入れ基準: outcome_unknown の列を足すマイグレーションで、pending かつ attempts が1以上の行が 1、それ以外の行が 0 になる; 送信を始める前に outcome_unknown が 1 でコミットされる; 成功、Linear が応答した失敗、接続前の失敗で 0 に戻る; 応答の前に接続を切るテストで 1 のまま残り、Worker を作り直した（再起動した）後の送信で先にコメントを読み、同じ dedupe_key のコメントがあれば再送せず sent とそのコメント ID が記録される; 同じ状況でコメントが無ければ1回だけ送る; 停止で送信を中断すると attempts は増えず、再起動の後に照合してから送る; コメントを読めなかったときは送らず attempts が1増える; 照合の要否をプロセスの中の記憶で決めていない
 - [ ] [Backend] Execution の無い契機の送信の失敗を linear_outbox に記録し、通知失敗の一覧 API に出す（3.4.2、3.7、12 の 5章、Q82）
-  - 受け入れ基準: execution_id・failure_reason・failed_at を足すマイグレーションで、既存の行の execution_id が dedupe_key の対象の Execution で埋まり、Execution の無い行は NULL、すでに failed の行は failure_reason が other で failed_at が created_at になる; Execution の契機の行を書くと execution_id が入り、intake_blocked・missing_acceptance_criteria・保留したタスクの中止の行では NULL になる; intake_blocked・missing_acceptance_criteria・保留したタスクの中止の送信が上限で failed になると、GET /api/notification-failures に taskId・taskTitle・kind・channel=linear・reason が入った項目が出て、eventId と executionId が null、outboxId が入る; Execution のある契機の失敗は execution_events の項目として1回だけ出て、outbox の行から二重に出ない; macOS 通知の失敗と Linear の失敗が混ざっても、ページを続けて読んで欠けも重複も無い; 応答にエラーの文字列とコメントの本文が入らない
+  - 受け入れ基準: execution_id・failure_reason・failed_at を足すマイグレーションで、既存の行の execution_id が dedupe_key の対象の Execution で埋まり、Execution の無い行は NULL、すでに failed の行は failure_reason が other で failed_at が created_at になる; Execution の契機の行を書くと execution_id が入り、intake_blocked・missing_acceptance_criteria・保留したタスクの中止の行では NULL になる; intake_blocked・missing_acceptance_criteria・保留したタスクの中止の送信が上限で failed になると、GET /api/notification-failures に taskId・taskTitle・kind・channel=linear・reason が入った項目が出て、eventId と executionId が null、outboxId が入る; Execution のある契機の失敗は execution_events の項目として1回だけ出て、outbox の行から二重に出ない; macOS 通知の失敗と Linear の失敗が混ざった一覧が記録した時刻（execution_events.created_at、linear_outbox.failed_at）の新しい順に並び、cursor でページを続けて読んで欠けも重複も無い; Linear の失敗の reason が、認証エラーで auth、Issue が削除・アーカイブされていたときに issue_removed、5回目も失敗したときに retries_exhausted、それ以外で other になり、notification_failed の reason と linear_outbox の failure_reason が同じ値になる（Q85）; 応答にエラーの文字列とコメントの本文が入らない
 - [ ] [Backend] Linear コメントの送信の認証エラーで macOS 通知を出す（3.4.3、12 の 3.5、Q84）
-  - 受け入れ基準: 送信が認証エラーで failed になると、Dashboard の URL（http://127.0.0.1:<port>/）を開く通知が1回出る; 本文が送信の失敗であることと分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が入らない; 1回の処理で複数の行が認証エラーになっても通知は1回; 認証エラーが続く間はもう出ず、送信が1回成功した後にまた認証エラーになると、もう一度出る; 通知の送信に失敗してもタスクと outbox の行は変わらず、execution_events に notification_sent / notification_failed が書かれない
+  - 受け入れ基準: 送信が認証エラーで failed になると、Dashboard の URL（http://127.0.0.1:<port>/）を開く通知が1回出る; 本文が送信の失敗であることと分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が入らない; 1回の処理で複数の行が認証エラーになっても通知は1回; 認証エラーの通知の抑止を Linear Poller と送信 Worker で共通の1つにする（Poller の認証エラーの通知も、Team ごとの抑止ではなくこの共通の抑止で決める）; 照会と送信の両方が認証エラーになっても、通知は先に検出した側の1回だけ出る; 照会と送信が同時に認証エラーを検出しても通知は1回; 認証エラーが続く間はもう出ず、照会（どれか1つの Team）か送信のどちらかが1回成功した後にまた認証エラーになると、もう一度出る; Linear が認証を通したうえで返した失敗（issue_removed など）では抑止が解けない; 通知の送信に失敗してもタスクと outbox の行は変わらず、execution_events に notification_sent / notification_failed が書かれない
