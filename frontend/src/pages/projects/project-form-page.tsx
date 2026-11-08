@@ -74,7 +74,8 @@ const EMPTY: FormValues = {
   setupAllowedHosts: '',
   copyAllowlist: '',
   allowedOperations: '{}',
-  approvalPolicy: '{}',
+  // 17 3.2（Q60）の形だけを Backend が受け付ける。既定は PR マージを承認対象に残す。
+  approvalPolicy: JSON.stringify({ version: 1, mergePullRequest: 'require_approval' }, null, 2),
   linearTeamId: '',
   linearRoutingLabel: '',
   'timeouts.setupSec': '',

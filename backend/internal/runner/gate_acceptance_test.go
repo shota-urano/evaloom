@@ -103,7 +103,10 @@ func gateAcceptanceExecution(t *testing.T, mode, cause string, stoppingGate int,
 		query string
 		args  []any
 	}{
-		{`UPDATE projects SET local_repo_path=?,git_remote_url=?,test_command='python3 gate_test.py',test_report_path='junit.xml'`, []any{f.Repository, remoteURL}},
+		// The fake GitHub serves non-github.com PR URLs, which a spec 17
+		// approval cannot bind to; exclude PR merges from approval so a
+		// published PR completes the task as in Phase 1.
+		{`UPDATE projects SET local_repo_path=?,git_remote_url=?,test_command='python3 gate_test.py',test_report_path='junit.xml',approval_policy='{"mergePullRequest":"direct_push","version":1}'`, []any{f.Repository, remoteURL}},
 		{`UPDATE worktrees SET path=?,base_sha=?,branch_name=?`, []any{f.Worktree, f.BaseSHA, branch}},
 	} {
 		if _, err := httpFixture.db.Exec(stmt.query, stmt.args...); err != nil {

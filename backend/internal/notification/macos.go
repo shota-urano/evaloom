@@ -152,13 +152,15 @@ func macOSContent(n Notification) (string, string, error) {
 		title = "evaloom: 失敗"
 	case model.ExecutionBlocked:
 		title = "evaloom: 対応が必要"
+	case model.ExecutionWaitingApproval:
+		title = "evaloom: 承認待ち"
 	default:
 		return "", "", errors.New("notification: unsupported macOS notification status")
 	}
 	classification := string(n.Status)
 	if n.Status == model.ExecutionBlocked && n.BlockCause != "" && n.BlockCause.Validate() == nil {
 		classification = string(n.BlockCause)
-	} else if n.Status != model.ExecutionSucceeded && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
+	} else if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
 		classification = string(n.ErrorClass)
 	}
 	return title, n.Title + "\n" + n.TaskID + "\n" + classification, nil

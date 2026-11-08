@@ -26,10 +26,11 @@ type TaskCancellation struct {
 	Reason string
 }
 
-// CancelTaskTx applies spec 04 3.5 inside tx: a queued or blocked task and
-// its latest Execution become cancelled; for a running or verifying task the
+// CancelTaskTx applies spec 04 3.5 inside tx: a queued, blocked or
+// waiting_approval (spec 17 3.6) task and its latest Execution become
+// cancelled; for a running or verifying task, or a merging Execution, the
 // Execution's cancel_requested_at is recorded and the Runner stops it on its
-// next heartbeat. A task held at Linear intake (blocked without an
+// next heartbeat (a merging one at consume, spec 17 3.5.2). A task held at Linear intake (blocked without an
 // Execution, spec 15 3.6.3) becomes cancelled directly. Any other state is a
 // task.ErrConflict. A repeated request for a running task keeps the first
 // timestamp and writes nothing. The caller must roll back on any error.
@@ -88,7 +89,9 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 	if expected != status {
 		return &task.ConflictError{Code: "conflict", Message: "Task and latest Execution states do not match"}
 	}
-	if status == model.TaskRunning || status == model.TaskVerifying {
+	// A merging Execution may already hold a consumed approval, so the Runner
+	// decides at consume time (spec 17 3.5.2: cancel request -> invalidated).
+	if status == model.TaskRunning || status == model.TaskVerifying || execution.Status == model.ExecutionMerging {
 		// Preserve the first request on retries. State and latest-seq guards
 		// prevent a delayed cancellation from modifying another attempt.
 		result, err := tx.ExecContext(ctx, `UPDATE executions SET cancel_requested_at = ?
@@ -118,6 +121,13 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 			return &task.ConflictError{Code: "conflict", Message: "State changed before cancellation could be requested"}
 		}
 		return nil
+	}
+	// Spec 17 3.6: cancelling a task waiting for approval invalidates its
+	// unused approvals in the same transaction.
+	if execution.Status == model.ExecutionWaitingApproval {
+		if err := invalidateOpenApprovalsTx(ctx, tx, execution.ID, "cancelled"); err != nil {
+			return err
+		}
 	}
 	// Same result metadata and transition effects as a reported cancellation:
 	// error classification, finish time, retained worktree and cancellation's

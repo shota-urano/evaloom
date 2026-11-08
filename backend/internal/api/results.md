@@ -67,6 +67,7 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   `notification_requests`に保存する。列は`execution_id`、`status`、`created_at`。
   `execution_id`はexecutionsへの外部キーとし、`(execution_id, status)`を主キーにする。
   状態は仕様12の`succeeded / failed / interrupted / timed_out / blocked`に限定する。
+  仕様17の3.3（承認待ちの通知）のため、0021で`waiting_approval`を足す。
   `created_at`はUTCのRFC 3339で保存する。
   送信処理は別タスクであり、要求を`notification_sent`として記録しない。
 - 通知対象は仕様12を採用し、`cancelled`では要求しない。
@@ -77,6 +78,17 @@ Executionの`runner_id`を照合する。不一致と未claimは403にし、既�
   失敗・中断・タイムアウト・中止・Blockedではactiveのworktreeをretainedにする。
   成功時はworktreeをそのまま保持する。Context Builderもこの処理を共有する。
 - `status_changed`イベントの`reason`は`runner_result`とする。
+- 仕様17の3.3: `publishing`から`succeeded`への報告で、ExecutionにPR（`pr_number`）があり、
+  Projectの承認ポリシーが`direct_push`でなければ、Control Planeは同じトランザクションで
+  同じPRの未使用の承認を`invalidated`（`superseded`、監査記録は`system`）にし、
+  `pending`の承認を作り、Executionとタスクを`waiting_approval`にする。
+  Runnerは従来どおり`succeeded`を報告する（仕事は終わっているため）。状態はControl Planeが決める。
+  このときの`status_changed`の`reason`は`approval_required`、監査記録の遷移後は`waiting_approval`。
+  承認ポリシーの値が読めない・未知の場合も既定の`require_approval`として扱う。
+  承認の`target.repository`と`prNumber`は`pr_url`（`https://github.com/<owner>/<repo>/pull/<番号>`）から取り、
+  番号が`pr_number`と一致しない、`pushed_sha`や`branch_name`が無い場合は422にして何も保存しない（Fail Closed）。
+  `params_hash`は`operation`・`target`・`contentVersion`・`mergeMethod`（`merge`、Q56）を
+  キー順に並べたJSONのSHA-256。
   監査記録は`runner:<id>/execution.result/execution/<Execution ID>`とし、
   Task IDと遷移前後を保存する。自由文や認証情報を監査記録に複製しない。
   Runnerは仕様05に従い、エラー本文とBlockの詳細から秘密情報を除いて送る。

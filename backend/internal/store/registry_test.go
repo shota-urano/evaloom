@@ -224,7 +224,8 @@ func insertRegistryProject(t *testing.T, db *sql.DB, id, path string) {
 	_, err = db.Exec(`INSERT INTO projects (`+registryProjectColumns+legacyColumns+`)
 		VALUES (?, 'Project', ?, 'https://example.invalid/project.git', 'mac-mini',
 		'main', 'developer', NULL, 'AGENTS.md', NULL, NULL, NULL, NULL,
-		'[]', '{}', '{}', '{"setupSec":60,"harnessSec":600,"testSec":120}', ?, ?`+legacyValues+`)`,
+		'[]', '{}', '{"mergePullRequest":"require_approval","version":1}',
+		'{"setupSec":60,"harnessSec":600,"testSec":120}', ?, ?`+legacyValues+`)`,
 		id, path, registryTime, registryTime)
 	if err != nil {
 		t.Fatal(err)

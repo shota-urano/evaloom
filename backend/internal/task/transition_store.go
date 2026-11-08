@@ -98,6 +98,10 @@ func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID str
 		kind = linearoutbox.KindBlocked
 	case model.ExecutionCancelled:
 		kind = linearoutbox.KindCancelled
+	case model.ExecutionWaitingApproval:
+		// Spec 17 3.3 step 4, spec 16 3.2. A consume refused back into the
+		// wait reuses the Execution ID, so the dedupe key keeps one comment.
+		kind = linearoutbox.KindWaitingApproval
 	default:
 		return nil
 	}
@@ -128,8 +132,11 @@ func recordTransitionEffects(ctx context.Context, tx *sql.Tx, id string, status 
 	}
 	// Spec 12 section 3.1 explicitly excludes cancellation. The unique key
 	// survives restart and a second blocked episode after an owner continuation.
+	// Spec 17 3.3 step 4 adds the approval wait; the same key notifies once
+	// per Execution even if a refused consume returns it to the wait.
 	switch status {
-	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionBlocked:
+	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionBlocked,
+		model.ExecutionWaitingApproval:
 		_, err := tx.ExecContext(ctx, `INSERT INTO notification_requests (execution_id, status, created_at)
 			VALUES (?, ?, ?) ON CONFLICT (execution_id, status) DO NOTHING`, id, status, now)
 		return err

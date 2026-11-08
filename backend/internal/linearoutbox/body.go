@@ -68,8 +68,9 @@ type executionFacts struct {
 //
 // It carries the requirements 6.4 items that apply to the trigger (3.2):
 // 実行ステータス, 実行担当ハーネス, 作業概要, 検証結果, PR URL, エラー情報.
-// 必要な承認事項 has no data source yet (spec 17 is not implemented), so the
-// waiting_approval body carries the status only. An intake hold carries the
+// The waiting_approval body carries 必要な承認事項: the operation and the
+// target of the Execution's pending approval (spec 17 3.4), and that the
+// owner approves in the management UI (3.2). An intake hold carries the
 // reason and the fix instead (3.2); the missing-criteria hold also asks for
 // the criteria.
 //
@@ -93,6 +94,8 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 	switch t.Kind {
 	case KindIntakeBlocked, KindMissingAcceptanceCriteria:
 		writeHold(&b, t)
+	case KindWaitingApproval:
+		writeApproval(ctx, tx, &b, t)
 	case KindSucceeded, KindFailed, KindBlocked, KindCancelled:
 		facts, ok, err := readExecution(ctx, tx, t)
 		if err != nil {
@@ -149,6 +152,33 @@ func writeHold(b *strings.Builder, t Trigger) {
 	fmt.Fprintf(b, "- 保留の理由: %s\n", fill(text.reason))
 	fmt.Fprintf(b, "- 直し方: %s\n", fill(text.fix))
 	b.WriteString("- Issue を直すと、次の照会で Evaloom が判定をやり直す\n")
+}
+
+// writeApproval writes 必要な承認事項 (spec 16 3.3) from the Execution's
+// unused approvals: the operation and the target (repository, PR number,
+// base and head branch). The values were validated when the approval was
+// created; the head SHA, Gate results and diff stay in the management UI.
+func writeApproval(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger) {
+	rows, err := tx.QueryContext(ctx, `SELECT operation,
+		coalesce(json_extract(target, '$.repository'), ''), coalesce(json_extract(target, '$.prNumber'), 0),
+		coalesce(json_extract(target, '$.baseBranch'), ''), coalesce(json_extract(target, '$.headBranch'), '')
+		FROM approvals WHERE execution_id = ? AND status IN ('pending', 'approved') ORDER BY created_at, id`, t.TargetID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var operation, repository, base, head string
+			var number int
+			if rows.Scan(&operation, &repository, &number, &base, &head) != nil {
+				break
+			}
+			if operation == "merge_pull_request" {
+				fmt.Fprintf(b, "- 必要な承認事項: PR のマージ（%s）。対象 %s #%d（%s → %s）\n", operation, repository, number, head, base)
+			} else {
+				fmt.Fprintf(b, "- 必要な承認事項: %s\n", operation)
+			}
+		}
+	}
+	b.WriteString("- 承認・却下は管理画面で本人が行う\n")
 }
 
 func statusName(status model.TaskStatus) string {
