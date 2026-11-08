@@ -74,6 +74,11 @@ func assignProjectHarness(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			AssignedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}
 		err = store.SaveProjectHarness(r.Context(), tx, after)
+		if err == nil && (status == http.StatusCreated || before.ProfileID != after.ProfileID) {
+			// A changed assignment may release this Project's
+			// config_missing_assignment holds (spec 15 3.6.3, Q81).
+			err = store.MarkLinearRecheck(r.Context(), tx, store.LinearRecheck{ProjectID: id}, after.AssignedAt)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: "project.assign_harness", TargetType: "project", TargetID: id,

@@ -226,6 +226,9 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		if err == nil {
 			err = store.PruneLinearPollTeams(r.Context(), tx)
 		}
+		if err == nil && !create {
+			err = markLinearRecheck(r.Context(), tx, before.ProjectSettings, after, now)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: action, TargetType: "project", TargetID: id,
@@ -244,6 +247,19 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			Warnings []string `json:"warnings"`
 		}{after, warnings})
 	}
+}
+
+// markLinearRecheck puts the recheck mark on the Issues of the held tasks a
+// Project update may release (spec 15 3.6.3, the table of setting changes,
+// Q81), in the update's transaction. An update that leaves linear_team_id,
+// linear_routing_label and default_role unchanged marks nothing.
+func markLinearRecheck(ctx context.Context, tx *sql.Tx, before model.ProjectSettings, after model.Project, at string) error {
+	routing := !reflect.DeepEqual(before.LinearTeamID, after.LinearTeamID) ||
+		!reflect.DeepEqual(before.LinearRoutingLabel, after.LinearRoutingLabel)
+	if !routing && before.DefaultRole == after.DefaultRole {
+		return nil
+	}
+	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID, Routing: routing}, at)
 }
 
 func validateProjectSettings(p model.ProjectSettings) ([]string, error) {

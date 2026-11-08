@@ -63,7 +63,7 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 		if got := migrationRows(t, db, `SELECT linear_team_id, linear_routing_label FROM projects`); !reflect.DeepEqual(got, [][]any{{nil, nil}}) {
 			t.Fatalf("migrated routing = %#v", got)
 		}
-		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+		assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 		if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 			t.Fatalf("foreign key violations = %#v", violations)
 		}
@@ -320,7 +320,7 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 }
 
 // TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria checks 0011: an
@@ -417,7 +417,7 @@ func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 	if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 		t.Fatalf("foreign key violations = %#v", violations)
 	}
@@ -467,7 +467,7 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -477,4 +477,52 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 	mustTaskExec(t, db, `UPDATE linear_issue_states SET removed_at = ? WHERE linear_issue_id = 'issue-a'`, registryTime)
 	mustTaskExec(t, db, `UPDATE linear_issue_states SET removed_at = NULL WHERE linear_issue_id = 'issue-a'`)
 	mustTaskExec(t, db, `UPDATE linear_issue_states SET last_decision = 'skipped_restored'`)
+}
+
+// 受け入れ基準: recheck_requested_at の列を足すマイグレーションで既存の行が
+// NULL になる (spec 15 3.6.3, 3.8, Q81). 0016 is applied to a database that
+// already holds linear_issue_states rows.
+func TestLinearIssueRecheckRequestedAtMigrationLeavesExistingRowsNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "evaloom.db")
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := readMigrations(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, migration := range migrations {
+		if migration.version < 16 {
+			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
+		}
+	}
+	db, err := open(context.Background(), path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		id      string
+		removed any
+	}{{"issue-a", nil}, {"issue-b", registryTime}} {
+		mustTaskExec(t, db, `INSERT INTO linear_issue_states (linear_issue_id, issue_identifier, team_id,
+			ai_ready, attach_seq, issue_updated_at, last_decision, last_decision_at, first_seen_at, last_seen_at,
+			removed_at) VALUES (?, 'ENG-1', 'team-a', 1, 1, ?, 'held', ?, ?, ?, ?)`,
+			row.id, registryTime, registryTime, registryTime, registryTime, row.removed)
+	}
+	query := `SELECT linear_issue_id, issue_identifier, team_id, ai_ready, attach_seq, issue_updated_at,
+		last_decision, last_decision_at, first_seen_at, last_seen_at, removed_at FROM linear_issue_states ORDER BY 1`
+	before := migrationRows(t, db, query)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = openRegistry(t, path)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
+		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
+	}
+	if got := migrationRows(t, db, `SELECT recheck_requested_at FROM linear_issue_states ORDER BY 1`); !reflect.DeepEqual(got, [][]any{{nil}, {nil}}) {
+		t.Fatalf("recheck_requested_at of existing rows = %#v, want NULL", got)
+	}
 }
