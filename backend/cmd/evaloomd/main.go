@@ -53,6 +53,9 @@ var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearin
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear alert home: %w", err)
 	}
+	// Handler (linearintake.Intake with TaskStarter) stays unset until the
+	// Linear-caused cancellation (spec 15 3.7) exists: Intake requires a
+	// Canceller, and recording a detach without cancelling would lose it.
 	poller := &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}
 	if alerter := linearPollAlerter(runtime.GOOS, home, port); alerter != nil {
 		poller.Alerter = alerter

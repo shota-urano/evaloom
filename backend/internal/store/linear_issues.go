@@ -134,3 +134,59 @@ func MarkLinearBaselineDone(ctx context.Context, db *sql.DB, teamID string, at t
 	}
 	return nil
 }
+
+// LinearIssueLink is one row of linear_issue_links (spec 15 3.8).
+type LinearIssueLink struct {
+	ID              string
+	LinearIssueID   string
+	IssueIdentifier string
+	IssueURL        string
+	TeamID          string
+	TaskID          string
+	AttachSeq       int
+	CreatedAt       string
+}
+
+// InsertLinearIssueLink records which task an attach started. The schema
+// rejects a second task for the same attach (UNIQUE(linear_issue_id,
+// attach_seq)) and a second link for one task.
+func InsertLinearIssueLink(ctx context.Context, tx *sql.Tx, l LinearIssueLink) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier,
+		issue_url, team_id, task_id, attach_seq, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		l.ID, l.LinearIssueID, l.IssueIdentifier, l.IssueURL, l.TeamID, l.TaskID, l.AttachSeq, l.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("store: insert linear issue link: %w", err)
+	}
+	return nil
+}
+
+// LinearRoute is a Project registered for Linear routing: both
+// linear_team_id and linear_routing_label are set (spec 15 3.8).
+type LinearRoute struct {
+	ProjectID string
+	TeamID    string
+}
+
+// ListLinearRoutesByLabel returns the Projects whose routing label is label
+// and whose Team is set, ordered by Project ID. A Project with either column
+// NULL is never run from Linear and is not returned.
+func ListLinearRoutesByLabel(ctx context.Context, tx *sql.Tx, label string) ([]LinearRoute, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, linear_team_id FROM projects
+		WHERE linear_routing_label = ? AND linear_team_id IS NOT NULL ORDER BY id`, label)
+	if err != nil {
+		return nil, fmt.Errorf("store: list linear routes: %w", err)
+	}
+	var routes []LinearRoute
+	for rows.Next() {
+		var r LinearRoute
+		if err := rows.Scan(&r.ProjectID, &r.TeamID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		routes = append(routes, r)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return routes, nil
+}

@@ -10,7 +10,8 @@ import (
 
 func GetTaskByIdempotencyKey(ctx context.Context, reader projectReader, key string) (model.Task, error) {
 	var t model.Task
-	err := reader.QueryRowContext(ctx, `SELECT id, project_id, title, body, acceptance_criteria,
+	// A held Linear task has no Project (spec 15 3.6); it reads as "".
+	err := reader.QueryRowContext(ctx, `SELECT id, coalesce(project_id, ''), title, body, acceptance_criteria,
 		short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at
 		FROM tasks WHERE idempotency_key = ?`, key).Scan(&t.ID, &t.ProjectID, &t.Title, &t.Body,
 		&t.AcceptanceCriteria, &t.ShortName, &t.TaskType, &t.CollaborationMode, &t.Status,
@@ -21,17 +22,41 @@ func GetTaskByIdempotencyKey(ctx context.Context, reader projectReader, key stri
 // InsertTask allocates the next numeric task ID inside the store's serialized
 // creation transaction. It must be committed with the initial Execution.
 func InsertTask(ctx context.Context, tx *sql.Tx, t *model.Task) error {
-	var next int64
-	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(CAST(substr(id, 6) AS INTEGER)), 0) + 1 FROM tasks`).Scan(&next); err != nil {
+	if err := allocateTaskID(ctx, tx, t); err != nil {
 		return err
 	}
-	t.ID = fmt.Sprintf("task-%03d", next)
 	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
 		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.ProjectID, t.Title, t.Body,
 		t.AcceptanceCriteria, t.ShortName, t.TaskType, t.CollaborationMode, t.Status,
 		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt)
+	return err
+}
+
+func allocateTaskID(ctx context.Context, tx *sql.Tx, t *model.Task) error {
+	var next int64
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(CAST(substr(id, 6) AS INTEGER)), 0) + 1 FROM tasks`).Scan(&next); err != nil {
+		return err
+	}
+	t.ID = fmt.Sprintf("task-%03d", next)
+	return nil
+}
+
+// InsertLinearTask inserts a task created from a Linear Issue (spec 15 3.6)
+// with source=linear. An empty t.ProjectID stores NULL and blockCause is
+// tasks.intake_block_cause (empty: NULL); the schema rejects a NULL Project
+// or an empty acceptance_criteria unless the cause allows it (3.8).
+func InsertLinearTask(ctx context.Context, tx *sql.Tx, t *model.Task, blockCause string) error {
+	if err := allocateTaskID(ctx, tx, t); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
+		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
+		collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'linear', nullif(?, ''))`, t.ID, t.ProjectID,
+		t.Title, t.Body, t.AcceptanceCriteria, t.ShortName, t.TaskType, t.CollaborationMode, t.Status,
+		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt, blockCause)
 	return err
 }
 
@@ -66,7 +91,7 @@ type TaskFilter struct {
 // minimum of three digits, so ordering and the exclusive cursor boundary use
 // the numeric part (task-1000 follows task-999). before <= 0 starts at the top.
 func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64, limit int) ([]TaskSummary, error) {
-	rows, err := db.QueryContext(ctx, `SELECT t.id, t.project_id, t.title, t.body, t.acceptance_criteria,
+	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		e.id, e.seq, e.mode, e.status, e.error_class,
 		(SELECT pr_url FROM executions WHERE task_id = t.id AND pr_url IS NOT NULL ORDER BY seq DESC LIMIT 1)

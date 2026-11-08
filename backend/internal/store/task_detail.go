@@ -25,7 +25,7 @@ type TaskExecution struct {
 // snapshot, so a concurrent retry cannot mix task state with older history.
 func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, error) {
 	result := TaskDetail{Executions: []TaskExecution{}}
-	rows, err := db.QueryContext(ctx, `SELECT t.id, t.project_id, t.title, t.body, t.acceptance_criteria,
+	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		e.id, e.seq, e.mode, e.status, e.error_class, e.profile_version, e.profile_commit_sha,
 		e.started_at, e.finished_at, e.pr_url
