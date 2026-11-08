@@ -71,7 +71,7 @@ requirements 6.4 は「処理完了後」に返すとし、8.8 は「承認待�
 1. 契機が起きたら、状態遷移と同じトランザクションで linear_outbox に1行書く（status=`pending`）。
 2. Control Plane の Worker が `pending` の行を古い順に送る。Linear GraphQL API のコメント作成を使い、認証は個人 API キー（requirements 6.6）。
 3. 成功したら status=`sent`、Linear のコメント ID を記録し、`notification_sent` イベント（channel=`linear`）を書く。
-4. 失敗したら attempts を増やし、間隔を空けて再試行する。上限回数（実装時に確定）を超えたら status=`failed` にし、`notification_failed` イベント（channel=`linear`）を書く。
+4. 失敗したら attempts を増やし、間隔を空けて再試行する。上限は5回。間隔は1分・2分・4分・8分と倍にし、5回目も失敗したら status=`failed` にし、`notification_failed` イベント（channel=`linear`）を書く（最初の失敗からおよそ15分。Q80、2026-11-08 決定）。
 5. 送信に失敗しても、タスクの状態遷移は取り消さない（[`12-notification.md`](./12-notification.md) 3.4 と同じ）。
 
 送った結果が分からない（応答の前に接続が切れた）ときは、同じ dedupe_key（3.7）のコメントがすでに付いていないかを Linear から読んで確かめてから再送する。照合できるよう、コメントの本文の末尾に dedupe_key を入れる（案）（requirements 15.8 の「重複して実行する前に外部システムの状態を照合する」と同じ考え方）。
@@ -126,6 +126,7 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 | 長期の履歴 | Evaloom 側に保持し、Linear の保存状態に依存しない | requirements 6.5 |
 | 通知の経路 | Linear コメント + macOS 通知 | requirements 8.8 |
 | 承認の操作 | Linear 上の操作を承認として扱わない。承認は管理画面で本人だけが行う | requirements 15.5 |
+| コメント送信の再試行 | 上限5回。間隔は1分・2分・4分・8分（倍にする）。5回目も失敗したら failed | Q80（2026-11-08 本人決定） |
 
 ## 5. インターフェース
 
@@ -138,7 +139,7 @@ requirements 6.4 は Issue への情報の返却を求めているが、Issue �
 
 | 状況 | 処理 |
 |---|---|
-| Linear API の一時的な失敗 | 間隔を空けて再試行。上限で failed と `notification_failed` |
+| Linear API の一時的な失敗 | 1分・2分・4分・8分の間隔で再試行する（3.4）。5回目も失敗したら failed と `notification_failed` |
 | Linear API の認証エラー | 再試行せず failed。macOS 通知で本人に知らせる（案）。API キーの値はログに出さない |
 | Issue が削除・アーカイブされていた | failed（reason=`other`）。タスクには影響させない |
 | 送った結果が分からない | Linear のコメントを読んで、同じ dedupe_key のコメントが無いことを確かめてから再送する |

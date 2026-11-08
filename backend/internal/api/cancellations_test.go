@@ -521,6 +521,13 @@ func TestCancelHeldLinearTaskWithoutExecution(t *testing.T) {
 			task.id, "linear:"+task.id+":1", task.cause); err != nil {
 			t.Fatal(err)
 		}
+		// A Linear task is always created with its Issue link (spec 15 3.6);
+		// the cancellation comment needs it (spec 16 3.7).
+		if _, err := f.db.Exec(`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url,
+			team_id, task_id, attach_seq, created_at) VALUES (?, ?, 'ENG-1', 'https://linear.app/x/ENG-1', 'team-a', ?, 1, 't')`,
+			"link-"+task.id, "issue-"+task.id, task.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	status, body := requestCancellation(t, f, "task-900001")
 	if status != 204 {

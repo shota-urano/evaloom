@@ -84,11 +84,11 @@ func (log *Log) Path() string { return log.path }
 // normalizing LF/CRLF and the final line to one LF in the persisted log.
 // A read failure preserves any partial output before returning the error.
 func (log *Log) Read(source io.Reader) error {
-	patterns := &patternReader{source: bufio.NewReader(source)}
+	patterns := logredact.NewPatternReader(source)
 	literals := logredact.NewLiteralReader(patterns, log.secrets)
 	defer func() {
 		log.mu.Lock()
-		log.redacted = log.redacted || patterns.changed || literals.Changed()
+		log.redacted = log.redacted || patterns.Changed() || literals.Changed()
 		log.mu.Unlock()
 	}()
 	reader := bufio.NewReader(literals)

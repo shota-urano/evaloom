@@ -13,6 +13,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -59,10 +60,7 @@ var _ Starter = (*TaskStarter)(nil)
 func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue) (Routing, error) {
 	criteria, written := ExtractAcceptanceCriteria(issue.Description)
 	r := Routing{Criteria: criteria}
-	prefix := s.RoutingLabelPrefix
-	if prefix == "" {
-		prefix = roundLabels(ctx).RoutingLabelPrefix
-	}
+	prefix := s.routingLabelPrefix(ctx)
 	var labels []string
 	for _, label := range issue.Labels {
 		if strings.HasPrefix(label, prefix) && !slices.Contains(labels, label) {
@@ -171,11 +169,39 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		AttachSeq: attachSeq, CreatedAt: stamp}); err != nil {
 		return "", err
 	}
+	// After the link: the outbox row needs the linked Issue.
+	if r.Cause != "" {
+		if err := enqueueHold(ctx, tx, created.ID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
+			return "", err
+		}
+	}
 	if _, err := store.RecordAuditLog(ctx, tx, store.AuditLog{Actor: "system", Action: "task.create",
 		TargetType: "task", TargetID: created.ID, Detail: detail}); err != nil {
 		return "", err
 	}
 	return decision, nil
+}
+
+// enqueueHold writes the hold comment of spec 16 3.2 for a held task in the
+// hold's transaction. The cause is the dedupe target, so the same cause is
+// commented once per task (3.5 rule 3). The comment carries the reason and
+// the fix, with the routing label prefix the decision used.
+func enqueueHold(ctx context.Context, tx *sql.Tx, taskID string, cause BlockCause, prefix string) error {
+	kind := linearoutbox.KindIntakeBlocked
+	if cause == CauseMissingAcceptanceCriteria {
+		kind = linearoutbox.KindMissingAcceptanceCriteria
+	}
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: kind, TargetID: string(cause),
+		RoutingLabelPrefix: prefix})
+}
+
+// routingLabelPrefix is the prefix Route uses: the starter's own, else the
+// Poller's round settings, else the default.
+func (s *TaskStarter) routingLabelPrefix(ctx context.Context) string {
+	if s.RoutingLabelPrefix != "" {
+		return s.RoutingLabelPrefix
+	}
+	return roundLabels(ctx).RoutingLabelPrefix
 }
 
 func newID(now time.Time) (string, error) {
