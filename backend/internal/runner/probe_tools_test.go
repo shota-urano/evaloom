@@ -70,7 +70,9 @@ func TestProbeToolsExecution(t *testing.T) {
 	if _, err := db.Exec(`UPDATE harnesses SET adapter='probe'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE projects SET local_repo_path=?,git_remote_url=?,setup_command='python3 setup.py',test_command='python3 test.py',test_report_format='junit',test_report_path='junit.xml'`, fixture.Repository, fixture.Remote); err != nil {
+	// The fake GitHub serves non-github.com PR URLs, which a spec 17 approval
+	// cannot bind to; exclude PR merges from approval so the PR completes.
+	if _, err := db.Exec(`UPDATE projects SET local_repo_path=?,git_remote_url=?,setup_command='python3 setup.py',test_command='python3 test.py',test_report_format='junit',test_report_path='junit.xml',approval_policy='{"mergePullRequest":"direct_push","version":1}'`, fixture.Repository, fixture.Remote); err != nil {
 		t.Fatal(err)
 	}
 	if err := process.Heartbeat(ctx); err != nil {

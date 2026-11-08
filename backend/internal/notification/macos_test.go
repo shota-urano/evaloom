@@ -25,6 +25,7 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 		{model.ExecutionInterrupted, "evaloom: 失敗", "test_failed"},
 		{model.ExecutionTimedOut, "evaloom: 失敗", "test_failed"},
 		{model.ExecutionBlocked, "evaloom: 対応が必要", "gate2_missing_tests"},
+		{model.ExecutionWaitingApproval, "evaloom: 承認待ち", "waiting_approval"},
 	} {
 		t.Run(string(tc.status), func(t *testing.T) {
 			n := Notification{

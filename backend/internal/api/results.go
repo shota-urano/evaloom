@@ -186,20 +186,35 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 				})
 			}
 		}
+		// Spec 17 3.3: a published PR of a require_approval Project waits for
+		// the owner's approval instead of succeeding. The Runner still reports
+		// succeeded (its work is done); the Control Plane decides the state.
+		to, reason := model.ExecutionStatus(input.Status), "runner_result"
+		if err == nil && execution.Status == model.ExecutionPublishing && to == model.ExecutionSucceeded {
+			var required bool
+			required, err = store.RequiresMergeApprovalTx(ctx, tx, id)
+			if err == nil && required {
+				_, err = store.OpenMergeApprovalTx(ctx, tx, id)
+				to, reason = model.ExecutionWaitingApproval, "approval_required"
+			}
+			if errors.Is(err, store.ErrApprovalPrecondition) {
+				err = &Error{Code: PreconditionFailed, Message: "PR approval requires a GitHub PR URL matching the PR number, the pushed SHA and the branch"}
+			}
+		}
 		if err == nil {
 			err = task.TransitionExecutionTx(ctx, tx, task.Transition{
 				TaskID: execution.TaskID, ExecutionID: id, FromTask: execution.TaskStatus,
-				FromExecution: execution.Status, ToExecution: model.ExecutionStatus(input.Status),
+				FromExecution: execution.Status, ToExecution: to,
 			})
 		}
 		if err == nil {
-			payload, _ := json.Marshal(map[string]string{"from": input.FromStatus, "to": input.Status, "reason": "runner_result"})
+			payload, _ := json.Marshal(map[string]string{"from": input.FromStatus, "to": string(to), "reason": reason})
 			_, err = store.AppendExecutionEvent(ctx, tx, id, model.EventStatusChanged, payload)
 		}
 		if err == nil {
 			_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
 				Actor: "runner:" + runner, Action: "execution.result", TargetType: "execution", TargetID: id,
-				Detail: map[string]any{"taskId": execution.TaskID, "from": input.FromStatus, "to": input.Status},
+				Detail: map[string]any{"taskId": execution.TaskID, "from": input.FromStatus, "to": string(to)},
 			})
 		}
 		if err == nil {
