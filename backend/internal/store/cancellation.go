@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
@@ -65,6 +66,13 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 			WHERE id = ? AND status = ? AND NOT EXISTS (SELECT 1 FROM executions WHERE task_id = ?)`,
 			model.TaskCancelled, time.Now().UTC().Format(time.RFC3339), c.TaskID, status, c.TaskID)
 		if err := expectOneRow(result, err); err != nil {
+			return err
+		}
+		// No Execution to key on: the task itself is the dedupe target
+		// (spec 16 3.2, cancellation of a Linear task).
+		if err := linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{
+			TaskID: c.TaskID, Kind: linearoutbox.KindCancelled, TargetID: c.TaskID,
+		}); err != nil {
 			return err
 		}
 		return audit(map[string]any{"from": status, "to": model.TaskCancelled, "cancelRequested": false})
