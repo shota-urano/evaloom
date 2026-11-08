@@ -62,6 +62,9 @@ Q28 で「setup はプロジェクトごとに登録した宛先だけ許可す�
 - 各要素は小文字の DNS ホスト名と 1〜65535 のポートを `:` でつないだものとする。ワイルドカード、IP リテラル、`localhost` などのローカル名は 400 で拒否する（[`09-sandbox.md`](./09-sandbox.md) 3.3 の宛先の書き方）。
 - 変更前後の値を audit_logs に残す（3.1 の4と同じく権限設定の変更として扱う）。
 - 空配列なら setup もネットワークを全遮断する。
+- 拒否するローカルの名前は、ドットを含まない1語の名前（`localhost` を含む）と、最後のラベルが `localhost`・`local`・`internal` の名前とする（2026-11-08 決定、Q87。PR #71 の実装どおり）。
+- 同じ宛先（同じ `host:port`）を2回以上含む入力は 400 `validation_failed` で拒否し、`details` の field を `setupAllowedHosts` にする（2026-11-08 決定、Q87）。PR #71 の実装は重複を受け付けるため、9章の実装単位で直す。
+- 本人は管理画面の Project の登録・編集で、この値を入力する（2026-11-08 決定、Q87。[`13-management-ui.md`](./13-management-ui.md) 3.2）。
 
 ### 3.4 Harness の登録・更新
 
@@ -178,3 +181,5 @@ requirements 15.3 により、Phase 1 でも本人は管理画面から許可操
   - 受け入れ基準: 1つの Harness を2つの Project に別の版で割り当てられる; 新しい版を登録しても既存の割り当てが変わらない; 未登録の版の指定が 422 になる
 - [ ] [Backend] setup の許可宛先の登録（3.3.1。projects.setup_allowed_hosts の列追加、登録・更新 API、claim の `project.setupAllowedHosts`。Q73 の決定後。[`05-runner.md`](./05-runner.md) 9章の「起動コマンドから工程表への接続」の前提ではない）
   - 受け入れ基準: `setupAllowedHosts` を省いて登録した Project の値が空配列になる; ワイルドカード、IP リテラル、`localhost`、ポートの無い値がそれぞれ 400 になる; 更新で変更前後の値が audit_logs に残る; 登録した値が claim の `project.setupAllowedHosts` にそのまま入る
+- [ ] [Backend] setup の許可宛先の重複を 400 で拒否する（3.3.1、Q87）
+  - 受け入れ基準: 同じ `host:port` を2回含む `setupAllowedHosts` で `POST /api/projects` と `PATCH /api/projects/{id}` がそれぞれ 400 `validation_failed` になり、`details` の field が `setupAllowedHosts` になる; 400 のとき Project の値が変わらず、audit_logs に行が増えない; 重複の無い値は従来どおり登録でき、claim の `project.setupAllowedHosts` にそのまま入る
