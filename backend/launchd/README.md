@@ -169,7 +169,7 @@ HTTPサーバーとDBを閉じている間にログを読み、同じDB・URLで
 通知方式の正本は`docs/specs/12-notification.md`の3.3節。
 上記のバイナリとplistの生成に続けて、ログイン中の本人のアカウントで実行する。
 Swiftコンパイラを含むXcode Command Line Toolsが必要になる。
-`make verify`はこのSwiftビルド・署名・配置や実通知を実行しない。
+`make verify`はこのビルド・署名・配置や実通知を実行しない（URLの許可範囲のテストだけが一時ディレクトリでSwiftをコンパイルする）。
 
 リポジトリのルートで、毎回新しいビルド先を作る。
 
@@ -181,6 +181,7 @@ mkdir -p "$notify_app/Contents/MacOS"
 cp -f backend/launchd/notification-helper/Info.plist "$notify_app/Contents/Info.plist"
 xcrun swiftc -O -framework AppKit -framework UserNotifications \
   -module-cache-path "$notify_build_dir/module-cache" \
+  backend/launchd/notification-helper/URLPolicy.swift \
   backend/launchd/notification-helper/main.swift \
   -o "$notify_app/Contents/MacOS/evaloom-notification-helper"
 plutil -lint "$notify_app/Contents/Info.plist"
@@ -220,6 +221,10 @@ PY
 URLは`http://127.0.0.1:<port>/tasks/<taskId>`に限定する。
 ただしLinearの照会が続けて失敗したときの通知（仕様15の6章）はタスクを持たないため、
 Dashboardの`http://127.0.0.1:<port>/`（パスが`/`だけ）も受け付ける。それ以外のURLは拒否する。
+許可範囲（仕様12の3.6）の検査は`notification-helper/URLPolicy.swift`にあり、起動時の引数とクリック時に
+通知へ保存したURLの両方を検査する。起動時に拒否したURLでは通知を出さず、結果を`invalid_arguments`にする。
+`make verify`の`go test`（`backend/launchd/notification_helper_test.go`）が、macOSでSwiftコンパイラがある場合に
+この検査をコンパイルして受け付けと拒否を確かめる（実通知は出さない）。
 この通知の本文は分類（`auth`・`rate_limited`・`network`・`other`）と連続失敗回数だけとする。
 既に配置したヘルパーはこの変更を含まないため、作り直して配置し直す。
 通知登録後は60秒待って終了する。通知センターからのクリックでmacOSが再起動した
