@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -73,34 +72,9 @@ type Worker struct {
 	// Now is the clock; nil uses time.Now. Tests advance it to pass the
 	// retry delays.
 	Now func() time.Time
-
-	mu sync.Mutex
-	// notDelivered holds the outbox IDs whose last send this Worker saw
-	// fail with a known result (Linear answered, or no connection was
-	// made). Only these rows are resent without reading the Issue's
-	// comments first. A row that is missing here (its last send broke
-	// before the response, or it was tried before this process started)
-	// is checked against Linear before it is sent again (3.4, 6章).
-	notDelivered map[string]bool
-}
-
-func (w *Worker) setNotDelivered(id string, known bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !known {
-		delete(w.notDelivered, id)
-		return
-	}
-	if w.notDelivered == nil {
-		w.notDelivered = map[string]bool{}
-	}
-	w.notDelivered[id] = true
-}
-
-func (w *Worker) isNotDelivered(id string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.notDelivered[id]
+	// The Worker keeps no per-row state in memory: whether a row must be
+	// matched against Linear before it is sent again is read from
+	// linear_outbox.outcome_unknown, so it survives a restart (3.4.1, Q83).
 }
 
 func (w *Worker) now() time.Time {
@@ -140,6 +114,8 @@ func (w *Worker) Run(ctx context.Context) {
 type outboxRow struct {
 	id, taskID, issueID, kind, dedupeKey, body string
 	attempts                                   int
+	// outcomeUnknown is linear_outbox.outcome_unknown (3.4.1, 3.7).
+	outcomeUnknown bool
 }
 
 // SendDue sends up to batchSize due rows, one at a time, oldest first. No
@@ -174,10 +150,10 @@ func (w *Worker) SendDue(ctx context.Context) error {
 
 func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 	var r outboxRow
-	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, body, attempts
-		FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, body, attempts,
+		outcome_unknown != 0 FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY created_at, id LIMIT 1`, w.now().Format(timeLayout)).Scan(
-		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts)
+		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -190,40 +166,62 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 // send makes one attempt for r. A Linear failure is handled here (retry or
 // failed) and logged; only DB errors and shutdown are returned.
 //
-// A row that was tried before and whose last result is not known to be "not
-// delivered" is first matched against the Issue's comments by dedupe_key
-// (3.4, 6章). If the comment is there it is not sent again and the row is
-// recorded as sent with that comment's ID. If the comments cannot be read,
-// nothing is sent (a resend could duplicate the comment) and the read
-// failure counts as the attempt's failure.
+// The result of each send is tracked in linear_outbox.outcome_unknown
+// (3.4.1, Q83):
+//   - Before the comment is sent, outcome_unknown is set to 1 and committed.
+//   - It goes back to 0 when the result is known: the send succeeded (in the
+//     same transaction as status=sent), Linear answered with a failure, or
+//     the request failed before a connection was made.
+//   - It stays 1 when the connection broke or timed out after it was opened,
+//     when shutdown interrupted the send, and when the process died.
+//
+// A row whose outcome_unknown is 1 is first matched against the Issue's
+// comments by dedupe_key. If the comment is there it is not sent again and
+// the row is recorded as sent with that comment's ID. If the comments cannot
+// be read, nothing is sent (a resend could duplicate the comment), the read
+// failure counts as the attempt's failure and outcome_unknown stays 1.
 func (w *Worker) send(ctx context.Context, r outboxRow) error {
-	if r.attempts > 0 && !w.isNotDelivered(r.id) {
+	if r.outcomeUnknown {
 		commentID, err := w.findSent(ctx, r)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
-			return w.failAttempt(ctx, r, err, "linear comments not read before resend")
+			return w.failAttempt(ctx, r, err, "linear comments not read before resend", true)
 		}
 		if commentID != "" {
 			w.logger().Info("linear comment already on the Issue; not sent again", "outbox_id", r.id,
 				"task_id", r.taskID, "kind", r.kind)
-			w.setNotDelivered(r.id, false)
 			return w.markSent(ctx, r, commentID, r.attempts)
 		}
 	}
+	if err := w.markOutcomeUnknown(ctx, r); err != nil {
+		return err
+	}
 	commentID, sendErr := w.Client.CreateComment(ctx, r.issueID, r.body)
 	if sendErr == nil {
-		w.setNotDelivered(r.id, false)
 		return w.markSent(ctx, r, commentID, r.attempts+1)
 	}
 	if ctx.Err() != nil {
-		// Shutdown interrupted the send: it is not counted as an attempt.
-		w.setNotDelivered(r.id, false)
+		// Shutdown interrupted the send: it is not counted as an attempt,
+		// and outcome_unknown stays 1 so the next send checks first.
 		return sendErr
 	}
-	w.setNotDelivered(r.id, !linear.OutcomeUnknown(sendErr))
-	return w.failAttempt(ctx, r, sendErr, "linear comment not sent")
+	return w.failAttempt(ctx, r, sendErr, "linear comment not sent", linear.OutcomeUnknown(sendErr))
+}
+
+// markOutcomeUnknown commits outcome_unknown=1 before the comment is sent
+// (3.4.1 step 1). No transaction is held while Linear is called.
+func (w *Worker) markOutcomeUnknown(ctx context.Context, r outboxRow) error {
+	result, err := w.DB.ExecContext(ctx, `UPDATE linear_outbox SET outcome_unknown = 1
+		WHERE id = ? AND status = 'pending'`, r.id)
+	if err != nil {
+		return fmt.Errorf("linearfeedback: mark %s outcome unknown: %w", r.id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return errors.Join(err, fmt.Errorf("linearfeedback: outbox row %s is no longer pending", r.id))
+	}
+	return nil
 }
 
 // findSent returns the ID of the Issue's comment that carries r's
@@ -254,27 +252,29 @@ func lastLineIs(body, key string) bool {
 
 // failAttempt counts a failed attempt for r: auth errors and removed Issues
 // fail at once (6章), the 5th failure fails, and otherwise the row waits
-// for the next retry delay (3.4 step 4).
-func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, message string) error {
+// for the next retry delay (3.4 step 4). unknown is the new
+// outcome_unknown: true when the attempt's result is not known (3.4.1).
+func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, message string, unknown bool) error {
 	attempts := r.attempts + 1
 	class := linear.ClassOf(failure)
 	w.logger().Warn(message, "outbox_id", r.id, "task_id", r.taskID,
 		"kind", r.kind, "attempt", attempts, "class", string(class),
-		"outcome_unknown", linear.OutcomeUnknown(failure))
+		"outcome_unknown", unknown)
 	switch {
 	case class == linear.ClassAuth:
 		// 6章: an authentication error is not retried.
-		return w.markFailed(ctx, r, attempts, "auth")
+		return w.markFailed(ctx, r, attempts, unknown, "auth")
 	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
 		// 6章: a deleted or archived Issue fails with reason=other and does
 		// not affect the task.
-		return w.markFailed(ctx, r, attempts, "issue_removed")
+		return w.markFailed(ctx, r, attempts, unknown, "issue_removed")
 	case attempts >= MaxAttempts:
-		return w.markFailed(ctx, r, attempts, "retries_exhausted")
+		return w.markFailed(ctx, r, attempts, unknown, "retries_exhausted")
 	default:
 		next := w.now().Add(RetryDelays[attempts-1]).Format(timeLayout)
 		_, err := w.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE linear_outbox
-			SET attempts = ?, next_attempt_at = ? WHERE id = ? AND status = 'pending'`, attempts, next, r.id)
+			SET attempts = ?, next_attempt_at = ?, outcome_unknown = ? WHERE id = ? AND status = 'pending'`,
+			attempts, next, flag(unknown), r.id)
 		return err
 	}
 }
@@ -294,7 +294,7 @@ func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, at
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'sent', attempts = ?, next_attempt_at = NULL,
-		linear_comment_id = ?, sent_at = ? WHERE id = ? AND status = 'pending'`,
+		linear_comment_id = ?, sent_at = ?, outcome_unknown = 0 WHERE id = ? AND status = 'pending'`,
 		[]any{attempts, commentID, w.now().Format(time.RFC3339Nano), r.id},
 		model.EventNotificationSent, map[string]string{"kind": r.kind, "channel": Channel})
 }
@@ -303,14 +303,13 @@ func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, at
 // reason is "other" for every Linear failure: spec 12 3.4 defines the other
 // reasons for the macOS helper only, and 6章 names "other" for removed
 // Issues. cause goes only to the Control Plane log.
-func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, cause string) error {
-	w.setNotDelivered(r.id, false) // The row is final; forget it.
+func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, unknown bool, cause string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	w.logger().Error("linear comment failed", "outbox_id", r.id, "task_id", r.taskID,
 		"kind", r.kind, "attempts", attempts, "cause", cause)
-	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'failed', attempts = ?, next_attempt_at = NULL
-		WHERE id = ? AND status = 'pending'`, []any{attempts, r.id},
+	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'failed', attempts = ?, next_attempt_at = NULL,
+		outcome_unknown = ? WHERE id = ? AND status = 'pending'`, []any{attempts, flag(unknown), r.id},
 		model.EventNotificationFailed, map[string]string{"kind": r.kind, "channel": Channel, "reason": "other"})
 }
 
@@ -364,4 +363,12 @@ func eventExecution(ctx context.Context, tx *sql.Tx, r outboxRow) (string, error
 		return "", nil
 	}
 	return id, err
+}
+
+// flag is the INTEGER value of a boolean column.
+func flag(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
