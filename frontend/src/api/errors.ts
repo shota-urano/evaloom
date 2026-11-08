@@ -35,14 +35,25 @@ const REASON_LABELS: Record<string, string> = {
   duplicate: 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています',
 }
 
-/** details の reason（機械向けの語）を画面の文言にする。未知の語は原文を添えて出す。 */
-export function reasonLabel(reason: string): string {
-  return REASON_LABELS[reason] ?? `値が正しくありません（${reason}）`
+// 項目によって意味が変わる reason の文言。details[].field ごとに REASON_LABELS より優先する。
+const FIELD_REASON_LABELS: Record<string, Record<string, string>> = {
+  // 03-registry 3.3.1（Q87）: setup の許可宛先の検証（backend/internal/api/projects.md）
+  setupAllowedHosts: {
+    invalid_format:
+      'host:port の形式で入力してください（ワイルドカード・IP アドレス・localhost などのローカルの名前・ポートの無い値は使えません）',
+    duplicate: '同じ宛先（host:port）が2回以上入力されています',
+  },
+}
+
+/** details の reason（機械向けの語）を画面の文言にする。field があれば項目ごとの文言を優先する。未知の語は原文を添えて出す。 */
+export function reasonLabel(reason: string, field?: string): string {
+  const byField = field === undefined ? undefined : FIELD_REASON_LABELS[field]?.[reason]
+  return byField ?? REASON_LABELS[reason] ?? `値が正しくありません（${reason}）`
 }
 
 /** fieldLabels があれば項目名（details[].field）を画面の名前にして出す。 */
 export function formatDetail(detail: ErrorDetail, fieldLabels: Readonly<Record<string, string>> = {}): string {
-  return `${fieldLabels[detail.field] ?? detail.field}: ${reasonLabel(detail.reason)}`
+  return `${fieldLabels[detail.field] ?? detail.field}: ${reasonLabel(detail.reason, detail.field)}`
 }
 
 export function describeError(error: unknown): ErrorDisplay {
@@ -99,7 +110,7 @@ export function splitFieldErrors(
   if (!(error instanceof ApiError) || error.status !== 400) return { fieldErrors, unmatched }
   for (const detail of error.details) {
     if (fields.includes(detail.field)) {
-      ;(fieldErrors[detail.field] ??= []).push(reasonLabel(detail.reason))
+      ;(fieldErrors[detail.field] ??= []).push(reasonLabel(detail.reason, detail.field))
     } else {
       unmatched.push(detail)
     }
