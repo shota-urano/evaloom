@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,14 +18,16 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
+	"github.com/shota-urano/evaloom/backend/internal/linearfeedback"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 // fakeLinear is an httptest stand-in for the Linear GraphQL API. It serves
 // team-a's ai-ready list and per-Issue fetches from the current issues map.
 type fakeLinear struct {
-	mu     sync.Mutex
-	issues map[string]map[string]any
+	mu       sync.Mutex
+	issues   map[string]map[string]any
+	comments []map[string]any // commentCreate variables, in order
 }
 
 func (l *fakeLinear) set(id string, issue map[string]any) {
@@ -69,6 +72,10 @@ func (l *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			data = map[string]any{"issue": issue}
 		}
+	case strings.Contains(req.Query, "EvaloomCommentCreate"):
+		l.comments = append(l.comments, req.Variables)
+		data = map[string]any{"commentCreate": map[string]any{"success": true,
+			"comment": map[string]any{"id": fmt.Sprintf("comment-%d", len(l.comments))}}}
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -325,5 +332,76 @@ func TestLinearPollerWiringKeepsRemovedIssueRecord(t *testing.T) {
 	}
 	if got := taskStatus("linear:issue-1:2"); got != "queued" {
 		t.Fatalf("new task = %s", got)
+	}
+}
+
+// 受け入れ基準: missing_acceptance_criteria で保留したタスクの Issue に記入
+// 依頼のコメントが1回付く。The production Poller holds the Issue, the
+// feedback Worker sends the request to an httptest Linear API once, and
+// later edits that still lack the criteria (rechecks with the same cause,
+// spec 16 3.5 rule 3) send no second comment.
+func TestLinearPollerWiringAsksForAcceptanceCriteriaOnce(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	setupLinearProject(t, db)
+
+	fake := &fakeLinear{issues: map[string]map[string]any{}}
+	server := httptest.NewTLSServer(fake)
+	defer server.Close()
+	keyPath := filepath.Join(t.TempDir(), "linear-api-key")
+	if err := os.WriteFile(keyPath, []byte("test-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	client, err := linear.NewClient(server.Client(), server.URL+"/graphql", keyPath, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller := linearPoller(db, client, logger)
+	worker := &linearfeedback.Worker{DB: db, Client: client, Logger: logger}
+	step := func() {
+		t.Helper()
+		if _, err := poller.PollOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := worker.SendDue(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	step() // first poll of team-a: baseline only
+	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	fake.set("issue-1", linearIssueJSON("issue-1", "no criteria", at, "ai-ready", "repo:p"))
+	step()
+	for i := 1; i <= 2; i++ {
+		fake.set("issue-1", linearIssueJSON("issue-1", fmt.Sprintf("still no criteria %d", i),
+			at.Add(time.Duration(i)*time.Minute), "ai-ready", "repo:p"))
+		step()
+	}
+
+	fake.mu.Lock()
+	comments := fake.comments
+	fake.mu.Unlock()
+	if len(comments) != 1 || comments[0]["issueId"] != "issue-1" {
+		t.Fatalf("comments = %v", comments)
+	}
+	body, _ := comments[0]["body"].(string)
+	for _, want := range []string{"受け入れ条件の記入をお願いします", "Issue の本文に受け入れ条件が書かれていない",
+		"「受け入れ条件」または「Acceptance Criteria」という見出し"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("comment lacks %q:\n%s", want, body)
+		}
+	}
+	var status, commentID string
+	if err := db.QueryRow(`SELECT status, linear_comment_id FROM linear_outbox
+		WHERE kind = 'missing_acceptance_criteria'`).Scan(&status, &commentID); err != nil {
+		t.Fatal(err)
+	}
+	if status != "sent" || commentID != "comment-1" {
+		t.Fatalf("outbox = %s %s", status, commentID)
 	}
 }

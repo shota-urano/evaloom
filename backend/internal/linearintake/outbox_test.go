@@ -2,8 +2,11 @@ package linearintake
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/shota-urano/evaloom/backend/internal/linear"
 )
 
 // outboxKeys returns the task's linear_outbox rows as kind -> dedupe_key,
@@ -113,5 +116,87 @@ func TestCancellationWritesOutboxRow(t *testing.T) {
 				t.Fatalf("outbox = %v (before %v)", got, before)
 			}
 		})
+	}
+}
+
+func outboxBody(t *testing.T, db *sql.DB, taskID string) string {
+	t.Helper()
+	var body string
+	if err := db.QueryRow(`SELECT body FROM linear_outbox WHERE task_id = ?`, taskID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func bodyHas(t *testing.T, body string, want ...string) {
+	t.Helper()
+	for _, s := range want {
+		if !strings.Contains(body, s) {
+			t.Errorf("body lacks %q:\n%s", s, body)
+		}
+	}
+}
+
+// 受け入れ基準: ルーティングの保留では理由と直し方が載る。Each routing
+// hold (and the assignment hold) of spec 15 3.6 comments its reason and its
+// fix (spec 16 3.2), naming the routing label prefix the decision used.
+func TestRoutingHoldCommentHasReasonAndFix(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		issue       linear.Issue
+		cause       BlockCause
+		reason, fix string
+	}{
+		{"two labels", routedIssue("1", "repo:one", "repo:three"), CauseRoutingMultipleLabels,
+			"実行先ラベル（repo: で始まるラベル）が2つ以上付いている", "直し方: 実行先ラベルを1つにする"},
+		{"unknown label", routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel,
+			"実行先ラベル（repo: で始まるラベル）が Evaloom に登録されていない", "直し方: Evaloom に登録済みの実行先ラベルを付ける"},
+		{"team mismatch", routedIssue("1", "repo:two"), CauseRoutingTeamMismatch,
+			"Linear Team がこの Issue の Team と違う", "直し方: この Issue の Team で登録済みの実行先ラベルを付ける"},
+		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel,
+			"実行先ラベル（repo: で始まるラベル）が付いていない", "直し方: Evaloom に登録済みの実行先ラベルを1つ付ける"},
+		{"no assignment", routedIssue("1", "repo:three"), CauseConfigMissingAssignment,
+			"default role にハーネスが割り当てられていない", "直し方: 管理画面で Project の default role にハーネスを割り当てる"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRecheckFixture(t)
+			held := f.hold(t, test.issue, test.cause)
+			body := outboxBody(t, f.db, held.id)
+			bodyHas(t, body, "- 実行ステータス: Blocked", "管理画面のタスク ID: "+held.id,
+				"- 保留の理由: ", test.reason, test.fix)
+			if strings.Contains(body, "受け入れ条件の記入") {
+				t.Errorf("routing hold asks for acceptance criteria:\n%s", body)
+			}
+		})
+	}
+}
+
+// The prefix in the reason is the round's setting, not a fixed "repo:".
+func TestHoldCommentUsesRoundPrefix(t *testing.T) {
+	f := newRecheckFixture(t)
+	f.intake.Starter.(*TaskStarter).RoutingLabelPrefix = "run:"
+	held := f.hold(t, routedIssue("1", "bug"), CauseRoutingNoLabel)
+	bodyHas(t, outboxBody(t, f.db, held.id), "実行先ラベル（run: で始まるラベル）が付いていない")
+}
+
+// 受け入れ基準: missing_acceptance_criteria で保留したタスクの Issue に記入
+// 依頼のコメントが1回付く。The hold writes one row asking for the criteria
+// with the heading to write (spec 15 3.6.1); later updates of the Issue that
+// still lack the criteria write no second row (spec 16 3.5 rule 3, 3.7).
+func TestMissingCriteriaHoldAsksOnce(t *testing.T) {
+	f := newRecheckFixture(t)
+	issue := routedIssue("1", "repo:one")
+	issue.Description = "no criteria"
+	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
+	bodyHas(t, outboxBody(t, f.db, held.id), "受け入れ条件の記入をお願いします",
+		"保留の理由: Issue の本文に受け入れ条件が書かれていない",
+		"「受け入れ条件」または「Acceptance Criteria」という見出し", "## 受け入れ条件")
+	for i := 1; i <= 3; i++ {
+		issue.Description = "still no criteria " + strings.Repeat("x", i)
+		issue.UpdatedAt = base.Add(time.Duration(i) * time.Minute)
+		f.mustRound(t, issue)
+	}
+	if got := outboxKeys(t, f.db, held.id); len(got) != 1 || len(got["missing_acceptance_criteria"]) != 1 {
+		t.Fatalf("outbox = %v", got)
 	}
 }

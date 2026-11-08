@@ -49,7 +49,7 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	decision := DecisionHeld
 	if r.Cause != "" {
 		detail["intakeBlockCause"] = string(r.Cause)
-		if err := enqueueHold(ctx, tx, h.TaskID, r.Cause); err != nil {
+		if err := enqueueHold(ctx, tx, h.TaskID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
 			return "", err
 		}
 	} else {
