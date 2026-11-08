@@ -153,3 +153,14 @@ PR のクローズは実装しない。
 送信後の通信失敗・5xx・読めない応答は `ErrMergeUnknown`（結果が分からない、3.5.3）。
 送信前の失敗（トークン取得失敗など）はマージされていないため、そのエラーを返す。
 Runner 側の手順は `internal/runner/operation.go`。
+
+## ベースブランチへの直接 push（仕様17の3.7）
+
+`PublishConfig.DirectPushCheck` を設定すると（claim の時点の承認ポリシーが `direct_push` のときだけ）、
+`Publish` は PR を作らず、verified_sha を Base Branch へ強制なしで push する。
+push 先の ref は `PushConfig.DirectPushBase`（Base Branch）と完全に一致する場合だけ許す。
+`DirectPushCheck` は `Push.CheckCancellation` の代わりに push 直前の最後の確認として呼ばれ、
+Control Plane の publish-check で中止要求と承認ポリシーの現在値を確かめる。
+`ErrPolicyChanged` を返すと PR を作る経路へ切り替え、ほかのエラーは push しない（Fail Closed）。
+pushed_sha は Execution の作業ブランチ名で記録する。作業ブランチは push しない。
+詳細と仕様に無い値は `internal/api/approvals.md` の「push 直前の確認（publish-check）と直接 push」。

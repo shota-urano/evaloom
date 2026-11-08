@@ -34,6 +34,10 @@ type PushConfig struct {
 	// The Runner audit delivery interface is not specified; this local boundary
 	// deliberately adds no HTTP endpoint or result field.
 	RecordRemoteMismatch func(ctx context.Context, verifiedSHA, observedSHA string) error
+	// DirectPushBase is the Project's Base Branch, set only when its approval
+	// policy is direct_push (spec 17 3.7.1 step 4). It additionally allows the
+	// target branch to be exactly this name. Empty allows only evaloom/.
+	DirectPushBase string
 }
 
 // GitTransport is an internal, trusted network boundary, not a public API.
@@ -78,7 +82,7 @@ func Push(ctx context.Context, target Target, config PushConfig) (pushedSHA stri
 			return "", ErrPush
 		}
 	}
-	if err := CheckBeforePush(ctx, target, config.CheckCancellation); err != nil {
+	if err := checkBeforePush(ctx, target, config.DirectPushBase, config.CheckCancellation); err != nil {
 		return "", err
 	}
 	ref := "refs/heads/" + target.BranchName

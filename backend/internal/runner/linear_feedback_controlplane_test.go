@@ -27,10 +27,15 @@ func TestProductionPipelineLinearCommentBody(t *testing.T) {
 	if kind != "succeeded" {
 		t.Fatalf("kind %s", kind)
 	}
+	var pushed string
+	if err := f.db.QueryRow(`SELECT pushed_sha FROM executions WHERE id=?`, logExecution).Scan(&pushed); err != nil {
+		t.Fatal(err)
+	}
+	// The scenario's Project is direct_push (spec 17 3.7): no PR is created.
 	for _, want := range []string{
 		"- 実行ステータス: Completed\n",
 		"- 実行担当ハーネス: h（Profile 1.0.0）\n",
-		"- PR URL: https://github.com/owner/repo/pull/1\n",
+		"- PR URL: なし（ベースブランチへ push した commit: " + pushed + "）\n",
 		"- Gate 2: pass（実行数: 1、skip 数: 0、確認方法: ID による照合）\n",
 		"- Gate 3: pass\n",
 		"作業概要:\n作業した [REDACTED] [REDACTED] [REDACTED]",
