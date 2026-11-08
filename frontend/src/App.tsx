@@ -5,6 +5,9 @@ import type { ApiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Link } from '@/lib/link'
 import { matchPath, useLocation } from '@/lib/router'
+import { ApprovalDetailPage } from '@/pages/approvals/approval-detail-page'
+import { ApprovalListPage } from '@/pages/approvals/approval-list-page'
+import { APPROVALS_PATH } from '@/pages/approvals/labels'
 import { DashboardPage } from '@/pages/dashboard/dashboard-page'
 import { LoginPage } from '@/pages/login-page'
 import { HarnessDetailPage } from '@/pages/harnesses/harness-detail-page'
@@ -27,6 +30,7 @@ const NAV = [
   { to: '/projects', label: 'Projects' },
   { to: '/harnesses', label: 'Harnesses' },
   { to: TASKS_PATH, label: 'Tasks' },
+  { to: APPROVALS_PATH, label: 'Approvals' },
   { to: SETTINGS_PATH, label: 'Settings' },
 ]
 
@@ -47,6 +51,9 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (path === TASK_NEW_PATH) return <TaskNewPage />
   const task = matchPath('/tasks/:id', path)
   if (task) return <TaskDetailPage key={task.id} id={task.id} />
+  if (path === APPROVALS_PATH) return <ApprovalListPage />
+  const approval = matchPath('/approvals/:id', path)
+  if (approval) return <ApprovalDetailPage key={approval.id} id={approval.id} />
   if (path === SETTINGS_PATH) return <SettingsPage />
   if (path === '/') return <DashboardPage />
   return (

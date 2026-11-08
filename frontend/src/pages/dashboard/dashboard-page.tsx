@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { ApiClient } from '@/api/client'
 
+import { approvals, type Approval } from '@/api/approvals'
 import { linearStatus } from '@/api/linear'
 import { registry } from '@/api/registry'
 import {
@@ -20,6 +21,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { cn } from '@/lib/utils'
+import { APPROVALS_PATH, approvalDetailPath, approvalTargetLabel } from '@/pages/approvals/labels'
 import { useLiveTaskList } from '@/pages/tasks/live'
 import { taskDetailPath } from '@/pages/tasks/labels'
 import { TaskStatusBadge } from '@/pages/tasks/task-list-page'
@@ -171,6 +173,52 @@ function NotificationFailures({ state }: { state: NotificationState }) {
   )
 }
 
+/** 承認待ち（17 3.3・3.4、13 3.10 の追加）。件数と、詳細へのリンク。 */
+function PendingApprovals({ items, error, onReload }: { items: Approval[] | undefined; error: unknown; onReload: () => void }) {
+  return (
+    <section aria-labelledby="dashboard-approvals" className="grid gap-3">
+      <h2 id="dashboard-approvals" className="font-semibold">
+        承認
+      </h2>
+      <ApiErrorAlert error={error} onReload={onReload} />
+      {items === undefined ? (
+        error ? null : <Loading />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,12rem)_1fr]">
+          <dl>
+            <Stat testId="approval-count-pending" label="承認待ち" value={items.length} tone="border-sky-300 bg-sky-50" />
+          </dl>
+          <Card>
+            <CardContent className="grid gap-2">
+              {items.length === 0 ? (
+                <p className="text-muted-foreground text-sm">承認待ちはありません。</p>
+              ) : (
+                <ul className="divide-y" aria-label="承認待ち">
+                  {items.map((approval) => (
+                    <li key={approval.id} className="py-2">
+                      <Link to={approvalDetailPath(approval.id)} className="font-medium underline-offset-4 hover:underline">
+                        {approvalTargetLabel(approval)}
+                      </Link>
+                      <div className="text-muted-foreground font-mono text-xs">
+                        {approval.contentVersion.slice(0, 12)} · {approval.taskId}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div>
+                <Link to={APPROVALS_PATH} className="text-sm underline underline-offset-4">
+                  Approvals 画面を開く
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function TaskGroupCard({
   group,
   items,
@@ -233,8 +281,10 @@ export function DashboardPage() {
   useLiveTaskList(api, list.data, list.reload)
   const notifications = useNotificationFailures(api)
   const linear = useResource((signal) => linearStatus.get(api, signal), 'linear-status')
+  const pendingApprovals = useResource((signal) => approvals.list(api, 'pending', signal), 'approvals:pending')
 
   const reload = () => {
+    pendingApprovals.reload()
     linear.reload()
     runners.reload()
     list.reload()
@@ -270,6 +320,8 @@ export function DashboardPage() {
             </dl>
             <RunnerTable runners={runners.data ?? []} />
           </section>
+
+          <PendingApprovals items={pendingApprovals.data} error={pendingApprovals.error} onReload={pendingApprovals.reload} />
 
           <section aria-labelledby="dashboard-tasks" className="grid gap-3">
             <h2 id="dashboard-tasks" className="font-semibold">
