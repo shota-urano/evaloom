@@ -58,3 +58,19 @@
   details に`linearRoutingLabel / duplicate`を返す。DB の UNIQUE 制約も残る。
 - 保存のトランザクションで、どの Project も登録しなくなった Team の linear_poll_teams の行を消す
   （仕様15の3.8、Q64）。次の照会を待たずに消すので、すぐ登録し直しても最初の照会からやり直す。
+
+## setup の許可宛先（仕様03の3.3.1、Q73）
+
+- `setupAllowedHosts`は`host:port`の文字列配列で、省略値は`[]`。nullは400と
+  `setupAllowedHosts / required`で拒否する（空にするときは`[]`を送る）。
+  値は検証に通ったものを並び順のまま保存し、claim の`project.setupAllowedHosts`にそのまま入れる。
+- 各要素は小文字の DNS ホスト名、`:`、先頭0の無い10進のポート（1〜65535）とする。
+  外れた要素が1つでもあれば400と`setupAllowedHosts / invalid_format`で拒否する。
+- 仕様の「ワイルドカード、IP リテラル、`localhost` などのローカル名」は次のとおり判定する。
+  - ワイルドカード: 英小文字・数字・`-`・`.`以外の文字（`*`など）を含む値。
+  - IP リテラル: 最後のラベルが数字だけの値（`127.1`などの省略形を含む）と、`[`や`:`を含む IPv6 表記。
+  - ローカル名: ラベルが1つだけの名前（ローカルの検索ドメインで解決されるため）と、
+    最後のラベルが`localhost`（RFC 6761）、`local`（mDNS、RFC 6762）、
+    `internal`（`host.docker.internal`など）の名前。仕様が列挙していないので、ここで安全側に決めた。
+- 重複した要素は拒否も除去もしない。
+- 変更は既存の`project.update`の監査記録の`before`・`after`に入る。

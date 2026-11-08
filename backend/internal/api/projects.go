@@ -123,7 +123,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			return
 		}
 		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
-			ContextLocation: "AGENTS.md", CopyAllowlist: []string{},
+			ContextLocation: "AGENTS.md", SetupAllowedHosts: []string{}, CopyAllowlist: []string{},
 			AllowedOperations: map[string]any{}, ApprovalPolicy: map[string]any{}, Timeouts: map[string]int{},
 		}}
 		if !create {
@@ -281,6 +281,11 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 			return nil, invalid("timeouts", "invalid")
 		}
 	}
+	for _, host := range p.SetupAllowedHosts {
+		if !validSetupHost(host) {
+			return nil, invalid("setupAllowedHosts", "invalid_format")
+		}
+	}
 	warnings := []string{}
 	for _, name := range p.CopyAllowlist {
 		if name == "" || filepath.IsAbs(name) || strings.Contains(name, "..") || strings.ContainsAny(name, "*?[]\\\x00") {
@@ -297,6 +302,57 @@ func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
 		}
 	}
 	return warnings, nil
+}
+
+// validSetupHost accepts only a lowercase DNS host name and a port 1-65535
+// joined by ":" (spec 03 3.3.1, spec 09 3.3): the container proxy matches
+// destinations exactly. Wildcards, IP literals, and local names that would
+// resolve to the host or the local network are rejected.
+func validSetupHost(value string) bool {
+	host, port, found := strings.Cut(value, ":")
+	if !found || port == "" || len(port) > 5 || port[0] == '0' {
+		return false
+	}
+	number := 0
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+		number = number*10 + int(digit-'0')
+	}
+	if number < 1 || number > 65535 || host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	// A single-label name is resolved through local search domains, never a
+	// public registry; such names count as local names here.
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	// An all-numeric last label makes the value an IPv4 literal (including
+	// shorthand forms such as 127.1), not a DNS name.
+	last := labels[len(labels)-1]
+	if strings.Trim(last, "0123456789") == "" {
+		return false
+	}
+	// localhost (RFC 6761), mDNS .local (RFC 6762), and .internal names such
+	// as host.docker.internal reach the host or the local network.
+	for _, local := range []string{"localhost", "local", "internal"} {
+		if last == local {
+			return false
+		}
+	}
+	return true
 }
 
 // Credentials in a remote URL are not configuration history. Retain the

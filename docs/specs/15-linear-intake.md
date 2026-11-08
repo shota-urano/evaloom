@@ -8,7 +8,7 @@ confirmed_rev: 8c99c84
 
 **親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend（設定画面は Frontend） ｜ **範囲**: requirements 8.2 の工程1〜4（イベント受信、確認、重複排除、プロジェクト特定）を Linear について行い、タスクを作る。Linear の変化は Evaloom から Linear API へ一定間隔で照会して取得する（ポーリング、requirements 6.6）。結果の返却は [`16-linear-feedback.md`](./16-linear-feedback.md)
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67、Q76〜Q79）に載せている。
+この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q43〜Q50、Q64〜Q67、Q76〜Q79、Q81）に載せている。
 
 ## 1. 目的
 
@@ -155,6 +155,21 @@ requirements は、ルーティングで保留したタスクと受け入れ条�
 - 再判定は新しいタスクを作らない。同じタスクを起動できるかを見直すだけである。
 - 本人は管理画面からこのタスクを中止できる（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.5 の `blocked` の経路）。
 
+**Evaloom 側の設定の変更による再判定（2026-11-08 決定、Q81）**: 保留の理由の中には、Issue ではなく Evaloom 側の設定で決まるものがある。本人が管理画面でその設定を直したときも、Issue を更新しなくても再判定する。
+
+| 本人が変えた設定 | 再判定の対象にする保留中のタスク |
+|---|---|
+| Project の `linear_team_id` / `linear_routing_label`（`PATCH /api/projects/{id}` の `linearTeamId` / `linearRoutingLabel`。登録・変更・外す、のいずれも） | 保留の理由が `routing_unknown_label` / `routing_team_mismatch` のタスクすべてと、保留の理由が `config_missing_assignment` でその Project に決まっていたタスク |
+| Project の `default_role`（`PATCH /api/projects/{id}`） | 保留の理由が `config_missing_assignment` でその Project に決まっていたタスク |
+| Project の Harness Profile の割り当て（`POST /api/projects/{id}/harnesses`、[`03-registry.md`](./03-registry.md) 3.6） | 保留の理由が `config_missing_assignment` でその Project に決まっていたタスク |
+
+- `routing_multiple_labels` / `routing_no_label` / `missing_acceptance_criteria` は Issue の中身だけで決まるため、設定の変更では再判定しない。これまでどおり Issue の更新時刻が進んだときに再判定する。
+- 設定を変える API は、設定の書き込みと同じトランザクションで、対象のタスクの Issue の linear_issue_states に再判定の印（`recheck_requested_at`、3.8）を付ける。値が変わらない更新では印を付けない。
+- 次の照会で、印の付いた Issue は更新時刻が進んでいなくても 3.6 の判定をやり直す。Issue のラベル・Team・本文は、その回の照会で取得した値を使う（linear_issue_states は Issue の中身を持たないため）。判定の結果の扱いは更新時刻による再判定と同じで、通れば同じタスクを起動し、理由が変わらなければ何もしない。理由が変わったときは、新しい理由の保留のコメントを出す（16 の 3.7 の dedupe_key で同じ理由のコメントは1回だけ）。
+- 印は再判定と同じトランザクションで消す。その回の照会でその Issue が一覧に無かった（`ai-ready` が外れた、削除・アーカイブされた）ときは、3.4・3.7 の判定に従い、印も消す。
+- 照会が失敗した回は判定をしない（6章）ため、印は残り、次に照会が成功した回で再判定する。
+- 保留のコメント（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2）で `routing_unknown_label` / `routing_team_mismatch` / `config_missing_assignment` の直し方を書くときは、管理画面で Project の設定を直しても再判定することを書く。
+
 ### 3.7 中止（requirements 6.2）
 
 `ai-ready` が外されたとき、または Issue がキャンセルされたとき、その Issue に対応するタスクのうち待機中・実行中のものを中止する。3.4 の表で中止とした場合も同じに扱う。
@@ -210,10 +225,12 @@ requirements 17章の event_inbox（受信イベント）は Phase 2 では作�
 | last_decision_at | TEXT NULL | |
 | first_seen_at / last_seen_at | TEXT | |
 | removed_at | TEXT NULL | 削除・アーカイブを検出した時刻（削除済みの印）。元に戻されて一覧に再び現れたら NULL に戻す（3.4、Q78） |
+| recheck_requested_at | TEXT NULL | Evaloom 側の設定の変更で、保留したタスクの再判定を求めた時刻（3.6.3、Q81）。次の照会で再判定したら NULL に戻す |
 
 - `ai_ready=0` の行は、中止の後に付け直しを検出するために残す（Q46）。保存期間は Q24 と合わせて決める。
 - 削除・アーカイブされた Issue の行も消さない。attach_seq を保ち、元に戻された後の付け直しで以前のタスクと同じ冪等キーにならないようにする（Q78）。
 - 既存の DB に removed_at の列を足すマイグレーションでは、既存の行を NULL にする。PR #66 の実装で削除・アーカイブ時にすでに消えた行は戻せない。
+- 既存の DB に recheck_requested_at の列を足すマイグレーションでは、既存の行を NULL にする。
 
 #### settings（全体設定、02 で定義）
 
@@ -346,6 +363,8 @@ Linear GraphQL API で使う操作（対象 Team の `ai-ready` 付き Issue の
   - 受け入れ基準: Team とラベルが一致する Issue から queued のタスクと pending の Execution ができる; 実行先ラベルが2つ・未登録・無し・Team 違いでは Execution の無い blocked のタスクができ、intake_block_cause が表の値になる; 受け入れ条件の見出しが無い Issue が missing_acceptance_criteria で保留になり、acceptance_criteria が空文字列で保存される; source=manual のタスクは acceptance_criteria が空だと保存できない; Linear Project を設定していない Issue でも実行される
 - [ ] [Backend] 保留したタスクの再判定（3.6.3）
   - 受け入れ基準: 保留中のタスクの Issue で実行先ラベルを直し、更新時刻が進んだ状態で照会すると、同じタスクが queued になり Execution が1つできる; 更新時刻が変わらない照会では再判定しない; 保留の理由が変わらなければ何も起きない; 保留していないタスクの Issue の更新では何も起きない
+- [ ] [Backend] Evaloom 側の設定の変更による保留したタスクの再判定（3.6.3 の設定の変更の表、3.8 の recheck_requested_at、Q81）
+  - 受け入れ基準: recheck_requested_at の列を足すマイグレーションで既存の行が NULL になる; routing_unknown_label で保留したタスクの実行先ラベルを PATCH /api/projects/{id} で Project に登録すると、Issue の更新時刻が変わらないまま次の照会で同じタスクが queued になり Execution が1つできる; routing_team_mismatch で保留したタスクも、Project の linear_team_id を Issue の Team に直すと同じになる; config_missing_assignment で保留したタスクは、その Project の default_role を割り当てのある役割に変える、または default_role の役割に POST /api/projects/{id}/harnesses で割り当てると、次の照会で queued になる; ほかの Project の default_role や割り当てを変えても、そのタスクの Issue に印が付かない; routing_multiple_labels・routing_no_label・missing_acceptance_criteria のタスクには設定の変更で印が付かない; 値が変わらない PATCH では印が付かない; 再判定で理由が変わらなければ何も起きず、コメントも増えない; 再判定の後に印が NULL に戻る; 照会が失敗した回は印が残り、次に成功した回で再判定する; 設定の書き込みがロールバックされると印も付かない
 - [ ] [Backend] Linear 起因の中止（3.7）
   - 受け入れ基準: ai-ready を外した Issue の照会で queued・running・blocked のタスクが中止の経路に入る; Issue のキャンセル、削除・アーカイブでも同じになる; completed のタスクは変わらない; audit_logs の actor が system で、理由が 3.4 の表の値になる
 - [ ] [Backend] 削除・アーカイブした Issue の記録を残す（3.4、3.7、3.8 の removed_at、Q78）
