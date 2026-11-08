@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { ApiClient } from '@/api/client'
 
+import { linearStatus } from '@/api/linear'
 import { registry } from '@/api/registry'
 import {
   NOTIFICATION_FAILURE_REASONS,
@@ -21,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { useLiveTaskList } from '@/pages/tasks/live'
 import { taskDetailPath } from '@/pages/tasks/labels'
 import { TaskStatusBadge } from '@/pages/tasks/task-list-page'
+import { LinearPollFailures, LinearStatusSection } from './linear-status'
 import { summarize, TASK_GROUP_LABELS, TASK_GROUPS, type TaskGroup } from './summary'
 
 function Stat({ testId, label, value, more, tone }: { testId: string; label: string; value: number; more?: boolean; tone?: string }) {
@@ -179,7 +181,7 @@ function TaskGroupCard({
         </CardTitle>
         {group === 'error' ? (
           <CardDescription>
-            Failed と Timed Out のタスク、および通知失敗。
+            Failed と Timed Out のタスク、通知失敗、および Linear の照会の失敗。
           </CardDescription>
         ) : null}
       </CardHeader>
@@ -211,7 +213,7 @@ function TaskGroupCard({
   )
 }
 
-/** Dashboard（13 3.2）。Runner 状態、実行中・待機中・Blocked のタスク、エラー状況。 */
+/** Dashboard（13 3.2）。Runner 状態、実行中・待機中・Blocked のタスク、エラー状況、Linear の取り込みの状況（15 5章）。 */
 export function DashboardPage() {
   const { api } = useSession()
   const runners = useResource((signal) => registry.listRunners(api, signal), 'runners')
@@ -219,8 +221,10 @@ export function DashboardPage() {
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
   useLiveTaskList(api, list.data, list.reload)
   const notifications = useNotificationFailures(api)
+  const linear = useResource((signal) => linearStatus.get(api, signal), 'linear-status')
 
   const reload = () => {
+    linear.reload()
     runners.reload()
     list.reload()
     projects.reload()
@@ -277,11 +281,18 @@ export function DashboardPage() {
             <div className="grid gap-4 lg:grid-cols-2">
               {TASK_GROUPS.map((group) => (
                 <TaskGroupCard key={group} group={group} items={summary.tasks[group]} projectName={projectName}>
-                  {group === 'error' ? <NotificationFailures state={notifications} /> : null}
+                  {group === 'error' ? (
+                    <>
+                      <NotificationFailures state={notifications} />
+                      <LinearPollFailures teams={linear.data?.teams} error={linear.error} />
+                    </>
+                  ) : null}
                 </TaskGroupCard>
               ))}
             </div>
           </section>
+
+          <LinearStatusSection status={linear.data} error={linear.error} onReload={linear.reload} />
         </>
       )}
     </div>

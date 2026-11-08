@@ -1,8 +1,10 @@
+import type { ApiClient } from './client'
+
 // 全体設定（13-management-ui 3.2「Settings」）。
 //
-// 01-architecture 5.1 には GET/PATCH /api/settings があるが、応答の形は仕様に無く、backend にも実装が無い
-// （backend/internal/api/server.go に経路が無い）。画面はこの型だけに依存し、値の取り出し方は settingsSource に閉じ込める。
-// GET /api/settings の形が決まったら、settingsSource をその API を読む実装に差し替える。
+// GET/PATCH /api/settings は 15-linear-intake 5章の linear（トリガーのラベル名と実行先ラベルの接頭辞）だけを返す
+// （backend/internal/api/linear.go・linear.md）。同時実行の上限などほかの全体設定は応答の形が仕様に無いので、
+// 画面はこの型だけに依存し、値の取り出し方は settingsSource に閉じ込める。
 
 /** 同時実行の上限（13 4節・04 4節・05 4節、requirements 8.7）。画面からは変更させない。 */
 export type ConcurrencyLimits = {
@@ -29,4 +31,16 @@ export type SettingsSource = {
 export const settingsSource: SettingsSource = {
   origin: '仕様の確定値（13-management-ui 4節）',
   load: async () => ({ concurrency: { ...CONCURRENCY_LIMITS } }),
+}
+
+/** 15-linear-intake 3.4・5章（Q48）。既定値は ai-ready と repo:。 */
+export type LinearLabelSettings = { triggerLabel: string; routingLabelPrefix: string }
+
+/** GET / PATCH /api/settings の応答（backend/internal/api/linear.go の settingsView）。 */
+export type SettingsView = { linear: LinearLabelSettings }
+
+export const settingsApi = {
+  get: (api: ApiClient, signal?: AbortSignal) => api.get<SettingsView>('/api/settings', { signal }),
+  /** linear の中の指定したキーだけを置き換える（省略したキーは残る）。 */
+  updateLinear: (api: ApiClient, linear: Partial<LinearLabelSettings>) => api.patch<SettingsView>('/api/settings', { linear }),
 }

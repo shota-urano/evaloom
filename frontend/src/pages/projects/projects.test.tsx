@@ -112,7 +112,56 @@ describe('プロジェクトの登録', () => {
       allowedOperations: {},
       approvalPolicy: {},
       timeouts: { testSec: 600 },
+      linearTeamId: null,
+      linearRoutingLabel: null,
     })
+  })
+
+  it('Linear Team ID と実行先ラベルを送り、詳細画面に表示する（15 3.8）', async () => {
+    const saved = { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' }
+    const fake = renderAt('/projects/_new', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.method === 'POST') return json(201, { ...saved, warnings: [] })
+      return json(200, saved)
+    })
+    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
+    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
+    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
+    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
+    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
+    await userEvent.type(screen.getByLabelText('Linear Team ID'), ' team-eng ')
+    await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
+    await userEvent.click(screen.getByRole('button', { name: '登録' }))
+    expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
+    const post = fake.calls.find((c) => c.method === 'POST')
+    expect(JSON.parse(post?.body ?? '')).toMatchObject({ linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' })
+    expect(screen.getByText('Linear Team ID').nextElementSibling).toHaveTextContent('team-eng')
+    expect(screen.getByText('実行先ラベル').nextElementSibling).toHaveTextContent('repo:alpha')
+  })
+
+  it('409 の Linear Team ID と実行先ラベルの組の重複は、実行先ラベルの項目と一覧に出し、読み直しボタンは出さない', async () => {
+    renderAt('/projects/_new', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      return apiError(409, 'conflict', 'Linear Team and routing label already registered to another Project', [
+        { field: 'linearRoutingLabel', reason: 'duplicate' },
+      ])
+    })
+    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
+    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
+    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
+    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
+    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
+    await userEvent.type(screen.getByLabelText('Linear Team ID'), 'team-eng')
+    await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
+    await userEvent.click(screen.getByRole('button', { name: '登録' }))
+    const message = 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています'
+    expect(await within(fieldOf('実行先ラベル')).findByText(message)).toBeVisible()
+    expect(screen.getByLabelText('実行先ラベル')).toHaveAttribute('aria-invalid', 'true')
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Linear の実行先が重複しています')
+    expect(alert).toHaveTextContent(`実行先ラベル: ${message}`)
+    expect(alert).not.toHaveTextContent('状態が変わりました')
+    expect(screen.queryByRole('button', { name: '最新を読み直す' })).toBeNull()
   })
 
   it('保存の応答に warnings があれば詳細画面に表示する', async () => {
@@ -219,6 +268,21 @@ describe('プロジェクトの編集', () => {
     expect(body).not.toHaveProperty('reviewRole')
     expect(body).not.toHaveProperty('contextLocation')
     expect(body).toMatchObject({ name: 'Alpha 2', testCommand: 'make test', timeouts: { testSec: 600 } })
+  })
+
+  it('編集では登録済みの Linear 項目を入力欄に出して送り直し、空欄にすると null で解除する', async () => {
+    const fake = renderAt('/projects/alpha/edit', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
+      return json(200, { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' })
+    })
+    expect(await screen.findByDisplayValue('team-eng')).toBeVisible()
+    expect(screen.getByLabelText('実行先ラベル')).toHaveValue('repo:alpha')
+    await userEvent.clear(screen.getByLabelText('実行先ラベル'))
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    const body = JSON.parse(fake.calls.find((c) => c.method === 'PATCH')?.body ?? '')
+    expect(body).toMatchObject({ linearTeamId: 'team-eng', linearRoutingLabel: null })
   })
 
   it('409 は最新を読み直すボタンを出し、押すと読み直した値で入力欄を作り直す', async () => {
