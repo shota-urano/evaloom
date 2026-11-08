@@ -271,7 +271,8 @@ test('Settings に同時実行の上限が表示されるが、変更する入�
   await expect(page.getByTestId('concurrency-global').locator('dd')).toHaveText('2 本')
   await expect(page.getByTestId('concurrency-per-project').locator('dd')).toHaveText('1 本')
   await expect(page.getByText('表示のみです。画面からは変更できません。')).toBeVisible()
-  const main = page.getByRole('main')
+  // Linear のラベル（evaloom-iao.10、15 5章）は編集できるので、同時実行の上限の欄に入力欄もボタンも無いことを確かめる。
+  const main = page.getByTestId('settings-concurrency')
   await expect(main.getByRole('textbox')).toHaveCount(0)
   await expect(main.getByRole('spinbutton')).toHaveCount(0)
   await expect(main.getByRole('combobox')).toHaveCount(0)

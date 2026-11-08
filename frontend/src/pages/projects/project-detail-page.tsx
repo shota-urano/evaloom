@@ -61,6 +61,8 @@ function SettingsCard({ project }: { project: Project }) {
               {project.timeouts[key] === undefined ? <span className="text-muted-foreground">全体の既定値</span> : project.timeouts[key]}
             </Row>
           ))}
+          <Row label={L.linearTeamId}>{mono(project.linearTeamId ?? null)}</Row>
+          <Row label={L.linearRoutingLabel}>{mono(project.linearRoutingLabel ?? null)}</Row>
           <Row label={L.allowedOperations}>{json(project.allowedOperations)}</Row>
           <Row label={L.approvalPolicy}>{json(project.approvalPolicy)}</Row>
         </dl>
