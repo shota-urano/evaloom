@@ -41,6 +41,9 @@ type resultInput struct {
 	Worktree    *resultWorktree    `json:"worktree"`
 	PRCreated   *bool              `json:"prCreated"`
 	Audit       *resultAudit       `json:"audit"`
+	// MergeCommitSHA is the merge result of an approved merge (spec 17
+	// 3.5.2 step 4), reported from merging only.
+	MergeCommitSHA *string `json:"mergeCommitSha"`
 }
 
 type resultGateResult struct {
@@ -121,8 +124,31 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if execution.Status == model.ExecutionMerging || execution.Status == model.ExecutionWaitingApproval {
+			if execution.Status == model.ExecutionMerging {
+				err = saveMergeResult(r, tx, execution, runner, input)
+			} else {
+				err = saveApprovalWaitResult(r, tx, execution, runner, input)
+			}
+			if err == nil {
+				err = tx.Commit()
+			}
+			if errors.Is(err, task.ErrConflict) {
+				err = &Error{Code: Conflict, Message: err.Error()}
+			}
+			if err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
 			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
+			return
+		}
+		if input.MergeCommitSHA != nil {
+			WriteError(w, logger, invalid("mergeCommitSha", "only_for_merging"))
 			return
 		}
 		if hasStageResult(input) {

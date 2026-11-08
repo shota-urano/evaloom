@@ -68,3 +68,129 @@
 - イベントの`reason`：戻りは`approval_expired`・`approval_target_changed`・`approval_content_changed`、
   中止は既存の`task_cancelled`。
 - reasonの値のうち`already_used`・`expired`・`not_approved`は仕様に無いため、ここで決めた。
+
+## 承認済みの操作（claim）とマージの結果の報告
+
+正本は17の3.5.1・3.5.2・6章。
+
+- claim（`POST /api/runners/{id}/claim`）は、通常の Execution より先に「承認済みの操作」を探す。
+  条件は、approvals が `approved`・未使用・`merge_pull_request`、Execution が最新の `merging`、
+  タスクが `waiting_approval`、Execution と Project の Runner が呼び出し元であること。
+  `decided_at`・ID の順で1件返す。merging は同時実行の枠に数えない（Q59）ため、空き枠の判定より前に探す。
+  応答は `{"execution":{"id","taskId"},"project":{...},"operation":{"approvalId","operation","target","contentVersion"}}`。
+  claim は状態を変えない。使用は consume だけが行うため、同じ操作を2回渡してもマージは1回だけになる。
+  通常の Execution の claim の応答には `"operation": null` を付ける。
+- マージの結果は既存の `POST /api/executions/{id}/result` で `fromStatus=merging` から報告する。
+  - 成功：`status=succeeded`、`mergeCommitSha`（40桁または64桁の小文字16進、必須）。
+  - 失敗：`status=failed`、`errorClass=publish_failed`、`errorMessage` は
+    `content_changed`（GitHub が sha の不一致で拒否、6章）・`merge_rejected`（その他の拒否）・
+    `merge_unknown`（結果が分からない、3.5.3）のどれか。
+  - 他の項目（usage、Gate 結果、PR の項目など）は 400。`mergeCommitSha` を merging 以外から送ると 400。
+  - 同じ Execution に、consume 済みで結果未記録の承認が無ければ 409（マージは許されていない）。
+  - approvals.result に `{"mergeCommitSha":...}` または `{"error":<理由>}` を保存する。
+    `content_changed` のときは承認を `invalidated`（content_changed）にし、`system` の監査記録を残す。
+  - 状態遷移・通知要求（succeeded / failed）・`status_changed`（reason `runner_result`）・
+    `runner:<id>/execution.result` の監査記録は既存の遷移関数で同じトランザクションに保存する。
+- 仕様に無いため、ここで決めた値：claim の応答の `operation` の形、`mergeCommitSha` の項目名、
+  失敗理由 `merge_rejected`、GitHub の拒否時に Execution を `failed` にすること。
+
+## マージの結果が分からないときの照合（Runner）
+
+正本は17の3.5.3。マージ要求に応答が無い・5xx・読めない応答のとき、Git Publisherは
+マージを再び要求せず、PRを1回だけ読み直す（`GET /repos/{repo}/pulls/{n}`）。
+
+- マージ済みで、headのSHAがcontent_versionと一致し、`merge_commit_sha`が40桁または64桁なら、
+  その値を`mergeCommitSha`として`succeeded`を報告する。
+- 開いたまま・読めないときは`failed`・`publish_failed`・`merge_unknown`を報告する。
+- 仕様の表に無い状態（マージ済みだがheadがcontent_versionと違う、閉じていてマージされていない、
+  マージ済みだが`merge_commit_sha`が読めない）も、仕様に無いため安全側の`merge_unknown`にした。
+  `succeeded`の報告には`mergeCommitSha`が必須のため、マージ commit を読めないときは成功として報告できない。
+- 読み直しは再試行しない（1回だけ）。
+
+## 承認待ちのPRの定期照合（Runner）
+
+正本は17の3.6とQ58。承認待ちの間に本人がGitHubでPRを直接マージ・クローズした場合を、
+Runnerが承認待ちのPRを定期的に読んで照合する。
+
+- 承認待ちのPRの一覧：Runnerの既存の定期処理であるheartbeatの応答に`waitingApprovals`を足した。
+  要素は`executionId`・`taskId`・`target`（Executionの最新のmerge承認のtarget）・`project`
+  （claimの`project`と同じ形）。対象は呼び出し元のRunnerが実行した、最新で`waiting_approval`の
+  Execution（タスクも`waiting_approval`）。`merging`は含めない（承認済みの操作がconsumeの前にPRを
+  読み、対象が変わっていれば`waiting_approval`へ戻すため、次の照合で拾われる）。
+- PRの読み取り：Git Publisherの読み取り専用のinstallation token（contents・pull_requestsはread）で
+  `GET /repos/{repo}/pulls/{n}`を読む。マージの権限は使わない。読めないPRは次の照合で読み直す。
+  Runnerが処理中のExecution（承認済みの操作を含む）は読まない。
+- 照合の結果は既存の`POST /api/executions/{id}/result`で`fromStatus=waiting_approval`から報告する。
+  - マージ済み：`status=succeeded`、`mergeCommitSha`（40桁または64桁の小文字16進、必須）。
+    Executionは`succeeded`、タスクは`completed`。
+  - マージされずに閉じた：`status=failed`、`errorMessage=pull_request_closed`、`errorClass`は送らない。
+    Executionとタスクは`failed`。02の5.4に該当する`error_class`が無いため、Q57の`approval_rejected`と
+    同じく`error_class`は空のまま`error_message`に入れる。
+  - 開いたままなら報告しない。
+  - どちらも、未使用（pending / approved）の承認を`invalidated`（target_changed）にし、
+    `system/approval.invalidate`の監査記録を残す。状態遷移・通知要求・`status_changed`イベント
+    （reason `pull_request_merged` / `pull_request_closed`）・`runner:<id>/execution.result`の監査記録
+    （`reason`、マージなら`mergeCommitSha`）を同じ`BEGIN IMMEDIATE`のトランザクションで保存する。
+  - 他の項目は400。merge承認の無いExecution、最新でないExecution、`waiting_approval`以外からの報告は409。
+- 仕様に無いため、ここで決めた値：照合の間隔（1分。heartbeatのたびではなく、前回の照合から1分経った
+  heartbeatの後に1回）、heartbeatの応答の`waitingApprovals`の形、失敗理由`pull_request_closed`、
+  イベントの`reason`の`pull_request_merged` / `pull_request_closed`。
+
+## push 直前の確認（publish-check）と直接 push
+
+正本は17の3.7・5章・6章。
+
+- `POST /api/executions/{id}/publish-check`（Runner用）。入力は空のJSON（`{}`）。ほかの項目は400。
+  応答は200で `{"cancelRequested": <bool>, "approvalPolicy": {"version": 1, "mergePullRequest": "require_approval" | "direct_push"}}`。
+  - `cancelRequested` は Execution の `cancel_requested_at` の有無（heartbeat の中止要求と同じ値）。
+  - `approvalPolicy` は呼び出した時点の Project の値。保存値が3.2の形で `direct_push`（version 1）のときだけ
+    `direct_push` を返し、ほかの値・読めない値は既定の `require_approval` を返す（直接 push の側へ倒さない）。
+  - Execution の `runner_id` と違う Runner は403（`execution_runner_mismatch`、`auth.reject` の監査記録）。
+    本人のセッションは403（6章）。Execution が無ければ404。最新の `publishing` でなければ409。
+  - 状態・イベント・監査記録は変えない（読むだけ）。
+- Runner（`internal/runner/publish_check.go`、`internal/publisher/publish.go`）:
+  - claim の `project.approvalPolicy.mergePullRequest` が `direct_push` のときだけ直接 push を試みる。
+    claim の値が `require_approval` なら publish-check を呼ばず、従来どおり PR を作る（3.7.1 の2「違えば安全側」）。
+  - 直接 push では、ローカルの確認（push 先の ref、HEAD と verified_sha の一致、作業ツリー）の後、
+    push の直前の最後の確認として publish-check を1回呼ぶ。再試行しない。
+    届かない・200以外・読めない応答なら push しない（`failed`・`publish_failed`）。
+    `cancelRequested` なら Execution を中止する。現在値が `direct_push` でなければ PR を作る経路へ切り替える。
+  - push 先の ref は、`evaloom/` で始まるブランチに加えて、直接 push のときだけ Project の Base Branch と
+    完全に一致する名前を許す（3.7.1 の4）。`git push <remote> <verified_sha>:refs/heads/<base_branch>` を
+    強制なしで1回送り、リモートの Base Branch の SHA が verified_sha と一致することを確かめる。
+  - 一致したら既存の工程内報告（`publishing` のまま `pushedSha`・`branchName`）で pushed_sha を記録し、
+    PR を検索も作成もせずに `succeeded` を報告する。PR が無いため Control Plane は承認待ちを作らず、
+    Execution は `succeeded`、タスクは `completed` になる。
+- 仕様に無いため、ここで決めた値:
+  - publish-check の入力（空のJSON）と応答の形（`cancelRequested`・`approvalPolicy`）。
+  - 直接 push の後の `pushed` の報告の `branchName` は Execution の `branch_name`（`evaloom/...`）とした。
+    既存の結果API が `branchName` を executions.branch_name と照合する（不一致は422）ため。
+    push 先が Base Branch だったことは、PR が無いことと Project の承認ポリシーから分かる。
+  - 3.7.2 の4（作業ブランチを push するか）：push しない。作業ブランチは Runner のクローンに残る。
+    外部への書き込みを Base Branch への1回に限るため。
+  - PR を作る経路（claim の時点で `require_approval`、または publish-check で切り替えた場合）の
+    push 直前の中止確認は、従来どおり heartbeat を使う。5章の「heartbeat の応答を使っていた確認を置き換える案」は、
+    直接 push の経路だけで適用した。
+
+## 直接 push で fast-forward できないとき（3.7.3）
+
+正本は17の3.7.3（Q62）。
+
+- Base Branch への直接 push は強制なしで1回だけ送る。拒否されたら、リモートの Base Branch の SHA を読み直し、
+  それが存在し、verified_sha と違い、verified_sha の祖先でない（Runner のクローンに無い commit も祖先でないとみなす）
+  ときだけ「fast-forward できない」と判定する（`publisher.ErrNotFastForward`）。Git の出力の文言は解析しない。
+  それ以外の拒否（Base Branch がまだ祖先のままなど）は従来どおり `publish_failed`。
+- 判定したら、承認ポリシーが変わったとき（3.7.1 の2）と同じ PR を作る経路へ切り替える。作業ブランチを push し、
+  heartbeat で中止を確かめ、PR を1件作る。Base Branch は先に進んだ commit のまま（強制 push しない）。
+- 承認ポリシーは `direct_push` のままのため、Control Plane は承認待ちを作らない（既存の
+  `RequiresMergeApprovalTx`）。Evaloom はこの PR をマージせず、本人が GitHub でマージする。
+  Execution は `succeeded`、タスクは `completed`、`pr_number`・`pr_url` と `pr_created` が記録される（Phase 1 の公開と同じ）。
+- 新しい API・列・イベントは足していない。
+- 仕様に無いため、ここで決めた値:
+  - 切り替え後の Execution・タスクの状態（`succeeded`・`completed`、承認なし）。3.7.3 の「Evaloom はこの PR をマージしない」から、
+    承認待ち（`waiting_approval`）にはしない。3.6 の定期照合も merge 承認の無い Execution を扱わない。
+  - 切り替えたことを示す専用の記録（イベント・監査記録）は作らない。PR が有ることと Project の承認ポリシーから分かる。
+- 仕様の穴: fast-forward できないと判定した後、結果を報告するまでに本人が承認ポリシーを `require_approval` へ
+  変えると、Control Plane は報告の時点の値で承認待ちを作り、承認後に Evaloom がこの PR をマージし得る。
+  「承認ポリシーにかかわらず Evaloom はマージしない」を守るには、PR が 3.7.3 の切り替えで作られたことを
+  結果API で伝える項目が要るが、仕様に無いため足していない。

@@ -126,6 +126,11 @@ type productionPipelineFixture struct {
 	cookie                      *http.Cookie
 	harnessOutputs              []harnessOutputAttempt
 	runnerToken, secretSummary  string
+	// publishChecks counts POST /api/executions/{id}/publish-check calls.
+	publishChecks, prSearches int
+	initialMain               string
+	// advancedMain is the remote Base Branch moved by another push (3.7.3).
+	advancedMain string
 }
 
 // secretSummaryHarness reports a summary chosen by the test, as a harness
@@ -167,6 +172,7 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	profileSHA := gate2Git(t, f.source, "rev-parse", "HEAD")
 	gate2Git(t, root, "init", "--bare", "--initial-branch=main", f.remote)
 	gate2Git(t, f.remote, "fetch", f.source, "HEAD:refs/heads/main")
+	f.initialMain = gate2Git(t, f.remote, "rev-parse", "refs/heads/main")
 	gate2Git(t, f.remote, "config", "http.receivepack", "true")
 	gate2Git(t, f.source, "remote", "add", "origin", readURL)
 	gate2Write(t, filepath.Join(f.source, "copied.txt"), "copy manifest content\n")
@@ -233,6 +239,36 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	}
 	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ContextConfig{}, api.ArtifactConfig{Store: files, MaxBytes: 1 << 20}, f.adapters)
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/publish-check") {
+			f.mu.Lock()
+			f.publishChecks++
+			f.mu.Unlock()
+			switch scenario {
+			case "direct_push_policy_changed":
+				// The owner switches back to require_approval right before the push.
+				if _, err := f.db.Exec(`UPDATE projects SET approval_policy='{"mergePullRequest":"require_approval","version":1}' WHERE id='project'`); err != nil {
+					t.Error(err)
+				}
+			case "direct_push_not_fast_forward":
+				// Someone else pushes to the Base Branch after the task started.
+				f.advancedMain = gate2Git(t, f.remote, "commit-tree", "-p", f.initialMain, "-m", "pushed by someone else", f.initialMain+"^{tree}")
+				gate2Git(t, f.remote, "update-ref", "refs/heads/main", f.advancedMain, f.initialMain)
+			case "direct_push_cancelled":
+				// The owner cancels the task right before the push.
+				if _, err := f.db.Exec(`UPDATE executions SET cancel_requested_at='2026-11-08T00:00:00Z' WHERE id=?`, logExecution); err != nil {
+					t.Error(err)
+				}
+			case "direct_push_unreachable":
+				// The Control Plane cannot be reached: drop the connection unanswered.
+				connection, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				connection.Close()
+				return
+			}
+		}
 		failOutput := false
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/artifacts") && r.URL.Query().Get("kind") == "harness_output" {
 			body, err := io.ReadAll(r.Body)
@@ -330,7 +366,7 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	// body scenario checks the succeeded comment, so it excludes PR merges
 	// from approval and completes on the PR as in Phase 1.
 	policy := `{"mergePullRequest":"require_approval","version":1}`
-	if scenario == "linear_feedback" {
+	if scenario == "linear_feedback" || strings.HasPrefix(scenario, "direct_push") {
 		policy = `{"mergePullRequest":"direct_push","version":1}`
 	}
 	timeouts := "{}"
@@ -407,6 +443,7 @@ func (f *productionPipelineFixture) github(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls") {
+		f.prSearches++
 		io.WriteString(w, "[]")
 		return
 	}
@@ -499,8 +536,9 @@ func TestProductionPipelineRetriesHarnessOutput(t *testing.T) {
 
 func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	t.Helper()
-	var status, base, branch, worktreeID, session, verified, pushed, prURL string
-	var pr int
+	var status, base, branch, worktreeID, session, verified, pushed string
+	var pr sql.NullInt64
+	var prURL sql.NullString
 	if err := f.db.QueryRow(`SELECT status,base_sha,branch_name,worktree_id,harness_session_id,verified_sha,pushed_sha,pr_number,pr_url FROM executions WHERE id=?`, logExecution).Scan(&status, &base, &branch, &worktreeID, &session, &verified, &pushed, &pr, &prURL); err != nil {
 		t.Fatal(err)
 	}
@@ -509,12 +547,22 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Spec 17 3.3: with require_approval the published PR waits for approval.
+	// Spec 17 3.7: with direct_push the verified commit goes to the Base
+	// Branch and no PR exists.
+	direct := policy == "direct_push"
 	want, wantTask := "waiting_approval", "waiting_approval"
-	if policy == "direct_push" {
+	if direct {
 		want, wantTask = "succeeded", "completed"
 	}
-	if status != want || taskStatus != wantTask || base == "" || worktreeID == "" || session == "" || verified == "" || pushed != verified || pr != 1 || prURL != "https://github.com/owner/repo/pull/1" || !strings.HasSuffix(branch, "-r1") {
-		t.Fatalf("execution %s/%s %s %s %s %s %s %s %d %s", status, taskStatus, base, branch, worktreeID, session, verified, pushed, pr, prURL)
+	if status != want || taskStatus != wantTask || base == "" || worktreeID == "" || session == "" || verified == "" || pushed != verified || !strings.HasSuffix(branch, "-r1") {
+		t.Fatalf("execution %s/%s %s %s %s %s %s %s", status, taskStatus, base, branch, worktreeID, session, verified, pushed)
+	}
+	if direct {
+		if pr.Valid || prURL.Valid {
+			t.Fatalf("direct push recorded a PR: %v %v", pr, prURL)
+		}
+	} else if pr.Int64 != 1 || prURL.String != "https://github.com/owner/repo/pull/1" {
+		t.Fatalf("PR %v %v", pr, prURL)
 	}
 	var approvals int
 	if err := f.db.QueryRow(`SELECT count(*) FROM approvals WHERE execution_id=? AND status='pending' AND content_version=?
@@ -522,8 +570,22 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 		logExecution, pushed, branch).Scan(&approvals); err != nil || approvals != map[bool]int{true: 1, false: 0}[want == "waiting_approval"] {
 		t.Fatalf("pending approvals %d %v", approvals, err)
 	}
-	if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/"+branch); got != verified {
-		t.Fatalf("remote %s != verified %s", got, verified)
+	if direct {
+		// 3.7.2 step 2: the remote Base Branch is the verified commit, and the
+		// task branch is kept only in the Runner's clone.
+		if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/main"); got != verified {
+			t.Fatalf("remote main %s != verified %s", got, verified)
+		}
+		if refs := gate2Git(t, f.remote, "for-each-ref", "--format=%(refname)", "refs/heads/evaloom/"); refs != "" {
+			t.Fatalf("task branch pushed: %s", refs)
+		}
+	} else {
+		if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/"+branch); got != verified {
+			t.Fatalf("remote %s != verified %s", got, verified)
+		}
+		if got := gate2Git(t, f.remote, "rev-parse", "refs/heads/main"); got != f.initialMain {
+			t.Fatalf("PR path moved main to %s", got)
+		}
 	}
 	var manifest string
 	if err := f.db.QueryRow(`SELECT copied_files FROM worktrees WHERE id=?`, worktreeID).Scan(&manifest); err != nil {
@@ -537,9 +599,9 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	if copies[0].SHA256 != hex.EncodeToString(digest[:]) {
 		t.Fatalf("copy digest %s", manifest)
 	}
-	for _, kind := range []string{"worktree_ready", "pushed", "pr_created"} {
+	for kind, wantCount := range map[string]int{"worktree_ready": 1, "pushed": 1, "pr_created": map[bool]int{true: 0, false: 1}[direct]} {
 		var count int
-		if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE execution_id=? AND type=?`, logExecution, kind).Scan(&count); err != nil || count != 1 {
+		if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE execution_id=? AND type=?`, logExecution, kind).Scan(&count); err != nil || count != wantCount {
 			t.Fatalf("event %s count %d %v", kind, count, err)
 		}
 	}
@@ -548,16 +610,32 @@ func (f *productionPipelineFixture) assertSucceeded(t *testing.T) {
 	if err := f.db.QueryRow(`SELECT wall_time_ms,input_tokens,output_tokens FROM usage_records WHERE execution_id=?`, logExecution).Scan(&wall, &input, &output); err != nil || wall <= 0 || input.Valid || output.Valid {
 		t.Fatalf("usage %d %v %v %v", wall, input, output, err)
 	}
-	if f.harnessCalls != 1 || f.prCalls != 1 {
-		t.Fatalf("harness/PR %d/%d", f.harnessCalls, f.prCalls)
-	}
 	read := map[string]string{"contents": "read", "metadata": "read", "pull_requests": "read"}
 	write := map[string]string{"contents": "write", "metadata": "read", "pull_requests": "write"}
-	if !reflect.DeepEqual(f.tokenPermissions, []map[string]string{read, read, write, write, write}) {
-		t.Fatalf("stage-scoped token permissions: %v", f.tokenPermissions)
-	}
-	if !strings.Contains(f.prBodies[0], "Gate 3: pass") {
-		t.Fatal("PR lacks Gate evidence")
+	if direct {
+		// No PR search or creation request reaches GitHub; only the push token.
+		if f.harnessCalls != 1 || f.prCalls != 0 || f.prSearches != 0 || f.publishChecks != 1 {
+			t.Fatalf("harness/PR/search/check %d/%d/%d/%d", f.harnessCalls, f.prCalls, f.prSearches, f.publishChecks)
+		}
+		if !reflect.DeepEqual(f.tokenPermissions, []map[string]string{read, read, write}) {
+			t.Fatalf("stage-scoped token permissions: %v", f.tokenPermissions)
+		}
+	} else {
+		if f.harnessCalls != 1 || f.prCalls != 1 {
+			t.Fatalf("harness/PR %d/%d", f.harnessCalls, f.prCalls)
+		}
+		wantTokens := []map[string]string{read, read, write, write, write}
+		if f.publishChecks != 0 {
+			// The direct attempt acquired a push token before publish-check
+			// selected the PR path.
+			wantTokens = []map[string]string{read, read, write, write, write, write}
+		}
+		if !reflect.DeepEqual(f.tokenPermissions, wantTokens) {
+			t.Fatalf("stage-scoped token permissions: %v", f.tokenPermissions)
+		}
+		if !strings.Contains(f.prBodies[0], "Gate 3: pass") {
+			t.Fatal("PR lacks Gate evidence")
+		}
 	}
 	entries, err := os.ReadDir(f.runtimeRoot)
 	if err != nil {

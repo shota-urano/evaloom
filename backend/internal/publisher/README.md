@@ -141,4 +141,30 @@ GitHub の実装は PR 番号を指定して取得し、`state` と `merged` の
   fresh の前回 worktree 情報を渡さない。判定は `RerunError` に分離し、報告時の HEAD の
   取得と工程2への接続は呼び出し側に残す。仮の SHA、API、列は追加しない。
 
-PR のクローズ・マージは実装しない。
+PR のクローズは実装しない。
+
+## 承認済みのマージ（仕様17の3.5.2）
+
+`merge.go` の `PullRequest` は PR の head SHA・base ブランチ・open/merged を読み、
+`Merge` は `PUT /repos/{repo}/pulls/{n}/merge` に `sha`（approvals.content_version）と
+`merge_method`（consume の応答の `mergeMethod`）を付けて1回だけ送る。自動で再送しない。
+応答の分類は、200 で `merged=true` と マージ commit の SHA があれば成功、409 は
+`ErrMergeContentChanged`（head が sha と違う）、その他の 4xx は `ErrMergeRejected`、
+送信後の通信失敗・5xx・読めない応答は `ErrMergeUnknown`（結果が分からない、3.5.3）。
+送信前の失敗（トークン取得失敗など）はマージされていないため、そのエラーを返す。
+Runner 側の手順は `internal/runner/operation.go`。
+
+## ベースブランチへの直接 push（仕様17の3.7）
+
+`PublishConfig.DirectPushCheck` を設定すると（claim の時点の承認ポリシーが `direct_push` のときだけ）、
+`Publish` は PR を作らず、verified_sha を Base Branch へ強制なしで push する。
+push 先の ref は `PushConfig.DirectPushBase`（Base Branch）と完全に一致する場合だけ許す。
+`DirectPushCheck` は `Push.CheckCancellation` の代わりに push 直前の最後の確認として呼ばれ、
+Control Plane の publish-check で中止要求と承認ポリシーの現在値を確かめる。
+`ErrPolicyChanged` を返すと PR を作る経路へ切り替え、ほかのエラーは push しない（Fail Closed）。
+pushed_sha は Execution の作業ブランチ名で記録する。作業ブランチは push しない。
+詳細と仕様に無い値は `internal/api/approvals.md` の「push 直前の確認（publish-check）と直接 push」。
+
+Base Branch が開始点より先へ進んでいて push が拒否されたとき（3.7.3）は、リモートの Base Branch が
+verified_sha の祖先でないことを確かめて `ErrNotFastForward` とし、強制 push せずに PR を作る経路へ切り替える。
+詳細は `internal/api/approvals.md` の「直接 push で fast-forward できないとき（3.7.3）」。

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -12,8 +13,8 @@ import (
 	"strings"
 )
 
-// GitHub implements only PR lookup, creation and issue comments using REST.
-// It has no merge/close operation. The installation token provider is supplied
+// GitHub implements PR lookup, creation, issue comments and the approved
+// merge (spec 17 3.5.2, merge.go) using REST. It has no close operation. The installation token provider is supplied
 // by Trusted Runner authentication (spec 11, Q29), never read from a worktree.
 type GitHub struct {
 	client *http.Client
@@ -42,7 +43,10 @@ type githubPR struct {
 	URL    string `json:"html_url"`
 	State  string `json:"state"`
 	Merged *bool  `json:"merged"`
-	Head   struct {
+	// MergeCommitSHA is GitHub's merge_commit_sha; read only for a merged
+	// PR (spec 17 3.5.3).
+	MergeCommitSHA string `json:"merge_commit_sha"`
+	Head           struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
 		Repo struct {
@@ -156,27 +160,45 @@ func (g *GitHub) Comment(ctx context.Context, repositoryURL string, number int, 
 }
 
 func (g *GitHub) request(ctx context.Context, method, path string, input any, status int, output any) error {
-	if err := ctx.Err(); err != nil {
+	response, err := g.send(ctx, method, path, input)
+	var sent *transportError
+	if errors.As(err, &sent) {
+		return sent.err
+	}
+	if err != nil {
 		return err
 	}
+	defer response.Body.Close()
+	if response.StatusCode != status {
+		return ErrPullRequest
+	}
+	return decodeResponse(response, output)
+}
+
+// send performs one authenticated REST request. The caller closes the body.
+// Errors never carry transport messages, response bodies or credentials.
+func (g *GitHub) send(ctx context.Context, method, path string, input any) (*http.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if g == nil || g.client == nil || g.token == nil {
-		return ErrPRConfiguration
+		return nil, ErrPRConfiguration
 	}
 	var body io.Reader
 	if input != nil {
 		data, err := json.Marshal(input)
 		if err != nil {
-			return ErrPullRequest
+			return nil, ErrPullRequest
 		}
 		body = bytes.NewReader(data)
 	}
 	token, err := g.token(ctx)
 	if err != nil || !validToken(token) {
-		return prError(ctx, ErrPullRequest)
+		return nil, prError(ctx, ErrPullRequest)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, body)
 	if err != nil {
-		return ErrPullRequest
+		return nil, ErrPullRequest
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -185,20 +207,29 @@ func (g *GitHub) request(ctx context.Context, method, path string, input any, st
 	}
 	response, err := g.client.Do(req)
 	if err != nil {
-		return prError(ctx, err)
+		return nil, &transportError{prError(ctx, err)}
 	}
-	defer response.Body.Close()
-	if response.StatusCode != status {
+	return response, nil
+}
+
+// transportError marks a failure after the request was handed to the HTTP
+// client: unlike errors before sending, GitHub may have received it.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
+
+// decodeResponse decodes exactly one JSON value into output (nil: ignore).
+func decodeResponse(response *http.Response, output any) error {
+	if output == nil {
+		return nil
+	}
+	decoder := json.NewDecoder(response.Body)
+	if err := decoder.Decode(output); err != nil {
 		return ErrPullRequest
 	}
-	if output != nil {
-		decoder := json.NewDecoder(response.Body)
-		if err := decoder.Decode(output); err != nil {
-			return ErrPullRequest
-		}
-		if err := decoder.Decode(new(any)); err != io.EOF {
-			return ErrPullRequest
-		}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return ErrPullRequest
 	}
 	return nil
 }

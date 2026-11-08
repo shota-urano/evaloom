@@ -38,6 +38,8 @@ type ExecutionResult struct {
 	PRURL            string                `json:"prUrl,omitempty"`
 	PRCreated        *bool                 `json:"prCreated,omitempty"`
 	HarnessSessionID string                `json:"harnessSessionId,omitempty"`
+	// MergeCommitSHA reports an approved merge (spec 17 3.5.2 step 4).
+	MergeCommitSHA string `json:"mergeCommitSha,omitempty"`
 }
 
 type ResultWorktree struct {

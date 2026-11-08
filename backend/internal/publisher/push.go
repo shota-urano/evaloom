@@ -16,6 +16,10 @@ var (
 	ErrPushConfiguration = errors.New("publisher: push configuration is required")
 	ErrPushDestination   = errors.New("publisher: push destination overrides are not allowed")
 	ErrAudit             = errors.New("publisher: remote SHA mismatch audit failed")
+	// ErrNotFastForward means a direct push to the Base Branch was rejected
+	// because the remote Base Branch moved past the commit the task started
+	// from (spec 17 3.7.3). Nothing was pushed; Publish takes the PR path.
+	ErrNotFastForward = errors.New("publisher: base branch cannot be fast-forwarded")
 )
 
 // PushConfig contains trusted inputs, independent of worktree configuration.
@@ -34,6 +38,10 @@ type PushConfig struct {
 	// The Runner audit delivery interface is not specified; this local boundary
 	// deliberately adds no HTTP endpoint or result field.
 	RecordRemoteMismatch func(ctx context.Context, verifiedSHA, observedSHA string) error
+	// DirectPushBase is the Project's Base Branch, set only when its approval
+	// policy is direct_push (spec 17 3.7.1 step 4). It additionally allows the
+	// target branch to be exactly this name. Empty allows only evaloom/.
+	DirectPushBase string
 }
 
 // GitTransport is an internal, trusted network boundary, not a public API.
@@ -78,7 +86,7 @@ func Push(ctx context.Context, target Target, config PushConfig) (pushedSHA stri
 			return "", ErrPush
 		}
 	}
-	if err := CheckBeforePush(ctx, target, config.CheckCancellation); err != nil {
+	if err := checkBeforePush(ctx, target, config.DirectPushBase, config.CheckCancellation); err != nil {
 		return "", err
 	}
 	ref := "refs/heads/" + target.BranchName
@@ -94,27 +102,20 @@ func Push(ctx context.Context, target Target, config PushConfig) (pushedSHA stri
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", ErrPush
-	}
-	var out []byte
-	if network != nil {
-		out, err = network(ctx, target.Worktree, "ls-remote", ref)
-	} else {
-		out, err = gitOutput(ctx, target.Worktree, "ls-remote", "--refs", "--", config.RepositoryURL, ref)
-	}
-	if err != nil {
+		if config.DirectPushBase != "" && target.BranchName == config.DirectPushBase {
+			observed, err := readRemote(ctx, target.Worktree, config.RepositoryURL, network, ref)
+			if remoteAhead(ctx, target, observed, err) {
+				return "", ErrNotFastForward
+			}
+		}
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", ErrRemoteInspection
+		return "", ErrPush
 	}
-	observed := ""
-	if len(out) != 0 {
-		fields := strings.Fields(string(out))
-		if len(fields) != 2 || !objectID.MatchString(fields[0]) || fields[1] != ref {
-			return "", ErrRemoteInspection
-		}
-		observed = fields[0]
+	observed, err := readRemote(ctx, target.Worktree, config.RepositoryURL, network, ref)
+	if err != nil {
+		return "", err
 	}
 	if observed != target.VerifiedSHA {
 		if err := config.RecordRemoteMismatch(context.WithoutCancel(ctx), target.VerifiedSHA, observed); err != nil {
@@ -123,4 +124,49 @@ func Push(ctx context.Context, target Target, config PushConfig) (pushedSHA stri
 		return "", ErrRemoteSHA
 	}
 	return observed, nil
+}
+
+// readRemote returns the remote SHA of ref, or "" when the ref is absent.
+func readRemote(ctx context.Context, worktree, repositoryURL string, network GitCommand, ref string) (string, error) {
+	var out []byte
+	var err error
+	if network != nil {
+		out, err = network(ctx, worktree, "ls-remote", ref)
+	} else {
+		out, err = gitOutput(ctx, worktree, "ls-remote", "--refs", "--", repositoryURL, ref)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", ErrRemoteInspection
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 || !objectID.MatchString(fields[0]) || fields[1] != ref {
+		return "", ErrRemoteInspection
+	}
+	return fields[0], nil
+}
+
+// remoteAhead classifies a rejected direct push (spec 17 3.7.3) without
+// parsing Git's diagnostics: the push was not a fast-forward when the remote
+// Base Branch exists, differs from verified_sha and is not an ancestor of it.
+// A remote commit the Runner's clone does not have cannot be an ancestor of
+// the locally built verified_sha. Any other rejection stays ErrPush.
+func remoteAhead(ctx context.Context, target Target, observed string, err error) bool {
+	if err != nil || observed == "" || observed == target.VerifiedSHA {
+		return false
+	}
+	if _, err := safegit.Output(ctx, target.Worktree, "cat-file", "-e", observed+"^{commit}"); err != nil {
+		return ctx.Err() == nil
+	}
+	base, err := safegit.Output(ctx, target.Worktree, "merge-base", "--end-of-options", observed, target.VerifiedSHA)
+	if err != nil {
+		// Unrelated histories have no merge base and cannot fast-forward.
+		return ctx.Err() == nil
+	}
+	return strings.TrimSpace(string(base)) != observed
 }

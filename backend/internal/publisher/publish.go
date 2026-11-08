@@ -50,6 +50,16 @@ type PublishConfig struct {
 	// ReportContext survives Execution cancellation, as in Runner result delivery.
 	ReportContext context.Context
 	Report        Report
+	// DirectPushCheck is set only when the claim-time approval policy is
+	// direct_push (spec 17 3.7). Publish then first tries to push the verified
+	// commit to BaseBranch without a PR, calling this check as the final
+	// pre-push confirmation instead of Push.CheckCancellation. When the Base
+	// Branch cannot be fast-forwarded (3.7.3), Publish takes the PR path. The check asks
+	// the Control Plane (publish-check) for the cancellation request and the
+	// current approval policy. It must return ErrPolicyChanged when the policy
+	// is no longer direct_push, and any other error when the Control Plane
+	// cannot answer (no push, Fail Closed).
+	DirectPushCheck func(context.Context) error
 }
 
 // Publication retains a confirmed push and any returned PR even on later
@@ -71,6 +81,18 @@ func Publish(ctx context.Context, target Target, config PublishConfig) (Publicat
 	body, err := config.Report.body(target.VerifiedSHA)
 	if err != nil {
 		return publication, err
+	}
+	if config.DirectPushCheck != nil {
+		publication, err := publishDirect(ctx, target, config)
+		if !errors.Is(err, ErrPolicyChanged) && !errors.Is(err, ErrNotFastForward) {
+			return publication, err
+		}
+		// The owner switched to require_approval (3.7.1), or the Base Branch
+		// moved past the task's starting point (3.7.3): take the PR path for
+		// the owner's review. The verified commit is never forced onto the
+		// Base Branch. With direct_push still in effect the Control Plane
+		// opens no approval, so Evaloom never merges this PR; the owner
+		// merges it on GitHub.
 	}
 	sha, err := Push(ctx, target, config.Push)
 	if err != nil {
@@ -118,6 +140,29 @@ func Publish(ctx context.Context, target Target, config PublishConfig) (Publicat
 	}
 	publication.PR = pr
 	if err := config.Recorder.RecordPR(config.ReportContext, *pr, publication.Created); err != nil {
+		return publication, ErrPublication
+	}
+	return publication, ctx.Err()
+}
+
+// publishDirect is spec 17 3.7.2: push verified_sha to the Base Branch
+// (fast-forward only, never forced), confirm the remote Base Branch SHA and
+// record pushed_sha. It creates no PR. The task branch is not pushed; it
+// stays in the Runner's clone as the work record (3.7.2 step 4).
+// pushed_sha is recorded with the Execution's own branch name because the
+// result API binds the pushed report to executions.branch_name.
+func publishDirect(ctx context.Context, target Target, config PublishConfig) (Publication, error) {
+	var publication Publication
+	push := config.Push
+	push.CheckCancellation, push.DirectPushBase = config.DirectPushCheck, config.BaseBranch
+	base := target
+	base.BranchName = config.BaseBranch
+	sha, err := Push(ctx, base, push)
+	if err != nil {
+		return publication, err
+	}
+	publication.PushedSHA = sha
+	if err := config.Recorder.RecordPushed(config.ReportContext, sha, target.BranchName); err != nil {
 		return publication, ErrPublication
 	}
 	return publication, ctx.Err()

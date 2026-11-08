@@ -43,10 +43,18 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Spec 17 3.6: read the PRs waiting for approval periodically.
+	process.EnableApprovalCheck(config)
 	fmt.Fprintln(output, "evaloom-runner: started")
 	// Result/log delivery must remain alive after an execution is cancelled.
 	reportCtx := context.WithoutCancel(ctx)
 	return process.Run(ctx, func(ctx context.Context, claim runner.Claim) {
+		if claim.Operation != nil {
+			if err := process.ExecuteOperation(ctx, reportCtx, config, claim); err != nil {
+				fmt.Fprintln(output, err)
+			}
+			return
+		}
 		if err := process.ExecuteClaim(ctx, reportCtx, config, claim, process.PipelineDependenciesForClaim(config, claim)); err != nil {
 			fmt.Fprintln(output, err)
 		}
