@@ -81,9 +81,9 @@ func (c *recordingCanceller) CancelLinearTasks(_ context.Context, _ *sql.Tx, iss
 
 type recordingRechecker struct{ calls []string }
 
-func (r *recordingRechecker) RecheckHeldTask(_ context.Context, _ *sql.Tx, issue linear.Issue) error {
+func (r *recordingRechecker) RecheckHeldTask(_ context.Context, _ *sql.Tx, issue linear.Issue) (Decision, error) {
 	r.calls = append(r.calls, issue.ID)
-	return nil
+	return "", nil
 }
 
 type intakeFixture struct {

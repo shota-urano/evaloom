@@ -158,6 +158,33 @@ func QueueExecutionTx(ctx context.Context, tx *sql.Tx, taskID, executionID strin
 	return updateTask(ctx, tx, taskID, from, model.TaskQueued)
 }
 
+// QueueHeldTaskTx queues a Linear task held at intake (spec 15 3.6.3): a
+// blocked task that never had an Execution. executionID must be its only
+// Execution, pending with seq 1, inserted in the same transaction. The caller
+// must roll back the transaction on any error.
+func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string) error {
+	if err := ValidateTaskTransition(model.TaskBlocked, model.TaskQueued); err != nil {
+		return err
+	}
+	var seq, count int
+	var status model.ExecutionStatus
+	err := tx.QueryRowContext(ctx, `SELECT seq, status, (SELECT count(*) FROM executions WHERE task_id = ?)
+		FROM executions WHERE id = ? AND task_id = ?`, taskID, executionID, taskID).Scan(&seq, &status, &count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return conflict("pending execution is missing")
+	}
+	if err != nil {
+		return err
+	}
+	if count != 1 || seq != 1 {
+		return conflict("held task must have only its initial execution")
+	}
+	if status != model.ExecutionPending {
+		return conflict("new execution must be pending")
+	}
+	return updateTask(ctx, tx, taskID, model.TaskBlocked, model.TaskQueued)
+}
+
 func updateTask(ctx context.Context, tx *sql.Tx, id string, from, to model.TaskStatus) error {
 	result, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
 		to, time.Now().UTC().Format(time.RFC3339), id, from)

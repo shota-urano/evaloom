@@ -59,9 +59,11 @@ type Canceller interface {
 
 // HeldRechecker re-runs the 3.6 decision for a held task (spec 15 3.6.3). It
 // is called inside tx for an Issue that stays attached and whose updatedAt
-// is newer than the recorded one; it must not create a new task.
+// is newer than the recorded one; it must not create a new task. It returns
+// the new last_decision (DecisionStarted or DecisionHeld), or "" when nothing
+// changed (no held task, or the same cause), which keeps the previous one.
 type HeldRechecker interface {
-	RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue linear.Issue) error
+	RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue linear.Issue) (Decision, error)
 }
 
 // Intake decides attach and detach (spec 15 3.4) and implements
@@ -181,8 +183,12 @@ func (in *Intake) handleListed(ctx context.Context, team store.LinearPollTeam, i
 			// Still attached: body, label or state edits never start again
 			// (requirements 6.2). Only a held task may be rechecked (3.6.3).
 			if in.Rechecker != nil && newer(issue.UpdatedAt, prev.IssueUpdatedAt) {
-				if err := in.Rechecker.RecheckHeldTask(ctx, tx, issue); err != nil {
+				d, err := in.Rechecker.RecheckHeldTask(ctx, tx, issue)
+				if err != nil {
 					return err
+				}
+				if d != "" {
+					decide(d)
 				}
 			}
 		}
