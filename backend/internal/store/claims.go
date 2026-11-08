@@ -120,6 +120,9 @@ type Claim struct {
 	Previous     *ClaimPrevious     `json:"previous"`
 	Worktree     *ClaimWorktree     `json:"worktree"`
 	PullRequests []ClaimPullRequest `json:"pullRequests"`
+	// Operation is null for an Execution claim; an approved operation is
+	// returned as OperationClaim instead (spec 17 3.5.1).
+	Operation *ClaimOperation `json:"operation"`
 	// Artifact selection is captured in the transaction; bytes are read after commit.
 	HarnessOutputArtifactID *string              `json:"-"`
 	Assignment              model.ProjectHarness `json:"-"`

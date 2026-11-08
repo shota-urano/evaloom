@@ -52,9 +52,13 @@ type Claim struct {
 		BranchName   *string `json:"branchName"`
 		PRNumber     *int    `json:"prNumber"`
 	} `json:"previous"`
-	Worktree          *ClaimWorktree     `json:"worktree"`
-	PullRequests      []ClaimPullRequest `json:"pullRequests"`
-	SetupAllowedHosts []string           `json:"-"`
+	Worktree     *ClaimWorktree     `json:"worktree"`
+	PullRequests []ClaimPullRequest `json:"pullRequests"`
+	// Operation is set when the claim is an approved operation instead of
+	// an Execution to run (spec 17 3.5.1). Only Execution.ID/TaskID and
+	// Project accompany it.
+	Operation         *ClaimOperation `json:"operation"`
+	SetupAllowedHosts []string        `json:"-"`
 	// Explicit null confirms that no earlier worktree was recorded. An omitted
 	// field in an older/partial response cannot establish baseline absence.
 	worktreeSnapshotPresent bool
@@ -191,6 +195,11 @@ func (runner *Runner) claimAndStart(ctx context.Context, execute func(context.Co
 	if _, exists := runner.executions[claim.Execution.ID]; exists {
 		runner.mu.Unlock()
 		cancel()
+		if claim.Operation != nil {
+			// The approved operation is still being handled; the claim
+			// keeps offering it until consume uses the approval.
+			return nil
+		}
 		return fmt.Errorf("runner: claimed execution is already registered")
 	}
 	runner.executions[claim.Execution.ID] = cancel

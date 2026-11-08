@@ -141,4 +141,15 @@ GitHub の実装は PR 番号を指定して取得し、`state` と `merged` の
   fresh の前回 worktree 情報を渡さない。判定は `RerunError` に分離し、報告時の HEAD の
   取得と工程2への接続は呼び出し側に残す。仮の SHA、API、列は追加しない。
 
-PR のクローズ・マージは実装しない。
+PR のクローズは実装しない。
+
+## 承認済みのマージ（仕様17の3.5.2）
+
+`merge.go` の `PullRequest` は PR の head SHA・base ブランチ・open/merged を読み、
+`Merge` は `PUT /repos/{repo}/pulls/{n}/merge` に `sha`（approvals.content_version）と
+`merge_method`（consume の応答の `mergeMethod`）を付けて1回だけ送る。自動で再送しない。
+応答の分類は、200 で `merged=true` と マージ commit の SHA があれば成功、409 は
+`ErrMergeContentChanged`（head が sha と違う）、その他の 4xx は `ErrMergeRejected`、
+送信後の通信失敗・5xx・読めない応答は `ErrMergeUnknown`（結果が分からない、3.5.3）。
+送信前の失敗（トークン取得失敗など）はマージされていないため、そのエラーを返す。
+Runner 側の手順は `internal/runner/operation.go`。

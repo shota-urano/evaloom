@@ -68,3 +68,28 @@
 - イベントの`reason`：戻りは`approval_expired`・`approval_target_changed`・`approval_content_changed`、
   中止は既存の`task_cancelled`。
 - reasonの値のうち`already_used`・`expired`・`not_approved`は仕様に無いため、ここで決めた。
+
+## 承認済みの操作（claim）とマージの結果の報告
+
+正本は17の3.5.1・3.5.2・6章。
+
+- claim（`POST /api/runners/{id}/claim`）は、通常の Execution より先に「承認済みの操作」を探す。
+  条件は、approvals が `approved`・未使用・`merge_pull_request`、Execution が最新の `merging`、
+  タスクが `waiting_approval`、Execution と Project の Runner が呼び出し元であること。
+  `decided_at`・ID の順で1件返す。merging は同時実行の枠に数えない（Q59）ため、空き枠の判定より前に探す。
+  応答は `{"execution":{"id","taskId"},"project":{...},"operation":{"approvalId","operation","target","contentVersion"}}`。
+  claim は状態を変えない。使用は consume だけが行うため、同じ操作を2回渡してもマージは1回だけになる。
+  通常の Execution の claim の応答には `"operation": null` を付ける。
+- マージの結果は既存の `POST /api/executions/{id}/result` で `fromStatus=merging` から報告する。
+  - 成功：`status=succeeded`、`mergeCommitSha`（40桁または64桁の小文字16進、必須）。
+  - 失敗：`status=failed`、`errorClass=publish_failed`、`errorMessage` は
+    `content_changed`（GitHub が sha の不一致で拒否、6章）・`merge_rejected`（その他の拒否）・
+    `merge_unknown`（結果が分からない、3.5.3）のどれか。
+  - 他の項目（usage、Gate 結果、PR の項目など）は 400。`mergeCommitSha` を merging 以外から送ると 400。
+  - 同じ Execution に、consume 済みで結果未記録の承認が無ければ 409（マージは許されていない）。
+  - approvals.result に `{"mergeCommitSha":...}` または `{"error":<理由>}` を保存する。
+    `content_changed` のときは承認を `invalidated`（content_changed）にし、`system` の監査記録を残す。
+  - 状態遷移・通知要求（succeeded / failed）・`status_changed`（reason `runner_result`）・
+    `runner:<id>/execution.result` の監査記録は既存の遷移関数で同じトランザクションに保存する。
+- 仕様に無いため、ここで決めた値：claim の応答の `operation` の形、`mergeCommitSha` の項目名、
+  失敗理由 `merge_rejected`、GitHub の拒否時に Execution を `failed` にすること。
