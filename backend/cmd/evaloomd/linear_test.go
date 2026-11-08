@@ -103,8 +103,21 @@ func TestDefaultLinearPollerUsesProductionConfiguration(t *testing.T) {
 	if poller.Interval != time.Minute || poller.TriggerLabel != "" {
 		t.Fatalf("poller = %+v; want 1 minute interval and default trigger label", poller)
 	}
-	if _, ok := poller.Client.(*linear.Client); !ok {
+	client, ok := poller.Client.(*linear.Client)
+	if !ok {
 		t.Fatalf("client = %T; want *linear.Client", poller.Client)
+	}
+	// Poller -> Intake -> TaskStarter (start and recheck) and TaskCanceller.
+	intake, ok := poller.Handler.(*linearintake.Intake)
+	if !ok {
+		t.Fatalf("handler = %T; want *linearintake.Intake", poller.Handler)
+	}
+	starter, ok := intake.Starter.(*linearintake.TaskStarter)
+	if !ok || intake.Rechecker != linearintake.HeldRechecker(starter) || intake.Fetcher != linearintake.IssueFetcher(client) {
+		t.Fatalf("intake = %+v; want TaskStarter as Starter and Rechecker and the Linear client as Fetcher", intake)
+	}
+	if _, ok := intake.Canceller.(linearintake.TaskCanceller); !ok {
+		t.Fatalf("canceller = %T; want linearintake.TaskCanceller", intake.Canceller)
 	}
 	// On macOS the production Poller must alert through the macOS helper.
 	if runtime.GOOS == "darwin" {

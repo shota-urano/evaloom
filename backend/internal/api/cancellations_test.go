@@ -508,3 +508,35 @@ func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
 		t.Fatalf("partial heartbeat survived: %s %s %+v err=%v", runnerStatus, runnerAt, executionAt, err)
 	}
 }
+
+// A Linear task held at intake has no Execution; the owner cancels it on the
+// blocked path (spec 15 3.6.3, spec 04 3.5). A blocked task without an
+// Execution that is not held is still a conflict.
+func TestCancelHeldLinearTaskWithoutExecution(t *testing.T) {
+	f, _, _ := claimFixture(t)
+	for _, task := range []struct{ id, cause string }{{"task-900001", "routing_no_label"}, {"task-900002", ""}} {
+		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
+			task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+			VALUES (?, 'project-a', 't', 'b', 'ac', 'eng-1', 'development', 'solo', 'blocked', ?, 't', 't', 'linear', nullif(?, ''))`,
+			task.id, "linear:"+task.id+":1", task.cause); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, body := requestCancellation(t, f, "task-900001")
+	if status != 204 {
+		t.Fatalf("cancel held=%d %s", status, body)
+	}
+	var taskStatus, actor, detail string
+	if err := f.db.QueryRow(`SELECT t.status, a.actor, a.detail FROM tasks t
+		JOIN audit_logs a ON a.target_id = t.id AND a.action = 'task.cancel' WHERE t.id = 'task-900001'`).
+		Scan(&taskStatus, &actor, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if taskStatus != "cancelled" || actor != "owner" || detail != `{"cancelRequested":false,"from":"blocked","to":"cancelled"}` {
+		t.Fatalf("held cancel: %s %s %s", taskStatus, actor, detail)
+	}
+	status, body = requestCancellation(t, f, "task-900002")
+	assertAuthError(t, status, body, 409, Conflict)
+	status, body = requestCancellation(t, f, "task-900001")
+	assertAuthError(t, status, body, 409, Conflict)
+}

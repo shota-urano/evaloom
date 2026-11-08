@@ -53,14 +53,22 @@ var newLinearPoller = func(db *sql.DB, logger *slog.Logger, port int) (*linearin
 	if err != nil {
 		return nil, fmt.Errorf("evaloomd: linear alert home: %w", err)
 	}
-	// Handler (linearintake.Intake with TaskStarter) stays unset until the
-	// Linear-caused cancellation (spec 15 3.7) exists: Intake requires a
-	// Canceller, and recording a detach without cancelling would lose it.
-	poller := &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval}
+	poller := linearPoller(db, client, logger)
 	if alerter := linearPollAlerter(runtime.GOOS, home, port); alerter != nil {
 		poller.Alerter = alerter
 	}
 	return poller, nil
+}
+
+// linearPoller connects the Poller to Intake (spec 15 3.4), which starts
+// tasks with TaskStarter (3.6), rechecks held tasks with the same TaskStarter
+// (3.6.3) and cancels with TaskCanceller (3.7). client also re-reads the
+// Issues that left the list.
+func linearPoller(db *sql.DB, client *linear.Client, logger *slog.Logger) *linearintake.Poller {
+	starter := &linearintake.TaskStarter{}
+	return &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval,
+		Handler: &linearintake.Intake{DB: db, Fetcher: client, Starter: starter,
+			Canceller: linearintake.TaskCanceller{}, Rechecker: starter, Logger: logger}}
 }
 
 // macOSLinearAlerter sends the Linear polling alert (spec 15 6章) through the
