@@ -190,3 +190,58 @@ func ListLinearRoutesByLabel(ctx context.Context, tx *sql.Tx, label string) ([]L
 	}
 	return routes, nil
 }
+
+// HeldLinearTask is a task held at intake (spec 15 3.6.3): source=linear,
+// blocked with an intake_block_cause and without an Execution.
+type HeldLinearTask struct {
+	TaskID string
+	Cause  string
+}
+
+// ListHeldLinearTasks returns the held tasks linked to the Issue through
+// linear_issue_links, oldest attach first.
+func ListHeldLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]HeldLinearTask, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.intake_block_cause FROM linear_issue_links l
+		JOIN tasks t ON t.id = l.task_id
+		WHERE l.linear_issue_id = ? AND t.source = 'linear' AND t.status = 'blocked'
+		AND t.intake_block_cause IS NOT NULL ORDER BY l.attach_seq`, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list held linear tasks: %w", err)
+	}
+	var held []HeldLinearTask
+	for rows.Next() {
+		var h HeldLinearTask
+		if err := rows.Scan(&h.TaskID, &h.Cause); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		held = append(held, h)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return held, nil
+}
+
+// UpdateHeldLinearTask writes the redone 3.6 decision to a held task (spec 15
+// 3.6.3): projectID (empty: NULL), acceptance criteria and cause (empty:
+// NULL, which releases the hold). Only a held task without an Execution is
+// changed; anything else is an error. The status is not changed here.
+func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, criteria, cause, updatedAt string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE tasks SET project_id = nullif(?, ''), acceptance_criteria = ?,
+		intake_block_cause = nullif(?, ''), updated_at = ?
+		WHERE id = ? AND source = 'linear' AND status = 'blocked' AND intake_block_cause IS NOT NULL
+		AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.task_id = tasks.id)`,
+		projectID, criteria, cause, updatedAt, taskID)
+	if err != nil {
+		return fmt.Errorf("store: update held linear task: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("store: held linear task %s changed before the recheck", taskID)
+	}
+	return nil
+}
