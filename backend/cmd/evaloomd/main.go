@@ -169,9 +169,9 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if err != nil {
 		return err
 	}
-	// The settings API and the Linear Poller share the label settings (spec
-	// 15 5章, Q48).
-	linearSettings := linearintake.NewLabelSettings()
+	// The settings API and the Linear Poller share the label settings stored
+	// in the settings table, so they survive a restart (spec 15 5章, Q48, Q76).
+	linearSettings := linearintake.NewLabelSettings(db, logger)
 	server := &http.Server{
 		Handler: api.NewHandlerWithSettings(db, logger, auth, web,
 			api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts, linearSettings),
