@@ -29,6 +29,15 @@ export const PROJECT_LABELS = {
   linearRoutingLabel: '実行先ラベル',
 } as const
 
+/** approvalPolicy.mergePullRequest の値（17 3.2）。 */
+export type MergePullRequestPolicy = 'require_approval' | 'direct_push'
+
+/** 承認ポリシーの選択肢。値の意味は 17 3.2 の表の文言。 */
+export const APPROVAL_POLICY_LABELS: Record<MergePullRequestPolicy, string> = {
+  require_approval: 'require_approval（既定）：PR を作り、本人の承認の後に Evaloom がマージする',
+  direct_push: 'direct_push：PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push する',
+}
+
 export const TIMEOUT_LABELS: Record<TimeoutKey, string> = {
   setupSec: 'セットアップのタイムアウト（秒）',
   harnessSec: 'ハーネス実行のタイムアウト（秒）',

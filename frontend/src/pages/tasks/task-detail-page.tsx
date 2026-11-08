@@ -13,6 +13,7 @@ import {
 } from '@/api/tasks'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Loading, PageTitle } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -245,36 +246,10 @@ function Artifacts({ execution, source }: { execution: ExecutionDetail; source: 
 }
 
 function FreshConfirm({ busy, onConfirm, onCancel }: { busy: boolean; onConfirm: () => void; onCancel: () => void }) {
-  const confirm = useRef<HTMLButtonElement>(null)
-  useEffect(() => confirm.current?.focus(), [])
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="fresh-confirm-title"
-        aria-describedby="fresh-confirm-description"
-        className="bg-background grid w-full max-w-md gap-4 rounded-xl border p-6 shadow-lg"
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') onCancel()
-        }}
-      >
-        <h2 id="fresh-confirm-title" className="font-semibold">
-          最初から再実行しますか
-        </h2>
-        <p id="fresh-confirm-description" className="text-muted-foreground text-sm">
-          前回の作業ツリーを引き継がず、開始点から新しい Execution で作業し直します。前回の Execution の記録はそのまま残ります。
-        </p>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
-            やめる
-          </Button>
-          <Button ref={confirm} type="button" onClick={onConfirm} disabled={busy}>
-            最初から再実行する
-          </Button>
-        </div>
-      </div>
-    </div>
+    <ConfirmDialog title="最初から再実行しますか" confirmLabel="最初から再実行する" busy={busy} onConfirm={onConfirm} onCancel={onCancel}>
+      <p>前回の作業ツリーを引き継がず、開始点から新しい Execution で作業し直します。前回の Execution の記録はそのまま残ります。</p>
+    </ConfirmDialog>
   )
 }
 

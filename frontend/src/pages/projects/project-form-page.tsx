@@ -4,6 +4,7 @@ import { conflictFieldErrors, preconditionFieldErrors, type FieldErrors } from '
 import { registry, TIMEOUT_KEYS, type Project, type ProjectInput, type Runner, type TimeoutKey } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SelectField, TextAreaField, TextField } from '@/components/form-field'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,7 +13,14 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { navigate } from '@/lib/router'
 import { Loading, PageTitle } from '@/components/page'
-import { LINEAR_CONFLICT_FIELDS, PROJECT_LABELS as L, REPOSITORY_CHECK_FIELDS, REPOSITORY_CHECK_LABELS, TIMEOUT_LABELS } from './labels'
+import {
+  APPROVAL_POLICY_LABELS,
+  LINEAR_CONFLICT_FIELDS,
+  PROJECT_LABELS as L,   REPOSITORY_CHECK_FIELDS,
+  REPOSITORY_CHECK_LABELS,
+  TIMEOUT_LABELS,
+  type MergePullRequestPolicy,
+} from './labels'
 
 type FormValues = {
   id: string
@@ -29,7 +37,8 @@ type FormValues = {
   setupAllowedHosts: string
   copyAllowlist: string
   allowedOperations: string
-  approvalPolicy: string
+  /** approvalPolicy.mergePullRequest の値（17 3.2）。 */
+  approvalPolicy: MergePullRequestPolicy
   linearTeamId: string
   linearRoutingLabel: string
 } & Record<`timeouts.${TimeoutKey}`, string>
@@ -51,6 +60,8 @@ const FIELDS = [
   'copyAllowlist',
   'allowedOperations',
   'approvalPolicy',
+  'approvalPolicy.version',
+  'approvalPolicy.mergePullRequest',
   'linearTeamId',
   'linearRoutingLabel',
   'timeouts',
@@ -74,8 +85,8 @@ const EMPTY: FormValues = {
   setupAllowedHosts: '',
   copyAllowlist: '',
   allowedOperations: '{}',
-  // 17 3.2（Q60）の形だけを Backend が受け付ける。既定は PR マージを承認対象に残す。
-  approvalPolicy: JSON.stringify({ version: 1, mergePullRequest: 'require_approval' }, null, 2),
+  // 既定は PR マージを承認対象に残す（17 3.2、requirements 15.3）。
+  approvalPolicy: 'require_approval',
   linearTeamId: '',
   linearRoutingLabel: '',
   'timeouts.setupSec': '',
@@ -100,7 +111,8 @@ function toValues(project: Project): FormValues {
     setupAllowedHosts: project.setupAllowedHosts.join('\n'),
     copyAllowlist: project.copyAllowlist.join('\n'),
     allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
-    approvalPolicy: JSON.stringify(project.approvalPolicy, null, 2),
+    // 既存の値はマイグレーション（0020）で 17 3.2 の形になっている。direct_push と明示されていなければ安全側に倒す。
+    approvalPolicy: project.approvalPolicy.mergePullRequest === 'direct_push' ? 'direct_push' : 'require_approval',
     linearTeamId: project.linearTeamId ?? '',
     linearRoutingLabel: project.linearRoutingLabel ?? '',
     'timeouts.setupSec': timeout('setupSec'),
@@ -134,9 +146,7 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
     if (values[field].trim() === '') errors[field] = ['入力してください']
   }
   const allowedOperations = parseObject(values.allowedOperations)
-  const approvalPolicy = parseObject(values.approvalPolicy)
   if (!allowedOperations) errors.allowedOperations = ['JSON のオブジェクト（{ … }）で入力してください']
-  if (!approvalPolicy) errors.approvalPolicy = ['JSON のオブジェクト（{ … }）で入力してください']
   const timeouts: ProjectInput['timeouts'] = {}
   for (const key of TIMEOUT_KEYS) {
     const raw = values[`timeouts.${key}`].trim()
@@ -147,7 +157,7 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
       timeouts[key] = Number(raw)
     }
   }
-  if (Object.keys(errors).length > 0 || !allowedOperations || !approvalPolicy) return { errors }
+  if (Object.keys(errors).length > 0 || !allowedOperations) return { errors }
   return {
     errors,
     input: {
@@ -165,7 +175,8 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
       setupAllowedHosts: lines(values.setupAllowedHosts),
       copyAllowlist: lines(values.copyAllowlist),
       allowedOperations,
-      approvalPolicy,
+      // 17 3.2（Q60）の形だけを Backend が受け付ける。
+      approvalPolicy: { version: 1, mergePullRequest: values.approvalPolicy },
       timeouts,
       // 空欄は null で送って解除する（省略しても null 扱いなので、編集時も毎回送る。backend/internal/api/projects.md）。
       linearTeamId: optional(values.linearTeamId),
@@ -192,6 +203,8 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
   const [values, setValues] = useState<FormValues>(() => (project ? toValues(project) : EMPTY))
   const [localErrors, setLocalErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
+  // direct_push を選んだときの確認ダイアログ（17 3.2）。確認するまで入力欄の値は変えない。
+  const [confirmDirectPush, setConfirmDirectPush] = useState(false)
   const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
   const repositoryErrors = preconditionFieldErrors(error, REPOSITORY_CHECK_FIELDS)
   const conflictErrors = conflictFieldErrors(error, LINEAR_CONFLICT_FIELDS)
@@ -207,6 +220,13 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
     ]
     return messages.length > 0 ? messages : undefined
   }
+  const policyErrors = [
+    ...(errorsFor('approvalPolicy') ?? []),
+    ...(errorsFor('approvalPolicy.version') ?? []),
+    ...(errorsFor('approvalPolicy.mergePullRequest') ?? []),
+  ]
+  const setApprovalPolicy = (value: MergePullRequestPolicy) => setValues((previous) => ({ ...previous, approvalPolicy: value }))
+
   const bind = (field: keyof FormValues) => ({
     name: field,
     value: values[field],
@@ -391,9 +411,57 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2">
           <TextAreaField label={L.allowedOperations} rows={4} spellCheck={false} className="font-mono" {...bind('allowedOperations')} />
-          <TextAreaField label={L.approvalPolicy} rows={4} spellCheck={false} className="font-mono" {...bind('approvalPolicy')} />
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{L.approvalPolicy}</CardTitle>
+          <CardDescription>承認対象から外せるのは PR マージだけです。Runner とハーネスからは変更できません。</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4">
+          <SelectField
+            label={L.approvalPolicy}
+            name="approvalPolicy"
+            value={values.approvalPolicy}
+            errors={policyErrors.length > 0 ? policyErrors : undefined}
+            onChange={(event) => {
+              const value = event.target.value as MergePullRequestPolicy
+              // direct_push へ変えるときは確認ダイアログを経る（17 3.2）。確認するまで値は変えない。
+              if (value === 'direct_push' && values.approvalPolicy !== 'direct_push') setConfirmDirectPush(true)
+              else setApprovalPolicy(value)
+            }}
+          >
+            {(Object.keys(APPROVAL_POLICY_LABELS) as MergePullRequestPolicy[]).map((value) => (
+              <option key={value} value={value}>
+                {APPROVAL_POLICY_LABELS[value]}
+              </option>
+            ))}
+          </SelectField>
+        </CardContent>
+      </Card>
+
+      {confirmDirectPush ? (
+        <ConfirmDialog
+          title="PR マージを承認対象から外しますか"
+          confirmLabel="direct_push にする"
+          initialFocus="cancel"
+          onCancel={() => setConfirmDirectPush(false)}
+          onConfirm={() => {
+            setApprovalPolicy('direct_push')
+            setConfirmDirectPush(false)
+          }}
+        >
+          <p>
+            direct_push にすると、Evaloom は PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push します。
+          </p>
+          <p className="text-foreground font-medium">
+            PR のレビューに任せていた範囲（既存テストの書き換え、テストの実行設定・CI の定義の変更など）を確認する人がいなくなります。
+          </p>
+          <p>push の前の確認は Gate 2・3 だけになり、GitHub の CI は push の後にベースブランチで動きます。</p>
+          <p>この時点ではまだ保存されません。フォームの「{create ? '登録' : '保存'}」を押すと保存します。</p>
+        </ConfirmDialog>
+      ) : null}
 
       <div className="flex gap-3">
         <Button type="submit" disabled={submitting}>

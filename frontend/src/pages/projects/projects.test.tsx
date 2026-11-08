@@ -403,3 +403,88 @@ describe('Harness Profile の割り当て', () => {
     expect(JSON.parse(post?.body ?? '')).toEqual({ role: 'developer', harnessId: 'h1', version: '1.2.0' })
   })
 })
+
+describe('承認ポリシー（17 3.2）', () => {
+  const DIRECT_PUSH = 'direct_push：PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push する'
+
+  function renderEdit(policy: string) {
+    return renderAt('/projects/alpha/edit', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
+      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
+      return json(200, { ...PROJECT, approvalPolicy: { version: 1, mergePullRequest: policy } })
+    })
+  }
+  const patches = (fake: { calls: Recorded[] }) => fake.calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body ?? ''))
+
+  it('require_approval と direct_push の2つを選べ、登録済みの値が選ばれている', async () => {
+    renderEdit('require_approval')
+    const select = await screen.findByLabelText('承認ポリシー')
+    expect(select).toHaveValue('require_approval')
+    expect(within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)).toEqual(['require_approval', 'direct_push'])
+  })
+
+  it('direct_push を選ぶとダイアログが出る。やめると値は戻り、保存しても require_approval のまま送る', async () => {
+    const fake = renderEdit('require_approval')
+    const select = await screen.findByLabelText('承認ポリシー')
+    await userEvent.selectOptions(select, 'direct_push')
+    const dialog = screen.getByRole('alertdialog', { name: 'PR マージを承認対象から外しますか' })
+    expect(dialog).toHaveTextContent('PR のレビューに任せていた範囲（既存テストの書き換え、テストの実行設定・CI の定義の変更など）を確認する人がいなくなります')
+    // 開いた時点では、取り返しの付きにくい側ではなく「やめる」にフォーカスがある。
+    expect(within(dialog).getByRole('button', { name: 'やめる' })).toHaveFocus()
+    expect(fake.calls.some((c) => c.method === 'PATCH')).toBe(false)
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'やめる' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(select).toHaveValue('require_approval')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'require_approval' })
+  })
+
+  it('Escape でもダイアログを閉じ、値は変わらない', async () => {
+    renderEdit('require_approval')
+    const select = await screen.findByLabelText('承認ポリシー')
+    await userEvent.selectOptions(select, 'direct_push')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(select).toHaveValue('require_approval')
+  })
+
+  it('確認すると direct_push が選ばれ、保存で direct_push を送る', async () => {
+    const fake = renderEdit('require_approval')
+    const select = await screen.findByLabelText('承認ポリシー')
+    await userEvent.selectOptions(select, 'direct_push')
+    await userEvent.click(screen.getByRole('button', { name: 'direct_push にする' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(select).toHaveValue('direct_push')
+    expect(screen.getByRole('option', { name: DIRECT_PUSH })).toBeInTheDocument()
+    // 確認しただけでは保存しない。
+    expect(fake.calls.some((c) => c.method === 'PATCH')).toBe(false)
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'direct_push' })
+  })
+
+  it('direct_push から require_approval へはダイアログ無しで戻せる', async () => {
+    const fake = renderEdit('direct_push')
+    const select = await screen.findByLabelText('承認ポリシー')
+    expect(select).toHaveValue('direct_push')
+    await userEvent.selectOptions(select, 'require_approval')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    await screen.findByRole('heading', { name: 'Alpha' })
+    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'require_approval' })
+  })
+
+  it('400 の approvalPolicy.mergePullRequest は承認ポリシーの項目に出す', async () => {
+    renderAt('/projects/alpha/edit', (request) => {
+      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
+      if (request.method === 'PATCH') return apiError(400, 'validation_failed', 'invalid', [{ field: 'approvalPolicy.mergePullRequest', reason: 'invalid' }])
+      return json(200, PROJECT)
+    })
+    await screen.findByLabelText('承認ポリシー')
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+    expect(await within(fieldOf('承認ポリシー')).findByText('値が正しくありません')).toBeVisible()
+  })
+})
