@@ -2,37 +2,47 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/oklog/ulid/v2"
+
+	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 const ownerCookieName = "evaloom_session"
 
-// OwnerAuth holds process-local credentials. Restarting evaloomd invalidates
-// the session and issues a new one-time login URL. Never log this struct.
+// OwnerAuth authenticates the owner with sessions stored in owner_sessions
+// (spec 18 3.4, 3.5), so sessions survive a Control Plane restart until they
+// expire. Never log this struct.
 type OwnerAuth struct {
-	db                              *sql.DB
-	logger                          *slog.Logger
-	host, session, csrf, loginToken string
-	loginMu                         sync.Mutex
-	loginUsed                       bool
+	db         *sql.DB
+	logger     *slog.Logger
+	host       string
+	remoteHost string
+	// now is replaced only by tests that check session expiry and login cooldown.
+	now func() time.Time
+	// There is one owner, and proxy addresses cannot identify devices. Keep one
+	// process-local counter; spec 18 defines no persistent throttle storage.
+	// Serialize credential checks and updates so concurrent attempts cannot
+	// pass the fifth failure before its cooldown has been recorded.
+	loginMu           sync.Mutex
+	loginFailures     int
+	loginBlockedUntil time.Time
 }
 
-func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, error) {
+func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string, remoteHosts ...string) (*OwnerAuth, error) {
 	ip, port, err := net.SplitHostPort(host)
 	n, portErr := strconv.Atoi(port)
 	if err != nil || ip != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
@@ -41,20 +51,34 @@ func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, err
 	if db == nil {
 		return nil, fmt.Errorf("api: owner authentication requires an audit database")
 	}
-	a := &OwnerAuth{db: db, logger: logger, host: host}
-	for _, target := range []*string{&a.session, &a.csrf, &a.loginToken} {
-		secret := make([]byte, 32)
-		if _, err := rand.Read(secret); err != nil {
-			return nil, fmt.Errorf("api: generate owner credential: %w", err)
-		}
-		*target = base64.RawURLEncoding.EncodeToString(secret)
+	if len(remoteHosts) > 1 {
+		return nil, fmt.Errorf("api: at most one remote host is allowed")
 	}
-	return a, nil
+	var remoteHost string
+	if len(remoteHosts) == 1 {
+		remoteHost = remoteHosts[0]
+	}
+	if remoteHost != "" && !validRemoteHost(remoteHost) {
+		return nil, fmt.Errorf("api: remote host must be a single DNS name without a scheme, port, or wildcard")
+	}
+	return &OwnerAuth{db: db, logger: logger, host: host, remoteHost: remoteHost, now: time.Now}, nil
 }
 
-// LoginURL is a credential: expose it only through the owner's startup terminal.
-func (a *OwnerAuth) LoginURL() string {
-	return "http://" + a.host + "/auth/login?token=" + a.loginToken
+func validRemoteHost(host string) bool {
+	if len(host) > 253 || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func secretEqual(got, want string) bool {
@@ -66,7 +90,8 @@ func changesState(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
-// Boundary validates the actual listening authority, never forwarded headers.
+// Boundary validates the listening authority or the configured HTTPS proxy
+// authority (spec 18 3.2), never forwarded headers.
 // Browser navigations and same-origin reads can omit Origin; writes cannot.
 func (a *OwnerAuth) Boundary(next http.Handler) http.Handler {
 	return a.boundary(next, true)
@@ -78,12 +103,18 @@ func (a *OwnerAuth) boundary(next http.Handler, requireOrigin bool) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		if r.Host != a.host {
+		var origin string
+		switch {
+		case r.Host == a.host:
+			origin = "http://" + a.host
+		case a.remoteHost != "" && r.Host == a.remoteHost:
+			origin = "https://" + a.remoteHost
+		default:
 			a.reject(w, r, Forbidden, "host_mismatch", "request host is not allowed")
 			return
 		}
 		origins := r.Header.Values("Origin")
-		if len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+a.host) || (len(origins) == 0 && requireOrigin && changesState(r.Method)) {
+		if len(origins) > 1 || (len(origins) == 1 && origins[0] != origin) || (len(origins) == 0 && requireOrigin && changesState(r.Method)) {
 			a.reject(w, r, Forbidden, "origin_mismatch", "request origin is not allowed")
 			return
 		}
@@ -109,33 +140,54 @@ func (a *OwnerAuth) protect(next http.Handler) http.Handler {
 			}
 			return
 		}
-		if !a.validSession(r) {
+		token, session, err := a.ownerSession(r)
+		if err != nil {
+			WriteError(w, a.logger, err)
+			return
+		}
+		if token == "" {
 			a.reject(w, r, Unauthenticated, "invalid_session", "owner session is missing or invalid")
 			return
 		}
 		tokens := r.Header.Values("X-CSRF-Token")
-		if changesState(r.Method) && (len(tokens) != 1 || !secretEqual(tokens[0], a.csrf)) {
+		if changesState(r.Method) && (len(tokens) != 1 || !secretEqual(ownerauth.TokenHash(tokens[0]), session.CSRFTokenHash)) {
 			a.reject(w, r, Forbidden, "invalid_csrf", "CSRF token is missing or invalid")
 			return
 		}
 		if r.URL.Path == "/api/session" && r.Method == http.MethodGet {
 			writeJSON(w, http.StatusOK, struct {
 				CSRFToken string `json:"csrfToken"`
-			}{a.csrf})
+			}{ownerauth.CSRFToken(token)})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (a *OwnerAuth) validSession(r *http.Request) bool {
-	var sessions []string
+// ownerSession returns an empty token for an absent, ambiguous, malformed,
+// unknown or expired session cookie. Database errors stay errors so that an
+// unreadable session store never authenticates anyone.
+func (a *OwnerAuth) ownerSession(r *http.Request) (string, store.OwnerSession, error) {
+	var values []string
 	for _, cookie := range r.Cookies() {
 		if cookie.Name == ownerCookieName {
-			sessions = append(sessions, cookie.Value)
+			values = append(values, cookie.Value)
 		}
 	}
-	return len(sessions) == 1 && secretEqual(sessions[0], a.session)
+	if len(values) != 1 || !ownerauth.CanonicalSessionToken(values[0]) {
+		return "", store.OwnerSession{}, nil
+	}
+	session, err := store.OwnerSessionByTokenHash(r.Context(), a.db, ownerauth.TokenHash(values[0]))
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", store.OwnerSession{}, nil
+	}
+	if err != nil {
+		return "", store.OwnerSession{}, err
+	}
+	if !a.now().Before(session.ExpiresAt) {
+		return "", store.OwnerSession{}, nil
+	}
+	return values[0], session, nil
 }
 
 // runnerIdentity returns an empty ID for absent, malformed, or unknown tokens.
@@ -160,7 +212,12 @@ type runnerIdentityKey struct{}
 
 func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.validSession(r) {
+		token, _, err := a.ownerSession(r)
+		if err != nil {
+			WriteError(w, a.logger, err)
+			return
+		}
+		if token != "" {
 			a.reject(w, r, Forbidden, "wrong_auth_class", "owner credentials cannot access Runner APIs")
 			return
 		}
@@ -183,32 +240,169 @@ func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
 }
 
 func (a *OwnerAuth) login(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		a.reject(w, r, Forbidden, "invalid_login", "login requires the one-time URL")
-		return
+	switch r.Method {
+	case http.MethodPost:
+		a.passwordLogin(w, r)
+	case http.MethodGet:
+		WriteError(w, a.logger, &Error{Code: NotFound, Message: "API endpoint not found"})
+	default:
+		a.reject(w, r, Forbidden, "invalid_login", "login requires POST /auth/login")
 	}
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	tokens := query["token"]
+}
+
+// maxLoginBody bounds the unauthenticated request body.
+const maxLoginBody = 64 << 10
+
+// Spec 18 3.4, Q91: the fifth consecutive mismatch starts a fixed cooldown.
+const (
+	maxLoginFailures = 5
+	loginCooldown    = 60 * time.Second
+)
+
+// passwordLogin implements POST /auth/login (spec 18 3.4). Wrong IDs and wrong
+// passwords produce the same response, and the password hash is always
+// evaluated so the timing does not reveal whether the ID matched.
+func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID       string `json:"id"`
+		Password string `json:"password"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBody)
+	// Read untrusted input before taking the lock, so a slow body cannot hold
+	// up other attempts. Check cooldown before any credential lookup or hash.
+	decodeErr := DecodeJSON(r, &body)
 	a.loginMu.Lock()
-	valid := err == nil && len(tokens) == 1 && !a.loginUsed && secretEqual(tokens[0], a.loginToken)
-	if valid {
-		a.loginUsed = true
-	}
-	a.loginMu.Unlock()
-	if !valid {
-		a.reject(w, r, Unauthenticated, "invalid_login", "login URL is invalid or already used")
+	defer a.loginMu.Unlock()
+	if a.now().Before(a.loginBlockedUntil) {
+		// 01 5.3 has no separate rate-limit code; retain the existing auth
+		// error envelope with the HTTP status required by 18 6章.
+		a.loginFailureStatus(w, r, "login_cooldown", &Error{Code: Unauthenticated,
+			Message: "login is temporarily unavailable after repeated failures"}, http.StatusTooManyRequests)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: ownerCookieName, Value: a.session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	if browserNavigation(r) {
-		// Opening the printed URL in a browser lands on the Management UI, which
-		// then reads the CSRF token from GET /api/session.
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+	if !a.loginBlockedUntil.IsZero() {
+		a.loginFailures = 0
+		a.loginBlockedUntil = time.Time{}
+	}
+	if decodeErr != nil {
+		var public *Error
+		if !errors.As(decodeErr, &public) {
+			public = invalid("body", "invalid_json").(*Error)
+		}
+		a.loginFailure(w, r, "invalid_request", public)
 		return
 	}
+	id, hash, err := store.OwnerCredentials(r.Context(), a.db)
+	if errors.Is(err, sql.ErrNoRows) {
+		a.loginFailure(w, r, "password_not_set", &Error{Code: Unauthenticated,
+			Message: "owner password is not set; run `evaloomd owner set-password` on the Mac mini",
+			Details: []Detail{{Field: "owner_credentials", Reason: "not_set"}}})
+		return
+	}
+	if err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	password := []byte(body.Password)
+	defer clear(password)
+	passwordOK, err := ownerauth.VerifyPassword(password, hash)
+	if err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	if !secretEqual(body.ID, id) || !passwordOK {
+		a.loginFailures++
+		if a.loginFailures == maxLoginFailures {
+			a.loginBlockedUntil = a.now().Add(loginCooldown)
+		}
+		a.loginFailure(w, r, "invalid_credentials", &Error{Code: Unauthenticated, Message: "ID or password is incorrect"})
+		return
+	}
+	token, err := a.startSession(w, r)
+	if err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	a.loginFailures = 0
 	writeJSON(w, http.StatusOK, struct {
 		CSRFToken string `json:"csrfToken"`
-	}{a.csrf})
+	}{ownerauth.CSRFToken(token)})
+}
+
+// via names the login route recorded in owner_sessions. Boundary has already
+// validated Host; TLS terminates at tailscale serve, not at this HTTP listener.
+func (a *OwnerAuth) via(r *http.Request) string {
+	if r.Host == a.host {
+		return "loopback"
+	}
+	return "tailnet"
+}
+
+// startSession stores a new per-device session with its success audit record
+// and sets the cookie only after both are committed (fail closed).
+func (a *OwnerAuth) startSession(w http.ResponseWriter, r *http.Request) (string, error) {
+	token, err := ownerauth.NewSessionToken()
+	if err != nil {
+		return "", err
+	}
+	now := a.now().UTC().Truncate(time.Second)
+	session := store.OwnerSession{
+		ID: ulid.Make().String(), TokenHash: ownerauth.TokenHash(token),
+		CSRFTokenHash: ownerauth.TokenHash(ownerauth.CSRFToken(token)), Via: a.via(r),
+		CreatedAt: now, ExpiresAt: now.Add(ownerauth.SessionLifetime),
+	}
+	if err := store.CreateOwnerSession(r.Context(), a.db, session, store.AuditLog{
+		Actor: "owner", Action: "auth.login", TargetType: "owner_sessions", TargetID: session.ID,
+		Detail: map[string]any{"method": r.Method, "via": session.Via},
+	}); err != nil {
+		return "", fmt.Errorf("api: start owner session: %w", err)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: ownerCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		MaxAge: int(session.ExpiresAt.Sub(now) / time.Second), Secure: session.Via == "tailnet",
+	})
+	return token, nil
+}
+
+// loginFailure records a failed login attempt without the submitted ID or
+// password, then returns public. A failed audit write fails closed with 500.
+func (a *OwnerAuth) loginFailure(w http.ResponseWriter, r *http.Request, reason string, public *Error) {
+	a.loginFailureStatus(w, r, reason, public, public.StatusCode())
+}
+
+func (a *OwnerAuth) loginFailureStatus(w http.ResponseWriter, r *http.Request, reason string, public *Error, status int) {
+	_, err := store.RecordAuditLog(r.Context(), a.db, store.AuditLog{
+		Actor: "system", Action: "auth.login_failure", TargetType: "request", TargetID: r.URL.Path,
+		Detail: map[string]any{"method": r.Method, "reason": reason, "via": a.via(r), "code": public.Code, "status": status},
+	})
+	if err != nil {
+		WriteError(w, a.logger, fmt.Errorf("api: record login failure: %w", err))
+		return
+	}
+	writeErrorResponse(w, status, public)
+}
+
+// logout is reached only through Protect, including its per-session CSRF check.
+func (a *OwnerAuth) logout(w http.ResponseWriter, r *http.Request) {
+	_, session, err := a.ownerSession(r)
+	if err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	if session.ID == "" {
+		a.reject(w, r, Unauthenticated, "invalid_session", "owner session is missing or invalid")
+		return
+	}
+	if err := store.DeleteOwnerSession(r.Context(), a.db, session.ID); err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	// Clear the browser cookie only after the deletion succeeds (fail closed).
+	http.SetCookie(w, &http.Cookie{
+		Name: ownerCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		MaxAge: -1, Expires: time.Unix(1, 0).UTC(), Secure: session.Via == "tailnet",
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *OwnerAuth) reject(w http.ResponseWriter, r *http.Request, code Code, reason, message string) {
@@ -223,13 +417,4 @@ func (a *OwnerAuth) reject(w http.ResponseWriter, r *http.Request, code Code, re
 		return
 	}
 	WriteError(w, a.logger, &Error{Code: code, Message: message})
-}
-
-// browserNavigation distinguishes a top-level page load from fetch/API clients,
-// which keep receiving the CSRF token as JSON.
-func browserNavigation(r *http.Request) bool {
-	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
-		return mode == "navigate"
-	}
-	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }

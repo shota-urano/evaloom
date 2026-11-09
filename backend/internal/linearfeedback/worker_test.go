@@ -163,7 +163,7 @@ func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
 // setup returns a DB whose Linear task "linear-1" (Issue "issue-1",
 // Execution "linear-1-e1") has just succeeded, so one outbox row is
 // pending, plus a Worker talking to fake through the real Linear client.
-func setup(t *testing.T, fake *fakeLinear) (*sql.DB, *linearfeedback.Worker, *clock, *bytes.Buffer) {
+func setup(t *testing.T, fake http.Handler) (*sql.DB, *linearfeedback.Worker, *clock, *bytes.Buffer) {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "feedback.db"))
 	if err != nil {
@@ -191,6 +191,9 @@ func setup(t *testing.T, fake *fakeLinear) (*sql.DB, *linearfeedback.Worker, *cl
 		ToExecution: model.ExecutionSucceeded}); err != nil {
 		t.Fatal(err)
 	}
+	// These fixtures exercise comment delivery. State tests explicitly make
+	// the generated state row pending again (see setupState).
+	mustExec(t, db, `UPDATE linear_outbox SET status = 'skipped' WHERE action = 'set_state'`)
 
 	server := httptest.NewTLSServer(fake)
 	t.Cleanup(server.Close)

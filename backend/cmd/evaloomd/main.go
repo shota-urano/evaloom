@@ -142,12 +142,17 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer, channels ...notification.Channel) (err error) {
+	return runWithInput(ctx, args, os.Stdin, output, channels...)
+}
+
+func runWithInput(ctx context.Context, args []string, input *os.File, output io.Writer, channels ...notification.Channel) (err error) {
 	flags := flag.NewFlagSet("evaloomd", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
 	dataDir := flags.String("data-dir", "", "Control Plane artifact data directory outside Git tracking (requires -artifact-max-bytes)")
 	artifactMaxBytes := flags.Int64("artifact-max-bytes", 0, "maximum artifact body size in bytes (requires -data-dir)")
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
+	remoteHost := flags.String("remote-host", "", "single Tailscale DNS name allowed as Host with its HTTPS Origin")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
 	contextRoot := flags.String("context-root", ".", "evaloom repository root for Global Context")
 	var globalPaths []string
@@ -164,8 +169,11 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "runner" {
 		return registerRunner(ctx, *path, flags.Args()[1:], output)
 	}
+	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "owner" {
+		return setOwnerPassword(ctx, *path, flags.Args()[1:], input, output)
+	}
 	if *path == "" || flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-web <built UI directory>]")
+		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-remote-host <name>] [-web <built UI directory>]")
 	}
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("evaloomd: port must be between 0 and 65535")
@@ -207,7 +215,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	}
 	defer listener.Close()
 	logger := slog.New(slog.NewTextHandler(output, nil))
-	auth, err := api.NewOwnerAuth(db, logger, listener.Addr().String())
+	auth, err := api.NewOwnerAuth(db, logger, listener.Addr().String(), *remoteHost)
 	if err != nil {
 		return err
 	}
@@ -286,7 +294,7 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	// Runner can keep its Execution after a Control Plane restart.
 	recoveryTimer := time.NewTimer(store.StartupHeartbeatGrace)
 	defer recoveryTimer.Stop()
-	fmt.Fprintf(output, "evaloomd: listening on %s\nevaloomd: owner login URL: %s\n", listener.Addr(), auth.LoginURL())
+	fmt.Fprintf(output, "evaloomd: listening on %s\n", listener.Addr())
 
 	for {
 		select {

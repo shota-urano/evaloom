@@ -316,10 +316,7 @@ func newProductionPipelineFixture(t *testing.T, scenario string) *productionPipe
 	})
 	server.Start()
 	f.server = server
-	login, err := server.Client().Get(auth.LoginURL())
-	if err != nil {
-		t.Fatal(err)
-	}
+	login := testOwnerLogin(t, f.db, server)
 	if len(login.Cookies()) != 1 {
 		t.Fatal("owner login")
 	}

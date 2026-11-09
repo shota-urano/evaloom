@@ -69,7 +69,7 @@ export function describeError(error: unknown): ErrorDisplay {
     case 401:
       return {
         title: 'ログインが必要です',
-        description: 'evaloomd の起動時にターミナルへ表示されたログイン URL を開いてください。',
+        description: 'ID とパスワードでログインし直してください。',
         action: 'login',
       }
     case 403:

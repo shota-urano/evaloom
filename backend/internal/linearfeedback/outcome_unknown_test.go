@@ -253,7 +253,7 @@ func TestCheckDecidedByColumnOnly(t *testing.T) {
 	t.Run("column 1, no attempts", func(t *testing.T) {
 		fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false)}
 		db, worker, _, _ := setup(t, fake)
-		mustExec(t, db, `UPDATE linear_outbox SET outcome_unknown = 1`)
+		mustExec(t, db, `UPDATE linear_outbox SET outcome_unknown = 1 WHERE action = 'comment'`)
 		sendDue(t, worker)
 		if strings.Join(fake.log, ",") != "read,create" {
 			t.Fatalf("requests = %v; want read before create", fake.log)
@@ -262,7 +262,7 @@ func TestCheckDecidedByColumnOnly(t *testing.T) {
 	t.Run("column 0, tried before", func(t *testing.T) {
 		fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment, issueBody: issueJSON(false)}
 		db, worker, _, _ := setup(t, fake)
-		mustExec(t, db, `UPDATE linear_outbox SET attempts = 2, outcome_unknown = 0`)
+		mustExec(t, db, `UPDATE linear_outbox SET attempts = 2, outcome_unknown = 0 WHERE action = 'comment'`)
 		sendDue(t, worker)
 		if strings.Join(fake.log, ",") != "create" {
 			t.Fatalf("requests = %v; want create without a read", fake.log)

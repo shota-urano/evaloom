@@ -344,3 +344,23 @@ CLI失敗を拒否する。`TestConfigurationAccessVerdict`と
 `TestConfigurationAccessScript`は結果欠落と正の確認の失敗を拒否し、
 実際に読める一時HOMEを隔離成功と扱わないことを確認する。
 通常検証の成功を、実CLIによる受け入れ条件の達成とは扱わない。
+
+## 仕様18の6章で追加する権限境界テスト
+
+`remote_access_test.go`の`TestRemoteAccessPermissionBoundaries`は、loopbackと
+設定済みのtailnetの両経路で、次の6項目を実行する。実際のSQLiteファイルと
+`api.NewHandler`のHTTPサーバを使い、業務ハンドラーは置き換えない。
+
+| 仕様18の6章の項目 | サブテストと確認内容 |
+|---|---|
+| 未許可・類似Hostの拒否 | `untrusted_and_lookalike_hosts`。`evil.example`と許可名に`.evil.example`を付けたHostでログイン、セッション取得、設定更新が403になる。監査記録と、セッション数・設定が変わらないことも照合する |
+| 期限切れCookieの拒否 | `expired_session`。保存済みのログイン時刻を過去にし、3日の期限を過ぎたCookieによる読み取り・更新が401になる。監査記録と設定の未変更も確認する |
+| 再起動後のセッションの維持 | `restart_preserves_session`。HTTPサーバとDBを閉じ、同じファイルを開いて認証・ルーター・サーバを作り直す。以前のCookieとCSRFで設定を更新でき、CSRFなしの更新は403になる。セッションの期限などの保存値も変わらない |
+| パスワード再設定後の拒否 | `password_reset_revokes_sessions`。CLIが使う資格情報更新処理を呼び、2端末分の以前のCookieによる読み取り・更新が401になる。新しいパスワードでログインして本人用APIを呼べる |
+| 一回限りのURLの廃止 | `retired_login_url`。JSON要求とブラウザ要求の両方でGETが404になり、Cookie・リダイレクト・セッション・ログイン成功記録が作られない |
+| Runnerから本人用APIへのアクセス拒否 | `runner_cannot_call_owner_apis`。有効なRunnerトークンでclaimできることを確認し、ログイン以外の全31本人用APIで403と監査記録を確認する。セッション、ログアウト、承認、Linear設定も含む |
+
+`make verify`で実行する。Dockerとモデル認証情報は不要で、スキップ条件はない。
+これらはHTTP認証の境界のテストであり、上記のSandboxによる接続遮断の証明とは区別する。
+Control Planeの起動処理を通す再起動確認は、既存の
+`cmd/evaloomd.TestOwnerSessionSurvivesControlPlaneRestart`も通常検証で実行する。

@@ -63,6 +63,7 @@ type daemon struct {
 
 func startDaemon(t *testing.T, path string) *daemon {
 	t.Helper()
+	configureTestOwner(t, path)
 	d := &daemon{output: &lockedBuffer{}, labels: make(chan string, 1)}
 	original := newLinearPoller
 	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
@@ -86,17 +87,13 @@ func startDaemon(t *testing.T, path string) *daemon {
 		newLinearPoller = original
 	}
 	t.Cleanup(d.stop)
-	var loginURL string
-	for loginURL == "" {
+	for d.address == "" {
 		for _, line := range strings.Split(d.output.String(), "\n") {
 			if address, ok := strings.CutPrefix(line, "evaloomd: listening on "); ok {
 				d.address = address
 			}
-			if url, ok := strings.CutPrefix(line, "evaloomd: owner login URL: "); ok {
-				loginURL = url
-			}
 		}
-		if loginURL != "" {
+		if d.address != "" {
 			break
 		}
 		select {
@@ -114,7 +111,12 @@ func startDaemon(t *testing.T, path string) *daemon {
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
 	d.client = &http.Client{Transport: transport, Timeout: 2 * time.Second, Jar: jar}
-	response, err := d.client.Get(loginURL)
+	r, err := http.NewRequest("POST", "http://"+d.address+"/auth/login", strings.NewReader(testOwnerLoginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Origin", "http://"+d.address)
+	response, err := d.client.Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}
