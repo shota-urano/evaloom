@@ -142,6 +142,10 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer, channels ...notification.Channel) (err error) {
+	return runWithInput(ctx, args, os.Stdin, output, channels...)
+}
+
+func runWithInput(ctx context.Context, args []string, input *os.File, output io.Writer, channels ...notification.Channel) (err error) {
 	flags := flag.NewFlagSet("evaloomd", flag.ContinueOnError)
 	flags.SetOutput(output)
 	path := flags.String("db", "", "SQLite database file path (required)")
@@ -163,6 +167,9 @@ func run(ctx context.Context, args []string, output io.Writer, channels ...notif
 	}
 	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "runner" {
 		return registerRunner(ctx, *path, flags.Args()[1:], output)
+	}
+	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "owner" {
+		return setOwnerPassword(ctx, *path, flags.Args()[1:], input, output)
 	}
 	if *path == "" || flags.NArg() != 0 {
 		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-web <built UI directory>]")
