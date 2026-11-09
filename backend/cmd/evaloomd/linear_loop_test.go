@@ -24,19 +24,37 @@ import (
 )
 
 // loopLinear is an httptest Linear GraphQL API that behaves like Linear for
-// the circular-trigger checks (spec 16 3.5): creating a comment advances the
-// Issue's updatedAt while its labels, state and body stay the same. It also
-// records the query text of every request, in order.
+// the circular-trigger checks (spec 16 3.5): creating a comment or changing
+// Workflow state advances updatedAt without changing the labels or body.
+// It also records the query text of every request, in order.
 type loopLinear struct {
-	mu       sync.Mutex
-	issues   map[string]map[string]any
-	comments []map[string]any // commentCreate variables, in order
-	queries  []string
+	mu           sync.Mutex
+	issues       map[string]map[string]any
+	comments     []map[string]any // commentCreate variables, in order
+	stateUpdates []map[string]any // issueUpdate variables, in order
+	queries      []string
+}
+
+var loopWorkflowStates = []linear.WorkflowState{
+	{ID: "todo", Name: "Todo", Type: "unstarted"},
+	{ID: "in-progress", Name: "In Progress", Type: "started"},
+	{ID: "pr-review", Name: "PR Review", Type: "started"},
+	{ID: "done", Name: "Done", Type: "completed"},
+	{ID: "canceled", Name: "Canceled", Type: "canceled"},
 }
 
 func (l *loopLinear) set(id string, issue map[string]any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Intake only needs the type; state delivery also reads the ID and name.
+	if state := issue["state"].(map[string]any); state["id"] == nil {
+		for _, candidate := range loopWorkflowStates {
+			if candidate.Type == state["type"] {
+				issue["state"] = map[string]any{"id": candidate.ID, "name": candidate.Name, "type": candidate.Type}
+				break
+			}
+		}
+	}
 	l.issues[id] = issue
 }
 
@@ -50,6 +68,30 @@ func (l *loopLinear) snapshot() (comments []map[string]any, queries []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]map[string]any(nil), l.comments...), append([]string(nil), l.queries...)
+}
+
+func (l *loopLinear) stateSnapshot(id string) (linear.WorkflowState, []map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.issues[id]["state"].(map[string]any)
+	return linear.WorkflowState{ID: s["id"].(string), Name: s["name"].(string), Type: s["type"].(string)},
+		append([]map[string]any(nil), l.stateUpdates...)
+}
+
+// Called under mu for both comment and state mutations.
+func (l *loopLinear) advanceIssue(id string) (map[string]any, error) {
+	issue := l.issues[id]
+	updated, err := time.Parse(time.RFC3339Nano, issue["updatedAt"].(string))
+	if err != nil {
+		return nil, err
+	}
+	next := map[string]any{}
+	for k, v := range issue {
+		next[k] = v
+	}
+	next["updatedAt"] = updated.Add(time.Minute).Format(time.RFC3339Nano)
+	l.issues[id] = next
+	return next, nil
 }
 
 func (l *loopLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +126,33 @@ func (l *loopLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		data = map[string]any{"issue": map[string]any{"id": req.Variables["id"], "comments": map[string]any{
 			"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}}
+	case strings.Contains(req.Query, "EvaloomTeamStates"):
+		data = map[string]any{"team": map[string]any{"id": req.Variables["id"], "states": map[string]any{
+			"nodes": loopWorkflowStates, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}}
+	case strings.Contains(req.Query, "EvaloomIssueSetState"):
+		id, _ := req.Variables["id"].(string)
+		if _, ok := l.issues[id]; !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		for _, state := range loopWorkflowStates {
+			if state.ID != req.Variables["stateId"] {
+				continue
+			}
+			issue, err := l.advanceIssue(id)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			issue["state"] = map[string]any{"id": state.ID, "name": state.Name, "type": state.Type}
+			l.stateUpdates = append(l.stateUpdates, req.Variables)
+			data = map[string]any{"issueUpdate": map[string]any{"success": true}}
+			break
+		}
+		if data == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 	case strings.Contains(req.Query, "EvaloomIssue"):
 		if issue, ok := l.issues[req.Variables["id"].(string)]; ok {
 			data = map[string]any{"issue": issue}
@@ -92,24 +161,17 @@ func (l *loopLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case strings.Contains(req.Query, "EvaloomCommentCreate"):
 		id, _ := req.Variables["issueId"].(string)
-		issue, ok := l.issues[id]
+		_, ok := l.issues[id]
 		if !ok {
 			data = map[string]any{"commentCreate": nil}
 			break
 		}
 		l.comments = append(l.comments, req.Variables)
 		// Linear moves the Issue's updatedAt when a comment is added.
-		updated, err := time.Parse(time.RFC3339Nano, issue["updatedAt"].(string))
-		if err != nil {
+		if _, err := l.advanceIssue(id); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		next := map[string]any{}
-		for k, v := range issue {
-			next[k] = v
-		}
-		next["updatedAt"] = updated.Add(time.Minute).Format(time.RFC3339Nano)
-		l.issues[id] = next
 		data = map[string]any{"commentCreate": map[string]any{"success": true,
 			"comment": map[string]any{"id": fmt.Sprintf("comment-%d", len(l.comments))}}}
 	default:
