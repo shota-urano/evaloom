@@ -37,6 +37,16 @@ func (c commentClient) IssueComments(context.Context, string) ([]linear.Comment,
 	return nil, nil
 }
 
+func (c commentClient) IssueState(context.Context, string) (linear.IssueState, error) {
+	return linear.IssueState{TeamID: "team-a", State: linear.WorkflowState{ID: "done", Name: "Done", Type: "completed"}}, nil
+}
+
+func (c commentClient) TeamStates(context.Context, string) ([]linear.WorkflowState, error) {
+	return nil, nil
+}
+
+func (c commentClient) SetIssueState(context.Context, string, string) error { return nil }
+
 // The Control Plane starts the Linear comment Worker (spec 16 3.4 step 2),
 // which sends a pending linear_outbox row and records it as sent.
 func TestRunStartsLinearFeedbackWorker(t *testing.T) {

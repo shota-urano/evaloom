@@ -1,4 +1,4 @@
-// Package linearfeedback sends the Linear comments queued in linear_outbox
+// Package linearfeedback sends Linear comments and Workflow state changes queued in linear_outbox
 // (spec 16 3.4 steps 2-5, 6章). It is the Linear transport of spec 16 3.1:
 // rows are written by linearoutbox in the transaction of the state change,
 // and the Worker here delivers them with retries.
@@ -29,20 +29,23 @@ import (
 )
 
 // Channel is the channel value of notification_sent / notification_failed
-// for Linear comments (spec 16 5).
+// for Linear comments and state changes (spec 16 5).
 const Channel = "linear"
 
 // The notification_failed reasons for channel=linear, also written to
 // linear_outbox.failure_reason (spec 16 3.4.2, Q85). ReasonOther is for a
 // failure none of the others describes; the Worker's own failures are
-// always one of the first three, so today only rows migrated by 0018 carry
+// always one of the specific reasons, so only rows migrated by 0018 carry
 // it.
 const (
 	ReasonAuth             = "auth"
 	ReasonIssueRemoved     = "issue_removed"
 	ReasonRetriesExhausted = "retries_exhausted"
+	ReasonStateNotFound    = "state_not_found"
 	ReasonOther            = "other"
 )
+
+var errStateNotFound = errors.New("linearfeedback: state name not found")
 
 // MaxAttempts and RetryDelays are the retry policy of spec 16 3.4 and 4
 // (Q80, decided 2026-11-08): at most 5 sends, waiting 1, 2, 4 and 8 minutes
@@ -74,6 +77,9 @@ type Client interface {
 	// IssueComments reads the Issue's comments before a resend whose
 	// previous result is unknown (3.4, 6章).
 	IssueComments(ctx context.Context, issueID string) ([]linear.Comment, error)
+	IssueState(ctx context.Context, issueID string) (linear.IssueState, error)
+	TeamStates(ctx context.Context, teamID string) ([]linear.WorkflowState, error)
+	SetIssueState(ctx context.Context, issueID, stateID string) error
 }
 
 // AuthAlerter tells the owner that a comment could not be sent because of an
@@ -181,6 +187,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 type outboxRow struct {
 	id, taskID, issueID, kind, dedupeKey, body string
+	action, stateName                          string
 	attempts                                   int
 	// executionID is linear_outbox.execution_id, "" for triggers without
 	// an Execution (3.4.2, 3.7).
@@ -231,10 +238,10 @@ func (w *Worker) SendDue(ctx context.Context) error {
 func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 	var r outboxRow
 	var executionID sql.NullString
-	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, body, attempts,
-		outcome_unknown != 0, execution_id FROM linear_outbox WHERE action = 'comment' AND status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, coalesce(body, ''), attempts,
+		outcome_unknown != 0, execution_id, action, coalesce(state_name, '') FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY created_at, id LIMIT 1`, w.now().Format(timeLayout)).Scan(
-		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID)
+		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID, &r.action, &r.stateName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -263,6 +270,9 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 // be read, nothing is sent (a resend could duplicate the comment), the read
 // failure counts as the attempt's failure and outcome_unknown stays 1.
 func (w *Worker) send(ctx context.Context, r outboxRow, round *sendRound) error {
+	if r.action == "set_state" {
+		return w.sendState(ctx, r, round)
+	}
 	if r.outcomeUnknown {
 		commentID, err := w.findSent(ctx, r)
 		if err != nil {
@@ -358,6 +368,8 @@ func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, me
 		}
 		w.authFailed(round)
 		return nil
+	case errors.Is(failure, errStateNotFound):
+		return w.markFailed(ctx, r, attempts, false, ReasonStateNotFound)
 	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
 		// 6章: a deleted or archived Issue fails at once and does not
 		// affect the task.
@@ -384,12 +396,12 @@ func (w *Worker) issueRemoved(ctx context.Context, issueID string) bool {
 }
 
 func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, attempts int) error {
-	// The comment exists in Linear now: record it even during shutdown.
+	// Delivery succeeded: record it even during shutdown.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'sent', attempts = ?, next_attempt_at = NULL,
 		linear_comment_id = ?, sent_at = ?, outcome_unknown = 0 WHERE id = ? AND status = 'pending'`,
-		[]any{attempts, commentID, w.now().Format(time.RFC3339Nano), r.id},
+		[]any{attempts, sql.NullString{String: commentID, Valid: r.action == "comment"}, w.now().Format(time.RFC3339Nano), r.id},
 		model.EventNotificationSent, map[string]string{"kind": r.kind, "channel": Channel})
 }
 
@@ -399,7 +411,7 @@ func (w *Worker) markSent(ctx context.Context, r outboxRow, commentID string, at
 func (w *Worker) markFailed(ctx context.Context, r outboxRow, attempts int, unknown bool, reason string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	w.logger().Error("linear comment failed", "outbox_id", r.id, "task_id", r.taskID,
+	w.logger().Error("linear delivery failed", "outbox_id", r.id, "task_id", r.taskID,
 		"kind", r.kind, "attempts", attempts, "reason", reason)
 	return w.finish(ctx, r, `UPDATE linear_outbox SET status = 'failed', attempts = ?, next_attempt_at = NULL,
 		outcome_unknown = ?, failure_reason = ?, failed_at = ? WHERE id = ? AND status = 'pending'`,
@@ -435,7 +447,7 @@ func (w *Worker) finish(ctx context.Context, r outboxRow, update string, args []
 			return err
 		}
 	} else {
-		w.logger().Info("linear comment outcome has no Execution for an event", "outbox_id", r.id,
+		w.logger().Info("linear delivery outcome has no Execution for an event", "outbox_id", r.id,
 			"task_id", r.taskID, "kind", r.kind, "event", string(event))
 	}
 	return tx.Commit()

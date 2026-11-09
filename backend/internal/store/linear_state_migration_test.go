@@ -96,3 +96,62 @@ func TestLinearOutboxStateMigration(t *testing.T) {
 	_, err = db.Exec(`UPDATE linear_outbox SET dedupe_key = 'pending' WHERE id = 'started'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 }
+
+func TestLinearStateNotFoundMigrationPreservesAllColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state-reason.db")
+	source, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := readMigrations(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := fstest.MapFS{}
+	for _, m := range migrations {
+		if m.version < 23 {
+			previous[m.name] = &fstest.MapFile{Data: []byte(m.sql)}
+		}
+	}
+	db, err := open(context.Background(), path, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	for _, status := range []string{"pending", "sent", "failed", "skipped"} {
+		mustTaskExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind, dedupe_key,
+			body, status, attempts, next_attempt_at, linear_comment_id, created_at, sent_at,
+			execution_id, outcome_unknown, failure_reason, failed_at)
+			VALUES (?, 'task-001', 'issue-a', 'succeeded', ?, 'body', ?, 2, ?, 'comment-id', ?, ?,
+			'execution-1', 1, 'other', ?)`, "comment-"+status, "comment-"+status, status,
+			registryTime, registryTime, registryTime, registryTime)
+		mustTaskExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind, action, state_name,
+			dedupe_key, status, attempts, next_attempt_at, created_at, sent_at, execution_id, failure_reason, failed_at)
+			VALUES (?, 'task-001', 'issue-a', 'waiting_approval', 'set_state', 'PR Review', ?, ?,
+			3, ?, ?, ?, 'execution-1', 'auth', ?)`, "state-"+status, "state-"+status, status,
+			registryTime, registryTime, registryTime, registryTime)
+	}
+	const query = `SELECT * FROM linear_outbox ORDER BY id`
+	before := migrationRows(t, db, query)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		db = openRegistry(t, path)
+		if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
+			t.Fatalf("rows changed: got %#v, want %#v", got, before)
+		}
+		if got := migrationRows(t, db, `PRAGMA foreign_key_check`); len(got) != 0 {
+			t.Fatalf("foreign keys=%v", got)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db = openRegistry(t, path)
+	defer db.Close()
+	mustTaskExec(t, db, `UPDATE linear_outbox SET failure_reason = 'state_not_found' WHERE id = 'state-failed'`)
+	_, err = db.Exec(`UPDATE linear_outbox SET failure_reason = 'invalid' WHERE id = 'state-failed'`)
+	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
+}
