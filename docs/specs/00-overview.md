@@ -101,7 +101,7 @@ requirements 8.2 の16工程のうち、Phase 1 で動かす工程と担当仕�
 | 13 | [`13-management-ui.md`](./13-management-ui.md) | Phase 1 の管理画面（Dashboard / Projects / Harnesses / Tasks / Settings） | Frontend |
 | 14 | [`14-security-tests.md`](./14-security-tests.md) | 設定環境の分離テスト、権限境界テスト、隔離突破テスト、Gate の受け入れテスト | Backend |
 | 15 | [`15-linear-intake.md`](./15-linear-intake.md) | Phase 2（draft）：Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、Team + Label ルーティング、自動タスク作成、ai-ready の取り外し・キャンセルによる中止 | Backend, Frontend |
-| 16 | [`16-linear-feedback.md`](./16-linear-feedback.md) | Phase 2（draft）：Linear Issue への結果返却（コメント）、受け入れ条件の記入依頼、送信の再試行、循環トリガーの防止 | Backend |
+| 16 | [`16-linear-feedback.md`](./16-linear-feedback.md) | Phase 2（draft）：Linear Issue への結果返却（コメント）、Issue の状態（Workflow state）の変更（Q51 見直し）、受け入れ条件の記入依頼、送信の再試行、循環トリガーの防止 | Backend |
 | 17 | [`17-approval.md`](./17-approval.md) | Phase 2（draft）：承認対象と承認ポリシー、承認と操作内容の結び付け（head SHA が変わったら無効）、承認後の PR マージ、ベースブランチへの直接 push（Q35） | Backend, Frontend |
 | 18 | [`18-remote-access.md`](./18-remote-access.md) | 別端末からの管理画面の利用（Tailscale のネットワーク内だけ）、ID とパスワードによる本人のログイン、端末ごとに3日保つセッション、一回限りのログイン URL の廃止 | Backend, Frontend |
 
@@ -261,7 +261,7 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q48 | トリガーのラベル名（`ai-ready`）と実行先ラベルの接頭辞（`repo:`）を固定するか、設定にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: requirements 6.2 は推奨例としているため、全体設定で持ち、既定値をこの2つにする案 | 15 |
 | Q49 | Linear の API キーの置き場所と、どの Linear ユーザーのキーを使うか | 決定（2026-11-06、15〜17 の確定時に案を採用。同日、ポーリングへの切り替えで署名シークレットは不要になった）: API キーを `~/.config/evaloom/`（権限 0600）に置き、Control Plane だけが読む案（GitHub App の秘密鍵と同じ扱い）。本人とは別の Evaloom 専用の Linear ユーザーのキーを使う案。ポーリングでは操作者で見分ける循環防止は行わないため、専用ユーザーにする理由は、Evaloom のコメントを本人のコメントと見分けられることと、キーを無効にしても本人に影響しないことになる（16 の 3.5）。キーの権限を絞れるかは実装時に Linear で確かめる ファイル名は `~/.config/evaloom/linear-api-key` とする（2026-11-07 決定）。 | 15, 16 |
 | Q50 | requirements 17章の project_integrations を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らず、projects に linear_team_id と linear_routing_label の列を足す案。連携先が Linear だけのため | 02, 15 |
-| Q51 | Evaloom が Linear の Issue の状態（Workflow state）やラベルを変えるか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Phase 2 はコメントだけを返し、状態とラベルは変えない案。Linear 側の自動化を介した循環を避けるため | 16 |
+| Q51 | Evaloom が Linear の Issue の状態（Workflow state）やラベルを変えるか | 見直し（2026-11-09、本人）: 状態を変える。実行開始→In Progress、PR 作成・承認待ち→PR Review、マージ・完了→Done、失敗・Blocked→変えない、Evaloom で中止→Canceled。ラベル（ai-ready）は変えない。Uslab では種類 started の状態が In Progress と PR Review の2つあるため、状態は種類でなく名前で選ぶ（16 の 3.6）。旧決定（2026-11-06）: コメントだけを返し、状態とラベルは変えない | 16 |
 | Q52 | Linear にコメントを出す場面と、本文に載せない情報 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 受付時は出さず、保留・Blocked・承認待ち・完了・失敗・マージ・中止で出す。ログ本文、テストの出力、Runner のパスは載せない案（ワークスペースの他のメンバーも読めるため） | 16 |
 | Q53 | Phase 2 で承認を経て Evaloom が実際に行う操作 | 決定（2026-11-06、15〜17 の確定時に案を採用）: PR マージだけ。ほかの承認対象操作は Phase 2 でも権限で拒否する案 | 17 |
 | Q54 | 承認後の PR マージを誰が、どの権限で行うか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Runner の Git Publisher が claim で「承認済みの操作」を受け取って行う。GitHub はルールセット B の Bypass に evaloom-publisher を足し、A（PR 必須・CI 必須）の Bypass は空のままにする案。Phase 1 で決めた「Evaloom はマージしない」（05, 09, 11）を書き換えることになる | 11, 17 |
@@ -306,3 +306,8 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q93 | Cookie の Secure の付け方（18 の 3.5） | 案: tailnet からの HTTPS では付け、Mac mini からの `http://127.0.0.1` では付けない | 18 |
 | Q94 | 自分の端末からのログアウトを作るか（18 の 3.5）。ほかの端末のセッションを切る操作は作らない（決定、2026-11-09、本人） | 案: `POST /auth/logout` でそのセッションを消す | 18 |
 | Q95 | Tailscale の ACL で管理画面に届く端末を絞るか（18 の 3.1） | 案: 本人の端末だけに絞る。設定は本人が Tailscale の管理画面で行う | 18 |
+| Q96 | Linear の状態の名前を固定にするか設定にするか、名前の一致の判定（16 の 3.6.2） | 案: In Progress / PR Review / Done / Canceled に固定し、完全一致（大文字・小文字、空白を区別）で選ぶ。名前の状態が Team に無ければ代用せず failed（reason=state_not_found） | 16 |
+| Q97 | 本人が Linear で手で終わらせた Issue の状態を Evaloom が上書きするか（16 の 3.6.3） | 案: 現在の状態の種類が completed か canceled で、目的の状態と異なるときは変えない | 16 |
+| Q98 | 同じタスクの状態の変更の送る順序と、送れていない古い変更の扱い（16 の 3.6.3） | 案: 作った順に送る。新しい変更ができたら、pending のままの古い変更は送らず status=skipped にする（通知失敗の一覧には出さない） | 16 |
+| Q99 | どの中止で Canceled を付けるか（16 の 3.6.1） | 案: 本人が管理画面で中止したとき（保留したタスクを含む）だけ。Linear 起因の中止（ai-ready の取り外し、キャンセル、削除・アーカイブ、Team の移動）では変えない | 16 |
+| Q100 | 実行開始（In Progress）の契機の単位（16 の 3.6.1） | 案: Execution ごとに1回。続行・再実行で新しい Execution が running になったときも In Progress を付ける（すでに In Progress なら何も変わらない） | 16 |
