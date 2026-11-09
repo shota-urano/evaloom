@@ -3,6 +3,7 @@ package ownerauth
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -48,4 +49,34 @@ func HashPassword(password []byte) (string, error) {
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version,
 		passwordMemory, passwordTime, passwordThreads,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key)), nil
+}
+
+// VerifyPassword reports whether password matches a PHC string produced by
+// HashPassword. The comparison of derived keys is constant time. A malformed
+// stored hash is an error, never a successful verification.
+func VerifyPassword(password []byte, encoded string) (bool, error) {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" {
+		return false, fmt.Errorf("owner: stored password hash is malformed")
+	}
+	var version int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || version != argon2.Version {
+		return false, fmt.Errorf("owner: stored password hash has an unsupported version")
+	}
+	var memory, time uint32
+	var threads uint8
+	if n, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &time, &threads); err != nil || n != 3 || memory == 0 || time == 0 || threads == 0 {
+		return false, fmt.Errorf("owner: stored password hash has invalid parameters")
+	}
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil || len(salt) == 0 {
+		return false, fmt.Errorf("owner: stored password hash has an invalid salt")
+	}
+	want, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil || len(want) == 0 {
+		return false, fmt.Errorf("owner: stored password hash has an invalid key")
+	}
+	got := argon2.IDKey(password, salt, time, memory, threads, uint32(len(want)))
+	defer clear(got)
+	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

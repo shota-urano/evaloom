@@ -23,7 +23,14 @@ import (
 // a session obtained through the login endpoint, including closed-DB cases.
 func authenticatedHandler(t *testing.T, db *sql.DB, logger *slog.Logger) http.Handler {
 	t.Helper()
-	auth, err := NewOwnerAuth(db, logger, "127.0.0.1:8080")
+	return authenticatedHandlerWithAuthDB(t, db, db, logger)
+}
+
+// authenticatedHandlerWithAuthDB keeps owner sessions in authDB so that tests
+// can break the handler's database without breaking authentication.
+func authenticatedHandlerWithAuthDB(t *testing.T, authDB, db *sql.DB, logger *slog.Logger) http.Handler {
+	t.Helper()
+	auth, err := NewOwnerAuth(authDB, logger, "127.0.0.1:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +167,7 @@ func TestRunnerListJSONFieldAndTimeContract(t *testing.T) {
 func TestRunnerListRejectsInvalidInputBeforeDatabaseAccess(t *testing.T) {
 	db := runnerDB(t, 0)
 	db.Close()
-	handler := authenticatedHandler(t, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := authenticatedHandlerWithAuthDB(t, runnerDB(t, 0), db, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	for _, tc := range []struct{ query, field string }{
 		{"limit=201", "limit"}, {"limit=0", "limit"}, {"limit=-1", "limit"}, {"limit=oops", "limit"},
 		{"limit=1&limit=2", "limit"}, {"cursor=invalid!", "cursor"}, {"cursor=a&cursor=b", "cursor"},
@@ -193,7 +200,7 @@ func TestRunnerListDatabaseFailuresAreInternal(t *testing.T) {
 			}
 			var logs bytes.Buffer
 			w := httptest.NewRecorder()
-			authenticatedHandler(t, db, slog.New(slog.NewTextHandler(&logs, nil))).ServeHTTP(w, httptest.NewRequest("GET", "/api/runners", nil))
+			authenticatedHandlerWithAuthDB(t, runnerDB(t, 0), db, slog.New(slog.NewTextHandler(&logs, nil))).ServeHTTP(w, httptest.NewRequest("GET", "/api/runners", nil))
 			if w.Code != 500 || w.Body.String() != "{\"error\":{\"code\":\"internal\",\"message\":\"internal server error\",\"details\":[]}}\n" || logs.Len() == 0 {
 				t.Fatalf("status=%d body=%s logs=%s", w.Code, w.Body.String(), logs.String())
 			}

@@ -37,9 +37,8 @@
   通常のアクセスログにはURLを出力しない。
 - Cookie名は `evaloom_session`。秘密値はログイン用、セッション用、CSRF用を
   それぞれ32バイトの暗号学的乱数から生成し、paddingなしbase64urlにする。
-  Cookieは `HttpOnly; SameSite=Strict; Path=/`、DomainなしのセッションCookie。
-  TLSはスコープ外のためSecure属性は付けない。値はメモリにだけ保持し、
-  有効期限はプロセス終了まで。再起動するとすべて再発行する。
+  Cookieは `HttpOnly; SameSite=Strict; Path=/`、Domainなし。
+  セッションの保存と有効期限は下の「IDとパスワードによるログイン」を参照する。
 - 認証済みの `GET /api/session` からCSRFトークンを再取得できる。
   ログイン応答を含め、応答に `Cache-Control: no-store` と
   `Referrer-Policy: no-referrer` を付ける。
@@ -57,6 +56,41 @@
   `runner_mismatch`。未認証の主体をownerとは記録しない。
   クエリ、Cookie、各トークン、要求本文、ヘッダの生値は保存しない。
   記録に失敗した場合は共通形式の500を返し、後続処理を実行しない。
+
+IDとパスワードによるログインとセッションは `18-remote-access.md` 3.4・3.5・3.8 に基づく。
+以下は仕様にない部分の実装判断。
+
+- `POST /auth/login` の本文は `{"id","password"}` だけを受け付ける（未知のフィールドは400）。
+  本文は64KiBまで。Host・Originの照合は他の書き込みと同じで、CSRFトークンは要らない。
+  成功時は200で `{"csrfToken":"..."}` を返し、Cookieを設定する。
+- IDの違いとパスワードの違いは同じ401・同じ本文
+  （`unauthenticated`、`ID or password is incorrect`、details空）で返す。
+  IDが違ってもargon2idの照合を必ず行い、応答時間でIDの正否が分からないようにする。
+- パスワードが未設定のときは401で、detailsに
+  `{"field":"owner_credentials","reason":"not_set"}` を入れ、
+  メッセージで `evaloomd owner set-password` の実行を案内する。
+  仕様（6章）は状態コードを決めていないため、ログイン画面が設定手順を出せる形を選んだ。
+- セッションの値は32バイトの乱数をpaddingなしbase64urlにしたもの。
+  DBにはSHA-256の小文字hexだけを保存する。
+- CSRFトークンは、セッションの値を鍵にした `HMAC-SHA256("evaloom owner csrf v1")` の
+  paddingなしbase64url。DBには `csrf_token_hash` としてそのSHA-256だけを保存する。
+  `GET /api/session` はCookieの値から同じトークンを計算して返すので、
+  DBに平文を置かずに今の形（セッションごとのトークンの再取得）を保てる。
+- 有効期限は作成時刻（秒単位に切り捨て）から72時間。使っても延ばさない（Q92の案）。
+  Cookieの `Max-Age` は259200秒。`via` が `tailnet` のときだけ `Secure` を付ける。
+  今は境界が `127.0.0.1:<port>` だけを通すので、`via` は常に `loopback` になる。
+- 期限切れの行は、新しいセッションを作るときに同じトランザクションで消す。
+  期限切れの判定は照合のたびに行うため、行が残っていても使えない。
+- 監査記録: 成功は `actor=owner`、`action=auth.login`、`target_type=owner_sessions`、
+  `target_id=セッションのULID`、detailは `method`・`via`。
+  失敗は `actor=system`、`action=auth.login_failure`、`target_type=request`、
+  `target_id=/auth/login`、detailは `method`・`reason`
+  （`invalid_credentials`・`password_not_set`・`invalid_request`）・`via`・`code`・`status`。
+  送られたIDとパスワードは記録しない（パスワードをID欄に入れ間違える場合があるため）。
+  成功の記録はセッションの保存と同じトランザクションで行い、どちらかが失敗したら
+  Cookieを返さず500にする。失敗の記録に失敗したときも500にする。
+- 一回限りのログインURL（`GET /auth/login?token=...`）は廃止の作業（3.6）までは残す。
+  使った場合もDBにセッションを作り、同じ形で監査記録を残す。
 
 Runner用の認証は `01-architecture.md` 3.4のQ3案と5.2、6節、
 保存先は `02-data-model.md` 3.2の `runners` に基づく。
