@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Page } from '@playwright/test'
 
-import { startEvaloomd } from './evaloomd.ts'
+import { loginOwner, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-71p.14: Project 編集の承認ポリシーの選択と、direct_push にするときの確認ダイアログ（17 3.2、requirements 15.3）。
@@ -21,8 +21,8 @@ const SCOPE = 'PR のレビューに任せていた範囲（既存テストの�
 
 type Server = { temp: string; origin: string; cookie: string }
 
-async function login(loginURL: string): Promise<string> {
-  const response = await fetch(loginURL, { headers: { Accept: 'application/json' } })
+async function login(origin: string): Promise<string> {
+  const response = await loginOwner(origin)
   const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
   if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
   return cookie
@@ -60,9 +60,10 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const db = join(temp, 'evaloom.db')
       const registered = spawnSync(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'], { encoding: 'utf8' })
       if (registered.status !== 0) throw new Error(`runner register が失敗した: ${registered.stderr}`)
+      setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        await provide({ temp, origin: evaloomd.origin, cookie: await login(evaloomd.loginURL) })
+        await provide({ temp, origin: evaloomd.origin, cookie: await login(evaloomd.origin) })
       } finally {
         await evaloomd.stop()
         rmSync(temp, { recursive: true, force: true })

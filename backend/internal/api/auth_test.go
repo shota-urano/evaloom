@@ -8,10 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"reflect"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -149,7 +147,7 @@ func (f *authFixture) assertAudit(t *testing.T, method, path, reason string, sta
 	if _, err := time.Parse(time.RFC3339, created); err != nil || !strings.HasSuffix(created, "Z") {
 		t.Fatalf("invalid audit time %q: %v", created, err)
 	}
-	for _, secret := range []string{f.cookie.Value, f.csrf, f.auth.loginToken, "query-canary"} {
+	for _, secret := range []string{f.cookie.Value, f.csrf, "query-canary"} {
 		if strings.Contains(detail+targetID+f.logs.String(), secret) {
 			t.Fatal("credential leaked into audit/logs")
 		}
@@ -212,7 +210,7 @@ func TestOwnerRejectsForeignOriginAndHost(t *testing.T) {
 			f.assertAudit(t, "POST", "/api/tasks", tc.reason, 403, Forbidden)
 		})
 	}
-	// Origin validation also applies to reads and the bootstrap URL.
+	// Origin validation also applies to reads and the retired login URL.
 	for _, path := range []string{"/api/runners", "/auth/login?token=secret"} {
 		f := newAuthFixture(t)
 		status, body := f.request(t, "GET", path, true, "", func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") })
@@ -272,42 +270,45 @@ func TestOwnerRejectsInvalidOrAmbiguousCredentials(t *testing.T) {
 	assertAuthError(t, status, body, 401, Unauthenticated)
 }
 
-func TestOwnerLoginURLCannotBeReused(t *testing.T) {
+// Spec 18 3.6: GET login never creates a session, including browser navigation.
+func TestOwnerLoginURLIsRetired(t *testing.T) {
 	f := newAuthFixture(t)
-	u, err := url.Parse(f.auth.LoginURL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status, body := f.request(t, "GET", u.RequestURI(), false, "", nil); status != 200 {
-		t.Fatalf("first redemption: %d %s", status, body)
-	}
-	status, body := f.request(t, "GET", u.RequestURI(), false, "", nil)
-	assertAuthError(t, status, body, 401, Unauthenticated)
-	f.assertAudit(t, "GET", "/auth/login", "invalid_login", 401, Unauthenticated)
-}
-
-func TestOwnerLoginConcurrentRedemptionHasOneWinner(t *testing.T) {
-	db := runnerDB(t, 0)
-	auth, err := NewOwnerAuth(db, nil, "127.0.0.1:8080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var wins atomic.Int32
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Go(func() {
-			w := httptest.NewRecorder()
-			NewHandler(db, nil, auth).ServeHTTP(w, httptest.NewRequest("GET", auth.LoginURL(), nil))
-			if w.Code == 200 {
-				wins.Add(1)
-			} else if w.Code != 401 {
-				t.Errorf("concurrent login status=%d", w.Code)
+	for _, path := range []string{"/auth/login", "/auth/login?token=query-canary", "/auth/login?token=", "/auth/login?token=a&token=b"} {
+		for _, accept := range []string{"application/json", "text/html"} {
+			for _, authenticated := range []bool{false, true} {
+				r, err := http.NewRequest("GET", f.server.URL+path, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.Header.Set("Accept", accept)
+				if authenticated {
+					r.AddCookie(f.cookie)
+				}
+				response, err := f.server.Client().Do(r)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, err := io.ReadAll(response.Body)
+				response.Body.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertAuthError(t, response.StatusCode, body, 404, NotFound)
+				if len(response.Cookies()) != 0 || response.Header.Get("Location") != "" {
+					t.Fatalf("retired URL sets credentials or redirects: %v", response.Header)
+				}
 			}
-		})
+		}
 	}
-	wg.Wait()
-	if wins.Load() != 1 {
-		t.Fatalf("login winners=%d", wins.Load())
+	var sessions, logins int
+	if err := f.db.QueryRow("SELECT count(*) FROM owner_sessions").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.QueryRow("SELECT count(*) FROM audit_logs WHERE action = 'auth.login'").Scan(&logins); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 || logins != 0 || strings.Contains(f.logs.String(), "query-canary") {
+		t.Fatalf("retired URL changed sessions or leaked token: sessions=%d logins=%d logs=%s", sessions, logins, f.logs.String())
 	}
 }
 
@@ -320,41 +321,5 @@ func TestOwnerAuditFailureFailsClosed(t *testing.T) {
 	assertAuthError(t, status, body, 500, Internal)
 	if f.calls.Load() != 0 || !strings.Contains(f.logs.String(), "audit unavailable") || bytes.Contains(body, []byte("audit unavailable")) {
 		t.Fatalf("audit failure: calls=%d logs=%s body=%s", f.calls.Load(), f.logs.String(), body)
-	}
-}
-
-// A browser opening the printed login URL lands on the Management UI with the
-// session cookie; the token stays out of the page and is read via /api/session.
-func TestOwnerLoginBrowserNavigationRedirectsToUI(t *testing.T) {
-	for name, header := range map[string][2]string{
-		"sec-fetch":   {"Sec-Fetch-Mode", "navigate"},
-		"accept-html": {"Accept", "text/html,application/xhtml+xml"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			db := runnerDB(t, 0)
-			auth, err := NewOwnerAuth(db, nil, "127.0.0.1:8080")
-			if err != nil {
-				t.Fatal(err)
-			}
-			handler := NewHandler(db, nil, auth)
-			r := httptest.NewRequest("GET", auth.LoginURL(), nil)
-			r.Header.Set(header[0], header[1])
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, r)
-			cookies := w.Result().Cookies()
-			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/" || len(cookies) != 1 || !cookies[0].HttpOnly {
-				t.Fatalf("status=%d location=%q cookies=%v", w.Code, w.Header().Get("Location"), cookies)
-			}
-			if strings.Contains(w.Body.String(), "csrfToken") {
-				t.Fatalf("navigation response exposes CSRF token: %q", w.Body.String())
-			}
-			session := httptest.NewRequest("GET", "http://127.0.0.1:8080/api/session", nil)
-			session.AddCookie(cookies[0])
-			w = httptest.NewRecorder()
-			handler.ServeHTTP(w, session)
-			if w.Code != 200 || !strings.Contains(w.Body.String(), `"csrfToken":"`) {
-				t.Fatalf("session after navigation login: %d %s", w.Code, w.Body.String())
-			}
-		})
 	}
 }

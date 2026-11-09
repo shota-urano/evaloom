@@ -3,7 +3,7 @@ import { realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { backend, frontend, run, startEvaloomd, type Evaloomd } from './evaloomd.mts'
+import { backend, frontend, loginOwner, run, setupOwner, startEvaloomd, testOwner, type Evaloomd } from './evaloomd.mts'
 import { createRepo, git, tagProfile, type Repo } from './fixtures.mts'
 
 const controller = new AbortController()
@@ -58,7 +58,7 @@ async function seedAPI(server: Evaloomd, project: Repo) {
   const request = (url: string, init: RequestInit = {}) => fetch(url, {
     ...init, signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
   })
-  const login = await request(server.loginURL, { headers: { Accept: 'application/json' } })
+  const login = await loginOwner(server.origin, signal)
   const cookie = login.headers.getSetCookie().find((value) => value.startsWith('evaloom_session='))?.split(';')[0]
   if (!login.ok || !cookie) throw new Error(`確認用データのログインに失敗した: ${login.status}`)
   const { csrfToken } = await login.json() as { csrfToken: string }
@@ -101,17 +101,17 @@ async function main() {
     git(harness.path, 'push', '--quiet', 'origin', 'main', '--tags')
     run(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'Demo Runner', 'local'])
     seedHarness(db, harness)
-    server = await startEvaloomd(binary, db, '0', signal)
+    setupOwner(binary, db)
+    server = await startEvaloomd(binary, db, port, signal)
     console.log(`demo: データ投入用 evaloomd PID ${server.pid}`)
     await seedAPI(server, alpha)
-    await server.stop()
-    // 投入で使った URL とセッションを無効にし、ブラウザ用に未使用の URL を発行する。
-    server = await startEvaloomd(binary, db, port, signal)
     console.log(`demo: evaloomd PID ${server.pid}`)
     console.log(`確認用リポジトリ（登録済み） ${alpha.path}\nGit リポジトリ URL ${alpha.url}`)
     console.log(`確認用リポジトリ（登録を試す用） ${beta.path}\nGit リポジトリ URL ${beta.url}`)
     console.log('Runner は local、Base Branch は main。終了は Ctrl-C。')
-    console.log(`この URL を開く: ${server.loginURL}`)
+    console.log(`この URL を開く: ${server.origin}/`)
+    console.log(`テスト用 ID: ${testOwner.id}`)
+    console.log(`テスト用パスワード: ${testOwner.password}`)
     await server.exited
   } finally {
     await server?.stop()

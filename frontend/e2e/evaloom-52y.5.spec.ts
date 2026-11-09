@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type BrowserContext, type Page } from '@playwright/test'
 
-import { run, startEvaloomd, type Evaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd, type Evaloomd } from './evaloomd.ts'
 import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.5: タスク詳細（Execution 履歴、SSE ログ、中止・再実行）。
@@ -41,8 +41,8 @@ function seedHarness(db: string, harness: Repo) {
   ])
 }
 
-async function login(loginURL: string): Promise<string> {
-  const response = await fetch(loginURL, { headers: { Accept: 'application/json' } })
+async function login(origin: string): Promise<string> {
+  const response = await loginOwner(origin)
   const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
   if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
   return cookie
@@ -130,16 +130,17 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const runnerToken = registered.stderr.trim()
       if (registered.status !== 0 || !/^[A-Za-z0-9_-]{43}$/.test(runnerToken)) throw new Error(`runner register が失敗した: ${registered.stderr}`)
       seedHarness(db, harness)
+      setupOwner(binary, db)
       let evaloomd: Evaloomd = await startEvaloomd(binary, db, '0')
       try {
         const server: Server = {
           origin: evaloomd.origin,
-          cookie: await login(evaloomd.loginURL),
+          cookie: await login(evaloomd.origin),
           runnerToken,
           restart: async () => {
             await evaloomd.stop()
             evaloomd = await startEvaloomd(binary, db, new URL(server.origin).port)
-            server.cookie = await login(evaloomd.loginURL)
+            server.cookie = await login(evaloomd.origin)
           },
         }
         await owner(server, 'POST', '/api/harness-profiles', { harnessId: HARNESS, version: '1.0.0' })

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Locator } from '@playwright/test'
 
-import { run, startEvaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.12: Dashboard の通知失敗の一覧に、Execution の無い契機の Linear コメントの送信の失敗
@@ -46,8 +46,8 @@ const EXPECTED = [...SEEDED].sort((a, b) => b.i - a.i)
 
 type Server = { origin: string; cookie: string }
 
-async function login(loginURL: string): Promise<string> {
-  const response = await fetch(loginURL, { headers: { Accept: 'application/json' } })
+async function login(origin: string): Promise<string> {
+  const response = await loginOwner(origin)
   const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
   if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
   return cookie
@@ -102,9 +102,10 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const db = join(temp, 'evaloom.db')
       const registered = spawnSync(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'], { encoding: 'utf8' })
       if (registered.status !== 0) throw new Error(`runner register が失敗した: ${registered.stderr}`)
+      setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        const server: Server = { origin: evaloomd.origin, cookie: await login(evaloomd.loginURL) }
+        const server: Server = { origin: evaloomd.origin, cookie: await login(evaloomd.origin) }
         const repo = createRepo(temp, PROJECT)
         await owner(server, 'POST', '/api/projects', {
           id: PROJECT, name: 'Outbox アプリ', localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',

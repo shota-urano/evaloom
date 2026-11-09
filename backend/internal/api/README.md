@@ -28,23 +28,21 @@
 トークンのハッシュとローカルパスは返さない。Runner ID は文字列として保持し、
 02 の runners の例 `mac-mini` にない制約をこの一覧で加えない。
 
-本人用APIの認証は `01-architecture.md` 3.4 のQ2案に基づく。
-`NewHandler` は起動時に生成した `OwnerAuth` を必須で受け取る。
+本人用APIの認証は `18-remote-access.md` 3.3〜3.6 に基づく。
+`NewHandler` は `OwnerAuth` を必須で受け取る。
 以下は仕様にない部分の実装判断。
 
-- ログイン先は `GET /auth/login?token=...`。URLを起動時のターミナルに表示する。
-  1回だけ利用でき、成功時にCookieと `{"csrfToken":"..."}` を返す。
-  通常のアクセスログにはURLを出力しない。
-- Cookie名は `evaloom_session`。秘密値はログイン用、セッション用、CSRF用を
-  それぞれ32バイトの暗号学的乱数から生成し、paddingなしbase64urlにする。
-  Cookieは `HttpOnly; SameSite=Strict; Path=/`、Domainなし。
-  セッションの保存と有効期限は下の「IDとパスワードによるログイン」を参照する。
+- ログインは `POST /auth/login` で ID とパスワードを照合する。
+  一回限りのログイン URL は生成せず、起動時の出力やログにも出さない。
+  `GET /auth/login` は token の有無にかかわらず404を返し、Cookieを発行しない。
+- Cookie名は `evaloom_session`。属性とセッションの保存・有効期限は
+  下の「IDとパスワードによるログイン」を参照する。
 - 認証済みの `GET /api/session` からCSRFトークンを再取得できる。
   ログイン応答を含め、応答に `Cache-Control: no-store` と
   `Referrer-Policy: no-referrer` を付ける。
 - Hostは実際の待ち受け先、Originは `http://127.0.0.1:<実ポート>` と完全一致させる。
   Forwarded系ヘッダは参照しない。Origin省略はGET・HEAD・OPTIONSだけ許可する。
-  同一オリジンの読み取りとログインURLへの直接アクセスで省略されうるためである。
+  同一オリジンの読み取りで省略されうるためである。
   空・null・複数Origin、別スキーム、別ポートは拒否する。
 - 本人用の検証順はHost、Origin、Authorizationの区分、Cookie、CSRF。
   CookieとCSRFトークンの重複は拒否する。
@@ -89,8 +87,8 @@ IDとパスワードによるログインとセッションは `18-remote-access
   送られたIDとパスワードは記録しない（パスワードをID欄に入れ間違える場合があるため）。
   成功の記録はセッションの保存と同じトランザクションで行い、どちらかが失敗したら
   Cookieを返さず500にする。失敗の記録に失敗したときも500にする。
-- 一回限りのログインURL（`GET /auth/login?token=...`）は廃止の作業（3.6）までは残す。
-  使った場合もDBにセッションを作り、同じ形で監査記録を残す。
+- テストと `make demo` は起動前に CLI で一時 DB のパスワードを設定する。
+  `make demo` は管理画面の URL と、一時 DB 専用のテスト用 ID・パスワードを表示する。
 
 Runner用の認証は `01-architecture.md` 3.4のQ3案と5.2、6節、
 保存先は `02-data-model.md` 3.2の `runners` に基づく。

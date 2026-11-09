@@ -5,12 +5,12 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Page } from '@playwright/test'
 
-import { run, startEvaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.3: Harnesses 一覧・登録・編集・詳細（Profile の版の登録と一覧）。
 //
-// ログイン URL は一回限りなので、evaloom-52y.2 と同じく、global-setup がビルドしたバイナリを空きポートで別に起動する。
+// evaloom-52y.2 と同じく、専用の一時 DB と空きポートで起動する。
 // - Profile の版は画面から実 API（POST /api/harness-profiles）で登録する。そのため Harness リポジトリを本物の
 //   Git リポジトリとして作り、evaloom/profile.yaml を commit して profile/v<版> のタグを付ける（03 3.5、
 //   backend/internal/api/harness_profiles.md）。版の登録は Adapter の登録表を使わない（Harness の adapter 列と
@@ -51,10 +51,11 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const other = createRepo(temp, 'other-harness')
       run(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'])
       seedHarnesses(db, harness, other.path)
+      setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        // 一回限りのログイン URL を使い、セッション Cookie を各テストのブラウザへ渡す。
-        const response = await fetch(evaloomd.loginURL, { headers: { Accept: 'application/json' } })
+        // CLI で設定したパスワードでログインし、Cookie を各テストのブラウザへ渡す。
+        const response = await loginOwner(evaloomd.origin)
         const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
         if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
         await provide({ origin: evaloomd.origin, cookie, harness, project })

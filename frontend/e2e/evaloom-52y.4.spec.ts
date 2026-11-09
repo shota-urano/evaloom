@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Page } from '@playwright/test'
 
-import { run, startEvaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.4: Tasks 一覧とタスク作成。
@@ -91,9 +91,10 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const runnerToken = registered.stderr.trim()
       if (registered.status !== 0 || !/^[A-Za-z0-9_-]{43}$/.test(runnerToken)) throw new Error(`runner register が失敗した: ${registered.stderr}`)
       seedHarness(db, harness)
+      setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        const response = await fetch(evaloomd.loginURL, { headers: { Accept: 'application/json' } })
+        const response = await loginOwner(evaloomd.origin)
         const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
         if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
         const server = { origin: evaloomd.origin, cookie, runnerToken }

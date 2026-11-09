@@ -21,9 +21,37 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/api"
+	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
+
+// testOwnerLogin authenticates through the production password endpoint.
+func testOwnerLogin(t *testing.T, db *sql.DB, server *httptest.Server) *http.Response {
+	t.Helper()
+	const password = "runner fixture owner password"
+	hash, err := ownerauth.HashPassword([]byte(password))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetOwnerCredentials(t.Context(), db, "owner", hash); err != nil {
+		t.Fatal(err)
+	}
+	r, err := http.NewRequest("POST", server.URL+"/auth/login", strings.NewReader(`{"id":"owner","password":"`+password+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Origin", server.URL)
+	response, err := server.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 200 {
+		response.Body.Close()
+		t.Fatalf("owner login: %d", response.StatusCode)
+	}
+	return response
+}
 
 const logExecution = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
@@ -114,10 +142,7 @@ func (f *logControlPlane) start() {
 	})
 	server.Start()
 	f.server = server
-	response, err := server.Client().Get(auth.LoginURL())
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	response := testOwnerLogin(f.t, f.db, server)
 	defer response.Body.Close()
 	if response.StatusCode != 200 || len(response.Cookies()) != 1 {
 		f.t.Fatal("owner login failed")
