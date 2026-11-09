@@ -210,6 +210,63 @@ func TestStateMissingNameRefreshesThenFails(t *testing.T) {
 	}
 }
 
+// Spec 16 3.4.2, 3.6.2: a failed lookup is not evidence that the name is
+// absent. External error text must not select the internal missing-name reason.
+func TestStateNotFoundRequiresSuccessfulNameLookup(t *testing.T) {
+	scenarios := []struct {
+		name, reason string
+		configure    func(*stateLinear)
+	}{
+		{"lookup auth", "auth", func(f *stateLinear) {
+			f.teamStatus = http.StatusUnauthorized
+		}},
+		{"issue removed", "issue_removed", func(f *stateLinear) {
+			f.removed = true
+		}},
+		{"lookup unavailable", "retries_exhausted", func(f *stateLinear) {
+			f.teamStatus = http.StatusServiceUnavailable
+		}},
+		{"refresh unavailable after missing name", "retries_exhausted", func(f *stateLinear) {
+			f.teams[0] = f.teams[0][:1]
+			f.failRefresh = true
+		}},
+		{"update error mentions missing name", "retries_exhausted", func(f *stateLinear) {
+			f.updateBody = `{"errors":[{"message":"state_not_found: linearfeedback: state name not found"}]}`
+		}},
+	}
+	for _, sc := range scenarios {
+		for _, withExecution := range []bool{true, false} {
+			t.Run(sc.name+"/execution="+strconv.FormatBool(withExecution), func(t *testing.T) {
+				fake := newStateLinear()
+				sc.configure(fake)
+				db, worker, c := setupState(t, fake)
+				if !withExecution {
+					mustExec(t, db, `UPDATE linear_outbox SET execution_id = NULL WHERE action = 'set_state'`)
+				}
+				for range linearfeedback.MaxAttempts {
+					sendDue(t, worker)
+					c.advance(time.Hour)
+				}
+				if fr := readFailureRecord(t, db, stateKey); fr.status != "failed" || fr.failureReason.String != sc.reason {
+					t.Fatalf("failure=%+v; want %s", fr, sc.reason)
+				}
+				failures, err := store.ListNotificationFailures(context.Background(), db, nil, 10)
+				if err != nil || len(failures) != 1 || failures[0].Channel != "linear" || failures[0].Reason != sc.reason {
+					t.Fatalf("failures=%+v err=%v; want %s", failures, err, sc.reason)
+				}
+				events := notificationEvents(t, db)
+				if withExecution {
+					if len(events) != 1 || events[0].kind != "notification_failed" || events[0].payload["reason"] != sc.reason {
+						t.Fatalf("events=%+v; want notification_failed with reason %s", events, sc.reason)
+					}
+				} else if len(events) != 0 {
+					t.Fatalf("events without execution=%+v", events)
+				}
+			})
+		}
+	}
+}
+
 func TestStateFoundOnRefreshIsUsed(t *testing.T) {
 	fake := newStateLinear()
 	fake.teams = append([][]linear.WorkflowState{{fake.teams[0][0]}}, fake.teams...)

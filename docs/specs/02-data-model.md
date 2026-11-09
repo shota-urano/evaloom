@@ -454,7 +454,7 @@ requirements 8.3 の11状態。値は snake_case にする。
 | `pushed` | Runner | `sha`, `branch` |
 | `pr_created` | Runner | `prNumber`, `prUrl` |
 | `notification_sent` | Control Plane | `kind`, `channel` |
-| `notification_failed` | Control Plane | `kind`, `channel`, `reason`（channel=`macos` では `permission_denied` / `launch_failed` / `timeout` / `other`。[`12-notification.md`](./12-notification.md) 3.4。channel=`linear` では `auth` / `issue_removed` / `retries_exhausted` / `other`。2026-11-08 決定、Q85。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2） |
+| `notification_failed` | Control Plane | `kind`, `channel`, `reason`（channel=`macos` では `permission_denied` / `launch_failed` / `timeout` / `other`。[`12-notification.md`](./12-notification.md) 3.4。channel=`linear` では `auth` / `issue_removed` / `retries_exhausted` / `state_not_found` / `other`。2026-11-08 決定、Q85。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2） |
 
 発生元が Runner のイベントのうち、`log` 以外（`worktree_ready`、`pushed`、`pr_created`）は、Runner が result の工程内報告で送った値を Control Plane が同じトランザクションで記録する（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、2026-11-06 追記）。既存の `POST /api/executions/{id}/events` が受け付けるのは `log` だけである。`context_pinned` は context の API（[`07-context.md`](./07-context.md)）の側で記録する。`harness_started` / `harness_finished` の送り方は工程表の接続には要らないため、この追記では決めない。
 
