@@ -85,6 +85,7 @@ function renderDashboard(handler: (request: Recorded) => Response | undefined = 
     if (request.url.startsWith('/api/tasks')) return page(TASKS)
     if (request.url.startsWith('/api/notification-failures')) return failurePage([])
     if (request.url === '/api/linear/status') return json(200, { teams: [], issues: [] })
+    if (request.url.startsWith('/api/approvals')) return page([])
     return json(500, {})
   })
   render(<App api={new ApiClient(fake.fetch, fakeEvents().factory)} />)

@@ -40,10 +40,13 @@ export function buildEvaloomd(): { binary: string; cleanup: () => void } {
   }
 }
 
-/** 一回限りのログイン URL を読む。停止時は終了を待ってから呼び出し元へ戻る。 */
-export async function startEvaloomd(binary: string, db: string, port: string, signal?: AbortSignal): Promise<Evaloomd> {
+/**
+ * 一回限りのログイン URL を読む。停止時は終了を待ってから呼び出し元へ戻る。
+ * extraArgs は evaloomd に足すフラグ（成果物の保存先 -data-dir など）。
+ */
+export async function startEvaloomd(binary: string, db: string, port: string, signal?: AbortSignal, extraArgs: readonly string[] = []): Promise<Evaloomd> {
   signal?.throwIfAborted()
-  const child = spawn(binary, ['-db', db, '-port', port, '-web', web], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(binary, ['-db', db, '-port', port, '-web', web, ...extraArgs], { stdio: ['ignore', 'pipe', 'pipe'] })
   let output = ''
   let stopping = false
   const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
