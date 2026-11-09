@@ -79,10 +79,16 @@ func WriteError(w http.ResponseWriter, logger *slog.Logger, err error) {
 	} else {
 		logger.Error("API request failed", "error", err)
 	}
+	writeErrorResponse(w, public.StatusCode(), public)
+}
+
+// writeErrorResponse writes an already sanitized public error. Login cooldown
+// uses the existing auth error code with the 429 status required by spec 18.
+func writeErrorResponse(w http.ResponseWriter, status int, public *Error) {
 	if public.Details == nil {
 		public.Details = []Detail{}
 	}
-	writeJSON(w, public.StatusCode(), struct {
+	writeJSON(w, status, struct {
 		Error *Error `json:"error"`
 	}{public})
 }

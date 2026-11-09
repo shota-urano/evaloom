@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -29,8 +30,15 @@ type OwnerAuth struct {
 	db     *sql.DB
 	logger *slog.Logger
 	host   string
-	// now is replaced only by tests that check session expiry.
+	// now is replaced only by tests that check session expiry and login cooldown.
 	now func() time.Time
+	// There is one owner, and proxy addresses cannot identify devices. Keep one
+	// process-local counter; spec 18 defines no persistent throttle storage.
+	// Serialize credential checks and updates so concurrent attempts cannot
+	// pass the fifth failure before its cooldown has been recorded.
+	loginMu           sync.Mutex
+	loginFailures     int
+	loginBlockedUntil time.Time
 }
 
 func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, error) {
@@ -210,6 +218,12 @@ func (a *OwnerAuth) login(w http.ResponseWriter, r *http.Request) {
 // maxLoginBody bounds the unauthenticated request body.
 const maxLoginBody = 64 << 10
 
+// Spec 18 3.4, Q91: the fifth consecutive mismatch starts a fixed cooldown.
+const (
+	maxLoginFailures = 5
+	loginCooldown    = 60 * time.Second
+)
+
 // passwordLogin implements POST /auth/login (spec 18 3.4). Wrong IDs and wrong
 // passwords produce the same response, and the password hash is always
 // evaluated so the timing does not reveal whether the ID matched.
@@ -219,9 +233,25 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBody)
-	if err := DecodeJSON(r, &body); err != nil {
+	// Read untrusted input before taking the lock, so a slow body cannot hold
+	// up other attempts. Check cooldown before any credential lookup or hash.
+	decodeErr := DecodeJSON(r, &body)
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	if a.now().Before(a.loginBlockedUntil) {
+		// 01 5.3 has no separate rate-limit code; retain the existing auth
+		// error envelope with the HTTP status required by 18 6章.
+		a.loginFailureStatus(w, r, "login_cooldown", &Error{Code: Unauthenticated,
+			Message: "login is temporarily unavailable after repeated failures"}, http.StatusTooManyRequests)
+		return
+	}
+	if !a.loginBlockedUntil.IsZero() {
+		a.loginFailures = 0
+		a.loginBlockedUntil = time.Time{}
+	}
+	if decodeErr != nil {
 		var public *Error
-		if !errors.As(err, &public) {
+		if !errors.As(decodeErr, &public) {
 			public = invalid("body", "invalid_json").(*Error)
 		}
 		a.loginFailure(w, r, "invalid_request", public)
@@ -246,6 +276,10 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !secretEqual(body.ID, id) || !passwordOK {
+		a.loginFailures++
+		if a.loginFailures == maxLoginFailures {
+			a.loginBlockedUntil = a.now().Add(loginCooldown)
+		}
 		a.loginFailure(w, r, "invalid_credentials", &Error{Code: Unauthenticated, Message: "ID or password is incorrect"})
 		return
 	}
@@ -254,6 +288,7 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, a.logger, err)
 		return
 	}
+	a.loginFailures = 0
 	writeJSON(w, http.StatusOK, struct {
 		CSRFToken string `json:"csrfToken"`
 	}{ownerauth.CSRFToken(token)})
@@ -298,15 +333,42 @@ func (a *OwnerAuth) startSession(w http.ResponseWriter, r *http.Request) (string
 // loginFailure records a failed login attempt without the submitted ID or
 // password, then returns public. A failed audit write fails closed with 500.
 func (a *OwnerAuth) loginFailure(w http.ResponseWriter, r *http.Request, reason string, public *Error) {
+	a.loginFailureStatus(w, r, reason, public, public.StatusCode())
+}
+
+func (a *OwnerAuth) loginFailureStatus(w http.ResponseWriter, r *http.Request, reason string, public *Error, status int) {
 	_, err := store.RecordAuditLog(r.Context(), a.db, store.AuditLog{
 		Actor: "system", Action: "auth.login_failure", TargetType: "request", TargetID: r.URL.Path,
-		Detail: map[string]any{"method": r.Method, "reason": reason, "via": a.via(r), "code": public.Code, "status": public.StatusCode()},
+		Detail: map[string]any{"method": r.Method, "reason": reason, "via": a.via(r), "code": public.Code, "status": status},
 	})
 	if err != nil {
 		WriteError(w, a.logger, fmt.Errorf("api: record login failure: %w", err))
 		return
 	}
-	WriteError(w, a.logger, public)
+	writeErrorResponse(w, status, public)
+}
+
+// logout is reached only through Protect, including its per-session CSRF check.
+func (a *OwnerAuth) logout(w http.ResponseWriter, r *http.Request) {
+	_, session, err := a.ownerSession(r)
+	if err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	if session.ID == "" {
+		a.reject(w, r, Unauthenticated, "invalid_session", "owner session is missing or invalid")
+		return
+	}
+	if err := store.DeleteOwnerSession(r.Context(), a.db, session.ID); err != nil {
+		WriteError(w, a.logger, err)
+		return
+	}
+	// Clear the browser cookie only after the deletion succeeds (fail closed).
+	http.SetCookie(w, &http.Cookie{
+		Name: ownerCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		MaxAge: -1, Expires: time.Unix(1, 0).UTC(), Secure: session.Via == "tailnet",
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *OwnerAuth) reject(w http.ResponseWriter, r *http.Request, code Code, reason, message string) {
