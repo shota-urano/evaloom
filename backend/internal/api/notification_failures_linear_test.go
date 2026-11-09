@@ -34,6 +34,97 @@ func (c *failingLinear) IssueComments(context.Context, string) ([]linear.Comment
 	return nil, errors.New("PRIVATE-LINEAR-ERROR")
 }
 
+func (c *failingLinear) IssueState(context.Context, string) (linear.IssueState, error) {
+	return linear.IssueState{TeamID: "team-a", State: linear.WorkflowState{ID: "canceled", Name: "Canceled", Type: "canceled"}}, nil
+}
+
+func (c *failingLinear) TeamStates(context.Context, string) ([]linear.WorkflowState, error) {
+	return nil, errors.New("unexpected TeamStates")
+}
+
+func (c *failingLinear) SetIssueState(context.Context, string, string) error {
+	return errors.New("unexpected SetIssueState")
+}
+
+type missingStateLinear struct {
+	failingLinear
+	reads, updates int
+}
+
+func (c *missingStateLinear) IssueState(context.Context, string) (linear.IssueState, error) {
+	return linear.IssueState{TeamID: "team-a", State: linear.WorkflowState{ID: "progress", Name: "In Progress", Type: "started"}}, nil
+}
+
+func (c *missingStateLinear) TeamStates(context.Context, string) ([]linear.WorkflowState, error) {
+	c.reads++
+	return []linear.WorkflowState{{ID: "wrong-case", Name: "pr review", Type: "started"}}, nil
+}
+
+func (c *missingStateLinear) SetIssueState(context.Context, string, string) error {
+	c.updates++
+	return errors.New("unexpected update")
+}
+
+func TestNotificationFailuresStateNotFoundAndSkipped(t *testing.T) {
+	for _, executionID := range []string{"", "01ARZ3NDEKTSV4RRFFQ69G5FB4"} {
+		t.Run("execution="+executionID, func(t *testing.T) {
+			f := newAuthFixture(t)
+			seedStreamExecutions(t, f)
+			insertLinearTask(t, f, "task-state", "状態変更", "")
+			if executionID != "" {
+				if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
+					VALUES (?, 'task-state', 1, 'fresh', 'running', '2026-10-26T00:00:00Z')`, executionID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tx, err := f.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if err := linearoutbox.EnqueueStateTx(context.Background(), tx, linearoutbox.Trigger{TaskID: "task-state",
+				Kind: linearoutbox.KindWaitingApproval, TargetID: "trigger", ExecutionID: executionID}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind, action, state_name,
+				dedupe_key, status, created_at) VALUES ('skipped-state', 'task-state', 'issue-task-state', 'started',
+				'set_state', 'In Progress', 'skipped-state', 'skipped', '2026-10-26T00:00:00Z')`); err != nil {
+				t.Fatal(err)
+			}
+			client := &missingStateLinear{}
+			worker := &linearfeedback.Worker{DB: f.db, Client: client}
+			if err := worker.SendDue(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if client.reads != 2 || client.updates != 0 {
+				t.Fatalf("reads=%d updates=%d", client.reads, client.updates)
+			}
+			status, body := projectRequest(t, f, "GET", notificationFailurePath, nil)
+			var page notificationFailurePage
+			if err := json.Unmarshal(body, &page); err != nil {
+				t.Fatal(err)
+			}
+			if status != 200 || len(page.Items) != 1 {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			item := page.Items[0]
+			if item.TaskID != "task-state" || item.Channel != "linear" || item.Reason != "state_not_found" || item.Kind != "waiting_approval" {
+				t.Fatalf("item=%+v", item)
+			}
+			if executionID == "" {
+				if item.OutboxID == nil || item.EventID != nil || item.ExecutionID != nil {
+					t.Fatalf("item=%+v", item)
+				}
+			} else if item.OutboxID != nil || item.EventID == nil || item.ExecutionID == nil || *item.ExecutionID != executionID {
+				t.Fatalf("item=%+v", item)
+			}
+		})
+	}
+}
+
 // insertLinearTask adds a Linear task with its Issue link. heldCause, when
 // not empty, makes it a task held at intake (blocked, no Execution).
 func insertLinearTask(t *testing.T, f *authFixture, id, title, heldCause string) {
