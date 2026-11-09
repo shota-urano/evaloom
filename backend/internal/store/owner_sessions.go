@@ -45,6 +45,14 @@ func CreateOwnerSession(ctx context.Context, db *sql.DB, session OwnerSession, a
 	return tx.Commit()
 }
 
+// DeleteOwnerSession revokes only the requesting device's session (spec 18 3.5).
+func DeleteOwnerSession(ctx context.Context, db *sql.DB, id string) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM owner_sessions WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("store: delete owner session: %w", err)
+	}
+	return nil
+}
+
 // OwnerSessionByTokenHash returns sql.ErrNoRows for unknown values. Callers
 // decide expiry so that the clock is injectable.
 func OwnerSessionByTokenHash(ctx context.Context, db *sql.DB, tokenHash string) (OwnerSession, error) {
