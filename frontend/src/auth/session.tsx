@@ -9,7 +9,9 @@ type SessionValue = {
   status: SessionStatus
   /** セッション確認が 401 以外で失敗したときのエラー。 */
   error: unknown
-  login: (loginUrlOrToken: string) => Promise<void>
+  login: (id: string, password: string) => Promise<void>
+  /** この端末からログアウトし、ログイン画面へ移る。 */
+  logout: () => Promise<void>
   retry: () => void
 }
 
@@ -39,23 +41,29 @@ export function SessionProvider({ api = defaultApi, children }: { api?: ApiClien
     }
   }, [api, attempt])
 
-  // どの画面の要求でも 401 が返ったらログイン画面へ戻す（13 6節）。
+  // どの画面の要求でも 401 が返ったらログイン画面へ戻す（13 6節、18 6章）。
+  // URL はそのままにするので、ログインし直すと元の画面が出る。
   useEffect(() => api.onUnauthorized(() => setStatus('unauthenticated')), [api])
 
   const login = useCallback(
-    async (input: string) => {
-      await api.login(input)
+    async (id: string, password: string) => {
+      await api.login(id, password)
       setError(null)
       setStatus('authenticated')
     },
     [api],
   )
+  const logout = useCallback(async () => {
+    await api.logout()
+    setError(null)
+    setStatus('unauthenticated')
+  }, [api])
   const retry = useCallback(() => {
     setStatus('loading')
     setAttempt((n) => n + 1)
   }, [])
 
-  const value = useMemo(() => ({ api, status, error, login, retry }), [api, status, error, login, retry])
+  const value = useMemo(() => ({ api, status, error, login, logout, retry }), [api, status, error, login, logout, retry])
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
 

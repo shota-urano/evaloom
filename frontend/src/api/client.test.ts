@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { apiError, fakeFetch, json } from '@/test/fake-fetch'
-import { ApiClient, ApiError, CSRF_HEADER, NetworkError, extractLoginToken } from './client'
+import { ApiClient, ApiError, CSRF_HEADER, NetworkError, isPasswordNotSet } from './client'
 
 const TOKEN = 'csrf-token-123'
 
@@ -43,17 +43,25 @@ describe('X-CSRF-Token（01-architecture 3.4）', () => {
     expect(calls[0].headers).not.toHaveProperty(CSRF_HEADER)
   })
 
-  it('ログイン URL でのログイン後、応答の csrfToken を使う', async () => {
+  it('ID とパスワードを POST /auth/login に JSON で送り、応答の csrfToken を使う', async () => {
     const fake = fakeFetch((request) => {
-      if (request.url.startsWith('/auth/login')) return json(200, { csrfToken: 'from-login' })
+      if (request.url === '/auth/login') return json(200, { csrfToken: 'from-login' })
       return json(201, { id: 'task-1' })
     })
     const client = new ApiClient(fake.fetch)
-    await client.login('http://127.0.0.1:8080/auth/login?token=abc%2Bdef')
+    await client.login('owner', 'secret pass')
     await client.post('/api/tasks', {})
-    expect(fake.calls[0].url).toBe('/auth/login?token=abc%2Bdef')
-    expect(fake.calls[0].method).toBe('GET')
+    expect(fake.calls[0]).toMatchObject({ url: '/auth/login', method: 'POST' })
+    expect(JSON.parse(fake.calls[0].body!)).toEqual({ id: 'owner', password: 'secret pass' })
     expect(fake.calls[1].headers[CSRF_HEADER]).toBe('from-login')
+  })
+
+  it('logout は CSRF トークン付きで POST /auth/logout を呼び、以後はトークンを付けない', async () => {
+    const { client, calls } = await loggedInClient()
+    await client.logout()
+    expect(calls[0]).toMatchObject({ url: '/auth/logout', method: 'POST' })
+    expect(calls[0].headers[CSRF_HEADER]).toBeTruthy()
+    expect(client.hasCsrfToken).toBe(false)
   })
 
   it('セッション Cookie を送るため credentials は same-origin、JSON 本文に Content-Type を付ける', async () => {
@@ -127,15 +135,12 @@ describe('エラー形式（01-architecture 5.3）', () => {
   })
 })
 
-describe('extractLoginToken', () => {
-  it.each([
-    ['http://127.0.0.1:8080/auth/login?token=abc', 'abc'],
-    ['  http://127.0.0.1:8080/auth/login?token=a-b_c  ', 'a-b_c'],
-    ['/auth/login?token=xyz', 'xyz'],
-    ['raw-token', 'raw-token'],
-    ['http://127.0.0.1:8080/auth/login', ''],
-    ['', ''],
-  ])('%s → %s', (input, want) => {
-    expect(extractLoginToken(input)).toBe(want)
+describe('isPasswordNotSet', () => {
+  it('owner_credentials の not_set を持つ 401 だけを未設定とみなす', () => {
+    const notSet = new ApiError(401, 'unauthenticated', 'x', [{ field: 'owner_credentials', reason: 'not_set' }])
+    expect(isPasswordNotSet(notSet)).toBe(true)
+    expect(isPasswordNotSet(new ApiError(401, 'unauthenticated', 'ID or password is incorrect'))).toBe(false)
+    expect(isPasswordNotSet(new ApiError(400, 'validation_failed', 'x', [{ field: 'owner_credentials', reason: 'not_set' }]))).toBe(false)
+    expect(isPasswordNotSet(new Error('x'))).toBe(false)
   })
 })
