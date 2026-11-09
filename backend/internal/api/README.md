@@ -41,6 +41,9 @@
   ログイン応答を含め、応答に `Cache-Control: no-store` と
   `Referrer-Policy: no-referrer` を付ける。
 - Hostは実際の待ち受け先、Originは `http://127.0.0.1:<実ポート>` と完全一致させる。
+  `-remote-host <名前>` を指定したときは、そのHostと `https://<名前>` の組も許可する
+  （18の3.2、Q88）。指定が無ければループバックだけを許可する。
+  名前はスキーム・ポート・ワイルドカードを含まないDNS名を1つ指定する。
   Forwarded系ヘッダは参照しない。Origin省略はGET・HEAD・OPTIONSだけ許可する。
   同一オリジンの読み取りで省略されうるためである。
   空・null・複数Origin、別スキーム、別ポートは拒否する。
@@ -76,7 +79,9 @@ IDとパスワードによるログインとセッションは `18-remote-access
   DBに平文を置かずに今の形（セッションごとのトークンの再取得）を保てる。
 - 有効期限は作成時刻（秒単位に切り捨て）から72時間。使っても延ばさない（Q92の案）。
   Cookieの `Max-Age` は259200秒。`via` が `tailnet` のときだけ `Secure` を付ける。
-  今は境界が `127.0.0.1:<port>` だけを通すので、`via` は常に `loopback` になる。
+  受信したHostが設定したTailscale名と一致するときは `via=tailnet`、
+  待ち受け先と一致するときは `via=loopback` とする。TLSはTailscaleが終端するため、
+  `r.TLS` や転送ヘッダ、送信元アドレスでは判定しない。
 - 期限切れの行は、新しいセッションを作るときに同じトランザクションで消す。
   期限切れの判定は照合のたびに行うため、行が残っていても使えない。
 - 監査記録: 成功は `actor=owner`、`action=auth.login`、`target_type=owner_sessions`、

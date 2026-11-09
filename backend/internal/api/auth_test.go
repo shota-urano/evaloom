@@ -36,11 +36,16 @@ func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
 
 func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
 	t.Helper()
+	return newRemoteAuthFixture(t, "", configure, contexts...)
+}
+
+func newRemoteAuthFixture(t *testing.T, remoteHost string, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
+	t.Helper()
 	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
 	f.settings = linearintake.NewLabelSettings(f.db, nil)
 	f.server = httptest.NewUnstartedServer(nil)
 	var err error
-	f.auth, err = NewOwnerAuth(f.db, slog.New(slog.NewTextHandler(&f.logs, nil)), f.server.Listener.Addr().String())
+	f.auth, err = NewOwnerAuth(f.db, slog.New(slog.NewTextHandler(&f.logs, nil)), f.server.Listener.Addr().String(), remoteHost)
 	if err != nil {
 		t.Fatal(err)
 	}
