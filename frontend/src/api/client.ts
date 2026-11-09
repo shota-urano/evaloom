@@ -212,7 +212,7 @@ export class ApiClient {
 
   /**
    * 既存のセッション Cookie から CSRF トークンを取得する（GET /api/session）。
-   * ログイン URL をブラウザで直接開いた場合はこちらでログイン済みになる。
+   * 期限内のセッションがあれば、再読み込みや再起動の後もログイン済みになる（18 3.5）。
    * 未ログインなら false。
    */
   async loadSession(): Promise<boolean> {
@@ -227,29 +227,28 @@ export class ApiClient {
   }
 
   /**
-   * 一回限りのログイン URL（またはそのトークン）でログインする（GET /auth/login?token=）。
+   * ID とパスワードでログインする（POST /auth/login、18 3.4）。
    * 成功するとサーバーがセッション Cookie を設定し、CSRF トークンを返す。
    */
-  async login(loginUrlOrToken: string): Promise<void> {
-    const token = extractLoginToken(loginUrlOrToken)
-    if (token === '') throw new ApiError(400, 'validation_failed', 'login URL is empty', [{ field: 'loginUrl', reason: 'required' }])
-    const result = await this.get<{ csrfToken: string }>(`/auth/login?token=${encodeURIComponent(token)}`)
+  async login(id: string, password: string): Promise<void> {
+    const result = await this.post<{ csrfToken: string }>('/auth/login', { id, password })
     this.csrfToken = result.csrfToken
+  }
+
+  /** この端末のセッションを消す（POST /auth/logout、18 3.5）。ほかの端末のセッションには触れない。 */
+  async logout(): Promise<void> {
+    await this.post<void>('/auth/logout')
+    this.csrfToken = null
   }
 }
 
-/** 貼り付けられたログイン URL から token を取り出す。URL でなければ入力そのものをトークンとみなす。 */
-export function extractLoginToken(input: string): string {
-  const trimmed = input.trim()
-  if (trimmed === '') return ''
-  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
-    try {
-      return new URL(trimmed, 'http://127.0.0.1').searchParams.get('token') ?? ''
-    } catch {
-      return ''
-    }
-  }
-  return trimmed
+/** POST /auth/login の 401 のうち、パスワードが未設定であることを表すもの（18 3.4・6章）。 */
+export function isPasswordNotSet(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 401 &&
+    error.details.some((detail) => detail.field === 'owner_credentials' && detail.reason === 'not_set')
+  )
 }
 
 export const api = new ApiClient()

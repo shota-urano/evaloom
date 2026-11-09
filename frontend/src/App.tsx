@@ -1,10 +1,12 @@
+import { useState } from 'react'
+
 import { SessionProvider, useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Button } from '@/components/ui/button'
 import type { ApiClient } from '@/api/client'
 import { cn } from '@/lib/utils'
 import { Link } from '@/lib/link'
-import { matchPath, useLocation } from '@/lib/router'
+import { matchPath, navigate, useLocation } from '@/lib/router'
 import { ApprovalDetailPage } from '@/pages/approvals/approval-detail-page'
 import { ApprovalListPage } from '@/pages/approvals/approval-list-page'
 import { APPROVALS_PATH } from '@/pages/approvals/labels'
@@ -68,8 +70,32 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   )
 }
 
+function LogoutButton({ onError }: { onError: (error: unknown) => void }) {
+  const { logout } = useSession()
+  const [pending, setPending] = useState(false)
+  async function handleClick() {
+    onError(null)
+    setPending(true)
+    try {
+      await logout()
+      // 次にログインしたときは Dashboard から始める。
+      navigate('/')
+    } catch (cause) {
+      // 401 は ApiClient がログイン画面へ戻すので、ここに来るのはそれ以外の失敗だけ。
+      onError(cause)
+      setPending(false)
+    }
+  }
+  return (
+    <Button type="button" variant="ghost" size="sm" className="ml-auto" disabled={pending} onClick={handleClick}>
+      {pending ? 'ログアウトしています…' : 'ログアウト'}
+    </Button>
+  )
+}
+
 function AppShell() {
   const location = useLocation()
+  const [logoutError, setLogoutError] = useState<unknown>(null)
   const current = (to: string) => (to === '/' ? location.path === '/' : location.path === to || location.path.startsWith(`${to}/`))
   return (
     <div className="min-h-svh">
@@ -94,9 +120,15 @@ function AppShell() {
               </Link>
             ))}
           </nav>
+          <LogoutButton onError={setLogoutError} />
         </div>
       </header>
       <main className="mx-auto max-w-6xl p-6">
+        {logoutError ? (
+          <div className="mb-6">
+            <ApiErrorAlert error={logoutError} title="ログアウトできませんでした" />
+          </div>
+        ) : null}
         <Routes {...location} />
       </main>
     </div>
