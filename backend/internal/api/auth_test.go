@@ -65,22 +65,17 @@ func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConf
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)
-	response, err := f.server.Client().Get(f.auth.LoginURL())
-	if err != nil {
+	setOwnerPassword(t, f.db, testOwnerID, testOwnerPassword)
+	login := f.passwordLogin(t, testOwnerID, testOwnerPassword, nil)
+	if login.status != 200 || len(login.cookies) != 1 || login.csrf == "" {
+		t.Fatalf("login status=%d cookies=%d body=%s", login.status, len(login.cookies), login.raw)
+	}
+	f.cookie, f.csrf = login.cookies[0], login.csrf
+	// Tests observe audit_logs from a clean state; the setup's password and
+	// login records are checked by the dedicated login tests.
+	if _, err := f.db.Exec(`DELETE FROM audit_logs`); err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
-	var body struct {
-		CSRFToken string `json:"csrfToken"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	cookies := response.Cookies()
-	if response.StatusCode != 200 || len(cookies) != 1 || body.CSRFToken == "" {
-		t.Fatalf("login status=%d cookies=%d body=%+v", response.StatusCode, len(cookies), body)
-	}
-	f.cookie, f.csrf = cookies[0], body.CSRFToken
 	return f
 }
 
@@ -132,12 +127,12 @@ func (f *authFixture) assertAudit(t *testing.T, method, path, reason string, sta
 	t.Helper()
 	var id int64
 	var actor, action, targetType, targetID, detail, created string
-	if err := f.db.QueryRow(`SELECT id, actor, action, target_type, target_id, detail, created_at FROM audit_logs`).Scan(
+	if err := f.db.QueryRow(`SELECT id, actor, action, target_type, target_id, detail, created_at FROM audit_logs WHERE action = 'auth.reject'`).Scan(
 		&id, &actor, &action, &targetType, &targetID, &detail, &created); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err := f.db.QueryRow("SELECT count(*) FROM audit_logs").Scan(&count); err != nil {
+	if err := f.db.QueryRow("SELECT count(*) FROM audit_logs WHERE action = 'auth.reject'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if id <= 0 || count != 1 || actor != "system" || action != "auth.reject" || targetType != "request" || targetID != path {
@@ -227,7 +222,7 @@ func TestOwnerRejectsForeignOriginAndHost(t *testing.T) {
 
 func TestOwnerValidSessionAndCSRFAllowRequests(t *testing.T) {
 	f := newAuthFixture(t)
-	if !f.cookie.HttpOnly || f.cookie.SameSite != http.SameSiteStrictMode || f.cookie.Path != "/" || f.cookie.Domain != "" || f.cookie.MaxAge != 0 {
+	if !f.cookie.HttpOnly || f.cookie.SameSite != http.SameSiteStrictMode || f.cookie.Path != "/" || f.cookie.Domain != "" || f.cookie.MaxAge != 3*24*60*60 || f.cookie.Secure {
 		t.Fatalf("invalid owner cookie attributes: %+v", f.cookie)
 	}
 	for _, method := range []string{"POST", "PUT", "PATCH", "DELETE"} {
@@ -246,7 +241,7 @@ func TestOwnerValidSessionAndCSRFAllowRequests(t *testing.T) {
 		}
 	}
 	var count int
-	if err := f.db.QueryRow("SELECT count(*) FROM audit_logs").Scan(&count); err != nil || count != 0 {
+	if err := f.db.QueryRow("SELECT count(*) FROM audit_logs WHERE action = 'auth.reject'").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("unexpected rejection: count=%d err=%v", count, err)
 	}
 }
@@ -282,6 +277,9 @@ func TestOwnerLoginURLCannotBeReused(t *testing.T) {
 	u, err := url.Parse(f.auth.LoginURL())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if status, body := f.request(t, "GET", u.RequestURI(), false, "", nil); status != 200 {
+		t.Fatalf("first redemption: %d %s", status, body)
 	}
 	status, body := f.request(t, "GET", u.RequestURI(), false, "", nil)
 	assertAuthError(t, status, body, 401, Unauthenticated)
@@ -323,19 +321,6 @@ func TestOwnerAuditFailureFailsClosed(t *testing.T) {
 	if f.calls.Load() != 0 || !strings.Contains(f.logs.String(), "audit unavailable") || bytes.Contains(body, []byte("audit unavailable")) {
 		t.Fatalf("audit failure: calls=%d logs=%s body=%s", f.calls.Load(), f.logs.String(), body)
 	}
-}
-
-func TestOwnerRestartInvalidatesSession(t *testing.T) {
-	f := newAuthFixture(t)
-	other, err := NewOwnerAuth(f.db, nil, f.auth.host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := httptest.NewRequest("GET", f.server.URL+"/api/runners", nil)
-	r.AddCookie(f.cookie)
-	w := httptest.NewRecorder()
-	NewHandler(f.db, nil, other).ServeHTTP(w, r)
-	assertAuthError(t, w.Code, w.Body.Bytes(), 401, Unauthenticated)
 }
 
 // A browser opening the printed login URL lands on the Management UI with the
