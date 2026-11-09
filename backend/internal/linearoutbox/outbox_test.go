@@ -71,8 +71,10 @@ type outboxRow struct {
 
 func outboxRows(t *testing.T, db *sql.DB) []outboxRow {
 	t.Helper()
+	// These existing assertions cover comment payloads. State changes have
+	// NULL bodies and are checked independently in state_test.go.
 	rows, err := db.Query(`SELECT task_id, linear_issue_id, kind, dedupe_key, body, status, attempts,
-		next_attempt_at, linear_comment_id, sent_at, created_at FROM linear_outbox ORDER BY created_at, id`)
+		next_attempt_at, linear_comment_id, sent_at, created_at FROM linear_outbox WHERE action = 'comment' ORDER BY created_at, id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +264,7 @@ func TestOutboxRowRollsBackWithTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	var inside int
-	if err := tx.QueryRow(`SELECT count(*) FROM linear_outbox`).Scan(&inside); err != nil || inside != 1 {
+	if err := tx.QueryRow(`SELECT count(*) FROM linear_outbox WHERE action = 'comment'`).Scan(&inside); err != nil || inside != 1 {
 		t.Fatalf("rows inside the transaction = %d, err = %v", inside, err)
 	}
 	if err := tx.Rollback(); err != nil {

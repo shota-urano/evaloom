@@ -76,6 +76,13 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 		}); err != nil {
 			return err
 		}
+		if c.Actor == "owner" && c.Reason == "" {
+			if err := linearoutbox.EnqueueStateTx(ctx, tx, linearoutbox.Trigger{
+				TaskID: c.TaskID, Kind: linearoutbox.KindCancelled, TargetID: c.TaskID,
+			}); err != nil {
+				return err
+			}
+		}
 		return audit(map[string]any{"from": status, "to": model.TaskCancelled, "cancelRequested": false})
 	}
 	execution, err := GetContextExecution(ctx, tx, executionID.String)
@@ -136,6 +143,11 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 		model.ErrorCancelled, execution.ID); err != nil {
 		return err
 	}
+	// Record the requester before the shared transition writes its Linear
+	// state row. Both the audit and transition roll back together on error.
+	if err := audit(map[string]any{"executionId": execution.ID, "from": status, "to": model.TaskCancelled, "cancelRequested": false}); err != nil {
+		return err
+	}
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
 		TaskID: c.TaskID, ExecutionID: execution.ID, FromTask: status,
 		FromExecution: execution.Status, ToExecution: model.ExecutionCancelled,
@@ -148,7 +160,7 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 	if _, err := AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
 		return err
 	}
-	return audit(map[string]any{"executionId": execution.ID, "from": status, "to": model.TaskCancelled, "cancelRequested": false})
+	return nil
 }
 
 func expectOneRow(result sql.Result, err error) error {

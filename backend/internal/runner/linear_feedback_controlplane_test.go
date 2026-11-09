@@ -17,7 +17,7 @@ func TestProductionPipelineLinearCommentBody(t *testing.T) {
 	}
 	f.assertSucceeded(t)
 	var kind, body, worktreePath, worktreeRoot string
-	if err := f.db.QueryRow(`SELECT kind, body FROM linear_outbox WHERE task_id='task-001'`).Scan(&kind, &body); err != nil {
+	if err := f.db.QueryRow(`SELECT kind, body FROM linear_outbox WHERE task_id='task-001' AND action='comment'`).Scan(&kind, &body); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.db.QueryRow(`SELECT w.path, r.worktree_root FROM executions e JOIN worktrees w ON w.id=e.worktree_id

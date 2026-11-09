@@ -80,7 +80,43 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 	if err := recordTransitionEffects(ctx, tx, change.ExecutionID, change.ToExecution); err != nil {
 		return err
 	}
-	return recordLinearOutbox(ctx, tx, change.TaskID, change.ExecutionID, change.ToExecution)
+	if err := recordLinearOutbox(ctx, tx, change.TaskID, change.ExecutionID, change.ToExecution); err != nil {
+		return err
+	}
+	return recordLinearState(ctx, tx, change)
+}
+
+// State changes share the transition transaction and dedupe per Execution.
+func recordLinearState(ctx context.Context, tx *sql.Tx, change Transition) error {
+	var kind linearoutbox.Kind
+	switch change.ToExecution {
+	case model.ExecutionClaimed, model.ExecutionRunning:
+		// A Task enters running at claim (spec 02 5.2). The subsequent
+		// harness start and a resumed claim reuse the same dedupe key.
+		kind = linearoutbox.KindStarted
+	case model.ExecutionWaitingApproval:
+		kind = linearoutbox.KindWaitingApproval
+	case model.ExecutionSucceeded:
+		kind = linearoutbox.KindCompleted
+	case model.ExecutionCancelled:
+		// Active cancellation is reported later by the Runner. Its audit
+		// record survives restart and identifies who requested this stop.
+		var owner bool
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT actor = 'owner'
+			AND COALESCE(json_extract(detail, '$.reason'), '') = ''
+			FROM audit_logs WHERE action = 'task.cancel' AND target_type = 'task' AND target_id = ?
+			AND json_extract(detail, '$.executionId') = ? ORDER BY id DESC LIMIT 1), 0)`,
+			change.TaskID, change.ExecutionID).Scan(&owner)
+		if err != nil || !owner {
+			return err
+		}
+		kind = linearoutbox.KindCancelled
+	default:
+		return nil
+	}
+	return linearoutbox.EnqueueStateTx(ctx, tx, linearoutbox.Trigger{
+		TaskID: change.TaskID, ExecutionID: change.ExecutionID, TargetID: change.ExecutionID, Kind: kind,
+	})
 }
 
 // recordLinearOutbox writes the spec 16 3.2 comment for an Execution

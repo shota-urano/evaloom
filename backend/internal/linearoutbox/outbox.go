@@ -1,5 +1,5 @@
 // Package linearoutbox writes linear_outbox rows (spec 16 3.4 step 1, 3.7):
-// one row per Linear comment, in the same transaction as the state change
+// one row per Linear comment or Workflow state change, in the same transaction
 // that causes it. Sending (3.4 steps 2-5) is not done here.
 //
 // This package must not import store or task: task calls it from the shared
@@ -17,7 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// Kind is linear_outbox.kind: a trigger of spec 16 3.2.
+// Kind is linear_outbox.kind: a trigger of spec 16 3.2 or 3.6.1.
 type Kind string
 
 const (
@@ -29,6 +29,8 @@ const (
 	KindFailed                    Kind = "failed"
 	KindMerged                    Kind = "merged"
 	KindCancelled                 Kind = "cancelled"
+	KindStarted                   Kind = "started"
+	KindCompleted                 Kind = "completed"
 )
 
 // Trigger is one occurrence of a 3.2 trigger. TargetID is the "対象の ID" of
@@ -62,6 +64,30 @@ func (t Trigger) DedupeKey() string {
 // second occurrence of the same trigger is ignored by UNIQUE(dedupe_key).
 // The caller must roll back tx on any error.
 func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
+	return enqueueTx(ctx, tx, t, "")
+}
+
+// EnqueueStateTx writes a Workflow state change (spec 16 3.6.1, 3.6.3).
+// Only a newly inserted trigger supersedes pending state changes; replaying
+// an old trigger must not skip a newer one. Comments are never superseded.
+func EnqueueStateTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
+	var name string
+	switch t.Kind {
+	case KindStarted:
+		name = "In Progress"
+	case KindWaitingApproval:
+		name = "PR Review"
+	case KindCompleted:
+		name = "Done"
+	case KindCancelled:
+		name = "Canceled"
+	default:
+		return fmt.Errorf("linearoutbox: unsupported state trigger %q", t.Kind)
+	}
+	return enqueueTx(ctx, tx, t, name)
+}
+
+func enqueueTx(ctx context.Context, tx *sql.Tx, t Trigger, stateName string) error {
 	if t.TaskID == "" || t.Kind == "" || t.TargetID == "" {
 		return errors.New("linearoutbox: trigger needs a task, kind and target")
 	}
@@ -88,9 +114,18 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 			return errors.Join(err, fmt.Errorf("linearoutbox: execution %s is not of task %s", t.ExecutionID, t.TaskID))
 		}
 	}
-	body, err := Body(ctx, tx, t)
-	if err != nil {
-		return err
+	action, key := "comment", t.DedupeKey()
+	var body, state sql.NullString
+	if stateName == "" {
+		body.String, err = Body(ctx, tx, t)
+		if err != nil {
+			return err
+		}
+		body.Valid = true
+	} else {
+		action = "set_state"
+		state = sql.NullString{String: stateName, Valid: true}
+		key = t.TaskID + ":state_" + string(t.Kind) + ":" + t.TargetID
 	}
 	now := time.Now().UTC()
 	id, err := ulid.New(ulid.Timestamp(now), rand.Reader)
@@ -98,12 +133,21 @@ func EnqueueTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 		return err
 	}
 	executionID := sql.NullString{String: t.ExecutionID, Valid: t.ExecutionID != ""}
-	_, err = tx.ExecContext(ctx, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind,
-		dedupe_key, body, status, attempts, created_at, execution_id) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+	result, err := tx.ExecContext(ctx, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind,
+		dedupe_key, body, status, attempts, created_at, execution_id, action, state_name) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
 		ON CONFLICT (dedupe_key) DO NOTHING`,
-		id.String(), t.TaskID, issueID.String, t.Kind, t.DedupeKey(), body, now.Format(time.RFC3339Nano), executionID)
+		id.String(), t.TaskID, issueID.String, t.Kind, key, body, now.Format(time.RFC3339Nano), executionID, action, state)
 	if err != nil {
 		return fmt.Errorf("linearoutbox: insert: %w", err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if stateName != "" && inserted == 1 {
+		_, err := tx.ExecContext(ctx, `UPDATE linear_outbox SET status = 'skipped'
+			WHERE task_id = ? AND action = 'set_state' AND status = 'pending' AND id != ?`, t.TaskID, id.String())
+		return err
 	}
 	return nil
 }
