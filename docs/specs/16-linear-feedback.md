@@ -1,6 +1,5 @@
 ---
-status: confirmed
-confirmed_rev: 9dc6232
+status: draft
 範囲: Linear Issue への実行結果の返却（コメント）、受け入れ条件の記入依頼、送信の再試行、Evaloom 自身の更新による再起動（循環トリガー）の防止
 ---
 
