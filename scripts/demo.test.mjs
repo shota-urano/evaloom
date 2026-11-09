@@ -76,7 +76,7 @@ async function listen() {
   return { server, port: server.address().port, close: () => new Promise((resolve) => server.close(resolve)) }
 }
 
-test('make demo: 新しいデータ、未使用ログイン URL、API、指定ポート、SIGINT/SIGTERM の後始末', { timeout: 240_000 }, async () => {
+test('make demo: 新しいデータ、CLI パスワード認証、API、指定ポート、SIGINT/SIGTERM の後始末', { timeout: 240_000 }, async () => {
   const before = fingerprint()
   let previousTemp
   for (const explicitPort of [false, true]) {
@@ -90,11 +90,21 @@ test('make demo: 新しいデータ、未使用ログイン URL、API、指定�
       temp = await demo.until(/demo: 一時ディレクトリ (.+)/)
       assert.notEqual(temp, previousTemp)
       previousTemp = temp
-      const loginURL = await demo.until(/この URL を開く: (http:\/\/\S+)/)
+      const uiURL = await demo.until(/この URL を開く: (http:\/\/\S+)/)
       assert.ok(await demo.until(/demo: evaloomd PID (\d+)/))
-      origin = new URL(loginURL).origin
-      if (port) assert.equal(new URL(loginURL).port, String(port))
-      const login = await fetch(loginURL, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
+      origin = new URL(uiURL).origin
+      if (port) assert.equal(new URL(uiURL).port, String(port))
+      assert.equal(new URL(uiURL).pathname, '/')
+      assert.equal(new URL(uiURL).search, '')
+      const id = await demo.until(/テスト用 ID: (.+)/)
+      const password = await demo.until(/テスト用パスワード: (.+)/)
+      const oldLogin = await fetch(origin + '/auth/login?token=retired', { signal: AbortSignal.timeout(5000) })
+      assert.equal(oldLogin.status, 404)
+      assert.equal(oldLogin.headers.getSetCookie().length, 0)
+      const login = await fetch(origin + '/auth/login', {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, password }), signal: AbortSignal.timeout(5000),
+      })
       assert.equal(login.status, 200, await login.text())
       const cookie = login.headers.getSetCookie()[0]?.split(';')[0]
       assert.ok(cookie?.startsWith('evaloom_session='))
@@ -137,6 +147,7 @@ test('make demo: 新しいデータ、未使用ログイン URL、API、指定�
     } finally {
       await demo.stop(explicitPort ? 'SIGTERM' : 'SIGINT')
     }
+    assert.doesNotMatch(demo.output(), /owner login URL|[?&]token=/)
     assertClean(temp, demo.output())
     await assert.rejects(fetch(origin, { signal: AbortSignal.timeout(2000) }))
     assert.equal(fingerprint(), before, '追跡ファイルまたは普段の DB が変更された')

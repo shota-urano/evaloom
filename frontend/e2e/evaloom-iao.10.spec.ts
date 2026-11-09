@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Page } from '@playwright/test'
 
-import { run, startEvaloomd, type Evaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd, type Evaloomd } from './evaloomd.ts'
 import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-iao.10: Project 登録・編集の Linear Team ID と実行先ラベル、Settings のトリガーのラベル名と接頭辞、
@@ -21,8 +21,8 @@ const TIME_ZONE = 'Asia/Tokyo'
 
 type Server = { db: string; temp: string; origin: string; cookie: string }
 
-async function login(loginURL: string): Promise<string> {
-  const response = await fetch(loginURL, { headers: { Accept: 'application/json' } })
+async function login(origin: string): Promise<string> {
+  const response = await loginOwner(origin)
   const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
   if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
   return cookie
@@ -79,9 +79,10 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       mkdirSync(home)
       const registered = spawnSync(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'], { encoding: 'utf8' })
       if (registered.status !== 0) throw new Error(`runner register が失敗した: ${registered.stderr}`)
+      setupOwner(binary, db)
       const evaloomd = await startWithoutLinearKey(binary, db, home)
       try {
-        await provide({ db, temp, origin: evaloomd.origin, cookie: await login(evaloomd.loginURL) })
+        await provide({ db, temp, origin: evaloomd.origin, cookie: await login(evaloomd.origin) })
       } finally {
         await evaloomd.stop()
         rmSync(temp, { recursive: true, force: true })

@@ -2,19 +2,15 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -28,14 +24,11 @@ const ownerCookieName = "evaloom_session"
 
 // OwnerAuth authenticates the owner with sessions stored in owner_sessions
 // (spec 18 3.4, 3.5), so sessions survive a Control Plane restart until they
-// expire. The one-time login URL is still issued until its removal (spec 18
-// 3.6). Never log this struct.
+// expire. Never log this struct.
 type OwnerAuth struct {
-	db               *sql.DB
-	logger           *slog.Logger
-	host, loginToken string
-	loginMu          sync.Mutex
-	loginUsed        bool
+	db     *sql.DB
+	logger *slog.Logger
+	host   string
 	// now is replaced only by tests that check session expiry.
 	now func() time.Time
 }
@@ -49,16 +42,7 @@ func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, err
 	if db == nil {
 		return nil, fmt.Errorf("api: owner authentication requires an audit database")
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return nil, fmt.Errorf("api: generate owner credential: %w", err)
-	}
-	return &OwnerAuth{db: db, logger: logger, host: host, loginToken: base64.RawURLEncoding.EncodeToString(secret), now: time.Now}, nil
-}
-
-// LoginURL is a credential: expose it only through the owner's startup terminal.
-func (a *OwnerAuth) LoginURL() string {
-	return "http://" + a.host + "/auth/login?token=" + a.loginToken
+	return &OwnerAuth{db: db, logger: logger, host: host, now: time.Now}, nil
 }
 
 func secretEqual(got, want string) bool {
@@ -217,7 +201,7 @@ func (a *OwnerAuth) login(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		a.passwordLogin(w, r)
 	case http.MethodGet:
-		a.oneTimeLogin(w, r)
+		WriteError(w, a.logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	default:
 		a.reject(w, r, Forbidden, "invalid_login", "login requires POST /auth/login")
 	}
@@ -268,37 +252,6 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	token, err := a.startSession(w, r)
 	if err != nil {
 		WriteError(w, a.logger, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		CSRFToken string `json:"csrfToken"`
-	}{ownerauth.CSRFToken(token)})
-}
-
-// oneTimeLogin keeps the startup URL working until spec 18 3.6 removes it. A
-// redeemed URL creates a stored session like a password login.
-func (a *OwnerAuth) oneTimeLogin(w http.ResponseWriter, r *http.Request) {
-	query, err := url.ParseQuery(r.URL.RawQuery)
-	tokens := query["token"]
-	a.loginMu.Lock()
-	valid := err == nil && len(tokens) == 1 && !a.loginUsed && secretEqual(tokens[0], a.loginToken)
-	if valid {
-		a.loginUsed = true
-	}
-	a.loginMu.Unlock()
-	if !valid {
-		a.reject(w, r, Unauthenticated, "invalid_login", "login URL is invalid or already used")
-		return
-	}
-	token, err := a.startSession(w, r)
-	if err != nil {
-		WriteError(w, a.logger, err)
-		return
-	}
-	if browserNavigation(r) {
-		// Opening the printed URL in a browser lands on the Management UI, which
-		// then reads the CSRF token from GET /api/session.
-		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -368,13 +321,4 @@ func (a *OwnerAuth) reject(w http.ResponseWriter, r *http.Request, code Code, re
 		return
 	}
 	WriteError(w, a.logger, &Error{Code: code, Message: message})
-}
-
-// browserNavigation distinguishes a top-level page load from fetch/API clients,
-// which keep receiving the CSRF token as JSON.
-func browserNavigation(r *http.Request) bool {
-	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
-		return mode == "navigate"
-	}
-	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }

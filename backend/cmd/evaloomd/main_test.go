@@ -83,6 +83,7 @@ func (output startupOutput) Write(p []byte) (int, error) {
 
 func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
+	configureTestOwner(t, path)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	output := make(startupOutput, 1)
@@ -136,11 +137,15 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := &http.Client{Transport: transport, Timeout: time.Second, Jar: jar}
-	loginURL, ok := strings.CutPrefix(lines[1], "evaloomd: owner login URL: ")
-	if !ok {
-		t.Fatalf("missing login URL: %q", line)
+	if len(lines) != 1 || strings.Contains(line, "/auth/login") || strings.Contains(line, testOwnerPassword) {
+		t.Fatalf("startup output contains a credential: %q", line)
 	}
-	login, err := client.Get(loginURL)
+	r, err := http.NewRequest("POST", "http://"+address+"/auth/login", strings.NewReader(testOwnerLoginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Origin", "http://"+address)
+	login, err := client.Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}

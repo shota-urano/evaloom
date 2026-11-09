@@ -36,7 +36,10 @@ func authenticatedHandlerWithAuthDB(t *testing.T, authDB, db *sql.DB, logger *sl
 	}
 	handler := NewHandler(db, logger, auth)
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("GET", auth.LoginURL(), nil))
+	setOwnerPassword(t, authDB, testOwnerID, testOwnerPassword)
+	r := httptest.NewRequest("POST", "http://127.0.0.1:8080/auth/login", strings.NewReader(`{"id":"`+testOwnerID+`","password":"`+testOwnerPassword+`"}`))
+	r.Header.Set("Origin", "http://127.0.0.1:8080")
+	handler.ServeHTTP(w, r)
 	if w.Code != 200 {
 		t.Fatalf("login: %d %s", w.Code, w.Body.String())
 	}

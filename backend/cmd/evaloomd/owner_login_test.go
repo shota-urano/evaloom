@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+const testOwnerPassword = "correct horse battery staple"
+const testOwnerLoginBody = `{"id":"orion","password":"` + testOwnerPassword + `"}`
+
+func configureTestOwner(t *testing.T, path string) {
+	t.Helper()
+	if _, err := runOwnerCommand(t, path, []string{"set-password", "-id", "orion"}, testOwnerPassword+"\n"+testOwnerPassword+"\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // startEvaloomd runs the daemon on an ephemeral port and returns its address
 // and a function that stops it and waits for shutdown.
 func startEvaloomd(t *testing.T, path string) (string, func()) {

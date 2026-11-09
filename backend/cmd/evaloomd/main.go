@@ -293,7 +293,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	// Runner can keep its Execution after a Control Plane restart.
 	recoveryTimer := time.NewTimer(store.StartupHeartbeatGrace)
 	defer recoveryTimer.Stop()
-	fmt.Fprintf(output, "evaloomd: listening on %s\nevaloomd: owner login URL: %s\n", listener.Addr(), auth.LoginURL())
+	fmt.Fprintf(output, "evaloomd: listening on %s\n", listener.Addr())
 
 	for {
 		select {

@@ -5,12 +5,12 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test as base, type Page } from '@playwright/test'
 
-import { run, startEvaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.2: Projects 一覧・登録・編集・詳細（Profile 割り当てを含む）。
 //
-// ログイン URL は一回限りで、E2E_PORT の evaloomd のものは evaloom-52y.1 のテストが使う。
+// 各ファイルは専用の一時 DB で evaloomd を起動する。
 // そのためこのファイルは、同じバイナリ（global-setup がビルド）を空きポートで別に起動し、専用のデータを用意する。
 // - Project のパス検証（03 3.2）を本物で通すため、bare リポジトリを origin にした Git リポジトリを作る。
 // - Runner は evaloomd の runner register で登録する。
@@ -57,10 +57,11 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       mkdirSync(notGit)
       run(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'])
       seedHarness(db)
+      setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        // 一回限りのログイン URL を使い、セッション Cookie を各テストのブラウザへ渡す。
-        const response = await fetch(evaloomd.loginURL, { headers: { Accept: 'application/json' } })
+        // CLI で設定したパスワードでログインし、Cookie を各テストのブラウザへ渡す。
+        const response = await loginOwner(evaloomd.origin)
         const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
         if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
         await provide({ origin: evaloomd.origin, cookie, repos, notGit })

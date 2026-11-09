@@ -40,6 +40,7 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 	if err != nil || len(secret) != 32 || strings.Count(output.String(), "\n") != 1 {
 		t.Fatal("registration must display one 256-bit token, once")
 	}
+	configureTestOwner(t, path)
 	db, err := store.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +65,12 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 	server.Config.Handler = api.NewHandler(db, nil, auth)
 	server.Start()
 	defer server.Close()
-	login, err := server.Client().Get(auth.LoginURL())
+	r, err := http.NewRequest("POST", server.URL+"/auth/login", strings.NewReader(testOwnerLoginBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Origin", server.URL)
+	login, err := server.Client().Do(r)
 	if err != nil {
 		t.Fatal(err)
 	}
