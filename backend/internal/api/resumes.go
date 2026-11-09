@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -142,6 +143,13 @@ func saveBlockDecision(r *http.Request, db *sql.DB, id string, input resumeInput
 		err = task.TransitionExecutionTx(ctx, tx, task.Transition{
 			TaskID: id, ExecutionID: executionID, FromTask: status,
 			FromExecution: model.ExecutionBlocked, ToExecution: to,
+		})
+	}
+	if err == nil && input.Decision == "abort" {
+		// This owner cancellation uses task.resume, not the task.cancel
+		// audit used by Runner cancellations. Record its state in this tx.
+		err = linearoutbox.EnqueueStateTx(ctx, tx, linearoutbox.Trigger{
+			TaskID: id, ExecutionID: executionID, TargetID: executionID, Kind: linearoutbox.KindCancelled,
 		})
 	}
 	if err == nil {

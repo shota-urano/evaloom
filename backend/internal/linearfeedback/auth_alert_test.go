@@ -198,26 +198,29 @@ func TestAuthenticatedFailureDoesNotLiftSuppression(t *testing.T) {
 // 受け入れ基準: 通知の送信に失敗してもタスクと outbox の行は変わらず、
 // execution_events に notification_sent / notification_failed が書かれない。
 func TestAlertFailureChangesNoTaskRowOrEvent(t *testing.T) {
-	run := func(t *testing.T, alertErr error) (row, failureRecord, states, int) {
+	run := func(t *testing.T, alertErr error) (row, failureRecord, int) {
+		t.Helper()
 		fake := &fakeLinear{commentStatus: http.StatusUnauthorized, commentBody: unauthorized, issueBody: issueJSON(false)}
 		db, worker, _, _ := setup(t, fake)
 		holdKey := enqueueHold(t, db) // a row without an Execution
 		alerter := &recordingAuthAlerter{err: alertErr}
 		worker.Alerter = alerter
 		before := countAllNotificationEvents(t, db)
+		beforeStates := taskStates(t, db)
 		sendDue(t, worker)
 		alerter.want(t, "comment")
-		return outboxRow(t, db, holdKey), readFailureRecord(t, db, holdKey), taskStates(t, db),
+		// Compare within this DB: separate setups can have different updated_at values.
+		if afterStates := taskStates(t, db); afterStates != beforeStates || afterStates.task != "completed" {
+			t.Fatalf("task changed (alert error %v): before %+v, after %+v", alertErr, beforeStates, afterStates)
+		}
+		return outboxRow(t, db, holdKey), readFailureRecord(t, db, holdKey),
 			countAllNotificationEvents(t, db) - before
 	}
-	okRow, okRecord, okStates, okEvents := run(t, nil)
-	badRow, badRecord, badStates, badEvents := run(t, errors.New("notification: macOS helper: registration_failed"))
+	okRow, okRecord, okEvents := run(t, nil)
+	badRow, badRecord, badEvents := run(t, errors.New("notification: macOS helper: registration_failed"))
 	if badRow != okRow || badRecord.status != "failed" || badRecord.failureReason.String != "auth" ||
 		badRecord.failureReason != okRecord.failureReason || badRecord.executionID != okRecord.executionID {
 		t.Fatalf("outbox row differs: ok %+v %+v, alert failed %+v %+v", okRow, okRecord, badRow, badRecord)
-	}
-	if badStates != okStates || badStates.task != "completed" {
-		t.Fatalf("task differs: ok %+v, alert failed %+v", okStates, badStates)
 	}
 	// The hold row has no Execution and the alert itself is never recorded.
 	if okEvents != 0 || badEvents != 0 {

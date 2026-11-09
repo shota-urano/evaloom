@@ -148,7 +148,7 @@ func TestNotificationFailuresListLinearFailuresWithoutExecution(t *testing.T) {
 		t.Fatalf("items = %s; want 3 outbox rows and 1 event", body)
 	}
 	outboxIDs := map[string]string{}
-	rows, err := f.db.Query(`SELECT task_id, id FROM linear_outbox`)
+	rows, err := f.db.Query(`SELECT task_id, id FROM linear_outbox WHERE action = 'comment'`)
 	if err != nil {
 		t.Fatal(err)
 	}
