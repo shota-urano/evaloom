@@ -27,9 +27,10 @@ const ownerCookieName = "evaloom_session"
 // (spec 18 3.4, 3.5), so sessions survive a Control Plane restart until they
 // expire. Never log this struct.
 type OwnerAuth struct {
-	db     *sql.DB
-	logger *slog.Logger
-	host   string
+	db         *sql.DB
+	logger     *slog.Logger
+	host       string
+	remoteHost string
 	// now is replaced only by tests that check session expiry and login cooldown.
 	now func() time.Time
 	// There is one owner, and proxy addresses cannot identify devices. Keep one
@@ -41,7 +42,7 @@ type OwnerAuth struct {
 	loginBlockedUntil time.Time
 }
 
-func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, error) {
+func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string, remoteHosts ...string) (*OwnerAuth, error) {
 	ip, port, err := net.SplitHostPort(host)
 	n, portErr := strconv.Atoi(port)
 	if err != nil || ip != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
@@ -50,7 +51,34 @@ func NewOwnerAuth(db *sql.DB, logger *slog.Logger, host string) (*OwnerAuth, err
 	if db == nil {
 		return nil, fmt.Errorf("api: owner authentication requires an audit database")
 	}
-	return &OwnerAuth{db: db, logger: logger, host: host, now: time.Now}, nil
+	if len(remoteHosts) > 1 {
+		return nil, fmt.Errorf("api: at most one remote host is allowed")
+	}
+	var remoteHost string
+	if len(remoteHosts) == 1 {
+		remoteHost = remoteHosts[0]
+	}
+	if remoteHost != "" && !validRemoteHost(remoteHost) {
+		return nil, fmt.Errorf("api: remote host must be a single DNS name without a scheme, port, or wildcard")
+	}
+	return &OwnerAuth{db: db, logger: logger, host: host, remoteHost: remoteHost, now: time.Now}, nil
+}
+
+func validRemoteHost(host string) bool {
+	if len(host) > 253 || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func secretEqual(got, want string) bool {
@@ -62,7 +90,8 @@ func changesState(method string) bool {
 	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
 }
 
-// Boundary validates the actual listening authority, never forwarded headers.
+// Boundary validates the listening authority or the configured HTTPS proxy
+// authority (spec 18 3.2), never forwarded headers.
 // Browser navigations and same-origin reads can omit Origin; writes cannot.
 func (a *OwnerAuth) Boundary(next http.Handler) http.Handler {
 	return a.boundary(next, true)
@@ -74,12 +103,18 @@ func (a *OwnerAuth) boundary(next http.Handler, requireOrigin bool) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		if r.Host != a.host {
+		var origin string
+		switch {
+		case r.Host == a.host:
+			origin = "http://" + a.host
+		case a.remoteHost != "" && r.Host == a.remoteHost:
+			origin = "https://" + a.remoteHost
+		default:
 			a.reject(w, r, Forbidden, "host_mismatch", "request host is not allowed")
 			return
 		}
 		origins := r.Header.Values("Origin")
-		if len(origins) > 1 || (len(origins) == 1 && origins[0] != "http://"+a.host) || (len(origins) == 0 && requireOrigin && changesState(r.Method)) {
+		if len(origins) > 1 || (len(origins) == 1 && origins[0] != origin) || (len(origins) == 0 && requireOrigin && changesState(r.Method)) {
 			a.reject(w, r, Forbidden, "origin_mismatch", "request origin is not allowed")
 			return
 		}
@@ -294,9 +329,8 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	}{ownerauth.CSRFToken(token)})
 }
 
-// via names the login route recorded in owner_sessions. Boundary currently
-// admits only the loopback authority; the tailnet name is separate work
-// (spec 18 3.2).
+// via names the login route recorded in owner_sessions. Boundary has already
+// validated Host; TLS terminates at tailscale serve, not at this HTTP listener.
 func (a *OwnerAuth) via(r *http.Request) string {
 	if r.Host == a.host {
 		return "loopback"
