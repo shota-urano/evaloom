@@ -1,6 +1,5 @@
 ---
-status: confirmed
-confirmed_rev: c62c133
+status: draft
 範囲: 別端末からの管理画面の利用（Tailscale のネットワーク内だけで公開）、ID とパスワードによる本人のログイン、再起動をまたいで端末ごとに保つセッション（有効期限3日）、一回限りのログイン URL の廃止
 ---
 
