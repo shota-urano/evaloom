@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 8c056b1
 written: 2026-11-10
 範囲: 文脈の4つの層（global・harness・task・reported）の置き場所と固定方法、記録の受け渡しの固定、Context Builder、Execution Context の形
 ---
