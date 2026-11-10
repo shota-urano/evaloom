@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 59873bd
 written: 2026-11-10
 範囲: Linear Issue への結果の返却（コメント）、「管理画面で判断待ち」の知らせ、Issue の状態（Workflow state）の変更、本人が管理画面で承認した振り分けのラベルの追加、受け入れ条件の記入依頼、送信の再試行、Evaloom 自身の更新による再起動（循環トリガー）の防止
 ---
