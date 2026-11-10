@@ -9,16 +9,10 @@ export type ProjectSettings = {
   name: string
   runnerId: string
   defaultRole: string
-  reviewRole: string | null
-  allowedOperations: Record<string, unknown>
-  timeouts: Partial<Record<TimeoutKey, number>>
   /** Linear Team ID と実行先ラベル（15-linear-intake 3.8・5章）。null は未設定。どちらかが null だと Linear から実行されない。 */
   linearTeamId?: string | null
   linearRoutingLabel?: string | null
 }
-
-export const TIMEOUT_KEYS = ['harnessSec'] as const
-export type TimeoutKey = (typeof TIMEOUT_KEYS)[number]
 
 /** 役割ごとに固定した Harness Profile（GET /api/projects・/api/projects/{id} の harnesses）。 */
 export type ProjectHarness = {
@@ -38,8 +32,8 @@ export type Project = ProjectSettings & {
   harnesses?: ProjectHarness[]
 }
 
-/** 本人が画面から送る項目。reviewRole は Phase 1 では固定なので送らない。 */
-export type ProjectInput = Omit<ProjectSettings, 'reviewRole'>
+/** 本人が画面から送る項目。 */
+export type ProjectInput = ProjectSettings
 
 export type Runner = { id: string; name: string; status: 'online' | 'offline'; lastHeartbeatAt: string | null; createdAt: string }
 

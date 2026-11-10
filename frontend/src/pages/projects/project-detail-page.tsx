@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 
 import { preconditionFieldErrors } from '@/api/errors'
-import { operationStatusLabel, registry, shortSha, TIMEOUT_KEYS, type Project } from '@/api/registry'
+import { operationStatusLabel, registry, shortSha, type Project } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { SelectField, TextField } from '@/components/form-field'
@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useApiErrors } from '@/hooks/use-api-errors'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
-import { PROJECT_LABELS as L, TIMEOUT_LABELS } from './labels'
+import { PROJECT_LABELS as L } from './labels'
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -24,7 +24,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 const unset = <span className="text-muted-foreground">未設定</span>
 const mono = (value: string | null) => (value === null || value === '' ? unset : <span className="font-mono">{value}</span>)
-const json = (value: Record<string, unknown>) => <pre className="bg-muted/50 rounded-md p-2 font-mono text-xs">{JSON.stringify(value, null, 2)}</pre>
 
 function SettingsCard({ project }: { project: Project }) {
   return (
@@ -36,14 +35,8 @@ function SettingsCard({ project }: { project: Project }) {
         <dl className="divide-y">
           <Row label={L.runnerId}>{mono(project.runnerId)}</Row>
           <Row label={L.defaultRole}>{mono(project.defaultRole)}</Row>
-          {TIMEOUT_KEYS.map((key) => (
-            <Row key={key} label={TIMEOUT_LABELS[key]}>
-              {project.timeouts[key] === undefined ? <span className="text-muted-foreground">全体の既定値</span> : project.timeouts[key]}
-            </Row>
-          ))}
           <Row label={L.linearTeamId}>{mono(project.linearTeamId ?? null)}</Row>
           <Row label={L.linearRoutingLabel}>{mono(project.linearRoutingLabel ?? null)}</Row>
-          <Row label={L.allowedOperations}>{json(project.allowedOperations)}</Row>
         </dl>
       </CardContent>
     </Card>

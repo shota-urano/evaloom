@@ -27,8 +27,8 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 				t.Fatal(err)
 			}
 		}
-		if _, err := db.Exec(`INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
-			VALUES (?, ?, ?, 'developer', '{}', '{}', '', '')`, runner, runner, runner); err != nil {
+		if _, err := db.Exec(`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
+			VALUES (?, ?, ?, 'developer', '', '')`, runner, runner, runner); err != nil {
 			t.Fatal(err)
 		}
 		taskID := fmt.Sprintf("task-%03d", i+1)

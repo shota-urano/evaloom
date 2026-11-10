@@ -4,23 +4,16 @@
  */
 export const PROJECT_NEW_PATH = '/projects/_new'
 
-import type { TimeoutKey } from '@/api/registry'
-
 // Project の各項目の表示名（13 3.2「Project 登録・編集」、02-data-model 3.2 projects）。
 export const PROJECT_LABELS = {
   id: 'Project ID',
   name: '名称',
   runnerId: 'Runner',
   defaultRole: '既定の役割',
-  allowedOperations: '許可操作',
   // 15-linear-intake 3.8（requirements 5.1 の Linear Team ID・Linear Routing Label）
   linearTeamId: 'Linear Team ID',
   linearRoutingLabel: '実行先ラベル',
 } as const
-
-export const TIMEOUT_LABELS: Record<TimeoutKey, string> = {
-  harnessSec: 'ハーネス実行のタイムアウト（秒）',
-}
 
 /** 422 の前提条件の失敗（Runner が見つからないなど）が返す details[].field → フォームの項目。 */
 export const PRECONDITION_FIELDS: Record<string, string> = {

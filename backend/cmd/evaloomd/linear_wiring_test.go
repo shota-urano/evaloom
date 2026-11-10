@@ -126,8 +126,7 @@ func setupLinearProject(t *testing.T, db *sql.DB) {
 		if err := rows.Scan(&column); err != nil {
 			t.Fatal(err)
 		}
-		value := map[string]string{"id": "p1", "runner_id": "r1",
-			"allowed_operations": "{}", "timeouts": "{}"}[column]
+		value := map[string]string{"id": "p1", "runner_id": "r1"}[column]
 		if value == "" {
 			value = "x"
 		}

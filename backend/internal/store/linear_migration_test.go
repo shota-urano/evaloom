@@ -103,10 +103,10 @@ func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
 	}
 	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a' WHERE id = 'project-c'`)
 	// INSERT, as well as UPDATE, must reject a duplicate complete pair.
-	_, err = db.Exec(`INSERT INTO projects (id, name, runner_id, default_role, review_role,
-		allowed_operations, timeouts, created_at, updated_at, linear_team_id, linear_routing_label)
-		SELECT 'duplicate', name, runner_id, default_role, review_role,
-		allowed_operations, timeouts, created_at, updated_at,
+	_, err = db.Exec(`INSERT INTO projects (id, name, runner_id, default_role,
+		created_at, updated_at, linear_team_id, linear_routing_label)
+		SELECT 'duplicate', name, runner_id, default_role,
+		created_at, updated_at,
 		linear_team_id, linear_routing_label FROM projects WHERE id = 'project-a'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 }

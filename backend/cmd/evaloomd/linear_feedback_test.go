@@ -59,8 +59,8 @@ func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
-			VALUES ('p1', 'P', 'r1', 'developer', '[]', '{}', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'developer', '` + now + `', '` + now + `')`,
 		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
 			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'completed', 'k1', '` + now + `', '` + now + `', 'linear')`,
@@ -154,8 +154,8 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
-			VALUES ('p1', 'P', 'r1', 'developer', '[]', '{}', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'developer', '` + now + `', '` + now + `')`,
 		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
 			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'verifying', 'k1', '` + now + `', '` + now + `', 'linear')`,

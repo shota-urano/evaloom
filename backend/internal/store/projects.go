@@ -3,10 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"modernc.org/sqlite"
@@ -17,32 +14,14 @@ type projectReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-const projectColumns = `id, name, runner_id, default_role, review_role,
-	allowed_operations, timeouts, linear_team_id, linear_routing_label,
-	created_at, updated_at`
+const projectColumns = `id, name, runner_id, default_role,
+	linear_team_id, linear_routing_label, created_at, updated_at`
 
 func scanProject(row interface{ Scan(...any) error }) (model.Project, error) {
 	var p model.Project
-	var operations, timeouts string
-	err := row.Scan(&p.ID, &p.Name, &p.RunnerID, &p.DefaultRole, &p.ReviewRole,
-		&operations, &timeouts, &p.LinearTeamID, &p.LinearRoutingLabel, &p.CreatedAt, &p.UpdatedAt)
-	if err != nil {
-		return p, err
-	}
-	for _, column := range []struct {
-		data string
-		dst  any
-	}{{operations, &p.AllowedOperations}, {timeouts, &p.Timeouts}} {
-		if !json.Valid([]byte(column.data)) {
-			return p, fmt.Errorf("store: invalid stored Project JSON")
-		}
-		decoder := json.NewDecoder(strings.NewReader(column.data))
-		decoder.UseNumber()
-		if err := decoder.Decode(column.dst); err != nil {
-			return p, err
-		}
-	}
-	return p, nil
+	err := row.Scan(&p.ID, &p.Name, &p.RunnerID, &p.DefaultRole,
+		&p.LinearTeamID, &p.LinearRoutingLabel, &p.CreatedAt, &p.UpdatedAt)
+	return p, err
 }
 
 func GetProject(ctx context.Context, reader projectReader, id string) (model.Project, error) {
@@ -76,23 +55,13 @@ var ErrProjectConflict = errors.New("project ID already registered")
 
 // SaveProject participates in the caller's transaction with its audit record.
 func SaveProject(ctx context.Context, tx *sql.Tx, p model.Project, create bool) error {
-	args := []any{p.Name, p.RunnerID, p.DefaultRole, p.ReviewRole}
-	for _, value := range []any{p.AllowedOperations, p.Timeouts} {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		args = append(args, string(encoded))
-	}
-	args = append(args, p.LinearTeamID, p.LinearRoutingLabel, p.CreatedAt, p.UpdatedAt, p.ID)
-	statement := `UPDATE projects SET name=?, runner_id=?, default_role=?, review_role=?,
-		allowed_operations=?, timeouts=?,
+	args := []any{p.Name, p.RunnerID, p.DefaultRole, p.LinearTeamID, p.LinearRoutingLabel, p.CreatedAt, p.UpdatedAt, p.ID}
+	statement := `UPDATE projects SET name=?, runner_id=?, default_role=?,
 		linear_team_id=?, linear_routing_label=?, created_at=?, updated_at=? WHERE id=?`
 	if create {
-		statement = `INSERT INTO projects (name, runner_id, default_role, review_role,
-			allowed_operations, timeouts, linear_team_id, linear_routing_label,
-			created_at, updated_at, id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		statement = `INSERT INTO projects (name, runner_id, default_role,
+			linear_team_id, linear_routing_label, created_at, updated_at, id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	}
 	_, err := tx.ExecContext(ctx, statement, args...)
 	var constraint *sqlite.Error

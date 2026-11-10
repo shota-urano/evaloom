@@ -2,7 +2,8 @@
 -- the development work (worktree, Gate 2/3, Git Publisher, test command,
 -- setup, copy allowlist, Project Context) moved to the special harness
 -- software-engineer. docs/specs/02-data-model.md keeps no development
--- columns or tables. Remove them here. Nothing is in operational use, and
+-- columns or tables, and projects has no allowed operations or timeouts
+-- (02 projects). Remove them here, with the unused review_role. Nothing is in operational use, and
 -- the previous schema can be read from the git history.
 -- The CHECK values of the remaining columns are kept unchanged.
 -- The migration runner disables foreign keys for the table rebuilds and runs
@@ -65,9 +66,6 @@ CREATE TABLE projects_new (
     name TEXT NOT NULL,
     runner_id TEXT NOT NULL REFERENCES runners(id),
     default_role TEXT NOT NULL,
-    review_role TEXT,
-    allowed_operations TEXT NOT NULL,
-    timeouts TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     linear_team_id TEXT,
@@ -75,11 +73,11 @@ CREATE TABLE projects_new (
 );
 
 INSERT INTO projects_new (
-    id, name, runner_id, default_role, review_role, allowed_operations,
-    timeouts, created_at, updated_at, linear_team_id, linear_routing_label
+    id, name, runner_id, default_role, created_at, updated_at,
+    linear_team_id, linear_routing_label
 ) SELECT
-    id, name, runner_id, default_role, review_role, allowed_operations,
-    timeouts, created_at, updated_at, linear_team_id, linear_routing_label
+    id, name, runner_id, default_role, created_at, updated_at,
+    linear_team_id, linear_routing_label
 FROM projects;
 
 DROP TABLE projects;

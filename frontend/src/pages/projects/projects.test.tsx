@@ -15,9 +15,6 @@ const PROJECT: Project = {
   name: 'Alpha',
   runnerId: 'local',
   defaultRole: 'developer',
-  reviewRole: null,
-  allowedOperations: {},
-  timeouts: { harnessSec: 600 },
   createdAt: '2026-10-27T00:00:00Z',
   updatedAt: '2026-10-27T00:00:00Z',
   harnesses: [],
@@ -83,7 +80,6 @@ describe('プロジェクトの登録', () => {
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.type(screen.getByLabelText('ハーネス実行のタイムアウト（秒）'), '600')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
     expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
     const post = fake.calls.find((c) => c.method === 'POST')
@@ -92,8 +88,6 @@ describe('プロジェクトの登録', () => {
       name: 'Alpha',
       runnerId: 'local',
       defaultRole: 'developer',
-      allowedOperations: {},
-      timeouts: { harnessSec: 600 },
       linearTeamId: null,
       linearRoutingLabel: null,
     })
@@ -147,20 +141,20 @@ describe('プロジェクトの登録', () => {
     renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       return status === 400
-        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'timeouts.harnessSec', reason: 'out_of_range' }])
+        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'defaultRole', reason: 'required' }])
         : apiError(422, 'precondition_failed', 'runner not found', [{ field: 'runnerId', reason: 'not_found' }])
     })
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('ハーネス実行のタイムアウト（秒）')).findByText('範囲外の値です')).toBeVisible()
+    expect(await within(fieldOf('既定の役割')).findByText('入力してください')).toBeVisible()
 
     status = 422
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
     expect(await within(fieldOf('Runner')).findByText('見つかりません')).toBeVisible()
     expect(screen.getByRole('alert')).toHaveTextContent('Runner: 見つかりません')
-    expect(within(fieldOf('ハーネス実行のタイムアウト（秒）')).queryByText('範囲外の値です')).toBeNull()
+    expect(within(fieldOf('既定の役割')).queryByText('入力してください')).toBeNull()
   })
 })
 
@@ -197,7 +191,7 @@ describe('Project ID「new」（slug として正当な値）', () => {
 })
 
 describe('プロジェクトの編集', () => {
-  it('PATCH には id・reviewRole を送らず、読み込んだ値を入力欄に出す', async () => {
+  it('PATCH には id を送らず、読み込んだ値を入力欄に出す', async () => {
     let current = PROJECT
     const fake = renderAt('/projects/alpha/edit', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
@@ -211,7 +205,7 @@ describe('プロジェクトの編集', () => {
     const name = await screen.findByLabelText('名称')
     expect(name).toHaveValue('Alpha')
     expect(screen.getByLabelText('Project ID')).toBeDisabled()
-    expect(screen.getByLabelText('ハーネス実行のタイムアウト（秒）')).toHaveValue('600')
+    expect(screen.getByLabelText('既定の役割')).toHaveValue('developer')
     await userEvent.clear(name)
     await userEvent.type(name, 'Alpha 2')
     await userEvent.click(screen.getByRole('button', { name: '保存' }))
@@ -220,8 +214,9 @@ describe('プロジェクトの編集', () => {
     expect(patch?.url).toBe('/api/projects/alpha')
     const body = JSON.parse(patch?.body ?? '')
     expect(body).not.toHaveProperty('id')
-    expect(body).not.toHaveProperty('reviewRole')
-    expect(body).toMatchObject({ name: 'Alpha 2', runnerId: 'local', defaultRole: 'developer', timeouts: { harnessSec: 600 } })
+    expect(body).not.toHaveProperty('allowedOperations')
+    expect(body).not.toHaveProperty('timeouts')
+    expect(body).toMatchObject({ name: 'Alpha 2', runnerId: 'local', defaultRole: 'developer' })
   })
 
   it('編集では登録済みの Linear 項目を入力欄に出して送り直し、空欄にすると null で解除する', async () => {

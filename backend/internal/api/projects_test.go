@@ -127,12 +127,10 @@ func TestProjectsRegisterAndRetrieveTwoProjects(t *testing.T) {
 		if p.Name != input["name"] || p.RunnerID != "mac-mini" || p.DefaultRole != "developer" {
 			t.Fatalf("registered=%+v input=%v", p, input)
 		}
-		if p.ReviewRole != nil || p.AllowedOperations == nil || p.Timeouts == nil {
-			t.Fatalf("defaults=%+v", p)
-		}
-		// The development settings moved to software-engineer (spec 19 3.11).
+		// The development settings moved to software-engineer (spec 19 3.11);
+		// 02 projects has no allowed operations or timeouts.
 		for _, removed := range []string{"localRepoPath", "gitRemoteUrl", "baseBranch", "contextLocation", "testCommand",
-			"setupCommand", "setupAllowedHosts", "copyAllowlist", "approvalPolicy"} {
+			"setupCommand", "setupAllowedHosts", "copyAllowlist", "approvalPolicy", "allowedOperations", "timeouts", "reviewRole"} {
 			if strings.Contains(string(body), `"`+removed+`"`) {
 				t.Fatalf("response has removed field %s: %s", removed, body)
 			}
@@ -160,17 +158,13 @@ func TestProjectsRegisterAndRetrieveTwoProjects(t *testing.T) {
 func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
-	input["allowedOperations"] = map[string]any{"read": true}
-	input["timeouts"] = map[string]int{"harnessSec": 600}
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
-	patch := map[string]any{"name": "Renamed", "allowedOperations": map[string]any{"write": true},
-		"timeouts": map[string]int{"harnessSec": 180}}
+	patch := map[string]any{"name": "Renamed", "defaultRole": "reviewer"}
 	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", patch)
 	after := requireProject(t, status, body, 200)
 	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.Name != "Renamed" || after.RunnerID != before.RunnerID ||
-		after.UpdatedAt == before.UpdatedAt || after.DefaultRole != before.DefaultRole ||
-		!reflect.DeepEqual(after.Timeouts, map[string]int{"harnessSec": 180}) || !reflect.DeepEqual(after.AllowedOperations, map[string]any{"write": true}) {
+		after.UpdatedAt == before.UpdatedAt || after.DefaultRole != "reviewer" {
 		t.Fatalf("before=%+v after=%+v", before, after)
 	}
 	var actor, targetType, targetID, detail string
@@ -189,22 +183,6 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	}
 	if projectCount(t, f, "audit_logs") != 2 {
 		t.Fatal("update must append an audit row")
-	}
-}
-
-func TestProjectsPolicyNumbersSurviveReadsAndUnrelatedUpdates(t *testing.T) {
-	f := projectFixture(t)
-	input := projectInput(t, "project-a")
-	const large = "9007199254740993"
-	input["allowedOperations"] = map[string]any{"value": json.Number(large)}
-	status, body := projectRequest(t, f, "POST", "/api/projects", input)
-	requireProject(t, status, body, 201)
-	for _, method := range []string{"GET", "PATCH", "GET"} {
-		status, body = projectRequest(t, f, method, "/api/projects/project-a", map[string]any{"name": "Renamed"})
-		requireProject(t, status, body, 200)
-		if !strings.Contains(string(body), `"value":`+large) {
-			t.Fatalf("JSON number changed on %s: %s", method, body)
-		}
 	}
 }
 
@@ -254,12 +232,11 @@ func TestProjectsInvalidInputReturns400Details(t *testing.T) {
 		{"name", "", "name", "required"}, {"name", nil, "name", "required"},
 		{"runnerId", "", "runnerId", "required"}, {"defaultRole", "", "defaultRole", "required"},
 		{"unknown", true, "body", "invalid_json"}, {"createdAt", "2026-10-26T00:00:00Z", "body", "invalid_json"},
-		{"allowedOperations", []string{}, "body", "invalid_json"},
-		{"timeouts", map[string]int{"harnessSec": -1}, "timeouts.harnessSec", "out_of_range"},
-		{"timeouts", map[string]int{"unknown": 1}, "timeouts", "invalid"},
-		// The development settings moved to software-engineer (spec 19 3.11).
-		{"timeouts", map[string]int{"testSec": 1}, "timeouts", "invalid"},
-		{"timeouts", map[string]int{"setupSec": 1}, "timeouts", "invalid"},
+		// The development settings moved to software-engineer (spec 19 3.11);
+		// 02 projects has no allowed operations, timeouts or review role.
+		{"allowedOperations", map[string]any{}, "body", "invalid_json"},
+		{"timeouts", map[string]int{"harnessSec": 1}, "body", "invalid_json"},
+		{"reviewRole", nil, "body", "invalid_json"},
 		{"localRepoPath", "/repos/project", "body", "invalid_json"},
 		{"testCommand", "go test ./...", "body", "invalid_json"},
 		{"copyAllowlist", []string{"fixtures/data.json"}, "body", "invalid_json"},

@@ -11,9 +11,10 @@
 対応規約が無い。hb9.4で任意の`contextFiles`配列をProfile定義に追加した。
 呼び出し側は固定した登録済み定義の`contextFiles`を`paths`に渡す。
 `promptVersion`や`skillVersions`から配置を推測しない。
-詳細は`backend/internal/api/context.md`に記載する。
+固定した Context を Control Plane に送る旧 API（`POST /api/executions/{id}/context`）は、
+Project Context の固定とともに software-engineer への切り替えで消した（`docs/specs/19-routing-and-stages.md` 3.11）。
 
-Project Contextの既存処理を`internal/gitcontext`へ移し、両方の読み込みで共用する。
+Git の読み込みは`internal/gitcontext`で行う。
 固定commitのtreeから対象のblob IDを取得するため、`git show <SHA>:<path>`と同じ内容を、
 改行やバイナリの変換なしで読める。パス順に、内容・小文字のSHA-256・読み取り元SHAを返す。
 Gitのreplace参照と継承した`GIT_*`による別リポジトリへの切り替えも無効にする。

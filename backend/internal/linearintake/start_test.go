@@ -23,8 +23,6 @@ func startDB(t *testing.T) *sql.DB {
 	addProject(t, db, "p1", "team-a", "repo:one")
 	addProject(t, db, "p2", "team-b", "repo:two")
 	addProject(t, db, "p3", "team-a", "repo:three")
-	// addProject fills every column with "x"; the JSON columns need JSON.
-	exec(t, db, `UPDATE projects SET allowed_operations = '{}', timeouts = '{}'`)
 	exec(t, db, `INSERT INTO harnesses (id, name, specialty, supported_tasks, adapter, repo_path, repo_url,
 		supported_models, available_tools, tool_permissions, contract_version, created_at, updated_at)
 		VALUES ('h1', 'Developer', 'developer', '["development"]', 'codex', '/repos/h', 'https://example.invalid/h.git',

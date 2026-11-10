@@ -119,9 +119,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
-			AllowedOperations: map[string]any{}, Timeouts: map[string]int{},
-		}}
+		before := model.Project{ID: id}
 		if !create {
 			var err error
 			before, err = store.GetProject(r.Context(), db, id)
@@ -130,7 +128,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 				return
 			}
 		}
-		settings, err := decodeSettings(before.ProjectSettings, patch, create, "reviewRole", "linearTeamId", "linearRoutingLabel")
+		settings, err := decodeSettings(before.ProjectSettings, patch, create, "linearTeamId", "linearRoutingLabel")
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -233,9 +231,6 @@ func validateProjectSettings(p model.ProjectSettings) error {
 			return invalid(field.name, "required")
 		}
 	}
-	if p.ReviewRole != nil {
-		return invalid("reviewRole", "invalid")
-	}
 	// Clearing uses null; a blank value would never match a Linear Team or
 	// label and is rejected rather than stored.
 	for _, field := range []struct {
@@ -244,14 +239,6 @@ func validateProjectSettings(p model.ProjectSettings) error {
 	}{{"linearTeamId", p.LinearTeamID}, {"linearRoutingLabel", p.LinearRoutingLabel}} {
 		if field.value != nil && strings.TrimSpace(*field.value) == "" {
 			return invalid(field.name, "required")
-		}
-	}
-	if n, ok := p.Timeouts["harnessSec"]; ok && n <= 0 {
-		return invalid("timeouts.harnessSec", "out_of_range")
-	}
-	for key := range p.Timeouts {
-		if key != "harnessSec" {
-			return invalid("timeouts", "invalid")
 		}
 	}
 	return nil

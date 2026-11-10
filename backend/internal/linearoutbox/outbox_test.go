@@ -29,8 +29,8 @@ func outboxDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
-		VALUES ('project', 'Project', 'runner', 'developer', '[]', '{}', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
+		VALUES ('project', 'Project', 'runner', 'developer', ?, ?)`, testTime, testTime)
 	for _, source := range []string{"linear", "manual"} {
 		id := source + "-1"
 		mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,

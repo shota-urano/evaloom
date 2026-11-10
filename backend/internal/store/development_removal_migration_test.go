@@ -28,7 +28,7 @@ func TestDevelopmentRemovalMigrationKeepsRemainingData(t *testing.T) {
 		worktree_id = 'worktree-1', branch_name = 'evaloom/task-001-change', base_sha = ?, pr_number = 12,
 		harness_session_id = 'session-1', error_class = 'config_error', error_message = 'stopped'`,
 		strings.Repeat("a", 40), strings.Repeat("a", 40))
-	keptProject := `SELECT id, name, runner_id, default_role, review_role, allowed_operations, timeouts,
+	keptProject := `SELECT id, name, runner_id, default_role,
 		created_at, updated_at, linear_team_id, linear_routing_label FROM projects ORDER BY id`
 	keptExecution := `SELECT id, task_id, seq, mode, status, runner_id, role, harness_id, profile_id,
 		profile_version, profile_commit_sha, harness_session_id, error_class, error_message, created_at
@@ -53,7 +53,8 @@ func TestDevelopmentRemovalMigrationKeepsRemainingData(t *testing.T) {
 	}
 	for table, columns := range map[string][]string{
 		"projects": {"local_repo_path", "git_remote_url", "base_branch", "context_location", "test_command",
-			"test_report_format", "test_report_path", "setup_command", "setup_allowed_hosts", "copy_allowlist", "approval_policy"},
+			"test_report_format", "test_report_path", "setup_command", "setup_allowed_hosts", "copy_allowlist", "approval_policy",
+			"allowed_operations", "timeouts", "review_role"},
 		"executions": {"worktree_id", "branch_name", "base_sha", "resume_point", "harness_head_sha",
 			"verified_sha", "pushed_sha", "pr_number", "pr_url"},
 	} {

@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from 'react'
 
 import { conflictFieldErrors, preconditionFieldErrors, type FieldErrors } from '@/api/errors'
-import { registry, TIMEOUT_KEYS, type Project, type ProjectInput, type Runner, type TimeoutKey } from '@/api/registry'
+import { registry, type Project, type ProjectInput, type Runner } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
-import { SelectField, TextAreaField, TextField } from '@/components/form-field'
+import { SelectField, TextField } from '@/components/form-field'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
@@ -12,17 +12,16 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { navigate } from '@/lib/router'
 import { Loading, PageTitle } from '@/components/page'
-import { ERROR_FIELD_LABELS, LINEAR_CONFLICT_FIELDS, PRECONDITION_FIELDS, PROJECT_LABELS as L, TIMEOUT_LABELS } from './labels'
+import { ERROR_FIELD_LABELS, LINEAR_CONFLICT_FIELDS, PRECONDITION_FIELDS, PROJECT_LABELS as L } from './labels'
 
 type FormValues = {
   id: string
   name: string
   runnerId: string
   defaultRole: string
-  allowedOperations: string
   linearTeamId: string
   linearRoutingLabel: string
-} & Record<`timeouts.${TimeoutKey}`, string>
+}
 
 // サーバーの details[].field と同じ名前。400 の details をこの名前の項目へ出す（13 6節）。
 const FIELDS = [
@@ -30,11 +29,8 @@ const FIELDS = [
   'name',
   'runnerId',
   'defaultRole',
-  'allowedOperations',
   'linearTeamId',
   'linearRoutingLabel',
-  'timeouts',
-  ...TIMEOUT_KEYS.map((key) => `timeouts.${key}` as const),
 ] as const
 
 const REQUIRED = ['name', 'runnerId', 'defaultRole'] as const
@@ -44,37 +40,22 @@ const EMPTY: FormValues = {
   name: '',
   runnerId: '',
   defaultRole: 'developer',
-  allowedOperations: '{}',
   linearTeamId: '',
   linearRoutingLabel: '',
-  'timeouts.harnessSec': '',
 }
 
 function toValues(project: Project): FormValues {
-  const timeout = (key: TimeoutKey) => (project.timeouts[key] === undefined ? '' : String(project.timeouts[key]))
   return {
     id: project.id,
     name: project.name,
     runnerId: project.runnerId,
     defaultRole: project.defaultRole,
-    allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
     linearTeamId: project.linearTeamId ?? '',
     linearRoutingLabel: project.linearRoutingLabel ?? '',
-    'timeouts.harnessSec': timeout('harnessSec'),
   }
 }
 
 const optional = (value: string) => (value.trim() === '' ? null : value.trim())
-
-function parseObject(value: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(value.trim() === '' ? '{}' : value)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  } catch {
-    // 下で項目のエラーにする。
-  }
-  return undefined
-}
 
 /** 画面での検証（正本はサーバー、13 3.1）。通れば送信内容を返す。 */
 function validate(values: FormValues, create: boolean): { input?: ProjectInput; errors: FieldErrors } {
@@ -83,27 +64,13 @@ function validate(values: FormValues, create: boolean): { input?: ProjectInput; 
   for (const field of fields) {
     if (values[field].trim() === '') errors[field] = ['入力してください']
   }
-  const allowedOperations = parseObject(values.allowedOperations)
-  if (!allowedOperations) errors.allowedOperations = ['JSON のオブジェクト（{ … }）で入力してください']
-  const timeouts: ProjectInput['timeouts'] = {}
-  for (const key of TIMEOUT_KEYS) {
-    const raw = values[`timeouts.${key}`].trim()
-    if (raw === '') continue
-    if (!/^\d+$/.test(raw) || Number(raw) <= 0) {
-      errors[`timeouts.${key}`] = ['1 以上の整数で入力してください']
-    } else {
-      timeouts[key] = Number(raw)
-    }
-  }
-  if (Object.keys(errors).length > 0 || !allowedOperations) return { errors }
+  if (Object.keys(errors).length > 0) return { errors }
   return {
     errors,
     input: {
       name: values.name.trim(),
       runnerId: values.runnerId,
       defaultRole: values.defaultRole.trim(),
-      allowedOperations,
-      timeouts,
       // 空欄は null で送って解除する（省略しても null 扱いなので、編集時も毎回送る。backend/internal/api/projects.md）。
       linearTeamId: optional(values.linearTeamId),
       linearRoutingLabel: optional(values.linearRoutingLabel),
@@ -230,24 +197,6 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>タイムアウト</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          {TIMEOUT_KEYS.map((key) => (
-            <TextField
-              key={key}
-              label={TIMEOUT_LABELS[key]}
-              inputMode="numeric"
-              autoComplete="off"
-              hint="空欄なら全体の既定値を使います。"
-              {...bind(`timeouts.${key}`)}
-            />
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
           <CardTitle>Linear 連携</CardTitle>
           <CardDescription>
             両方を設定すると、この Team の Issue のうち、この実行先ラベルが付いたものをこのプロジェクトで実行します。どちらかが空欄なら
@@ -263,18 +212,6 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
             spellCheck={false}
             {...bind('linearRoutingLabel')}
           />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>権限設定</CardTitle>
-          <CardDescription>
-            Phase 1 は保存と表示のみです。承認が必要な操作は、この設定にかかわらず Runner が実行しません。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextAreaField label={L.allowedOperations} rows={4} spellCheck={false} className="font-mono" {...bind('allowedOperations')} />
         </CardContent>
       </Card>
 

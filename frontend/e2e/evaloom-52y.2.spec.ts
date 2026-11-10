@@ -117,16 +117,16 @@ test('2つのプロジェクトを画面から登録でき、一覧に表示さ�
 
   await page.getByRole('link', { name: 'プロジェクトを登録' }).click()
   await fillProject(page, { id: 'alpha-app', name: 'Alpha アプリ' })
-  // 開発の部品（リポジトリ・テスト・setup・コピー許可リスト・承認ポリシー）の入力欄は無い（19 3.11）。
-  for (const label of ['ローカルリポジトリのパス', 'Git リポジトリ URL', 'Base Branch', 'テストコマンド', 'setup の許可宛先', 'コピー許可リスト', '承認ポリシー']) {
+  // 開発の部品（リポジトリ・テスト・setup・コピー許可リスト・承認ポリシー）と、02 の projects に無い
+  // 許可操作・タイムアウトの入力欄は無い（19 3.11、02 projects）。
+  for (const label of ['ローカルリポジトリのパス', 'Git リポジトリ URL', 'Base Branch', 'テストコマンド', 'setup の許可宛先', 'コピー許可リスト', '承認ポリシー', '許可操作', 'ハーネス実行のタイムアウト（秒）']) {
     await expect(page.getByLabel(label, { exact: true })).toHaveCount(0)
   }
-  await page.getByLabel('ハーネス実行のタイムアウト（秒）').fill('900')
   await screenshot(page, 'project-form')
   await page.getByRole('button', { name: '登録' }).click()
   await expect(page.getByRole('heading', { name: 'Alpha アプリ' })).toBeVisible()
   const settings = page.locator('[data-slot=card]').filter({ has: page.getByText('設定', { exact: true }) })
-  await expect(settings.locator('div').filter({ hasText: /^ハーネス実行のタイムアウト（秒）900$/ })).toBeVisible()
+  await expect(settings.locator('div').filter({ hasText: /^既定の役割developer$/ })).toBeVisible()
 
   await registerProject(page, { id: 'beta-api', name: 'Beta API' })
 
@@ -215,9 +215,9 @@ test('登録済みのプロジェクトを編集でき、ID は変えられな�
   await expect(page.getByLabel('Project ID')).toHaveValue('delta-cli')
   await expect(page.getByLabel('Runner')).toHaveValue('local')
   await page.getByLabel('名称').fill('Delta CLI（改名）')
-  await page.getByLabel('ハーネス実行のタイムアウト（秒）').fill('600')
+  await page.getByLabel('既定の役割').fill('reviewer')
   await page.getByRole('button', { name: '保存' }).click()
   await expect(page.getByRole('heading', { name: 'Delta CLI（改名）' })).toBeVisible()
   const settings = page.locator('[data-slot=card]').filter({ has: page.getByText('設定', { exact: true }) })
-  await expect(settings.locator('div').filter({ hasText: /^ハーネス実行のタイムアウト（秒）600$/ })).toBeVisible()
+  await expect(settings.locator('div').filter({ hasText: /^既定の役割reviewer$/ })).toBeVisible()
 })

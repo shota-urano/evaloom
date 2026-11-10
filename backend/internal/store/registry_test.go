@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"modernc.org/sqlite"
-	"modernc.org/sqlite/lib"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const registryTime = "2026-10-25T00:00:00Z"
@@ -37,13 +37,6 @@ func TestRegistryPersistsAcrossOpen(t *testing.T) {
 	if runner != "mac-mini" || project != "project-a" || harness != "codex-developer" ||
 		version != "1.2.0" || sha != strings.Repeat("a", 40) || status != "provisional" || definition != `{"profileVersion":"1.2.0"}` {
 		t.Fatalf("unexpected persisted assignment: %q %q %q %q %q %q %q", runner, project, harness, version, sha, status, definition)
-	}
-	var review sql.NullString
-	if err := db.QueryRow(`SELECT review_role FROM projects WHERE id = 'project-a'`).Scan(&review); err != nil {
-		t.Fatal(err)
-	}
-	if review.Valid {
-		t.Fatal("optional project settings must preserve NULL")
 	}
 }
 
@@ -81,8 +74,8 @@ func TestRegistryRejectsInvalidForeignKeys(t *testing.T) {
 	}{
 		{
 			"project runner",
-			`INSERT INTO projects (id, name, runner_id, default_role, review_role, allowed_operations, timeouts,
-			created_at, updated_at) SELECT 'bad', name, 'missing', default_role, review_role, allowed_operations, timeouts,
+			`INSERT INTO projects (id, name, runner_id, default_role,
+			created_at, updated_at) SELECT 'bad', name, 'missing', default_role,
 			created_at, updated_at FROM projects WHERE id = 'project-a'`,
 			`UPDATE projects SET runner_id = 'missing' WHERE id = 'project-a'`,
 			`DELETE FROM runners WHERE id = 'mac-mini'`,

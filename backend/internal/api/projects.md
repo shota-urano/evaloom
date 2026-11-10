@@ -5,18 +5,15 @@
 
 開発の列（ローカルリポジトリ、リモートURL、Base Branch、Context の場所、テストコマンド、
 setup とその許可宛先、コピー許可リスト、承認の方針）は software-engineer へ移したため持たない
-（`docs/specs/19-routing-and-stages.md` 3.11、マイグレーション0025）。送ると未知の項目として400になる。
+（`docs/specs/19-routing-and-stages.md` 3.11、マイグレーション0025）。仕様02の projects が持たないとする
+許可操作（`allowedOperations`）とタイムアウト（`timeouts`）、使っていなかった`reviewRole`も同じマイグレーションで消した。
+送ると未知の項目として400になる。
 
 - POSTは201、GET・PATCHは200でProjectの全列をcamelCaseで返す。
   一覧は既存の`items`・`nextCursor`形式とID昇順のページネーションを使う。
 - 登録には`id`、`name`、`runnerId`、`defaultRole`が必要。IDは既存のslug検証を使う。
-  `reviewRole`はPhase 5まで使わないためnullだけを受け付ける。
-- nullable列の省略値はnull、`allowedOperations`と`timeouts`は`{}`。
-  `allowedOperations`はオブジェクトとして保存・表示し、内部キーの実行効果は追加しない。
-- `timeouts`は`harnessSec`だけを受け付ける。指定値は正の整数とする。
-  今回は全体設定やタイムアウト実行処理を追加しない。
-- PATCHは省略した項目を保持し、指定した項目を丸ごと置き換える。
-  オブジェクトの内部キーはマージしない。nullable列はnullで解除できる。
+- nullable列（Linear の項目）の省略値はnull。
+- PATCHは省略した項目を保持し、指定した項目を置き換える。nullable列はnullで解除できる。
   ID・作成日時・更新日時は要求から変更できない。空のPATCHも再検証・監査記録を行う。
 - 未登録Runnerは422で`runnerId / not_found`を返す。Runnerの存在は保存のトランザクション内で確かめる。
   必須値や型の不備は既存の400とdetails形式で返す。
