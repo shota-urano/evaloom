@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 9a53040
 written: 2026-11-10
 範囲: Trusted Runner の pull ループ、heartbeat、段の枠（claim → prepare → work → check → 承認 → publish）の実行、Profile の中身の読み出し、作業領域のルート、鍵の受け渡し、通話口の中継、ログ収集と機密情報の除外、タイムアウトと中止、振り分けの提案の実行
 ---
