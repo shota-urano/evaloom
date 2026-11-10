@@ -289,7 +289,7 @@ Tool Permissions は Profile の `stages.work.toolPermissions` だけから取�
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q142 | `stages.work.instructions` の指示ファイルを、ミクロハーネスにどう読ませるか | Claude Code は `CLAUDE_CONFIG_DIR` の直下の `CLAUDE.md`、Codex は `CODEX_HOME` の直下の `AGENTS.md` に、宣言の順に連結して置く（どちらの CLI もユーザー単位の指示として読む場所）。Execution Context の指示文は起動の入力で渡す。実際に読まれることを [`14-security-tests.md`](./14-security-tests.md) 3.1 のカナリア B で確かめ、読まれなければ起動の入力に連結する |
-| Q143 | 質問の後に同じセッションを再開するため、セッションのファイルをどこに保持するか | 作業の段の結果が `question` のとき、認証ファイルを除いた作業用の設定コピーを Runner のデータディレクトリの中のタスクごとの保管場所（0700）に移す。再開のときに新しい作業用の設定コピーとして戻し、Profile から置いたファイルのハッシュを確かめ直してから `Resume` を呼ぶ。判断待ちが回答・取り下げ・中止で閉じたら消す。保持期間は作業領域と同じ（02 の Q121） |
-| Q144 | `out/question.json` と `out/summary.md` の検査 | `out/question.json` は 64 KiB 以下の通常ファイルで、契約 8章の形（`question` は 1〜4000 文字、`options` は任意で 10 個以内の文字列、ほかの項目は無い）でなければ `work_failed` にし、ファイルは成果物として残す。`out/summary.md` は 64 KiB 以下の通常ファイルだけを読み、超えた分は切り捨てて切り捨てたことを表示する。シンボリックリンクはどちらも読まない |
-| Q145 | Tool Permissions の検査をいつ行うか | Profile の登録のときに、`stages.work.microHarness` の Adapter の変換で確かめ、変換できなければ 422（`precondition_failed`）で登録を拒否する。claim の後にも同じ検査を行う（Adapter の版が変わった場合に備える） |
+| Q142 | `stages.work.instructions` の指示ファイルを、ミクロハーネスにどう読ませるか | 決定（2026-11-10 本人、案を採用）: Claude Code は `CLAUDE_CONFIG_DIR` の直下の `CLAUDE.md`、Codex は `CODEX_HOME` の直下の `AGENTS.md` に、宣言の順に連結して置く（どちらの CLI もユーザー単位の指示として読む場所）。Execution Context の指示文は起動の入力で渡す。実際に読まれることを [`14-security-tests.md`](./14-security-tests.md) 3.1 のカナリア B で確かめ、読まれなければ起動の入力に連結する |
+| Q143 | 質問の後に同じセッションを再開するため、セッションのファイルをどこに保持するか | 決定（2026-11-10 本人、案を採用）: 作業の段の結果が `question` のとき、認証ファイルを除いた作業用の設定コピーを Runner のデータディレクトリの中のタスクごとの保管場所（0700）に移す。再開のときに新しい作業用の設定コピーとして戻し、Profile から置いたファイルのハッシュを確かめ直してから `Resume` を呼ぶ。判断待ちが回答・取り下げ・中止で閉じたら消す。保持期間は作業領域と同じ（02 の Q121） |
+| Q144 | `out/question.json` と `out/summary.md` の検査 | 決定（2026-11-10 本人、案を採用）: `out/question.json` は 64 KiB 以下の通常ファイルで、契約 8章の形（`question` は 1〜4000 文字、`options` は任意で 10 個以内の文字列、ほかの項目は無い）でなければ `work_failed` にし、ファイルは成果物として残す。`out/summary.md` は 64 KiB 以下の通常ファイルだけを読み、超えた分は切り捨てて切り捨てたことを表示する。シンボリックリンクはどちらも読まない |
+| Q145 | Tool Permissions の検査をいつ行うか | 決定（2026-11-10 本人、案を採用）: Profile の登録のときに、`stages.work.microHarness` の Adapter の変換で確かめ、変換できなければ 422（`precondition_failed`）で登録を拒否する。claim の後にも同じ検査を行う（Adapter の版が変わった場合に備える） |

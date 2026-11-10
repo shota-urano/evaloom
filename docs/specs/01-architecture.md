@@ -191,7 +191,7 @@ Runner 用の認証は次のとおりとする（Q3 の案）。
 | GET | /api/harnesses | スペシャルハーネス一覧 | 03 |
 | POST | /api/harnesses | スペシャルハーネス登録（`id`、`name`、`repoUrl`、`repoPath`） | 03 |
 | GET | /api/harnesses/{id} | スペシャルハーネス詳細 | 03 |
-| PATCH | /api/harnesses/{id} | スペシャルハーネス更新（`name`、`repoUrl`、`repoPath`、`defaultProfileId`） | 03 |
+| PATCH | /api/harnesses/{id} | スペシャルハーネス更新（`name`、`repoUrl`、`repoPath`、`defaultProfileId`、`approvalWaivers`） | 03 |
 | GET | /api/harness-profiles | Profile 一覧（`?harnessId=` で絞り込み） | 03 |
 | POST | /api/harness-profiles | Profile の版を登録（タグを commit SHA に解決し、契約 5章で検証） | 03 |
 | GET | /api/harness-profiles/{id} | Profile 詳細（定義の全文、宣言した段・承認・鍵の名前） | 03 |
@@ -335,6 +335,6 @@ Runner 用の認証は次のとおりとする（Q3 の案）。
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q114 | 段の通話口の方式（3.2、契約 7.4） | Runner が段ごとに作る Unix ドメインソケットを Sandbox の中に置く。コンテナと macOS VM の両方で使えるかを実装時に確かめ、使えなければ別のファイル記述子で同じ形の要求と応答をやり取りする |
-| Q116 | 鍵の保管場所（3.5） | Runner のデータディレクトリの鍵ファイル（1つの鍵に1ファイル、0600）。macOS のキーチェーンは、launchd の常駐から確実に読めることを実測するまで使わない |
-| Q122 | Linear の「管理画面で判断待ち」のコメントに載せる管理画面の URL | 18 で決めた Tailscale の名前の URL（`https://orionmac-mini.tailb76d84.ts.net/decisions/<id>`）を載せる。`-remote-host` の指定が無いときは判断待ちの ID だけを載せる |
+| Q114 | 段の通話口の方式（3.2、契約 7.4） | 決定（2026-11-10 本人、案を採用）: Runner が段ごとに作る Unix ドメインソケットを Sandbox の中に置く。コンテナと macOS VM の両方で使えるかを実装時に確かめ、使えなければ別のファイル記述子で同じ形の要求と応答をやり取りする |
+| Q116 | 鍵の保管場所（3.5） | 決定（2026-11-10 本人、案を採用）: Runner のデータディレクトリの鍵ファイル（1つの鍵に1ファイル、0600）。macOS のキーチェーンは、launchd の常駐から確実に読めることを実測するまで使わない |
+| Q122 | Linear の「管理画面で判断待ち」のコメントに載せる管理画面の URL | 決定（2026-11-10 本人、案を採用）: 18 で決めた Tailscale の名前の URL（`https://orionmac-mini.tailb76d84.ts.net/decisions/<id>`）を載せる。`-remote-host` の指定が無いときは判断待ちの ID だけを載せる |

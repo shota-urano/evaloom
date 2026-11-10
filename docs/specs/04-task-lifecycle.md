@@ -436,8 +436,8 @@ Runner は起動のたびに新しい起動 ID（bootId）を作り、最初の 
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q131 | 再実行を受け付けるタスクの状態（旧仕様は `blocked` からの再実行も受け付けていた） | 終端（`failed` / `timed_out` / `cancelled` / `completed`）だけにする。判断待ちの `blocked` と `waiting_approval` は、判断待ちと承認が残ったままになるのを避けるため、先に中止か abort で終えてから再実行する |
-| Q132 | claim で、振り分けの提案と Execution のどちらを先に渡すか | 提案を先に渡す。提案は短く、本人の判断待ちを早く出せるためである。提案が続いても Execution が待ち続けないよう、提案は全体の枠の1本までに絞る案も実装時に確かめる |
-| Q133 | 振り分けの提案の途中で、タスクの中止や Runner の再起動が起きたときの値 | route_proposals.status に `cancelled` を、error_class に `interrupted` を足す（02 に反映済み）。中止は heartbeat の応答で Runner に止めさせて `cancelled`、再起動は `failed`（`interrupted`）にし、タスクが `routing` のままなら提案なしの route の判断待ちを作る |
-| Q134 | 作業領域のパス（task_workspaces.path）を誰が決めるか（Control Plane は Runner のルートを知らない） | claim の要求に Runner が `workspaceRoot`（絶対パス）を入れ、Control Plane が `<workspaceRoot>/<task_workspaces.id>` を書く。Runner はディレクトリを作るときに、実パスがルートの下にあることを確かめる |
-| Q135 | Profile を登録した後に全体設定 `limits.stageTimeoutMaxSec` を下げ、Profile の `timeoutSec` が上限を超えたとき | claim で `failed`（`config_error`）にする。上限を黙って縮めて Profile の宣言と違う時間で止めるより、本人に設定か版を見直してもらう |
+| Q131 | 再実行を受け付けるタスクの状態（旧仕様は `blocked` からの再実行も受け付けていた） | 決定（2026-11-10 本人、案を採用）: 終端（`failed` / `timed_out` / `cancelled` / `completed`）だけにする。判断待ちの `blocked` と `waiting_approval` は、判断待ちと承認が残ったままになるのを避けるため、先に中止か abort で終えてから再実行する |
+| Q132 | claim で、振り分けの提案と Execution のどちらを先に渡すか | 決定（2026-11-10 本人、案を採用）: 提案を先に渡す。提案は短く、本人の判断待ちを早く出せるためである。提案が続いても Execution が待ち続けないよう、提案は全体の枠の1本までに絞る案も実装時に確かめる |
+| Q133 | 振り分けの提案の途中で、タスクの中止や Runner の再起動が起きたときの値 | 決定（2026-11-10 本人、案を採用）: route_proposals.status に `cancelled` を、error_class に `interrupted` を足す（02 に反映済み）。中止は heartbeat の応答で Runner に止めさせて `cancelled`、再起動は `failed`（`interrupted`）にし、タスクが `routing` のままなら提案なしの route の判断待ちを作る |
+| Q134 | 作業領域のパス（task_workspaces.path）を誰が決めるか（Control Plane は Runner のルートを知らない） | 決定（2026-11-10 本人、案を採用）: claim の要求に Runner が `workspaceRoot`（絶対パス）を入れ、Control Plane が `<workspaceRoot>/<task_workspaces.id>` を書く。Runner はディレクトリを作るときに、実パスがルートの下にあることを確かめる |
+| Q135 | Profile を登録した後に全体設定 `limits.stageTimeoutMaxSec` を下げ、Profile の `timeoutSec` が上限を超えたとき | 決定（2026-11-10 本人、案を採用）: claim で `failed`（`config_error`）にする。上限を黙って縮めて Profile の宣言と違う時間で止めるより、本人に設定か版を見直してもらう |
