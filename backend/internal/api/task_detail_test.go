@@ -39,7 +39,7 @@ func TestGetTaskReturnsOverviewAndPendingExecution(t *testing.T) {
 	requireDetailFields(t, detail, map[string]any{
 		"id": created.ID, "projectId": input["projectId"], "title": input["title"],
 		"body": input["body"], "acceptanceCriteria": input["acceptanceCriteria"],
-		"status": "queued", "prUrl": nil,
+		"status": "queued",
 	})
 	if _, ok := detail["idempotencyKey"]; ok {
 		t.Fatal("response exposes idempotency key")
@@ -60,19 +60,16 @@ func TestGetTaskReturnsOverviewAndPendingExecution(t *testing.T) {
 	requireDetailFields(t, latest, map[string]any{"id": execution["id"], "seq": float64(1), "status": "pending"})
 }
 
-func TestGetTaskReturnsOrderedHistoryAndLatestRecordedPRURL(t *testing.T) {
+func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 	f, token, profiles := claimFixture(t)
 	created := createClaimTask(t, f, "project-a", "detail-history")
 	status, body := requestClaim(t, f, token)
 	first := requireClaim(t, status, body).Execution.ID
-	finish := func(id, terminal, prURL string) {
+	finish := func(id, terminal string) {
 		t.Helper()
 		from := "claimed"
 		for _, next := range []string{"preparing", "running", "verifying", "publishing", terminal} {
 			input := resultBody(from, next)
-			if next == terminal {
-				input["prUrl"] = prURL
-			}
 			status, body := postResult(t, f, token, id, input)
 			if status != 204 {
 				t.Fatalf("report %s: %d %s", next, status, body)
@@ -80,10 +77,8 @@ func TestGetTaskReturnsOrderedHistoryAndLatestRecordedPRURL(t *testing.T) {
 			from = next
 		}
 	}
-	finish(first, "succeeded", "https://example.com/pr/1")
-	requireDetailFields(t, requireTaskDetail(t, f, created.ID), map[string]any{
-		"status": "completed", "prUrl": "https://example.com/pr/1",
-	})
+	finish(first, "succeeded")
+	requireDetailFields(t, requireTaskDetail(t, f, created.ID), map[string]any{"status": "completed"})
 
 	// Later assignments must not change historical Profile pins.
 	status, body = postAssignment(t, f, "project-a", "developer", "harness-a", profiles[1].Version)
@@ -92,7 +87,7 @@ func TestGetTaskReturnsOrderedHistoryAndLatestRecordedPRURL(t *testing.T) {
 	requireRetrySuccess(t, status, body)
 	status, body = requestClaim(t, f, token)
 	second := requireClaim(t, status, body).Execution.ID
-	finish(second, "failed", "https://example.com/pr/2")
+	finish(second, "failed")
 	status, body = requestRetry(t, f, created.ID, `{"mode":"continue"}`, nil)
 	requireRetrySuccess(t, status, body)
 	// Another task must not appear in this history.
@@ -100,12 +95,10 @@ func TestGetTaskReturnsOrderedHistoryAndLatestRecordedPRURL(t *testing.T) {
 
 	detail := requireTaskDetail(t, f, created.ID)
 	requireDetailFields(t, detail, map[string]any{
-		"id": created.ID, "projectId": "project-a", "status": "queued", "prUrl": "https://example.com/pr/2",
+		"id": created.ID, "projectId": "project-a", "status": "queued",
 	})
-	for _, summary := range requireTaskList(t, f, "").Items {
-		if summary.ID == created.ID && (summary.PRURL == nil || *summary.PRURL != detail["prUrl"]) {
-			t.Fatalf("detail PR URL differs from list: list=%v detail=%v", summary.PRURL, detail["prUrl"])
-		}
+	if _, ok := detail["prUrl"]; ok {
+		t.Fatalf("task detail still has the removed prUrl: %v", detail)
 	}
 	executions := detail["executions"].([]any)
 	if len(executions) != 3 {
@@ -144,25 +137,6 @@ func TestGetTaskMissingReturns404NotFound(t *testing.T) {
 	f := taskFixture(t)
 	status, body := f.request(t, "GET", "/api/tasks/task-999999", true, "", nil)
 	assertAuthError(t, status, body, 404, NotFound)
-}
-
-func TestGetTaskResumeKeepsSameExecutionAndMode(t *testing.T) {
-	f, _, id, decision := resumeFixture(t, "gate2_missing_tests")
-	taskID := executionTaskID(t, f, id)
-	before := requireTaskDetail(t, f, taskID)["executions"].([]any)[0].(map[string]any)
-	status, body := requestResume(t, f, taskID, decision)
-	requireResumeSuccess(t, status, body)
-	detail := requireTaskDetail(t, f, taskID)
-	requireDetailFields(t, detail, map[string]any{"status": "queued"})
-	executions := detail["executions"].([]any)
-	if len(executions) != 1 {
-		t.Fatalf("resume added history: %v", executions)
-	}
-	requireDetailFields(t, executions[0].(map[string]any), map[string]any{
-		"id": id, "seq": float64(1), "mode": "continue", "status": "pending",
-		"profileVersion": before["profileVersion"], "profileCommitSha": before["profileCommitSha"],
-		"startedAt": before["startedAt"], "finishedAt": nil,
-	})
 }
 
 func TestGetTaskStorageFailureReturns500(t *testing.T) {

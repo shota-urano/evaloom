@@ -6,13 +6,11 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base, type Page } from '@playwright/test'
 
 import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
-import { createRepo, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.2: Projects 一覧・登録・編集・詳細（Profile 割り当てを含む）。
 //
 // 各ファイルは専用の一時 DB で evaloomd を起動する。
 // そのためこのファイルは、同じバイナリ（global-setup がビルド）を空きポートで別に起動し、専用のデータを用意する。
-// - Project のパス検証（03 3.2）を本物で通すため、bare リポジトリを origin にした Git リポジトリを作る。
 // - Runner は evaloomd の runner register で登録する。
 // - Harness と Profile の版は API での登録に Adapter と Harness リポジトリのタグが要り（evaloom-52y.3 の範囲）、
 //   evaloomd は Adapter を登録していないので、SQLite に直接入れる。
@@ -24,7 +22,7 @@ const PROFILES = [
   { version: '1.1.0', sha: '9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c' },
 ]
 
-type Server = { origin: string; cookie: string; repos: Record<string, Repo>; notGit: string }
+type Server = { origin: string; cookie: string }
 
 function seedHarness(db: string) {
   const now = new Date().toISOString()
@@ -52,9 +50,6 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       // macOS の tmpdir はシンボリックリンク経由なので、evaloomd が保存する実パスに揃える。
       const temp = realpathSync(mkdtempSync(join(tmpdir(), 'evaloom-e2e-52y2-')))
       const db = join(temp, 'evaloom.db')
-      const repos = Object.fromEntries(['alpha', 'beta', 'gamma', 'delta'].map((name) => [name, createRepo(temp, name)]))
-      const notGit = join(temp, 'repos', 'not-a-repository')
-      mkdirSync(notGit)
       run(binary, ['-db', db, 'runner', 'register', '-worktree-root', join(temp, 'worktrees'), '-name', 'ローカル Runner', 'local'])
       seedHarness(db)
       setupOwner(binary, db)
@@ -64,7 +59,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
         const response = await loginOwner(evaloomd.origin)
         const cookie = /evaloom_session=([^;]+)/.exec(response.headers.getSetCookie().join('\n'))?.[1]
         if (!response.ok || !cookie) throw new Error(`ログインに失敗した: ${response.status}`)
-        await provide({ origin: evaloomd.origin, cookie, repos, notGit })
+        await provide({ origin: evaloomd.origin, cookie })
       } finally {
         await evaloomd.stop()
         rmSync(temp, { recursive: true, force: true })
@@ -96,13 +91,11 @@ function fieldError(page: Page, label: string) {
   return field(page, label).locator('[data-slot=field-error]')
 }
 
-type ProjectValues = { id: string; name: string; repo: Repo }
+type ProjectValues = { id: string; name: string }
 
-async function fillProject(page: Page, { id, name, repo }: ProjectValues) {
+async function fillProject(page: Page, { id, name }: ProjectValues) {
   await page.getByLabel('Project ID').fill(id)
   await page.getByLabel('名称').fill(name)
-  await page.getByLabel('ローカルリポジトリのパス').fill(repo.path)
-  await page.getByLabel('Git リポジトリ URL').fill(repo.url)
   await page.getByLabel('Runner').selectOption('local')
 }
 
@@ -116,71 +109,43 @@ async function registerProject(page: Page, values: ProjectValues) {
   await expect(page).toHaveURL(`/projects/${values.id}`)
 }
 
-test('2つのプロジェクトを画面から登録でき、一覧に表示される', async ({ page, server }) => {
+test('2つのプロジェクトを画面から登録でき、一覧に表示される', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('navigation', { name: '画面' }).getByRole('link', { name: 'Projects' }).click()
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
   await expect(page.getByText('登録済みのプロジェクトはありません。')).toBeVisible()
 
   await page.getByRole('link', { name: 'プロジェクトを登録' }).click()
-  await fillProject(page, { id: 'alpha-app', name: 'Alpha アプリ', repo: server.repos.alpha })
-  await page.getByLabel('テストコマンド').fill('make verify')
-  await page.getByLabel('コピー許可リスト').fill('config/test.json')
+  await fillProject(page, { id: 'alpha-app', name: 'Alpha アプリ' })
+  // 開発の部品（リポジトリ・テスト・setup・コピー許可リスト・承認ポリシー）と、02 の projects に無い
+  // 許可操作・タイムアウトの入力欄は無い（19 3.11、02 projects）。
+  for (const label of ['ローカルリポジトリのパス', 'Git リポジトリ URL', 'Base Branch', 'テストコマンド', 'setup の許可宛先', 'コピー許可リスト', '承認ポリシー', '許可操作', 'ハーネス実行のタイムアウト（秒）']) {
+    await expect(page.getByLabel(label, { exact: true })).toHaveCount(0)
+  }
   await screenshot(page, 'project-form')
   await page.getByRole('button', { name: '登録' }).click()
   await expect(page.getByRole('heading', { name: 'Alpha アプリ' })).toBeVisible()
   const settings = page.locator('[data-slot=card]').filter({ has: page.getByText('設定', { exact: true }) })
-  await expect(settings.getByText('make verify')).toBeVisible()
-  await expect(settings.getByText('config/test.json')).toBeVisible()
+  await expect(settings.locator('div').filter({ hasText: /^既定の役割developer$/ })).toBeVisible()
 
-  await registerProject(page, { id: 'beta-api', name: 'Beta API', repo: server.repos.beta })
+  await registerProject(page, { id: 'beta-api', name: 'Beta API' })
 
   await page.getByRole('link', { name: '一覧へ戻る' }).click()
   const rows = page.getByRole('table', { name: '登録済みプロジェクト' }).locator('tbody tr')
   await expect(rows).toHaveCount(2)
   await expect(rows.nth(0)).toContainText('Alpha アプリ')
-  await expect(rows.nth(0)).toContainText(server.repos.alpha.path)
+  await expect(rows.nth(0)).toContainText('local')
   await expect(rows.nth(0)).toContainText('未割り当て')
   await expect(rows.nth(1)).toContainText('Beta API')
-  await expect(rows.nth(1)).toContainText(server.repos.beta.path)
 
   // 再読み込みしても登録内容はサーバーから読み直される。
   await page.reload()
   await expect(rows).toHaveCount(2)
 })
 
-test('パス検証の失敗理由が表示され、登録されない', async ({ page, server }) => {
-  await page.goto('/projects/_new')
-  await fillProject(page, { id: 'broken', name: '検証に失敗する', repo: { path: server.notGit, url: server.repos.gamma.url } })
-  await page.getByRole('button', { name: '登録' }).click()
-  const alert = page.getByTestId('api-error')
-  await expect(alert).toContainText('前提条件が満たされていません')
-  await expect(alert).toContainText('ローカルリポジトリのパス: Git リポジトリではありません')
-  await expect(field(page, 'ローカルリポジトリのパス').getByText('Git リポジトリではありません')).toBeVisible()
-  await expect(page.getByLabel('ローカルリポジトリのパス')).toHaveAttribute('aria-invalid', 'true')
-  await screenshot(page, 'path-error')
-
-  // origin と違う URL は、Git リポジトリ URL の項目に理由が出る。前の理由は消える。
-  await page.getByLabel('ローカルリポジトリのパス').fill(server.repos.gamma.path)
-  await page.getByLabel('Git リポジトリ URL').fill(server.repos.delta.url)
-  await page.getByRole('button', { name: '登録' }).click()
-  await expect(alert).toContainText('Git リポジトリ URL: Git URL がリポジトリの remote と一致しません')
-  await expect(field(page, 'Git リポジトリ URL').getByText('Git URL がリポジトリの remote と一致しません')).toBeVisible()
-  await expect(page.getByLabel('ローカルリポジトリのパス')).not.toHaveAttribute('aria-invalid')
-
-  // remote に無い Base Branch。
-  await page.getByLabel('Git リポジトリ URL').fill(server.repos.gamma.url)
-  await page.getByLabel('Base Branch').fill('no-such-branch')
-  await page.getByRole('button', { name: '登録' }).click()
-  await expect(fieldError(page, 'Base Branch')).toHaveText('見つかりません')
-
-  await page.goto('/projects')
-  await expect(page.getByRole('table', { name: '登録済みプロジェクト' })).not.toContainText('検証に失敗する')
-})
-
-test('役割に Harness と版を割り当てられ、差し替えと別の役割の追加もできる', async ({ page, server }) => {
+test('役割に Harness と版を割り当てられ、差し替えと別の役割の追加もできる', async ({ page }) => {
   // Project ID「new」は slug として正当なので、登録画面（/projects/_new）と衝突せず詳細を開けること。
-  await registerProject(page, { id: 'new', name: 'Gamma Web', repo: server.repos.gamma })
+  await registerProject(page, { id: 'new', name: 'Gamma Web' })
   const card = page.locator('[data-slot=card]').filter({ hasText: 'Harness Profile の割り当て' })
   await expect(card.getByText('まだ割り当てがありません。')).toBeVisible()
 
@@ -242,19 +207,17 @@ test('役割に Harness と版を割り当てられ、差し替えと別の役�
   await screenshot(page, 'projects')
 })
 
-test('登録済みのプロジェクトを編集でき、ID は変えられない', async ({ page, server }) => {
-  await registerProject(page, { id: 'delta-cli', name: 'Delta CLI', repo: server.repos.delta })
+test('登録済みのプロジェクトを編集でき、ID は変えられない', async ({ page }) => {
+  await registerProject(page, { id: 'delta-cli', name: 'Delta CLI' })
   await page.getByRole('link', { name: '編集' }).click()
   await expect(page.getByRole('heading', { name: 'プロジェクトの編集' })).toBeVisible()
   await expect(page.getByLabel('Project ID')).toBeDisabled()
   await expect(page.getByLabel('Project ID')).toHaveValue('delta-cli')
-  await expect(page.getByLabel('ローカルリポジトリのパス')).toHaveValue(server.repos.delta.path)
+  await expect(page.getByLabel('Runner')).toHaveValue('local')
   await page.getByLabel('名称').fill('Delta CLI（改名）')
-  await page.getByLabel('テストコマンド').fill('go test ./...')
-  await page.getByLabel('テストのタイムアウト（秒）').fill('600')
+  await page.getByLabel('既定の役割').fill('reviewer')
   await page.getByRole('button', { name: '保存' }).click()
   await expect(page.getByRole('heading', { name: 'Delta CLI（改名）' })).toBeVisible()
   const settings = page.locator('[data-slot=card]').filter({ has: page.getByText('設定', { exact: true }) })
-  await expect(settings.getByText('go test ./...')).toBeVisible()
-  await expect(settings.locator('div').filter({ hasText: /^テストのタイムアウト（秒）600$/ })).toBeVisible()
+  await expect(settings.locator('div').filter({ hasText: /^既定の役割reviewer$/ })).toBeVisible()
 })

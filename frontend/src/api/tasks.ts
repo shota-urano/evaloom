@@ -34,10 +34,9 @@ export type Task = {
 /** 最新の Execution（seq が最大のもの）。状態の値は 02-data-model 5.2。 */
 export type ExecutionSummary = { id: string; seq: number; mode: string; status: string; errorClass: string | null }
 
-/** GET /api/tasks の要素。prUrl は PR を作った Execution のうち最新のものの URL。 */
+/** GET /api/tasks の要素。 */
 export type TaskSummary = Task & {
   latestExecution: ExecutionSummary | null
-  prUrl: string | null
   /** 15-linear-intake 5章。`manual` / `linear`。 */
   source?: 'manual' | 'linear'
   /** 15-linear-intake 3.6 の保留の理由。保留していなければ null。 */
@@ -81,12 +80,7 @@ export type ExecutionHistoryItem = ExecutionSummary & {
 /** GET /api/tasks/{id}。タスク一覧の要素に Execution の履歴を加えたもの。 */
 export type TaskDetail = TaskSummary & { executions: ExecutionHistoryItem[] }
 
-/** 02-data-model 5.5 の Finding。 */
-export type Finding = { rule: string; path: string; line: number; message: string }
-
 export type ContextRevision = { id: string; layer: string; kind: string; sourcePath: string; sourceCommitSha: string; contentHash: string }
-
-export type GateResult = { id: string; gate: number; result: string; baseSha: string; targetSha: string; findings: Finding[]; createdAt: string }
 
 /** GET /api/executions/{id}（backend/internal/api/execution_detail.go）。 */
 export type ExecutionDetail = ExecutionHistoryItem & {
@@ -95,9 +89,7 @@ export type ExecutionDetail = ExecutionHistoryItem & {
   role: string | null
   harnessId: string | null
   profileId: string | null
-  prUrl: string | null
   contextRevisions: ContextRevision[]
-  gateResults: GateResult[]
 }
 
 /** 05-runner 3.4 のログの stream。 */
@@ -118,21 +110,6 @@ export function artifactPath(executionId: string, artifactId: string) {
   return `/api/executions/${encodeURIComponent(executionId)}/artifacts/${encodeURIComponent(artifactId)}`
 }
 
-/** 02-data-model 5.6 の Block 原因（execution_blocks.cause）。 */
-export type BlockCause = 'gate2_missing_tests' | 'gate2_unverifiable' | 'gate3_mismatch' | 'context_conflict' | 'git_state'
-
-/** 続行（decision=continue）を受け付ける Block 原因（04 3.8 処理2）。context_conflict と git_state は続行できない。 */
-export const CONTINUABLE_BLOCK_CAUSES: ReadonlySet<string> = new Set(['gate2_missing_tests', 'gate2_unverifiable', 'gate3_mismatch'])
-
-/** Gate による Block 原因と、その Gate の番号（02 5.6、10-verification-gates）。 */
-export const BLOCK_CAUSE_GATES: Readonly<Record<string, number>> = { gate2_missing_tests: 2, gate2_unverifiable: 2, gate3_mismatch: 3 }
-
-/** 04 3.8 の判断。 */
-export type ResumeDecision = 'continue' | 'abort'
-
-/** POST /api/tasks/{id}/resume の入力（04 3.8）。headSha は本人が画面で確認した HEAD SHA。 */
-export type ResumeInput = { blockId: string; decision: ResumeDecision; headSha: string }
-
 const taskPath = (id: string) => `/api/tasks/${encodeURIComponent(id)}`
 const executionPath = (id: string) => `/api/executions/${encodeURIComponent(id)}`
 
@@ -144,10 +121,6 @@ export const tasks = {
   cancel: (api: ApiClient, id: string) => api.post<void>(`${taskPath(id)}/cancel`),
   /** 新しい Execution を作る（成功は 204）。対象外の状態は 409。 */
   retry: (api: ApiClient, id: string, mode: RetryMode) => api.post<void>(`${taskPath(id)}/retry`, { mode }),
-  /** Blocked からの続行・中止（成功は 204）。SHA 不一致は 422、判断済み・状態違いは 409（04 3.8・6節）。 */
-  resume: (api: ApiClient, id: string, input: ResumeInput) => api.post<void>(`${taskPath(id)}/resume`, input),
-  /** 成果物（差分など）の本文を文字列で取得する。 */
-  getArtifactText: (api: ApiClient, executionId: string, artifactId: string, signal?: AbortSignal) => api.text(artifactPath(executionId, artifactId), { signal }),
   list: (api: ApiClient, filter: TaskFilter = {}, signal?: AbortSignal) => listAll<TaskSummary>(api, taskListPath(filter), signal),
   /** 同じ Idempotency-Key の再送には、サーバーが最初に作ったタスクを返す（新規は 201、再送は 200）。 */
   create: (api: ApiClient, input: TaskInput, idempotencyKey: string) =>

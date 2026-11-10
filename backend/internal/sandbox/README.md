@@ -20,8 +20,7 @@ CPU数・メモリ総量・実行時間は各`SandboxSpec.Limits`から渡す。
 必要とするかは、信頼する呼び出し側が判断する。Project Registryや全体設定には列を追加しない。
 
 ホストからのbind mountはworktree・GitDir・ConfigDirだけ。worktreeは読み書き可能、
-GitDirはHarnessだけ読み書き可能でテストでは読み取り専用、ConfigDirはHarnessだけに
-読み取り専用で渡す。Gitのworktree参照を維持するため、コンテナ側にも入力された絶対パスで
+GitDirは読み書き可能、ConfigDirは読み取り専用で渡す。Gitのworktree参照を維持するため、コンテナ側にも入力された絶対パスで
 マウントする。呼び出し側は、Evaloomの作業用クローンのGit領域とExecution専用の設定を渡す。
 GitDir全体を指定し、worktree内の`.git`が参照するパスもコンテナ内で解決できるようにする。
 
@@ -55,9 +54,10 @@ Dockerソケット等を追加する任意のマウント指定は提供しな�
 HOMEの上書きは許可しない。シェルによるコマンド文字列の展開は行わない。
 
 ネットワークはゼロ値と`NetworkNone`のどちらも`--network none`になる。
-`Kind=TestRun`はこの全遮断だけを受け付ける。
-`NetworkHarness`は`Kind=Harness`、`NetworkSetup`は`Kind=TestSetup`に限り、
-`SandboxSpec.AllowedDestinations`の宛先だけを許可する。宛先は小文字のDNSホスト名と
+`NetworkHarness`は`Kind=Harness`に限り、
+`SandboxSpec.AllowedDestinations`の宛先だけを許可する。
+setup とテストの Sandbox（`TestSetup`・`TestRun`・`NetworkSetup`）は software-engineer へ移したため無い
+（`docs/specs/19-routing-and-stages.md` 3.11）。宛先は小文字のDNSホスト名と
 ポートの完全一致（例は`model.example:443`）。ワイルドカード・IPリテラル・ローカル名を
 拒否し、Harnessでは`github.com`とそのサブドメインも登録できない。
 
@@ -125,7 +125,7 @@ worktreeは削除しない。`Stop`はコンテナ全体にTERM、`Kill`は強�
 時間超過は`timed_out / timeout`、中止は`cancelled / cancelled`、
 作成・隔離確認・OOM・シグナル終了等は`failed / sandbox_error`になる。
 時間超過と中止は`errors.Is`でも検出でき、既存Runnerの監視処理で分類できる。
-通常のコマンド失敗は`ExitError`と終了コードを返し、setup・Adapter・Gate側が分類する。
+通常のコマンド失敗は`ExitError`と終了コードを返し、Adapter側が分類する。
 runtimeの診断文はエラーに含めない。
 
 制御コマンドが失敗しても、コンテナの不存在または停止を確認するまでは`Wait`を返さない。
@@ -174,7 +174,7 @@ EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
 制御コマンドの待機上限がないため、既定値を設けず内部設定として受け取る。
 マウント元ごとの許可ルートの設定方法も仕様にないため、同じ内部設定で明示的に受け取る。
 イメージには`/usr/bin/env`が必要で、Linux用かつVolume宣言がないことを検査する。
-専用設定の作成・ハッシュ記録、実Adapterやsetup・Gate工程の接続は各担当タスクの範囲。
+専用設定の作成・ハッシュ記録、実Adapterの接続は各担当タスクの範囲。
 公開HTTP API・テーブル・列と、確定済みの仕様書は変更していない。
 モデルAPIの接続先とProjectごとのレジストリ一覧の保存先は仕様に列がないため、
 この実装では保存せず内部の`AllowedDestinations`で受け取る。Registryとの接続は未定。

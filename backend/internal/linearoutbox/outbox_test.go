@@ -29,10 +29,8 @@ func outboxDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-		default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-		VALUES ('project', 'Project', '/repos/project', 'https://example.test/repo.git', 'runner', 'main',
-		'developer', '.', '[]', '[]', '{}', '{}', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
+		VALUES ('project', 'Project', 'runner', 'developer', ?, ?)`, testTime, testTime)
 	for _, source := range []string{"linear", "manual"} {
 		id := source + "-1"
 		mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
@@ -323,7 +321,7 @@ func TestWaitingApprovalCommentNamesRequiredApprovalOnce(t *testing.T) {
 	}
 	for _, want := range []string{
 		"- 実行ステータス: Waiting Approval\n",
-		"- 必要な承認事項: PR のマージ（merge_pull_request）。対象 owner/repo #12（evaloom/linear-1-test → main）\n",
+		"- 必要な承認事項: merge_pull_request\n",
 		"- 承認・却下は管理画面で本人が行う\n",
 	} {
 		if !strings.Contains(rows[0].body, want) {

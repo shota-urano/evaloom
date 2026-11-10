@@ -93,25 +93,22 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
     "codex": "/absolute/path/data/runner/codex/auth.json",
     "claude_code": "/absolute/path/data/runner/claude/.credentials.json"
   },
-  "githubAppPrivateKeyFile": "/Users/runner/.config/evaloom/publisher.pem",
   "container": {
     "runtimePath": "/absolute/path/bin/docker",
     "image": "evaloom-harness:local",
     "proxyImage": "evaloom-proxy:local",
     "proxyBinary": "/absolute/path/bin/evaloom-proxy-linux"
-  },
-  "commitAuthor": {
-    "name": "evaloom-publisher[bot]",
-    "email": "YOUR_BOT_NOREPLY_ADDRESS"
   }
 }
 ```
 
-パスはすべて絶対パスで指定する。上の秘密鍵パスは実行ユーザーのホームに合わせる。
+パスはすべて絶対パスで指定する。
 `harnessAuthFiles`は`dataDir`内に置く。既存のシンボリックリンクが外部を指す場合も拒否し、既存ファイルの権限は0600かを検査する。
 `container.runtimeEnv`は任意の文字列のマップで、ランタイムCLIに渡す環境変数を指定する。
-`defaultTimeouts`は省略でき、`setupSec`は900秒、`harnessSec`は3600秒、`testSec`は1800秒になる。項目ごとの省略も同じ既定値を使い、指定値は正の整数とする。
-ディレクトリの作成、worktreeの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
+`defaultTimeouts`は省略でき、`harnessSec`は3600秒になる。指定値は正の整数とする。
+GitHub App の秘密鍵（`githubAppPrivateKeyFile`）、commit の作者（`commitAuthor`）、setup とテストの期限（`setupSec`・`testSec`）は
+Git Publisher・setup・テストとともに software-engineer へ移したため、指定すると未知の項目として起動を拒否する（`docs/specs/19-routing-and-stages.md` 3.11）。
+ディレクトリの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
 データディレクトリは利用者がGit管理外に配置する。
 
 - Runner IDの制約は登録コマンドに合わせる。接続先はHTTP(S)の絶対URLとし、認証情報、クエリ、フラグメントを含むURLを拒否する。パスを含む場合は、その下に`api/runners/{id}/heartbeat`を追加する。
@@ -130,26 +127,16 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - claimは同じ接続先の`api/runners/{id}/claim`へBearerトークン付きでPOSTする。要求全体の上限は5秒、リダイレクトは禁止。HTTP 204は仕事なしとして待機する。HTTP 200は最大1MiBのJSONを読み、Execution IDとTask IDを必須にする。それ以外のステータスや応答不正はログに出し、次の周回へ進む。応答本文やトークンはログに含めない。
 - Runnerは登録済みExecutionと通信中のclaimの予約枠を合わせて2本までに制限する。claimが仕事なし・エラーなら予約枠を解放し、実行処理を呼ばない。仕事があれば中止関数を登録して別のgoroutineで実行処理を呼ぶ。処理が戻った後に登録を解除する。同じRunnerでpullループを重複起動することは拒否する。
 - 通信失敗では実行中の処理を止めない。次の周回でheartbeatとclaimの通信を再試行するが、取得済みExecutionを再実行しない。中止指示ではそのExecutionのcontextを中止し、実行処理が戻るまでは枠とheartbeatのIDを保持する。終了要求では通信と各実行処理のcontextを中止し、開始済みの実行処理が戻るのを待つ。
-- `Runner.Run`はclaimの入力とcontextを実行関数へ渡す。実行関数は処理停止と結果報告を終えてから戻る契約とする。現在のCLIは取得した仕事を中止・終了要求まで待機させる仮の関数を渡す。worktree作成、Adapter起動、結果報告は行わず、仕事を成功扱いにしない。CLIの起動ログにも工程未実装を明記する。
-
-## Executionの工程実行器
-
-正本は`docs/specs/05-runner.md`の3.3・9節と`04-task-lifecycle.md`の3.8節。
-`backend/internal/runner/execution.go`の`ExecutionStages()`で、仕様表の14工程と
-工程番号・Execution状態を固定する。呼び出し側が表を変更しても実行順には影響しない。
-
-- `NewExecutor`に`StageID`ごとの工程関数を渡す。全14工程を必須とし、不足・nil・未知の工程を拒否する。登録後のmapの変更は実行器に反映しない。前回PRがない場合の工程2など、条件付きの処理は工程関数が判断する。
-- `Executor.Execute(ctx, claim)`は通常は工程1から、`resumePoint=gate2`なら工程11、`gate3`なら工程12、`publish`なら工程13から実行する。null以外の未知の値や空文字は工程を呼ぶ前に拒否する。この拒否方法は実装上の選択である。
-- 工程関数には同じcontextと、実行ごとに確保した`Execution`を渡す。`Execution.Claim`はpullで受け取った入力を保持する。工程がエラーを返したら直ちに打ち切り、再試行や後続工程の呼び出しはしない。Blockも工程側からエラーとして返す。`StageError`で工程番号と元のエラーを保持し、`errors.Is/As`で分類を取り出せる。エラー文字列には工程関数の自由文を含めない。
-- `Runner.Run`の実行関数から`Execute`を呼び、その結果の報告を終えてから戻る。工程表の状態は報告用の情報であり、実行器はControl Planeの状態を直接変更しない。工程開始・終了の報告、各工程の中身、再開時のHEAD照合、ログ・使用量、Adapter/Sandboxの停止・タイムアウトは各実装で扱う。contextが中止済みなら次の工程を開始しない。
-- 各工程の実装が揃うまではCLIに実行器を接続せず、上記の待機処理を維持する。未実装工程を成功するスタブに置き換えて本番の仕事を進めない。
+- `Runner.Run`はclaimの入力とcontextを実行関数へ渡す。実行関数は処理停止と結果報告を終えてから戻る契約とする。
+  開発の工程（worktree、setup、テスト、Gate 2・3、Git Publisher）と、それを並べた旧14工程の実行器は software-engineer への切り替えで消した（`docs/specs/19-routing-and-stages.md` 3.11）。
+  段の枠の実行器ができるまで、CLIは取得したExecutionを`failed`（`config_error`、「段を動かす仕組みがまだ無いため実行できない」）として報告する。仕事を成功扱いにしない。
 
 ## Runnerのログ収集と再送
 
 正本は`docs/specs/05-runner.md`の3.4・6・9節、イベント形式は
 `02-data-model.md`の5.3節。以下はログ収集の実装上の選択である。
 
-- 工程は`Runner.NewLog(executionID, stream, registrar)`でログを作る。streamは`harness`・`setup`・`test`。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。未実装のAdapter・setup・テスト工程をCLIへ接続する変更は行っていない。
+- 工程は`Runner.NewLog(executionID, stream, registrar)`でログを作る。streamは`harness`・`setup`・`test`（setupとtestは旧工程の値で、今は使う工程が無い）。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。段の枠の実行器ができるまで、CLIからは呼ばない。
 - Runnerは`dataDir/logs/<ULID>.log`を新規作成する。既存ファイルを上書きしない。親ディレクトリは0700、ファイルは0600。書き込みはバッファせず、終了時にSyncして閉じる。LF・CRLFをLFへ統一し、末尾に改行のない行にもLFを付ける。空行と64KiBを超える行も収集する。同じstream内ではファイルへの書き込み順に送る。stdoutとstderrの間の順序はreaderが行を書き込んだ順になる。
 - Deliverはファイルを読み、最大100行、通常256KiBまでを1バッチで送る。1行が256KiBを超える場合は、その行を分割せずに送る。全履歴をメモリに積まない。新着確認と送信失敗後の再試行は1秒間隔。HTTP要求全体の上限は既存の5秒で、Bearer認証とリダイレクト禁止も共通とする。送信処理が待機・失敗してもreaderはファイルへの書き込みを続ける。書き込み・読み取り・Syncの失敗は呼び出し元へ返す。
 - `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`sourceId`・`stream`・`text`とし、sourceIdには要求のidを保存する。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。

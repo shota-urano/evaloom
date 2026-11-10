@@ -61,7 +61,7 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
 
 呼び出し側は次の値を明示する。新しいHTTP APIや永続化項目は追加しない。
 
-- `harnessenv.Create`または`Runner.PrepareHarnessEnvironment`で固定済みファイルを配置し、
+- `harnessenv.Create`で固定済みファイルを配置し、
   `ConfigVariable="CODEX_HOME"`にする。`Environment.ConfigDir()`と`Environment.Env()`を
   `adapter.SandboxEnv`へ渡す。専用設定の内容・パスの選択は既存処理の責任とする。
 - `Config.ResolveConfig`で、渡された元設定ディレクトリに対応する`Environment`を返す。
@@ -95,12 +95,9 @@ Sandbox独自の実行時間上限は、準備の開始から引き続き適用�
   未知キー、配列でない値、文字列でない要素、空文字、null、解決関数の欠落も起動前に拒否する。
 - `Config.CancelGrace`にはRunnerの中止猶予時間を渡す。既定値は追加しない。
 - `registry.Register("codex", codex.New(config))`で登録する。Runnerは登録名で解決する。
-- ログを消費し、停止後の結果を`Execution.HarnessResult`へ渡す。
-  既存の`Runner.HarnessResultHandler`がworktreeからGit情報を取得し、diff artifactを保存する。
-  最後に専用設定環境を`Close`する。
+- ログを消費し、停止後の結果を受け取る。最後に専用設定環境を`Close`する。
+  Runner の旧工程（Git 情報と diff の取得）は software-engineer へ移した（`docs/specs/19-routing-and-stages.md` 3.11）。
 
-`TestCodexAdapterCommitReachesRunnerHarnessResult`は、実際のlinked worktreeに対する
-偽CLIのcommitから、既存Runnerのdiff保存までを検証する。
 `TestContainerLaunchUsesPreparedHarnessSandbox`はContainerの実際の起動引数と
 マウント・専用HOME・CODEX_HOMEの受け渡しを偽runtimeで検証する。
 `TestContainerLaunchErrorClassification`はpreflightが0、execが130で終了する場合と、

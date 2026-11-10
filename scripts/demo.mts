@@ -54,7 +54,7 @@ function seedHarness(db: string, repo: Repo) {
       ${sql(repo.path)}, ${sql(repo.url)}, '["claude-e2e-model"]', '["read","write"]', '{}', '1', ${now}, ${now});`])
 }
 
-async function seedAPI(server: Evaloomd, project: Repo) {
+async function seedAPI(server: Evaloomd) {
   const request = (url: string, init: RequestInit = {}) => fetch(url, {
     ...init, signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
   })
@@ -74,10 +74,7 @@ async function seedAPI(server: Evaloomd, project: Repo) {
   for (const version of ['1.0.0', '1.1.0']) {
     await post('/api/harness-profiles', { harnessId: 'claude-developer', version })
   }
-  await post('/api/projects', {
-    id: 'demo-app', name: 'Demo Project', localRepoPath: project.path, gitRemoteUrl: project.url,
-    runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-  })
+  await post('/api/projects', { id: 'demo-app', name: 'Demo Project', runnerId: 'local', defaultRole: 'developer' })
   await post('/api/projects/demo-app/harnesses', { role: 'developer', harnessId: 'claude-developer', version: '1.0.0' })
 }
 
@@ -94,8 +91,6 @@ async function main() {
     await build('go', ['build', '-o', binary, './cmd/evaloomd'], backend)
     signal.throwIfAborted()
     const db = join(temp, 'evaloom.db')
-    const alpha = createRepo(temp, 'alpha')
-    const beta = createRepo(temp, 'beta')
     const harness = createRepo(temp, 'harness')
     for (const version of ['1.0.0', '1.1.0']) tagProfile(harness.path, version, `demo-${version}`)
     git(harness.path, 'push', '--quiet', 'origin', 'main', '--tags')
@@ -104,11 +99,9 @@ async function main() {
     setupOwner(binary, db)
     server = await startEvaloomd(binary, db, port, signal)
     console.log(`demo: データ投入用 evaloomd PID ${server.pid}`)
-    await seedAPI(server, alpha)
+    await seedAPI(server)
     console.log(`demo: evaloomd PID ${server.pid}`)
-    console.log(`確認用リポジトリ（登録済み） ${alpha.path}\nGit リポジトリ URL ${alpha.url}`)
-    console.log(`確認用リポジトリ（登録を試す用） ${beta.path}\nGit リポジトリ URL ${beta.url}`)
-    console.log('Runner は local、Base Branch は main。終了は Ctrl-C。')
+    console.log('Runner は local。終了は Ctrl-C。')
     console.log(`この URL を開く: ${server.origin}/`)
     console.log(`テスト用 ID: ${testOwner.id}`)
     console.log(`テスト用パスワード: ${testOwner.password}`)

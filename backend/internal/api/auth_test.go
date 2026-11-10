@@ -30,16 +30,16 @@ type authFixture struct {
 	settings *linearintake.LabelSettings
 }
 
-func newAuthFixture(t *testing.T, contexts ...ContextConfig) *authFixture {
-	return newConfiguredAuthFixture(t, nil, contexts...)
+func newAuthFixture(t *testing.T) *authFixture {
+	return newConfiguredAuthFixture(t, nil)
 }
 
-func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
+func newConfiguredAuthFixture(t *testing.T, configure func(*sql.DB) ArtifactConfig) *authFixture {
 	t.Helper()
-	return newRemoteAuthFixture(t, "", configure, contexts...)
+	return newRemoteAuthFixture(t, "", configure)
 }
 
-func newRemoteAuthFixture(t *testing.T, remoteHost string, configure func(*sql.DB) ArtifactConfig, contexts ...ContextConfig) *authFixture {
+func newRemoteAuthFixture(t *testing.T, remoteHost string, configure func(*sql.DB) ArtifactConfig) *authFixture {
 	t.Helper()
 	f := &authFixture{db: runnerDB(t, 0), adapters: &adapter.Registry{}}
 	f.settings = linearintake.NewLabelSettings(f.db, nil)
@@ -56,15 +56,11 @@ func newRemoteAuthFixture(t *testing.T, remoteHost string, configure func(*sql.D
 		f.calls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	})))
-	var config ContextConfig
-	if len(contexts) > 0 {
-		config = contexts[0]
-	}
 	var artifacts ArtifactConfig
 	if configure != nil {
 		artifacts = configure(f.db)
 	}
-	mux.Handle("/", NewHandlerWithSettings(f.db, nil, f.auth, nil, config, artifacts, f.settings, f.adapters))
+	mux.Handle("/", NewHandlerWithSettings(f.db, nil, f.auth, nil, artifacts, f.settings, f.adapters))
 	f.server.Config.Handler = mux
 	f.server.Start()
 	t.Cleanup(f.server.Close)

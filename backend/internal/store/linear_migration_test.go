@@ -17,6 +17,13 @@ import (
 const legacyTaskColumns = `id, project_id, title, body, acceptance_criteria, short_name,
 	task_type, collaboration_mode, status, idempotency_key, created_at, updated_at`
 
+// registryProjectColumns are the 0001 projects columns that remained until
+// migration 0025 removed the development columns.
+const registryProjectColumns = `id, name, local_repo_path, git_remote_url, runner_id, base_branch,
+	default_role, review_role, context_location, test_command, test_report_format,
+	test_report_path, setup_command, copy_allowlist,
+	allowed_operations, approval_policy, timeouts, created_at, updated_at`
+
 func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
 	db, err := open(context.Background(), path, beforeLinearMigration(t))
@@ -50,8 +57,12 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A second open also checks that the migration is not applied twice.
+	// Stop before 0025, which removes the development tables and columns.
 	for range 2 {
-		db = openRegistry(t, path)
+		db, err = open(context.Background(), path, migrationsBefore(t, 25))
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i, query := range queries {
 			if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before[i]) {
 				t.Fatalf("migration changed %s: got %#v, want %#v", query, got, before[i])
@@ -92,10 +103,10 @@ func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
 	}
 	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a' WHERE id = 'project-c'`)
 	// INSERT, as well as UPDATE, must reject a duplicate complete pair.
-	_, err = db.Exec(`INSERT INTO projects (` + registryProjectColumns + `, linear_team_id, linear_routing_label)
-		SELECT 'duplicate', name, '/repos/duplicate', git_remote_url, runner_id, base_branch,
-		default_role, review_role, context_location, test_command, test_report_format, test_report_path,
-		setup_command, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at,
+	_, err = db.Exec(`INSERT INTO projects (id, name, runner_id, default_role,
+		created_at, updated_at, linear_team_id, linear_routing_label)
+		SELECT 'duplicate', name, runner_id, default_role,
+		created_at, updated_at,
 		linear_team_id, linear_routing_label FROM projects WHERE id = 'project-a'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 }
@@ -226,6 +237,12 @@ func TestLinearMigrationPollStateTables(t *testing.T) {
 
 func beforeLinearMigration(t *testing.T) fstest.MapFS {
 	t.Helper()
+	return migrationsBefore(t, 10)
+}
+
+// migrationsBefore returns the migrations older than version.
+func migrationsBefore(t *testing.T, version int64) fstest.MapFS {
+	t.Helper()
 	source, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +253,7 @@ func beforeLinearMigration(t *testing.T) fstest.MapFS {
 	}
 	previous := fstest.MapFS{}
 	for _, migration := range migrations {
-		if migration.version < 10 {
+		if migration.version < version {
 			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
 		}
 	}
@@ -320,7 +337,7 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 }
 
 // TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria checks 0011: an
@@ -417,7 +434,7 @@ func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 		t.Fatalf("foreign key violations = %#v", violations)
 	}
@@ -467,7 +484,7 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -518,7 +535,7 @@ func TestLinearIssueRecheckRequestedAtMigrationLeavesExistingRowsNull(t *testing
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -574,7 +591,7 @@ func TestLinearOutboxOutcomeUnknownMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -649,7 +666,7 @@ func TestLinearOutboxFailureRecordMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}

@@ -38,12 +38,6 @@ const approval = (overrides: Partial<Approval> = {}): Approval => ({
 
 const detail = (overrides: Partial<ApprovalDetail> = {}): ApprovalDetail => ({
   ...approval(),
-  prUrl: 'https://github.com/example/repo/pull/12',
-  gateResults: [
-    { id: 'g2', gate: 2, result: 'pass', baseSha: 'a'.repeat(40), targetSha: HEAD, findings: [], createdAt: '2026-11-08T00:00:00Z' },
-    { id: 'g3', gate: 3, result: 'pass', baseSha: 'a'.repeat(40), targetSha: HEAD, findings: [], createdAt: '2026-11-08T00:00:01Z' },
-  ],
-  diffArtifacts: [{ id: '01JE2EARTIFACT000000000001', sha256: 'b'.repeat(64), sizeBytes: 20, createdAt: '2026-11-08T00:00:00Z' }],
   ...overrides,
 })
 
@@ -90,21 +84,15 @@ describe('Approvals 一覧', () => {
 })
 
 describe('承認の詳細', () => {
-  it('PR の URL、head SHA、Gate の結果、差分を表示する', async () => {
+  it('対象と head SHA を表示し、Gate の結果と差分は出さない', async () => {
     renderAt(`/approvals/${ID}`, (request) => {
       if (request.url === `/api/approvals/${ID}`) return json(200, detail())
-      if (request.url.includes('/artifacts/')) return new Response('diff --git a/x b/x\n+added', { status: 200 })
       return undefined
     })
-    expect(await screen.findByRole('link', { name: 'https://github.com/example/repo/pull/12' })).toHaveAttribute(
-      'href',
-      'https://github.com/example/repo/pull/12',
-    )
+    expect(await screen.findByTestId('approval-pr-url')).toHaveTextContent('example/repo#12')
     expect(screen.getByTestId('approval-content-version')).toHaveTextContent(HEAD)
-    const gates = screen.getByRole('list', { name: 'Gate の結果' })
-    expect(within(gates).getByText('Gate 2')).toBeVisible()
-    expect(within(gates).getByText('Gate 3')).toBeVisible()
-    expect(await screen.findByLabelText('差分')).toHaveTextContent('+added')
+    expect(screen.queryByRole('heading', { name: 'Gate の結果' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '差分' })).toBeNull()
   })
 
   it('承認の送信に表示中の contentVersion を含める', async () => {

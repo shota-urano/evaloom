@@ -7,30 +7,12 @@ export type Page<T> = { items: T[]; nextCursor: string }
 
 export type ProjectSettings = {
   name: string
-  localRepoPath: string
-  gitRemoteUrl: string
   runnerId: string
-  baseBranch: string
   defaultRole: string
-  reviewRole: string | null
-  contextLocation: string
-  testCommand: string | null
-  testReportFormat: string | null
-  testReportPath: string | null
-  setupCommand: string | null
-  /** setup の許可宛先（`host:port` の一覧、03-registry 3.3.1、Q87）。空配列なら setup もネットワークを全遮断する。 */
-  setupAllowedHosts: string[]
-  copyAllowlist: string[]
-  allowedOperations: Record<string, unknown>
-  approvalPolicy: Record<string, unknown>
-  timeouts: Partial<Record<TimeoutKey, number>>
   /** Linear Team ID と実行先ラベル（15-linear-intake 3.8・5章）。null は未設定。どちらかが null だと Linear から実行されない。 */
   linearTeamId?: string | null
   linearRoutingLabel?: string | null
 }
-
-export const TIMEOUT_KEYS = ['setupSec', 'harnessSec', 'testSec'] as const
-export type TimeoutKey = (typeof TIMEOUT_KEYS)[number]
 
 /** 役割ごとに固定した Harness Profile（GET /api/projects・/api/projects/{id} の harnesses）。 */
 export type ProjectHarness = {
@@ -50,11 +32,8 @@ export type Project = ProjectSettings & {
   harnesses?: ProjectHarness[]
 }
 
-/** POST / PATCH の応答。コピー許可リストに秘密情報らしい名前があると warnings が付く（03 3.3）。 */
-export type SavedProject = Project & { warnings: string[] }
-
-/** 本人が画面から送る項目。reviewRole と contextLocation は Phase 1 では固定なので送らない。 */
-export type ProjectInput = Omit<ProjectSettings, 'reviewRole' | 'contextLocation'>
+/** 本人が画面から送る項目。 */
+export type ProjectInput = ProjectSettings
 
 export type Runner = { id: string; name: string; status: 'online' | 'offline'; lastHeartbeatAt: string | null; createdAt: string }
 
@@ -111,8 +90,8 @@ const harnessPath = (id: string) => `/api/harnesses/${encodeURIComponent(id)}`
 export const registry = {
   listProjects: (api: ApiClient, signal?: AbortSignal) => listAll<Project>(api, '/api/projects', signal),
   getProject: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<Project>(projectPath(id), { signal }),
-  createProject: (api: ApiClient, id: string, input: ProjectInput) => api.post<SavedProject>('/api/projects', { id, ...input }),
-  updateProject: (api: ApiClient, id: string, input: ProjectInput) => api.patch<SavedProject>(projectPath(id), input),
+  createProject: (api: ApiClient, id: string, input: ProjectInput) => api.post<Project>('/api/projects', { id, ...input }),
+  updateProject: (api: ApiClient, id: string, input: ProjectInput) => api.patch<Project>(projectPath(id), input),
   assignHarness: (api: ApiClient, id: string, input: { role: string; harnessId: string; version: string }) =>
     api.post<Assignment>(`${projectPath(id)}/harnesses`, input),
   listRunners: (api: ApiClient, signal?: AbortSignal) => listAll<Runner>(api, '/api/runners', signal),

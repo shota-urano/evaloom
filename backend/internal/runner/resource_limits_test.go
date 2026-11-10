@@ -70,7 +70,7 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, kind := range []sandbox.SandboxKind{sandbox.Harness, sandbox.TestSetup, sandbox.TestRun} {
+			for _, kind := range []sandbox.SandboxKind{sandbox.Harness} {
 				t.Run(string(kind), func(t *testing.T) {
 					limits := config.Container.ResourceLimits(time.Minute)
 					if limits.Time != time.Minute {

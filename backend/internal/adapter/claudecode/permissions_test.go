@@ -125,7 +125,7 @@ func TestClaudeCodeToolPermissionsLaunchArguments(t *testing.T) {
 
 func TestContainerLaunchOnlyAdapterDestinations(t *testing.T) {
 	expected := []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443"}
-	for _, network := range []sandbox.NetworkPolicy{sandbox.NetworkHarness, sandbox.NetworkNone, "", sandbox.NetworkSetup} {
+	for _, network := range []sandbox.NetworkPolicy{sandbox.NetworkHarness, sandbox.NetworkNone, "", sandbox.NetworkPolicy("setup")} {
 		t.Run(string(network), func(t *testing.T) {
 			env := adapter.SandboxEnv{Worktree: "/worktree", ConfigDir: "/config", Env: map[string]string{"CLAUDE_CONFIG_DIR": "/config"}}
 			incoming := []string{"github.com:443", "api.github.com:443", "unrelated.example:80"}
@@ -155,7 +155,7 @@ func TestContainerLaunchOnlyAdapterDestinations(t *testing.T) {
 			})
 			for range 2 {
 				_, err := launch(context.Background(), env, []string{"cli"}, io.Discard, io.Discard)
-				if network == sandbox.NetworkSetup {
+				if network == sandbox.NetworkPolicy("setup") {
 					if err == nil || called != 0 {
 						t.Fatal("setup policy reached Harness Sandbox")
 					}
@@ -163,7 +163,7 @@ func TestContainerLaunchOnlyAdapterDestinations(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if network != sandbox.NetworkSetup && called != 2 {
+			if network != sandbox.NetworkPolicy("setup") && called != 2 {
 				t.Fatalf("Sandbox calls=%d", called)
 			}
 			if !slices.Equal(incoming, []string{"github.com:443", "api.github.com:443", "unrelated.example:80"}) {

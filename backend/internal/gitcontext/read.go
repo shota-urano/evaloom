@@ -13,7 +13,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/safegit"
 )
 
-// File is a context snapshot shared by the project and harness readers.
+// File is a context snapshot read from a pinned commit.
 // ContentHash is the lowercase SHA-256 of the unmodified Git blob bytes.
 // Content holds raw bytes as a Go string; JSON transfers them as base64.
 type File struct {

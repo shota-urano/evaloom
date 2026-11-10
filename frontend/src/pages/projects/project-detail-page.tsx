@@ -1,19 +1,17 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 
 import { preconditionFieldErrors } from '@/api/errors'
-import { operationStatusLabel, registry, shortSha, TIMEOUT_KEYS, type Project } from '@/api/registry'
+import { operationStatusLabel, registry, shortSha, type Project } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { SelectField, TextField } from '@/components/form-field'
 import { Loading, PageTitle } from '@/components/page'
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
-import type { NavigationState } from '@/lib/router'
-import { PROJECT_LABELS as L, TIMEOUT_LABELS } from './labels'
+import { PROJECT_LABELS as L } from './labels'
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -26,17 +24,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 const unset = <span className="text-muted-foreground">未設定</span>
 const mono = (value: string | null) => (value === null || value === '' ? unset : <span className="font-mono">{value}</span>)
-const list = (values: readonly string[]) =>
-  values.length === 0 ? (
-    <span className="text-muted-foreground">なし</span>
-  ) : (
-    <ul className="grid gap-0.5 font-mono">
-      {values.map((value) => (
-        <li key={value}>{value}</li>
-      ))}
-    </ul>
-  )
-const json = (value: Record<string, unknown>) => <pre className="bg-muted/50 rounded-md p-2 font-mono text-xs">{JSON.stringify(value, null, 2)}</pre>
 
 function SettingsCard({ project }: { project: Project }) {
   return (
@@ -46,26 +33,10 @@ function SettingsCard({ project }: { project: Project }) {
       </CardHeader>
       <CardContent>
         <dl className="divide-y">
-          <Row label={L.localRepoPath}>{mono(project.localRepoPath)}</Row>
-          <Row label={L.gitRemoteUrl}>{mono(project.gitRemoteUrl)}</Row>
           <Row label={L.runnerId}>{mono(project.runnerId)}</Row>
-          <Row label={L.baseBranch}>{mono(project.baseBranch)}</Row>
           <Row label={L.defaultRole}>{mono(project.defaultRole)}</Row>
-          <Row label={L.testCommand}>{mono(project.testCommand)}</Row>
-          <Row label={L.testReportFormat}>{mono(project.testReportFormat)}</Row>
-          <Row label={L.testReportPath}>{mono(project.testReportPath)}</Row>
-          <Row label={L.setupCommand}>{mono(project.setupCommand)}</Row>
-          <Row label={L.setupAllowedHosts}>{list(project.setupAllowedHosts)}</Row>
-          <Row label={L.copyAllowlist}>{list(project.copyAllowlist)}</Row>
-          {TIMEOUT_KEYS.map((key) => (
-            <Row key={key} label={TIMEOUT_LABELS[key]}>
-              {project.timeouts[key] === undefined ? <span className="text-muted-foreground">全体の既定値</span> : project.timeouts[key]}
-            </Row>
-          ))}
           <Row label={L.linearTeamId}>{mono(project.linearTeamId ?? null)}</Row>
           <Row label={L.linearRoutingLabel}>{mono(project.linearRoutingLabel ?? null)}</Row>
-          <Row label={L.allowedOperations}>{json(project.allowedOperations)}</Row>
-          <Row label={L.approvalPolicy}>{json(project.approvalPolicy)}</Row>
         </dl>
       </CardContent>
     </Card>
@@ -248,11 +219,10 @@ function AssignmentsCard({ project, onChanged }: { project: Project; onChanged: 
   )
 }
 
-/** Project 詳細（13 3.2）。設定、役割ごとの Harness Profile 割り当て、Project Context の説明。 */
-export function ProjectDetailPage({ id, state }: { id: string; state: NavigationState }) {
+/** Project 詳細（13 3.2）。設定と、役割ごとの Harness Profile 割り当て。 */
+export function ProjectDetailPage({ id }: { id: string }) {
   const { api } = useSession()
   const project = useResource((signal) => registry.getProject(api, id, signal), `project:${id}`)
-  const warnings = state?.warnings ?? []
   const data = project.data
   return (
     <div className="grid gap-6">
@@ -272,35 +242,11 @@ export function ProjectDetailPage({ id, state }: { id: string; state: Navigation
           </>
         }
       />
-      {warnings.length > 0 ? (
-        <Alert variant="warning">
-          <AlertTitle>コピー許可リストに秘密情報を含むおそれのあるファイルがあります</AlertTitle>
-          <AlertDescription>
-            <p>許可リストには秘密情報を含まないファイルだけを載せ、値が必要ならテスト専用のダミー値を使ってください。</p>
-            <ul className="list-disc pl-5 font-mono">
-              {warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      ) : null}
       <ApiErrorAlert error={project.error} onReload={project.reload} />
       {data ? (
         <>
           <AssignmentsCard project={data} onChanged={project.reload} />
           <SettingsCard project={data} />
-          <Card>
-            <CardHeader>
-              <CardTitle>Project Context</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-1 text-sm">
-              <p>
-                固定対象はリポジトリ内の <span className="font-mono">{data.contextLocation}</span> です。Phase 1 は{' '}
-                <span className="font-mono">AGENTS.md</span> が正本のため、この画面からは編集できません。
-              </p>
-            </CardContent>
-          </Card>
         </>
       ) : project.error ? null : (
         <Loading />

@@ -51,7 +51,7 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 		if err := rows.Scan(&column); err != nil {
 			t.Fatal(err)
 		}
-		value := map[string]string{"id": "p1", "local_repo_path": "/repos/p1", "runner_id": "r1"}[column]
+		value := map[string]string{"id": "p1", "runner_id": "r1"}[column]
 		if value == "" {
 			value = "x"
 		}

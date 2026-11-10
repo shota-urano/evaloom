@@ -17,9 +17,7 @@ type executionDetailView struct {
 	Role             *string                        `json:"role"`
 	HarnessID        *string                        `json:"harnessId"`
 	ProfileID        *string                        `json:"profileId"`
-	PRURL            *string                        `json:"prUrl"`
 	ContextRevisions []executionContextRevisionView `json:"contextRevisions"`
-	GateResults      []executionGateResultView      `json:"gateResults"`
 }
 
 type executionContextRevisionView struct {
@@ -29,16 +27,6 @@ type executionContextRevisionView struct {
 	SourcePath      string `json:"sourcePath"`
 	SourceCommitSHA string `json:"sourceCommitSha"`
 	ContentHash     string `json:"contentHash"`
-}
-
-type executionGateResultView struct {
-	ID        string          `json:"id"`
-	Gate      int             `json:"gate"`
-	Result    string          `json:"result"`
-	BaseSHA   string          `json:"baseSha"`
-	TargetSHA string          `json:"targetSha"`
-	Findings  []store.Finding `json:"findings"`
-	CreatedAt Timestamp       `json:"createdAt"`
 }
 
 func getExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
@@ -62,9 +50,8 @@ func getExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 				ProfileVersion:       detail.ProfileVersion, ProfileCommitSHA: detail.ProfileCommitSHA,
 			},
 			TaskID: detail.TaskID, RunnerID: detail.RunnerID, Role: detail.Role,
-			HarnessID: detail.HarnessID, ProfileID: detail.ProfileID, PRURL: detail.PRURL,
+			HarnessID: detail.HarnessID, ProfileID: detail.ProfileID,
 			ContextRevisions: make([]executionContextRevisionView, 0, len(detail.ContextRevisions)),
-			GateResults:      make([]executionGateResultView, 0, len(detail.GateResults)),
 		}
 		for _, field := range []struct {
 			stored *string
@@ -84,17 +71,6 @@ func getExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			view.ContextRevisions = append(view.ContextRevisions, executionContextRevisionView{
 				ID: revision.ID, Layer: revision.Layer, Kind: revision.Kind, SourcePath: revision.SourcePath,
 				SourceCommitSHA: revision.SourceCommitSHA, ContentHash: revision.ContentHash,
-			})
-		}
-		for _, gate := range detail.GateResults {
-			created, err := ParseTimestamp(gate.CreatedAt)
-			if err != nil {
-				WriteError(w, logger, fmt.Errorf("gate result %q: invalid stored timestamp", gate.ID))
-				return
-			}
-			view.GateResults = append(view.GateResults, executionGateResultView{
-				ID: gate.ID, Gate: gate.Gate, Result: gate.Result, BaseSHA: gate.BaseSHA,
-				TargetSHA: gate.TargetSHA, Findings: gate.Findings, CreatedAt: created,
 			})
 		}
 		writeJSON(w, http.StatusOK, view)

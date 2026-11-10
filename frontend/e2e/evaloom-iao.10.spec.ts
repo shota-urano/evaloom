@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base, type Page } from '@playwright/test'
 
 import { loginOwner, run, setupOwner, startEvaloomd, type Evaloomd } from './evaloomd.ts'
-import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-iao.10: Project 登録・編集の Linear Team ID と実行先ラベル、Settings のトリガーのラベル名と接頭辞、
 // Dashboard の Linear の取り込みの状況（15-linear-intake 3.8・5章・6章）。
@@ -43,13 +42,9 @@ async function owner(server: Server, method: string, path: string, body?: unknow
   return text === '' ? undefined : JSON.parse(text)
 }
 
-/** Git リポジトリを用意して Project を API で登録する。 */
+/** Project を API で登録する。 */
 async function registerProject(server: Server, id: string, name: string, linear: { linearTeamId?: string; linearRoutingLabel?: string } = {}) {
-  const repo = createRepo(server.temp, id)
-  await owner(server, 'POST', '/api/projects', {
-    id, name, localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer', ...linear,
-  })
-  return repo
+  await owner(server, 'POST', '/api/projects', { id, name, runnerId: 'local', defaultRole: 'developer', ...linear })
 }
 
 function sessionCookie(value: string) {
@@ -100,19 +95,16 @@ test.use({ timezoneId: TIME_ZONE })
 const field = (page: Page, label: string) => page.locator('[data-field]').filter({ has: page.getByLabel(label, { exact: true }) })
 const detailRow = (page: Page, label: string) => page.locator('dl > div').filter({ has: page.getByText(label, { exact: true }) }).locator('dd')
 
-async function fillRepository(page: Page, id: string, name: string, repo: { path: string; url: string }) {
+async function fillRequired(page: Page, id: string, name: string) {
   await page.getByLabel('Project ID').fill(id)
   await page.getByLabel('名称').fill(name)
-  await page.getByLabel('ローカルリポジトリのパス').fill(repo.path)
-  await page.getByLabel('Git リポジトリ URL').fill(repo.url)
   await page.getByLabel('Runner').selectOption('local')
 }
 
 test('Project の登録で Linear Team ID と実行先ラベルを保存し、詳細と編集画面に表示する', async ({ page, server }) => {
-  const repo = createRepo(server.temp, 'linear-alpha')
   await page.goto('/projects')
   await page.getByRole('link', { name: 'プロジェクトを登録' }).click()
-  await fillRepository(page, 'linear-alpha', 'Linear Alpha', repo)
+  await fillRequired(page, 'linear-alpha', 'Linear Alpha')
   await page.getByLabel('Linear Team ID').fill('TEAM-ENG')
   await page.getByLabel('実行先ラベル').fill('repo:linear-alpha')
   await page.getByRole('button', { name: '登録' }).click()
@@ -140,10 +132,9 @@ test('Project の登録で Linear Team ID と実行先ラベルを保存し、�
 
 test('同じ Linear Team ID と実行先ラベルの組を別の Project に登録すると、409 の内容がフォームに出る', async ({ page, server }) => {
   await registerProject(server, 'linear-owner', 'Linear Owner', { linearTeamId: 'TEAM-DUP', linearRoutingLabel: 'repo:shared' })
-  const repo = createRepo(server.temp, 'linear-second')
 
   await page.goto('/projects/_new')
-  await fillRepository(page, 'linear-second', 'Linear Second', repo)
+  await fillRequired(page, 'linear-second', 'Linear Second')
   await page.getByLabel('Linear Team ID').fill('TEAM-DUP')
   await page.getByLabel('実行先ラベル').fill('repo:shared')
   await page.getByRole('button', { name: '登録' }).click()

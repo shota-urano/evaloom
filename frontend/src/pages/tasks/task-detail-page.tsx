@@ -17,12 +17,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Loading, PageTitle } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { useExecutionStatusEvents, type BlockedEvent, type StatusChanged } from '@/hooks/use-execution-events'
+import { useExecutionStatusEvents, type StatusChanged } from '@/hooks/use-execution-events'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { cn } from '@/lib/utils'
-import { type ArtifactSource } from './block'
-import { BlockReview } from './block-review'
 import { ExecutionLog } from './execution-log'
 import { HeldReview } from './held-review'
 import { heldCause } from './intake'
@@ -31,7 +29,8 @@ import { LinearIssueLink } from './linear-issue-link'
 import { TaskStatusBadge } from './task-list-page'
 
 /** 成果物の一覧。成果物（artifacts）の一覧を返す本人用 API は仕様（01 5.1）に無いので、取得元を差し替えられるようにしておく。 */
-export type { ArtifactRef, ArtifactSource } from './block'
+export type ArtifactRef = { id: string; kind: string }
+export type ArtifactSource = (execution: ExecutionDetail) => readonly ArtifactRef[] | null
 const NO_ARTIFACT_LIST: ArtifactSource = () => null
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -74,15 +73,6 @@ function OverviewCard({ task, projectLink }: { task: TaskDetail; projectLink: Re
             <span className="text-muted-foreground text-xs">{task.linear.url}</span>
           </Row>
         ) : null}
-        <Row label="PR">
-          {task.prUrl ? (
-            <a href={task.prUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">
-              {task.prUrl}
-            </a>
-          ) : (
-            none
-          )}
-        </Row>
         <Row label="本文">
           <div className="whitespace-pre-wrap">{task.body}</div>
         </Row>
@@ -176,57 +166,12 @@ function ContextTable({ execution }: { execution: ExecutionDetail }) {
   )
 }
 
-const GATE_RESULT_TONES: Record<string, string> = {
-  pass: 'border-emerald-300 bg-emerald-50 text-emerald-900',
-  blocked: 'border-amber-300 bg-amber-50 text-amber-900',
-  failed: 'border-red-300 bg-red-50 text-red-900',
-}
-
-function GateResults({ execution }: { execution: ExecutionDetail }) {
-  if (execution.gateResults.length === 0) return <p className="text-muted-foreground text-sm">検証結果はまだありません。</p>
-  return (
-    <ul className="grid gap-3">
-      {[...execution.gateResults]
-        .sort((a, b) => a.gate - b.gate || a.createdAt.localeCompare(b.createdAt))
-        .map((gate) => (
-          <li key={gate.id} className="rounded-md border p-3" aria-label={`Gate ${gate.gate}`}>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">Gate {gate.gate}</span>
-              <span className={cn('rounded-md border px-2 py-0.5 font-mono text-xs', GATE_RESULT_TONES[gate.result] ?? 'bg-muted')}>{gate.result}</span>
-              <span className="text-muted-foreground font-mono text-xs">
-                {shortSha(gate.baseSha)} → {shortSha(gate.targetSha)}
-              </span>
-            </div>
-            {gate.gate === 2 ? (
-              <p className="text-muted-foreground mt-2 text-xs">実行数・skip 数・確認方法（ID による照合か件数による確認か）は、Execution 詳細の API が返さないため表示できません。</p>
-            ) : null}
-            {gate.findings.length > 0 ? (
-              <ul className="mt-2 grid gap-1 text-sm">
-                {gate.findings.map((finding, index) => (
-                  <li key={index}>
-                    <span className="font-mono text-xs">
-                      {finding.path}
-                      {finding.line > 0 ? `:${finding.line}` : ''}
-                    </span>{' '}
-                    <span className="text-muted-foreground font-mono text-xs">[{finding.rule}]</span> {finding.message}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-muted-foreground mt-2 text-xs">Finding はありません。</p>
-            )}
-          </li>
-        ))}
-    </ul>
-  )
-}
-
 function Artifacts({ execution, source }: { execution: ExecutionDetail; source: ArtifactSource }) {
   const artifacts = source(execution)
   if (artifacts === null) {
     return (
       <p className="text-muted-foreground text-sm">
-        成果物（差分・テストレポートなど）の一覧を返す API が無いため、ここには一覧を出せません。保存済みのログは上のログ欄で表示します。
+        成果物の一覧を返す API が無いため、ここには一覧を出せません。保存済みのログは上のログ欄で表示します。
       </p>
     )
   }
@@ -253,14 +198,9 @@ function FreshConfirm({ busy, onConfirm, onCancel }: { busy: boolean; onConfirm:
   )
 }
 
-/** タスクも最新の Execution も blocked のとき、確認画面を出す。 */
-function isBlocked(task: TaskDetail | undefined, latest: ExecutionHistoryItem | undefined): boolean {
-  return task?.status === 'blocked' && latest?.status === 'blocked'
-}
-
 type Props = { id: string; artifactSource?: ArtifactSource }
 
-/** タスク詳細（13 3.3）。概要、Execution 履歴、ログ、固定した Context、検証結果、成果物、中止・再実行。 */
+/** タスク詳細（13 3.3）。概要、Execution 履歴、ログ、固定した Context、成果物、中止・再実行。 */
 export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props) {
   const { api } = useSession()
   const task = useResource((signal) => tasks.get(api, id, signal), `task:${id}`)
@@ -273,14 +213,6 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     (signal) => (selected ? tasks.getExecution(api, selected.id, signal) : Promise.resolve(undefined)),
     `execution:${selected?.id ?? ''}`,
   )
-  // Blocked のときは最新の Execution の Gate 結果から Block の確認画面を作る（13 3.4）。表示中の Execution とは別に読む。
-  const blockedExecution = isBlocked(task.data, latest) ? latest : undefined
-  const blockDetail = useResource(
-    (signal) => (blockedExecution ? tasks.getExecution(api, blockedExecution.id, signal) : Promise.resolve(undefined)),
-    `block:${blockedExecution?.id ?? ''}`,
-  )
-  // Execution ごとの最新の blocked イベント（Block の ID と原因）。
-  const [blockEvents, setBlockEvents] = useState<Record<string, BlockedEvent>>({})
   // 取り込みで保留したタスクは Project が決まっていないことがある（projectId が空、15 3.6）。
   const projectId = task.data?.projectId ?? ''
   const project = useResource((signal) => (projectId ? registry.getProject(api, projectId, signal) : Promise.resolve(undefined)), `project:${projectId}`)
@@ -293,7 +225,6 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     reloadAll.current = () => {
       task.reload()
       execution.reload()
-      blockDetail.reload()
     }
   })
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -305,7 +236,7 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
     if (current && (event.to === current.status || event.reason === 'task_created')) return
     clearTimeout(timer.current)
     timer.current = setTimeout(() => reloadAll.current(), 100)
-  }, (event) => setBlockEvents((previous) => ({ ...previous, [event.executionId]: event })))
+  })
 
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<unknown>(null)
@@ -396,29 +327,6 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
       <ApiErrorAlert error={actionError} onReload={task.reload} />
       {task.error ? <ApiErrorAlert error={task.error} onReload={task.reload} /> : null}
 
-      {blockedExecution ? (
-        blockDetail.data && blockDetail.data.id === blockedExecution.id ? (
-          <BlockReview
-            api={api}
-            taskId={data.id}
-            execution={blockDetail.data}
-            event={blockEvents[blockedExecution.id]}
-            artifactSource={artifactSource}
-            onDecided={(message) => {
-              setActionError(null)
-              setNotice(message)
-              setChosen(null)
-              task.reload()
-            }}
-            onReload={() => reloadAll.current()}
-          />
-        ) : blockDetail.error ? (
-          <ApiErrorAlert error={blockDetail.error} onReload={blockDetail.reload} />
-        ) : (
-          <Loading />
-        )
-      ) : null}
-
       {held ? <HeldReview cause={held} busy={busy} onCancel={cancel} /> : null}
 
       <OverviewCard task={data} projectLink={projectLink} />
@@ -437,9 +345,6 @@ export function TaskDetailPage({ id, artifactSource = NO_ARTIFACT_LIST }: Props)
             <>
               <Section title={`固定した Context（#${selected.seq}）`}>
                 <ContextTable execution={execution.data} />
-              </Section>
-              <Section title={`検証結果（#${selected.seq}）`}>
-                <GateResults execution={execution.data} />
               </Section>
               <Section title={`成果物（#${selected.seq}）`}>
                 <Artifacts execution={execution.data} source={artifactSource} />

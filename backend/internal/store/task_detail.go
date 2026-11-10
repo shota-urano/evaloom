@@ -19,7 +19,6 @@ type TaskExecution struct {
 	ProfileCommitSHA *string
 	StartedAt        *string
 	FinishedAt       *string
-	PRURL            *string
 }
 
 // GetTaskDetail reads the task and its complete history in a single SQLite
@@ -30,7 +29,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class, e.profile_version, e.profile_commit_sha,
-		e.started_at, e.finished_at, e.pr_url
+		e.started_at, e.finished_at
 		FROM tasks t LEFT JOIN executions e ON e.task_id = t.id
 		WHERE t.id = ? ORDER BY e.seq ASC`, id)
 	if err != nil {
@@ -45,7 +44,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 			&result.ShortName, &result.TaskType, &result.CollaborationMode, &result.Status, &result.CreatedAt, &result.UpdatedAt,
 			&result.Source, &result.IntakeBlockCause, &result.LinearIdentifier, &result.LinearURL,
 			&executionID, &seq, &mode, &status, &e.ErrorClass, &e.ProfileVersion, &e.ProfileCommitSHA,
-			&e.StartedAt, &e.FinishedAt, &e.PRURL); err != nil {
+			&e.StartedAt, &e.FinishedAt); err != nil {
 			return result, err
 		}
 		if executionID.Valid {

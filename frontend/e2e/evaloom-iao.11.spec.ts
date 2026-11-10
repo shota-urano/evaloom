@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base } from '@playwright/test'
 
 import { loginOwner, run, setupOwner, startEvaloomd, type Evaloomd } from './evaloomd.ts'
-import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-iao.11: タスク一覧・詳細での Linear 起因のタスクの表示（Issue へのリンク、保留の理由。15-linear-intake 3.6・3.6.3・5章）。
 //
@@ -135,10 +134,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const evaloomd = await startWithoutLinearKey(binary, db, home)
       try {
         const server = { db, temp, origin: evaloomd.origin, cookie: await login(evaloomd.origin) }
-        const repo = createRepo(temp, PROJECT.id)
-        await owner(server, 'POST', '/api/projects', {
-          id: PROJECT.id, name: PROJECT.name, localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-        })
+        await owner(server, 'POST', '/api/projects', { id: PROJECT.id, name: PROJECT.name, runnerId: 'local', defaultRole: 'developer' })
         for (const task of [STARTED, HELD_ROUTING, HELD_CRITERIA]) seedLinearTask(db, task)
         await provide(server)
       } finally {

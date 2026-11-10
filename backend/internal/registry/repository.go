@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,7 +15,7 @@ import (
 )
 
 // The specifications do not set a Git validation deadline. Bound the complete
-// validation, including remote branch discovery, to keep requests finite.
+// validation to keep requests finite.
 const repositoryValidationTimeout = 10 * time.Second
 
 // RepositoryInput describes a repository on the local Runner's machine.
@@ -24,11 +23,7 @@ type RepositoryInput struct {
 	Path         string
 	URL          string
 	Remote       string // Defaults to origin.
-	BaseBranch   string // Empty for a Harness, which has no Base Branch.
 	WorktreeRoot string
-	// Runner supplies a stage-scoped, authenticated read transport. Registry
-	// registration keeps the ordinary local validation path.
-	ReadRemote func(context.Context, string, ...string) ([]byte, error)
 }
 
 // Detail identifies the failed check using the API's field/reason format.
@@ -62,8 +57,7 @@ func rejected(field, reason string) error {
 // in the Control Plane, under the same OS user as the local Runner. A remote
 // Runner must execute this function on its own machine under its execution user.
 // URL comparison is exact; transport aliases and rewritten URLs are not treated
-// as equivalent. Base Branch is checked against the remote, not cached refs.
-// The caller must enforce Project path uniqueness transactionally when saving.
+// as equivalent.
 func ValidateRepository(ctx context.Context, input RepositoryInput) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -139,41 +133,6 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	}
 	if input.URL == "" || strings.TrimSuffix(url, "\n") != input.URL {
 		return "", rejected("url", "remote_mismatch")
-	}
-	if input.BaseBranch != "" {
-		ref := "refs/heads/" + input.BaseBranch
-		if _, err := repositoryGit(ctx, realPath, "check-ref-format", ref); err != nil {
-			return "", gitError(parentCtx, "baseBranch", "invalid_branch")
-		}
-		var refs string
-		var err error
-		if input.ReadRemote != nil {
-			var out []byte
-			out, err = input.ReadRemote(ctx, realPath, "ls-remote", "--heads", "--refs", "--", input.URL, ref)
-			refs = string(out)
-		} else {
-			refs, err = repositoryGit(ctx, realPath, "ls-remote", "--exit-code", "--heads", "--refs", "--", remote, ref)
-		}
-		if err != nil {
-			if parentCtx.Err() != nil {
-				return "", parentCtx.Err()
-			}
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-				return "", rejected("baseBranch", "not_found")
-			}
-			return "", rejected("baseBranch", "remote_unavailable")
-		}
-		found := false
-		for _, line := range strings.Split(refs, "\n") {
-			_, name, ok := strings.Cut(line, "\t")
-			if ok && name == ref {
-				found = true
-			}
-		}
-		if !found {
-			return "", rejected("baseBranch", "not_found")
-		}
 	}
 	return realPath, nil
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"modernc.org/sqlite"
-	"modernc.org/sqlite/lib"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const registryTime = "2026-10-25T00:00:00Z"
@@ -37,14 +37,6 @@ func TestRegistryPersistsAcrossOpen(t *testing.T) {
 	if runner != "mac-mini" || project != "project-a" || harness != "codex-developer" ||
 		version != "1.2.0" || sha != strings.Repeat("a", 40) || status != "provisional" || definition != `{"profileVersion":"1.2.0"}` {
 		t.Fatalf("unexpected persisted assignment: %q %q %q %q %q %q %q", runner, project, harness, version, sha, status, definition)
-	}
-	var review, command, format, report, setup sql.NullString
-	if err := db.QueryRow(`SELECT review_role, test_command, test_report_format,
-		test_report_path, setup_command FROM projects WHERE id = 'project-a'`).Scan(&review, &command, &format, &report, &setup); err != nil {
-		t.Fatal(err)
-	}
-	if review.Valid || command.Valid || format.Valid || report.Valid || setup.Valid {
-		t.Fatal("optional project settings must preserve NULL")
 	}
 }
 
@@ -82,10 +74,8 @@ func TestRegistryRejectsInvalidForeignKeys(t *testing.T) {
 	}{
 		{
 			"project runner",
-			`INSERT INTO projects (` + registryProjectColumns + `) SELECT 'bad', name, '/bad', git_remote_url, 'missing',
-			base_branch, default_role, review_role, context_location, test_command,
-			test_report_format, test_report_path, setup_command, copy_allowlist,
-			allowed_operations, approval_policy, timeouts,
+			`INSERT INTO projects (id, name, runner_id, default_role,
+			created_at, updated_at) SELECT 'bad', name, 'missing', default_role,
 			created_at, updated_at FROM projects WHERE id = 'project-a'`,
 			`UPDATE projects SET runner_id = 'missing' WHERE id = 'project-a'`,
 			`DELETE FROM runners WHERE id = 'mac-mini'`,
@@ -143,8 +133,6 @@ func TestRegistryAssignmentKeyAndSharedHarness(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO project_harnesses VALUES ('project-a', 'other-role', 'codex-developer', 'profile-2', ?)`, registryTime); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`UPDATE projects SET local_repo_path = '/repos/project-a' WHERE id = 'project-b'`)
-	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 }
 
 func TestRegistryRejectsUnknownEnumValues(t *testing.T) {
@@ -189,44 +177,40 @@ func seedRegistry(t *testing.T, db *sql.DB) {
 	}
 }
 
-const registryProjectColumns = `id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-	default_role, review_role, context_location, test_command, test_report_format,
-	test_report_path, setup_command, copy_allowlist,
-	allowed_operations, approval_policy, timeouts, created_at, updated_at`
-
 // insertRegistryProject also seeds databases migrated only partway, for the
-// upgrade tests. NOT NULL columns that later migrations dropped (JSON lists in
-// the 0001 schema) receive an empty list so the row survives the upgrade.
+// upgrade tests. It fills the columns the projects table has at that point,
+// including development columns that a later migration removed.
 func insertRegistryProject(t *testing.T, db *sql.DB, id, path string) {
 	t.Helper()
-	known := map[string]bool{}
-	for _, column := range strings.Split(registryProjectColumns, ",") {
-		known[strings.TrimSpace(column)] = true
+	values := map[string]any{
+		"id": id, "name": "Project", "local_repo_path": path,
+		"git_remote_url": "https://example.invalid/project.git", "runner_id": "mac-mini",
+		"base_branch": "main", "default_role": "developer", "context_location": "AGENTS.md",
+		"copy_allowlist": "[]", "test_file_patterns": "[]", "setup_allowed_hosts": "[]",
+		"allowed_operations": "{}", "approval_policy": `{"mergePullRequest":"require_approval","version":1}`,
+		"timeouts": `{"harnessSec":600}`, "created_at": registryTime, "updated_at": registryTime,
 	}
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') WHERE "notnull" = 1 AND dflt_value IS NULL`)
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') ORDER BY cid`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var legacyColumns, legacyValues string
+	var columns []string
+	var args []any
 	for rows.Next() {
 		var column string
 		if err := rows.Scan(&column); err != nil {
 			t.Fatal(err)
 		}
-		if !known[column] {
-			legacyColumns += ", " + column
-			legacyValues += ", '[]'"
+		if value, ok := values[column]; ok {
+			columns = append(columns, column)
+			args = append(args, value)
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO projects (`+registryProjectColumns+legacyColumns+`)
-		VALUES (?, 'Project', ?, 'https://example.invalid/project.git', 'mac-mini',
-		'main', 'developer', NULL, 'AGENTS.md', NULL, NULL, NULL, NULL,
-		'[]', '{}', '{"mergePullRequest":"require_approval","version":1}',
-		'{"setupSec":60,"harnessSec":600,"testSec":120}', ?, ?`+legacyValues+`)`,
-		id, path, registryTime, registryTime)
+	_, err = db.Exec(`INSERT INTO projects (`+strings.Join(columns, ", ")+`) VALUES (?`+
+		strings.Repeat(", ?", len(columns)-1)+`)`, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

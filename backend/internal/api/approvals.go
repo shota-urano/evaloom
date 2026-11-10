@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -50,18 +52,8 @@ type approvalView struct {
 	CreatedAt         Timestamp       `json:"createdAt"`
 }
 
-type approvalArtifactView struct {
-	ID        string    `json:"id"`
-	SHA256    string    `json:"sha256"`
-	SizeBytes int64     `json:"sizeBytes"`
-	CreatedAt Timestamp `json:"createdAt"`
-}
-
 type approvalDetailView struct {
 	approvalView
-	PRURL         *string                   `json:"prUrl"`
-	GateResults   []executionGateResultView `json:"gateResults"`
-	DiffArtifacts []approvalArtifactView    `json:"diffArtifacts"`
 }
 
 func newApprovalView(a store.Approval) (approvalView, error) {
@@ -165,29 +157,7 @@ func approvalDetail(ctx context.Context, db *sql.DB, id string) (approvalDetailV
 	if err != nil {
 		return approvalDetailView{}, err
 	}
-	view := approvalDetailView{approvalView: base, PRURL: detail.PRURL,
-		GateResults:   make([]executionGateResultView, 0, len(detail.GateResults)),
-		DiffArtifacts: make([]approvalArtifactView, 0, len(detail.DiffArtifacts)),
-	}
-	for _, gate := range detail.GateResults {
-		created, err := ParseTimestamp(gate.CreatedAt)
-		if err != nil {
-			return view, fmt.Errorf("gate result %q: invalid stored timestamp", gate.ID)
-		}
-		view.GateResults = append(view.GateResults, executionGateResultView{
-			ID: gate.ID, Gate: gate.Gate, Result: gate.Result, BaseSHA: gate.BaseSHA,
-			TargetSHA: gate.TargetSHA, Findings: gate.Findings, CreatedAt: created,
-		})
-	}
-	for _, artifact := range detail.DiffArtifacts {
-		created, err := ParseTimestamp(artifact.CreatedAt)
-		if err != nil {
-			return view, fmt.Errorf("artifact %q: invalid stored timestamp", artifact.ID)
-		}
-		view.DiffArtifacts = append(view.DiffArtifacts, approvalArtifactView{
-			ID: artifact.ID, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, CreatedAt: created,
-		})
-	}
+	view := approvalDetailView{approvalView: base}
 	return view, nil
 }
 
@@ -412,4 +382,10 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 		return "", err
 	}
 	return renewed, tx.Commit()
+}
+
+// fullCommitSHA accepts a lowercase, full SHA-1 or SHA-256 commit ID.
+func fullCommitSHA(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil && (len(value) == 40 || len(value) == 64) && value == strings.ToLower(value)
 }

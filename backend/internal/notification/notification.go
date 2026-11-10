@@ -15,11 +15,9 @@ type Notification struct {
 	TaskID      string
 	Title       string
 	Status      model.ExecutionStatus
-	PRURL       string
 	ErrorClass  model.ErrorClass
 	Reason      string
 	Stage       model.ExecutionStatus
-	BlockCause  model.BlockCause
 }
 
 type Notifier interface {

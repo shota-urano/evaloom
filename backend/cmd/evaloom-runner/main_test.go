@@ -83,7 +83,7 @@ func TestRunWaitsUntilShutdown(t *testing.T) {
 	}
 }
 
-func TestRunExecutesClaimAndReportsMissingHarnessAuthentication(t *testing.T) {
+func TestRunReportsClaimFailedWithoutStageFramework(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var reports []runner.ExecutionResult
@@ -98,7 +98,7 @@ func TestRunExecutesClaimAndReportsMissingHarnessAuthentication(t *testing.T) {
 				return
 			}
 			claimed = true
-			io.WriteString(w, `{"execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"},"worktree":null}`)
+			io.WriteString(w, `{"execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"}}`)
 		case strings.HasSuffix(req.URL.Path, "/result"):
 			var result runner.ExecutionResult
 			if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
@@ -126,7 +126,7 @@ func TestRunExecutesClaimAndReportsMissingHarnessAuthentication(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("claimed execution was not stopped and reported")
 	}
-	if len(reports) != 2 || reports[0].Status != "preparing" || reports[1].FromStatus != "preparing" || reports[1].Status != "failed" || reports[1].ErrorClass != "config_error" {
+	if len(reports) != 1 || reports[0].FromStatus != "claimed" || reports[0].Status != "failed" || reports[0].ErrorClass != "config_error" {
 		t.Fatalf("reports=%+v", reports)
 	}
 }
@@ -146,18 +146,12 @@ func writeConfig(t *testing.T, endpoint string) string {
 	if err := os.WriteFile(tokenFile, []byte(base64.RawURLEncoding.EncodeToString(make([]byte, 32))), 0600); err != nil {
 		t.Fatal(err)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	config := runner.Config{
 		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
 		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
-		HarnessAuthFiles:        map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
-		GitHubAppPrivateKeyFile: filepath.Join(home, ".config", "evaloom", "publisher.pem"),
-		Container:               runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
-		CommitAuthor:            runner.CommitAuthorConfig{Name: "evaloom", Email: "bot@example.test"},
-		DefaultTimeouts:         runner.DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+		HarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		Container:        runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
+		DefaultTimeouts:  runner.DefaultTimeouts{HarnessSec: 3600},
 	}
 	content, err := json.Marshal(config)
 	if err != nil {
@@ -236,16 +230,15 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 		}
 	}
 	for _, key := range []string{
-		"runnerId", "controlPlaneUrl", "tokenFile", "worktreeRoot", "dataDir", "harnessAuthFiles", "githubAppPrivateKeyFile",
+		"runnerId", "controlPlaneUrl", "tokenFile", "worktreeRoot", "dataDir", "harnessAuthFiles",
 		"container", "container.runtimePath", "container.image", "container.proxyImage", "container.proxyBinary",
-		"commitAuthor", "commitAuthor.name", "commitAuthor.email",
 	} {
 		cases = append(cases, invalidConfig{"missing/" + key, func(config map[string]any) {
 			object, field := configObject(config, key)
 			delete(object, field)
 		}})
 	}
-	for _, section := range []string{"", "container", "commitAuthor", "defaultTimeouts"} {
+	for _, section := range []string{"", "container", "defaultTimeouts"} {
 		cases = append(cases, invalidConfig{"unknown/" + section, func(config map[string]any) {
 			object := config
 			if section != "" {
@@ -254,7 +247,7 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 			object["secret-unknown-key"] = "secret-value"
 		}})
 	}
-	for _, key := range []string{"tokenFile", "worktreeRoot", "dataDir", "githubAppPrivateKeyFile", "container.runtimePath", "container.proxyBinary", "harnessAuthFiles.codex"} {
+	for _, key := range []string{"tokenFile", "worktreeRoot", "dataDir", "container.runtimePath", "container.proxyBinary", "harnessAuthFiles.codex"} {
 		cases = append(cases, invalidConfig{"relative/" + key, func(config map[string]any) {
 			object, field := configObject(config, key)
 			object[field] = "secret-relative-path"

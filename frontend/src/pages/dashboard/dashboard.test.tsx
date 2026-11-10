@@ -34,7 +34,6 @@ const task = (id: string, status: TaskSummary['status'], executionStatus: string
   createdAt: '2026-10-27T00:00:00Z',
   updatedAt: '2026-10-27T00:00:00Z',
   latestExecution: { id: `e-${id}`, seq: 1, mode: 'continue', status: executionStatus, errorClass },
-  prUrl: null,
 })
 
 const TASKS = [

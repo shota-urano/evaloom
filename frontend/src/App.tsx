@@ -42,7 +42,7 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   const edit = matchPath('/projects/:id/edit', path)
   if (edit) return <ProjectEditPage key={edit.id} id={edit.id} />
   const detail = matchPath('/projects/:id', path)
-  if (detail) return <ProjectDetailPage key={detail.id} id={detail.id} state={state} />
+  if (detail) return <ProjectDetailPage key={detail.id} id={detail.id} />
   if (path === '/harnesses') return <HarnessListPage />
   if (path === HARNESS_NEW_PATH) return <HarnessNewPage />
   const harnessEdit = matchPath('/harnesses/:id/edit', path)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -132,7 +131,7 @@ func TestDockerNetworkIsolation(t *testing.T) {
 		RuntimeEnv: runtimeEnv, AllowEnv: []string{"PATH"}, ControlTimeout: 15 * time.Second,
 		WorktreeRoot: filepath.Join(root, "worktree"), GitDirRoot: filepath.Join(root, "git"), ConfigDirRoot: filepath.Join(root, "config"),
 		HostHome: filepath.Join(root, "home"), DataDir: filepath.Join(root, "data"), RunnerTokenFile: filepath.Join(root, "token")}
-	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+	for _, kind := range []SandboxKind{Harness} {
 		t.Run(string(kind), func(t *testing.T) {
 			var output bytes.Buffer
 			config.Stdout, config.Stderr = &output, &output
@@ -146,13 +145,6 @@ func TestDockerNetworkIsolation(t *testing.T) {
 				spec.ConfigDir = config.ConfigDirRoot
 				spec.Network = NetworkHarness
 				spec.AllowedDestinations = []string{"example.com:443"}
-			}
-			if kind == TestSetup {
-				spec.Network = NetworkSetup
-				spec.AllowedDestinations = []string{"example.com:443"}
-			}
-			if kind == TestRun {
-				spec.Network = NetworkNone
 			}
 			// First prove nc works against a listener within this namespace.
 			// Then attempt raw TCP and CONNECT for all forbidden destinations.
@@ -198,28 +190,5 @@ done
 	}
 	if accesses.Load() != 0 {
 		t.Fatalf("host Control API canary accepted %d sandbox connections", accesses.Load())
-	}
-	// Optional positive Internet probe. Set a known reachable public HTTPS
-	// host:port; it must be explicitly provided, never a production default.
-	if destination := os.Getenv("EVALOOM_SANDBOX_TEST_ALLOWED_DESTINATION"); destination != "" {
-		t.Run("allowed_destination", func(t *testing.T) {
-			var output bytes.Buffer
-			config.Stdout, config.Stderr = &output, &output
-			container, err := NewContainer(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			spec := SandboxSpec{Kind: TestSetup, Worktree: config.WorktreeRoot, Network: NetworkSetup, AllowedDestinations: []string{destination},
-				Limits: ResourceLimits{CPU: 1, MemoryBytes: 128 * 1024 * 1024, Time: 60 * time.Second}}
-			script := `response=$({ /bin/busybox printf 'CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' "$1" "$1"; /bin/busybox sleep 5; } | /bin/busybox nc -w 5 127.0.0.1 18080); echo "$response"; case "$response" in *"200 Connection Established"*) exit 0;; *) exit 1;; esac`
-			p, err := container.Run(context.Background(), spec, []string{"/bin/sh", "-c", script, "probe", destination})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := p.Wait(); err != nil {
-				t.Fatalf("allowed destination: %v\n%s", err, output.String())
-			}
-			t.Log(fmt.Sprintf("allowed %s: %s", destination, output.String()))
-		})
 	}
 }

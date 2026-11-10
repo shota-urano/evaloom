@@ -55,13 +55,7 @@ export function ProjectListPage() {
                   プロジェクト
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  ローカルリポジトリのパス
-                </th>
-                <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   Runner
-                </th>
-                <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  Base Branch
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   割り当て中の Harness と版
@@ -77,9 +71,7 @@ export function ProjectListPage() {
                     </Link>
                     <div className="text-muted-foreground font-mono text-xs">{project.id}</div>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs break-all">{project.localRepoPath}</td>
                   <td className="px-4 py-3 font-mono text-xs">{project.runnerId}</td>
-                  <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{project.baseBranch}</td>
                   <td className="px-4 py-3">
                     <AssignmentSummary harnesses={project.harnesses ?? []} />
                   </td>
