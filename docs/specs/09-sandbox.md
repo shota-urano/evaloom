@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 50cfe87
 written: 2026-11-10
 範囲: 段ごとの Sandbox（Prepare・Work・Check・Publish）と Proposal Sandbox の隔離の条件、隔離方式の選択、段ごとのネットワーク、鍵とモデル API の認証情報の受け渡し、通話口、固定版の読み出し
 ---
