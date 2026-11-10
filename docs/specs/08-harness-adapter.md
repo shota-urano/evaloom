@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: f2fa5b7
 written: 2026-11-10
 範囲: ミクロハーネス（Claude Code・Codex）の Adapter。共通インターフェース、Capability、作業の段の流れ、質問の後の同じセッションの再開、専用設定環境と認証ファイル、Tool Permissions の変換、Adapter の登録
 ---

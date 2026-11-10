@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: c693cc8
 written: 2026-11-10
 範囲: タスクの完了・失敗・タイムアウトと、本人の判断待ちの macOS 通知、Execution の無い出来事の Dashboard 通知、通知経路を後から足せる送信口
 ---

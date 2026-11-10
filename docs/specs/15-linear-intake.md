@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: c6a3356
 written: 2026-11-10
 範囲: Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、振り分けのラベルによる振り分けと振り分けの提案、Linear からの自動タスク作成、ai-ready の取り外しと Issue のキャンセルによる中止
 ---

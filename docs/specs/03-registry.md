@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 84584a3
 written: 2026-11-10
 範囲: Project の登録（6項目）、振り分けの表（routes）の登録、スペシャルハーネスの登録、Profile の版の登録と検証、承認を省く設定の検証
 ---

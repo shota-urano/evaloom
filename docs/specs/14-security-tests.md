@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 5a00fb9
 written: 2026-11-10
 範囲: 自動のセキュリティテスト（設定環境の分離、段ごとの隔離、隔離突破、出す直前の問い合わせ、ハーネス契約への適合、振り分けの提案の隔離）
 ---
