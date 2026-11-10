@@ -1,314 +1,419 @@
-# Evaloom システム全体仕様書（Overview） — Phase 1（Phase 2 は下書き）
+---
+status: draft
+written: 2026-11-10
+範囲: Evaloom の仕様全体の索引。一言での説明、構成と段、詳細仕様の一覧、受け入れ条件と担当仕様、確定値、スコープ外、用語、要確認
+---
 
-**一次情報源**: [`../requirements.md`](../requirements.md)（基本仕様書 v1.2）
-**対象範囲**: 19章「Phase 1：基本実行基盤」と 20章「Phase 1 受け入れ条件 1〜18」、および全Phase共通の条件31。Phase 2（19章「Phase 2：Linear連携」、受け入れ条件19〜22）は 15〜17 に下書き（status: draft）がある
-**本書の役割**: Phase 1 詳細仕様書群と Phase 2 の下書きの索引。各詳細仕様書のファイル名はこの文書の「3. 詳細仕様書一覧」から辿る。
+# Evaloom システム全体仕様書（Overview）
+
+**正本**: [`../vision.md`](../vision.md)（Evaloom とは） ｜ **一次情報源**: [`../requirements.md`](../requirements.md)（基本仕様書） ｜ **スペシャルハーネスとの約束**: [`../contract/harness-contract-v1.md`](../contract/harness-contract-v1.md)（以下「契約」）
+**本書の役割**: 詳細仕様書群の索引。各詳細仕様書のファイル名はこの文書の「3. 詳細仕様書一覧」から辿る。
+
+この文書は [`../vision.md`](../vision.md) と本人決定（2026-11-10、[`../vision-alignment.md`](../vision-alignment.md) 5章・6章）に合わせて、目標の形で書き直した。いまの実装との食い違いは扱わない（本人決定 1）。開発の仕事の中身（06 worktree、10 検証 Gate、11 Git Publisher など）は、スペシャルハーネス software-engineer へ移し、この仕様群からは消した。移す前の版は evaloom の git 履歴（main の 558549e）で読める。
 
 ---
 
 ## 1. プロダクト概要
 
-Evaloom は、複数のAIハーネス（Phase 1 では Codex と Claude Code）を中央から統括し、本人が管理画面から作った開発タスクを、プロジェクトに割り当てた Harness Profile で実行して PR を作るシステムである。
+Evaloom は、Linear などから仕事を受け取り、どの Project またはスペシャルハーネスに頼むかを決めて振り分け、結果を返すオーケストラである。仕事そのもの（準備し、作業し、確かめ、出す）はスペシャルハーネスが行う（vision.md 1章）。
 
-Phase 1 の前提は次のとおり。
+開発の仕事だけを扱うものではない。開発、X の運用、調査など、種類の違う仕事を同じ仕組みで扱う。
 
-- 利用者は本人1人。管理画面と Control API は Mac mini のループバック（127.0.0.1）からだけ接続できる（requirements 15.5）。
-- タスクの入力元は管理画面からの手動指示だけ。Linear 連携は Phase 2（requirements 19章）。
-- 扱うタスクは開発タスク（コード変更と PR 作成）だけ（requirements 8.1）。
-- 危険な操作は指示で禁じず、権限の外に置く（requirements 1.3 原則13）。ハーネスは commit まで、push と PR 作成は Runner の Git Publisher が行い、PR のマージは本人が GitHub 上で行う（requirements 8.5）。
-- 評価基盤は Phase 3。Phase 1 の Profile はすべて「暫定運用」として登録・実行する（requirements 11.1、20章 条件23）。
+前提は次のとおりとする。
+
+- 利用者は本人1人。管理画面と Control API は Mac mini のループバックで待ち受け、別端末からは Tailscale のネットワークの中だけで届く（[`18-remote-access.md`](./18-remote-access.md)）。
+- 仕事の入口は Linear（API の定期照会）と管理画面からの手動作成である。ほかの入口（定期実行など）は後で足す。
+- 振り分けは Issue のラベルで決める。決まらないときは AI が振り分け先を提案し、本人が管理画面で承認してから実行する（本人決定 2）。
+- 本人の判断（振り分けの承認、操作の承認、止まった仕事の続行、作業中の AI の質問への回答）は、管理画面だけで受け付ける。Linear には「管理画面で判断待ち」と知らせるだけにする（本人決定 3）。
+- 危険な操作は指示で禁じず、権限の外に置く（requirements 1.3 原則13）。鍵を受け取る段（準備と出す）は AI を呼ばないプログラムだけで動かし、作業の段には鍵を渡さない（本人決定 4・7）。
+- 評価基盤は後の Phase。それまで Profile はすべて「暫定運用」として登録・実行する（requirements 11.1、条件23）。
+- この仕様群の範囲は requirements 19章の Phase 1・Phase 2 と、v1.3 で足した Phase 2A（software-engineer への切り替えと旧部品の削除、条件は requirements の Q190、19 の 3.11・Q170）・Phase 2B（開発以外のスペシャルハーネスを1つ、requirements の Q191）である。
 
 ## 2. システム全体像
 
 ### 2.1 構成要素と対応仕様
 
 ```
-                 本人（Mac mini 本体のブラウザ）
-                          │  127.0.0.1 のみ / 本人用認証 + CSRF
+          本人（Mac mini のブラウザ、または tailnet の中の端末）
+                          │  本人用認証 + CSRF          → 18-remote-access.md
                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Management UI (React)                 → 13-management-ui.md   │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ Management UI (React)  本人の判断はすべてここ  → 13-management-ui.md │
+└───────────────────────────────────────────────────────────────┘
                           │ 本人用 API / SSE
                           ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Control Plane (Go, launchd 常駐)        → 01-architecture.md   │
-│  ├ Control API（本人用 / Runner用を分離）→ 01-architecture.md   │
-│  ├ Registry（Project / Harness / Profile）→ 03-registry.md     │
-│  ├ Task / Execution 管理・同時実行制御  → 04-task-lifecycle.md │
-│  ├ Context Builder                     → 07-context.md        │
-│  ├ 通知                                → 12-notification.md   │
-│  └ SQLite (WAL)                        → 02-data-model.md     │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ Control Plane (Go, launchd 常駐)          → 01-architecture.md  │
+│  ├ Linear Poller・振り分け・振り分けの提案の管理 → 15, 19          │
+│  ├ Registry（Project・スペシャルハーネス・Profile・振り分けの表）→ 03 │
+│  ├ Task / Execution 管理・同時実行制御・判断待ち → 04             │
+│  ├ 承認の作成・照合・消費                  → 17                  │
+│  ├ Context Builder・記録                  → 07, 19              │
+│  ├ 通知・Linear への書き戻し              → 12, 16              │
+│  └ SQLite (WAL)                          → 02-data-model.md     │
+└───────────────────────────────────────────────────────────────┘
                           ▲ Runner 用 API（Runner から pull のみ）
-                          │ Runner 専用の認証情報
-┌──────────────────────────────────────────────────────────────┐
-│ Trusted Runner (Go, launchd 常駐)       → 05-runner.md         │
-│  ├ Worktree 準備                       → 06-worktree.md       │
-│  ├ Harness Adapter (Codex / Claude)    → 08-harness-adapter.md│
-│  ├ 検証 Gate 2・3                      → 10-verification-gates.md │
-│  └ Git Publisher（push / PR 作成）      → 11-git-publisher.md  │
-│                                                                │
-│  ┌ Harness Sandbox ┐  ┌ Test Sandbox ┐  → 09-sandbox.md        │
-│  │ AI がコード変更 │  │ setup / test │                         │
-│  └────────────────┘  └──────────────┘                         │
-└──────────────────────────────────────────────────────────────┘
+                          │
+┌───────────────────────────────────────────────────────────────┐
+│ Trusted Runner (Go, launchd 常駐)          → 05-runner.md        │
+│  ├ 作業領域の用意・Profile の固定版の読み出し → 05, 19            │
+│  ├ ミクロハーネスの Adapter（Claude Code・Codex）→ 08             │
+│  ├ 鍵の保管と段への受け渡し                → 01 の 3.5           │
+│  └ 段の通話口の中継（出す直前の問い合わせ） → 01, 契約 7.4         │
+│                                                                 │
+│  段ごとの Sandbox（段ごとに作り直す）       → 09-sandbox.md       │
+│  ┌ Prepare（任意）───┐ ┌ Work ─────────────┐ ┌ Check ──────┐ │
+│  │ AI なし           │ │ ミクロハーネス     │ │ AI なし     │ │
+│  │ 読み取り用の鍵    │ │ 鍵なし             │ │ 鍵なし      │ │
+│  │ 宣言した宛先だけ  │ │ モデルの API だけ  │ │ 接続なし    │ │
+│  └───────────────────┘ └────────────────────┘ └─────────────┘ │
+│  ┌ Publish ──────────┐ ┌ Proposal（振り分けの提案）┐          │
+│  │ AI なし           │ │ AI（ミクロハーネス）      │          │
+│  │ 宣言した鍵と宛先  │ │ 鍵なし。モデルの API だけ │          │
+│  └───────────────────┘ └───────────────────────────┘          │
+└───────────────────────────────────────────────────────────────┘
 
+段の中身（何を準備し、作業し、確かめ、出すか）はスペシャルハーネスが決める → 契約
 隔離・権限境界を突破できないことの自動テスト → 14-security-tests.md
 ```
 
-### 2.2 タスク処理フロー（Phase 1）と担当仕様
+### 2.2 仕事の流れと担当仕様
 
-requirements 8.2 の16工程のうち、Phase 1 で動かす工程と担当仕様の対応。
+vision.md 3章の流れと、担当する仕様の対応である。
 
-| # | 工程（requirements 8.2） | Phase 1 の扱い | 担当仕様 |
+| 段 | 中身 | 担当 | 担当仕様 |
 |---|---|---|---|
-| 1 | イベント受信 | 管理画面からの手動タスク作成のみ | 04 |
-| 2 | 認証・署名確認 | 本人用 API の認証 + CSRF | 01 |
-| 3 | 重複排除 | 手動タスク作成の二重送信防止 | 04 |
-| 4 | プロジェクト特定 | 本人が作成時に指定 | 04 |
-| 5 | Context 取得 | Execution 確定時に版を固定 | 07 |
-| 6 | タスク分類 | 行わない（Default Harness で実行） | 04 |
-| 7 | Harness 選択 | プロジェクトの Default Harness | 03, 04 |
-| 8 | Collaboration Mode 判定 | Solo 固定 | 04 |
-| 9 | Worktree 準備 | 実施 | 06 |
-| 10 | Harness 実行（commit まで） | 実施 | 08, 09 |
-| 11 | テスト・検証 | Gate 2・3（Gate 1 は Q36 で廃止） | 10 |
-| 12 | push・PR 作成 | Git Publisher | 11 |
-| 13 | 評価 | 行わない（Phase 3） | - |
-| 14 | 承認 | 行わない（Phase 2）。PR マージは本人が GitHub で行う | - |
-| 15 | 結果返却 | 管理画面表示 + macOS 通知 | 12, 13 |
-| 16 | 履歴保存 | 実施 | 02, 05 |
+| 1 入る | Linear から仕事を受け取る。手動でも作れる | Evaloom | 15、04 |
+| 2 振り分ける | ラベルで振り分け先を決める。決まらなければ AI が提案し、本人が管理画面で承認する | Evaloom | 15、19、03 |
+| 3 順番待ち | 同時に動かす数を制御し、状態を管理する。claim の時点でスペシャルハーネスの版を固定する | Evaloom | 04、05、19 |
+| 準備（任意） | 作業に要るものをそろえる。AI を呼ばない | スペシャルハーネス（場所は Evaloom） | 契約、19、09 |
+| 4 作業する | 仕事の中身をこなす。作業中の AI の質問は本人の判断待ちにする | スペシャルハーネス（場所は Evaloom） | 契約、19、05、07、08、09 |
+| 5 確かめる | 結果が基準を満たすかを、固定版のプログラムで確かめる | スペシャルハーネス（場所は Evaloom） | 契約、19、09 |
+| 7 承認する | スペシャルハーネスが宣言した操作を、操作の直前に本人が管理画面で承認する | Evaloom | 17、13 |
+| 6 出す | 結果を外に出す。操作の直前に毎回 Evaloom に問い合わせる | スペシャルハーネス（場所と鍵は Evaloom） | 契約、19、17、09 |
+| 8 返す | Linear へのコメントと状態の変更、通知、管理画面、記録 | Evaloom | 16、12、13、19 |
+
+番号は vision.md 3章のものである。承認（7）は出す（6）の前に行う。
 
 ## 3. 詳細仕様書一覧（索引）
 
-この表が有効な仕様の唯一の一覧である。下流（spec-to-beads）はこの表に載る仕様だけを使う。15〜17 は Phase 2 の下書き（status: draft）で、本人が /spec-review で確認するまでタスク化しない。
+この表が有効な仕様の唯一の一覧である。下流（spec-to-beads）はこの表に載る仕様だけを使う。status が draft の仕様は、本人が /spec-review で確認するまでタスク化しない。06・10・11 は欠番とする（software-engineer へ移した）。
 
 | # | ファイル名 | 範囲 | 担当 |
 |---|-----------|------|------|
-| 01 | [`01-architecture.md`](./01-architecture.md) | 整合性アンカー：構成要素、プロセス、権限境界、認証、API 一覧と共通規約 | Backend |
-| 02 | [`02-data-model.md`](./02-data-model.md) | 整合性アンカー：Phase 1 のテーブル、状態の列挙値、共通契約・Profile のスキーマ | Backend |
-| 03 | [`03-registry.md`](./03-registry.md) | Project / Harness / Harness Profile の登録、パス検証、版の固定、割り当て | Backend |
-| 04 | [`04-task-lifecycle.md`](./04-task-lifecycle.md) | 手動タスク作成、タスク・Execution の状態遷移、同時実行制御、再起動時の回収、再実行、中止、Blocked からの続行 | Backend |
-| 05 | [`05-runner.md`](./05-runner.md) | Local Runner の pull ループ、Execution の実行手順、ログ収集、タイムアウト、キャンセル | Backend |
-| 06 | [`06-worktree.md`](./06-worktree.md) | worktree の作成・再利用、開始点 SHA の記録、セットアップコマンド、コピー許可リスト | Backend |
-| 07 | [`07-context.md`](./07-context.md) | 4階層 Context の Phase 1 での扱い、Context Builder、AGENTS.md と設定の固定 | Backend |
-| 08 | [`08-harness-adapter.md`](./08-harness-adapter.md) | 共通契約、Adapter インターフェース、Codex / Claude Code Adapter、ハーネスの専用設定環境 | Backend |
-| 09 | [`09-sandbox.md`](./09-sandbox.md) | Harness Sandbox / Test Sandbox の隔離条件、ネットワークポリシー、秘密情報の扱い | Backend |
-| 10 | [`10-verification-gates.md`](./10-verification-gates.md) | テスト実行と既存テストの照合（Gate 2）、SHA と作業ツリーの検証（Gate 3）。Gate 1 は Q36 で廃止 | Backend |
-| 11 | [`11-git-publisher.md`](./11-git-publisher.md) | 検証済み commit の push と PR 作成、ブランチ命名、再実行時の PR の扱い | Backend |
-| 12 | [`12-notification.md`](./12-notification.md) | macOS 通知（完了・失敗・Blocked・タイムアウト） | Backend |
-| 13 | [`13-management-ui.md`](./13-management-ui.md) | Phase 1 の管理画面（Dashboard / Projects / Harnesses / Tasks / Settings） | Frontend |
-| 14 | [`14-security-tests.md`](./14-security-tests.md) | 設定環境の分離テスト、権限境界テスト、隔離突破テスト、Gate の受け入れテスト | Backend |
-| 15 | [`15-linear-intake.md`](./15-linear-intake.md) | Phase 2（draft）：Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、Team + Label ルーティング、自動タスク作成、ai-ready の取り外し・キャンセルによる中止 | Backend, Frontend |
-| 16 | [`16-linear-feedback.md`](./16-linear-feedback.md) | Phase 2（draft）：Linear Issue への結果返却（コメント）、Issue の状態（Workflow state）の変更（Q51 見直し）、受け入れ条件の記入依頼、送信の再試行、循環トリガーの防止 | Backend |
-| 17 | [`17-approval.md`](./17-approval.md) | Phase 2（draft）：承認対象と承認ポリシー、承認と操作内容の結び付け（head SHA が変わったら無効）、承認後の PR マージ、ベースブランチへの直接 push（Q35） | Backend, Frontend |
-| 18 | [`18-remote-access.md`](./18-remote-access.md) | 別端末からの管理画面の利用（Tailscale のネットワーク内だけ）、ID とパスワードによる本人のログイン、端末ごとに3日保つセッション、一回限りのログイン URL の廃止 | Backend, Frontend |
-| 19 | [`19-harness-work-kinds.md`](./19-harness-work-kinds.md) | 開発以外の仕事の Phase（draft）：仕事の種類（code / artifact）、ハーネスリポジトリの共通の形、確かめる部分と出す部分、Linear からハーネスへの直接の振り分け、受け入れ条件を任意にする設定、ハーネスの記録と次の実行への受け渡し | Backend, Frontend |
-
-**Evaloom の中心と、開発の仕事の部品（2026-11-09、本人の方針。Q101）**: Evaloom は開発の仕事だけを扱うシステムではない。上の仕様は次の3つに分かれる。
-
-| 分類 | 仕様 | 扱い |
-|---|---|---|
-| どの仕事でも使う中心 | 01, 02, 03, 04, 12, 13, 14, 15, 16, 17, 18, 19 | Evaloom の中心として保つ |
-| どの仕事でも使うが、いまは開発の例に寄せて書いてある | 05, 07, 08, 09 | 開発以外の仕事を載せるときに、開発に寄った書き方を一般的な書き方に直す |
-| 開発の仕事だけで使う部品 | 06, 10, 11 | 本来は開発ハーネスの「確かめて出す部分」。開発以外の仕事を載せるときに、開発の部品として切り離す |
-
-03 と 15 は Project（Git リポジトリ）を振り分け先の前提にしている点だけ、開発に寄っている。直し方は Q101 に書き、形は 19（draft）にまとめた。
+| 01 | [`01-architecture.md`](./01-architecture.md) | 整合性アンカー。構成要素・段ごとの Sandbox・鍵の保管・プロセス配置・権限境界・認証・API 一覧と共通規約 | Backend |
+| 02 | [`02-data-model.md`](./02-data-model.md) | 整合性アンカー。テーブル、状態の列挙値、段の名前、イベント種別、エラー分類、本人の判断待ちの原因。スペシャルハーネスとの入出力と Profile 定義のスキーマはハーネス契約を参照する | Backend |
+| 03 | [`03-registry.md`](./03-registry.md) | Project の登録（6項目）、振り分けの表（routes）の登録、スペシャルハーネスの登録、Profile の版の登録と検証、承認を省く設定の検証 | Backend |
+| 04 | [`04-task-lifecycle.md`](./04-task-lifecycle.md) | 手動タスク作成、タスクと Execution の状態遷移、claim と同時実行制御、段の報告、本人の判断の後の再開、中止、再起動時の回収、再実行 | Backend |
+| 05 | [`05-runner.md`](./05-runner.md) | Trusted Runner の pull ループ、heartbeat、段の枠（claim → prepare → work → check → 承認 → publish）の実行、Profile の中身の読み出し、作業領域のルート、鍵の受け渡し、通話口の中継、ログ収集と機密情報の除外、タイムアウトと中止、振り分けの提案の実行 | Backend |
+| 07 | [`07-context.md`](./07-context.md) | 文脈の4つの層（global・harness・task・reported）の置き場所と固定方法、記録の受け渡しの固定、Context Builder、Execution Context の形 | Backend |
+| 08 | [`08-harness-adapter.md`](./08-harness-adapter.md) | ミクロハーネス（Claude Code・Codex）の Adapter。共通インターフェース、Capability、作業の段の流れ、質問の後の同じセッションの再開、専用設定環境と認証ファイル、Tool Permissions の変換、Adapter の登録 | Backend |
+| 09 | [`09-sandbox.md`](./09-sandbox.md) | 段ごとの Sandbox（Prepare・Work・Check・Publish）と Proposal Sandbox の隔離の条件、隔離方式の選択、段ごとのネットワーク、鍵とモデル API の認証情報の受け渡し、通話口、固定版の読み出し | Backend |
+| 12 | [`12-notification.md`](./12-notification.md) | タスクの完了・失敗・タイムアウトと、本人の判断待ちの macOS 通知、Execution の無い出来事の Dashboard 通知、通知経路を後から足せる送信口 | Backend |
+| 13 | [`13-management-ui.md`](./13-management-ui.md) | 管理画面（ログイン、Dashboard、本人の判断待ち、Projects、振り分けの表、スペシャルハーネスと版、記録の一覧、Tasks、Settings）、SSE によるログ表示 | Frontend |
+| 14 | [`14-security-tests.md`](./14-security-tests.md) | 自動のセキュリティテスト（設定環境の分離、段ごとの隔離、隔離突破、出す直前の問い合わせ、ハーネス契約への適合、振り分けの提案の隔離） | Backend |
+| 15 | [`15-linear-intake.md`](./15-linear-intake.md) | Linear API の定期照会（ポーリング）による ai-ready 付き Issue の取得、付与・取り外しの検出と重複排除、振り分けのラベルによる振り分けと振り分けの提案、Linear からの自動タスク作成、ai-ready の取り外しと Issue のキャンセルによる中止 | Backend, Frontend |
+| 16 | [`16-linear-feedback.md`](./16-linear-feedback.md) | Linear Issue への結果の返却（コメント）、「管理画面で判断待ち」の知らせ、Issue の状態（Workflow state）の変更、本人が管理画面で承認した振り分けのラベルの追加、受け入れ条件の記入依頼、送信の再試行、Evaloom 自身の更新による再起動（循環トリガー）の防止 | Backend |
+| 17 | [`17-approval.md`](./17-approval.md) | 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止 | Backend, Frontend |
+| 18 | [`18-remote-access.md`](./18-remote-access.md) | 別端末からの管理画面の利用（Tailscale のネットワーク内だけで公開）、ID とパスワードによる本人のログイン、再起動をまたいで端末ごとに保つセッション（有効期限3日）、一回限りのログイン URL の廃止 | Backend, Frontend |
+| 19 | [`19-routing-and-stages.md`](./19-routing-and-stages.md) | 振り分け先（Project とスペシャルハーネス）、スペシャルハーネスの登録と版の固定、段と段ごとの安全な場所、中身の識別子と承認の結び付け、鍵の受け渡し、承認の宣言、結果の受け取りと返却、記録の受け渡し、受け入れ条件の要否、同時実行の単位、software-engineer への切り替えの順番 | Backend, Frontend |
 
 ### 3.1 受け入れ条件（requirements 20章）と担当仕様
 
-| 条件 | 内容（要約） | 担当仕様 |
+requirements 20章は、次の方針で書き直した（vision-alignment.md 5章の推奨）。条件12・15・18 は開発の仕事の条件であるため、software-engineer の受け入れ条件へ移し、requirements では欠番にした。Evaloom 側では、その代わりに「スペシャルハーネスが契約に合っているかのテスト」を受け入れ条件にする。そのほかの条件は、開発に寄った言葉（worktree、PR、Team）を段の言葉に直した。条件32〜36 は v1.3 で足した。
+
+| 条件 | 内容（要約。書き直しの方針で読む） | 担当仕様 |
 |---|---|---|
-| 1 | 複数のローカル Git プロジェクトを登録できる | 03 |
-| 2 | 中央・ハーネス・プロジェクトを独立リポジトリで管理できる | 03 |
+| 1 | 複数の Project を登録できる | 03 |
+| 2 | Evaloom・スペシャルハーネス・対象のリポジトリを独立したリポジトリで管理できる | 03、契約 4章 |
 | 3 | 各リポジトリを任意のディレクトリへ配置できる | 03 |
-| 4 | 共有ハーネスを複数プロジェクトから利用できる | 03 |
-| 5 | プロジェクトごとに Profile の版を固定できる | 03, 04 |
-| 6 | Codex と Claude Code を指定の worktree で実行できる | 06, 08 |
-| 7 | 実行状態とログを確認できる | 05, 13 |
-| 8 | Global / Harness / Project / Task Context を分離できる | 07 |
-| 9 | 各ハーネスが共通契約に従って実行できる | 08 |
-| 10 | 再起動後に未完了タスクを検出し、中断を失敗として記録できる | 04 |
-| 11 | ハーネスが本人のグローバル設定を読み込んでいないことをテストで確認できる | 08, 14 |
-| 12 | ハーネスの commit から Runner が PR を作成できる | 11 |
-| 13 | 同時実行の上限（全体2本・同一プロジェクト1本）が守られる | 04 |
-| 14 | ハーネスから Control API・DB・GitHub 書き込み認証情報にアクセスできないことをテストで確認できる | 09, 14 |
-| 15 | テストした commit と同じ commit だけが push される | 10, 11 |
-| 16 | セットアップとテストのコードから管理 DB・Control API・秘密情報にアクセスできないことをテストで確認できる | 09, 14 |
+| 4 | 1つのスペシャルハーネスを複数の Project から使える | 03 |
+| 5 | Project ごとに Profile の版を固定できる | 03、04 |
+| 6 | Codex と Claude Code のそれぞれを、作業の段で作業領域に対して実行できる | 05、08 |
+| 7 | 実行状態とログを確認できる | 05、13 |
+| 8 | Global・Harness・Task の文脈を分離できる。スペシャルハーネスが固定した文脈を記録できる | 07 |
+| 9 | 各スペシャルハーネスが契約に従って実行でき、契約に合わない結果は `contract_error` になる | 04、08、19、契約 |
+| 10 | 再起動後に未完了のタスクを検出し、中断した Execution を失敗として記録できる | 04 |
+| 11 | 作業の段のミクロハーネスが本人のグローバル設定を読み込んでいないことを、テストで確認できる | 08、14 |
+| 12 | software-engineer へ移す（commit から PR を作る）。Evaloom 側は、試験用の最小のスペシャルハーネスで、準備から出すまでが契約どおりに動くことをテストで確認する（19 の Q173） | 14、19 |
+| 13 | 同時実行の上限（全体2本、振り分け先ごとに1本）が守られる | 04、19 |
+| 14 | 作業の段と確かめる段から Control API・管理 DB・鍵にアクセスできないことを、テストで確認できる | 09、14 |
+| 15 | software-engineer へ移す（テストした commit だけを push する）。Evaloom 側は、承認したときと出す直前で中身の識別子が違うと操作が許可されないことを確かめる（条件22 と同じテスト） | 17、14 |
+| 16 | 準備・確かめる・出す段のプログラムから、管理 DB・Control API・宣言していない鍵にアクセスできないことを、実際にアクセスを試みるテストで確認できる | 09、14 |
 | 17 | （欠番。Q36 で Gate 1 を廃止した） | - |
-| 18 | 既存テストが欠けて実行された場合に push せず止まる | 10, 14 |
-| 31 | 新しい Adapter・モデルの追加で中央のコードは登録処理以外を変更しない | 08 |
+| 18 | software-engineer へ移す（既存のテストが欠けたら push しない）。Evaloom 側の条件は無い | - |
+| 19 | Issue のラベルから振り分け先を識別できる。Linear Team は使わない | 15、19 |
+| 20 | Linear Project を使わなくても自動実行できる | 15 |
+| 21 | スペシャルハーネスが宣言した操作を、本人の承認の対象にできる | 17 |
+| 22 | 承認した後に中身の識別子が変わると、その承認では操作が実行されない | 17 |
+| 31 | 新しいスペシャルハーネス、ミクロハーネスの Adapter、モデルを追加するとき、Evaloom のコードは登録処理以外を変更しない | 03、08 |
+| 32 | 振り分けのラベルが決まらない Issue は、AI が振り分け先を提案し、本人が管理画面で承認するまで実行しない | 15、04、13 |
+| 33 | リポジトリを持たない仕事を、スペシャルハーネスへ直接振り分けて実行できる | 03、04、19 |
+| 34 | Project を6項目で登録でき、それ以外の項目は受け付けない | 03 |
+| 35 | 鍵が準備の段（読み取り用だけ）と出す段にだけ渡り、作業の段と確かめる段には無い。鍵を受け取る段からモデルの API へ接続できない | 09、14 |
+| 36 | 本人の判断は管理画面だけで受け付ける。Linear で本人が振り分けのラベルを付けたことは、普通の振り分けとして扱う | 13、15、16 |
 
-### 3.2 Phase 2 の受け入れ条件（requirements 20章）と担当仕様（draft）
-
-| 条件 | 内容（要約） | 担当仕様 |
-|---|---|---|
-| 19 | Linear Team と Issue Label から実行対象を識別できる | 15 |
-| 20 | Linear Project を使用しなくても自動実行できる | 15 |
-| 21 | 重要操作を人間の承認対象にできる | 17 |
-| 22 | 承認した後に対象の内容（PR の head commit SHA など）が変わると、その承認では操作が実行されない | 17 |
-
-Phase 2 で動かす requirements 8.2 の工程: 1 イベント受信（Linear API の定期照会）・2 確認（Linear からの受信口を持たないため署名の確認は無く、API キーで Linear に接続する）・3 重複排除（同じ付与から二重にタスクを作らない）・4 プロジェクト特定（15）、14 承認（17）、15 結果返却（16）。Phase 2 の実装に入るときに書き換える必要がある確定済みの仕様は、15 の 3.9 と 17 の 3.10 にまとめた。
+条件23〜30 は評価・改善・AI 協議の Phase の条件で、この仕様群の範囲に入れない（5章）。
 
 ## 4. 確定済みの初期値（横断・変更禁止）
 
-requirements で確定している値。各詳細仕様にも再掲する。変更するときは requirements を先に改訂する。
+確定している値。各詳細仕様にも再掲する。変更するときは vision.md か requirements を先に改訂する。
 
 | 項目 | 値 | 出典 | 再掲先 |
 |---|---|---|---|
+| Project が持つもの | 名前、振り分けのラベル、頼むスペシャルハーネス、渡す値、承認を省く設定、Runner の6つだけ | vision.md 4章、本人決定 6 | 02, 03 |
+| 振り分けのキー | ラベルだけ。Linear Team は使わない | 本人決定 2 | 02, 15, 19 |
+| 段 | `prepare`（任意）→ `work` → `check` → `publish` | 本人決定 7 | 01, 02, 19 |
+| 鍵を受け取る段 | `prepare`（読み取り用だけ）と `publish`。どちらも AI を呼ばない | 本人決定 4・7 | 01, 09, 19 |
+| 本人の判断の場所 | 管理画面だけ | 本人決定 3 | 02, 13, 16 |
+| 確かめたもの＝出すもの | スペシャルハーネスが見張る。Evaloom は承認と中身の識別子の結び付けだけを見る | 本人決定 5 | 02, 17, 19 |
 | 同時実行の上限（全体） | 2本 | 8.7 | 04, 05 |
-| 同時実行の上限（同一プロジェクト） | 1本 | 8.7 | 04, 05 |
+| 同時実行の上限（振り分け先ごと） | 1本 | 8.7 | 04, 19 |
 | 自動リトライ回数 | 0回 | 8.3 | 04 |
-| 1タスクあたりのアクティブな PR | 最大1本 | 8.5 | 11 |
-| ブランチ名 | `evaloom/<task-id>-<短い名前>` | 8.5 | 06, 11 |
-| Collaboration Mode | Solo 固定（Phase 5 まで） | 8.2 | 04 |
-| タスク分類 | 行わない。Default Harness で実行 | 8.2 | 04 |
-| task_steps | Phase 1 では使わない | 8.2 | 02, 04 |
-| 接続元 | 127.0.0.1 のみ | 2.2, 15.5 | 01 |
-| Profile の版 | SemVer を正本とし、Git commit SHA を記録。公開済みタグの付け替え禁止 | 5.4 | 02, 03 |
-| Profile の状態 | Phase 1 はすべて暫定運用 | 11.1 | 03 |
-| Project Context の正本 | 各プロジェクトリポジトリの `AGENTS.md` | 7.1 | 07 |
-| テストコマンドの正本 | Project Registry（Evaloom 側）。ハーネスは変更できない | 8.5 | 03, 10 |
-| worktree へのファイルコピー | 許可リストのみ。`.env` 等を無条件にコピーしない | 5.1, 8.6 | 03, 06 |
-| setup / test の実行場所 | Test Sandbox（ホスト上で直接実行しない） | 8.6, 15.7 | 06, 09, 10 |
-| push・PR 作成の実行者 | Runner（Git Publisher）。ハーネスは commit まで | 8.5 | 08, 11 |
-| PR マージ | 本人が GitHub 上で行う。Evaloom はマージしない | 8.5, 15.3 | 11 |
-| 再起動で中断した Execution | 失敗（中断）として記録し、タスクを Failed。worktree は保持 | 8.3 | 04, 06 |
-| Profile・Context の版の固定時点 | Runner がタスクを取得した時点 | 8.3 | 04, 07 |
-| 承認対象操作（15.3） | Phase 1 では Runner の実行権限で拒否する | 15.3 | 09 |
-| 通知先（Phase 1） | macOS 通知 | 8.8 | 12 |
-| `users` テーブル | Phase 1 では作らない | 17 | 02 |
+| Collaboration Mode | Solo 固定（AI 協議の Phase まで） | 8.2 | 04 |
+| タスク分類 | 行わない。振り分けはラベルと振り分けの提案で決める | 8.2、本人決定 2 | 04, 15 |
+| task_steps | 使わない | 8.2 | 02, 04 |
+| 待ち受け | `127.0.0.1:<port>` のみ。別端末からは `tailscale serve` の中継だけ | 2.2, 15.5、18 | 01, 18 |
+| Profile の版 | SemVer を正本とし、Git commit SHA を記録。公開済みタグの付け替え禁止 | 5.4、契約 4.2 | 02, 03 |
+| Profile の状態 | 評価基盤ができるまで、すべて暫定運用 | 11.1 | 03 |
+| 文脈の版の固定時点 | Runner がタスクを取得した時点（claim） | 8.3 | 04, 07 |
+| 再起動で中断した Execution | 失敗（中断）として記録し、タスクを Failed。作業領域は保持 | 8.3 | 04 |
+| 通知先 | macOS 通知と Linear | 8.8 | 12, 16 |
+| `users` テーブル | 作らない | 17 | 02 |
 
-## 5. スコープ外（Phase 1 では作らない）
+## 5. スコープ外
 
-次のうち Phase 2 の項目（最初の3つ）は、15〜17 に下書きがある。
-
-- Linear の取り込み（API の定期照会）、Team + Label ルーティング、Linear へのコメント返却（Phase 2）
-- 承認の仕組み（approvals、15.8 の承認と操作内容の結び付け）（Phase 2）
-- 承認ポリシーで PR マージを承認対象から外した Project の、ベースブランチへの直接 push（8.5, 15.3。Phase 2、Q35）
-- 評価（ルーブリック、LLM-as-a-Judge、人間による評価入力、非公開テスト）（Phase 3）
+- 仕事の中身（準備・作業・確かめる・出すで何をするか）。スペシャルハーネスが決める（vision.md 4章）。開発の仕事の中身（worktree、テスト、push、PR、マージ、ブランチ、GitHub CI）は software-engineer が持つ
+- Linear 以外の入口（定期実行など）。後で足す（vision.md 3章）
+- 評価（ルーブリック、LLM-as-a-Judge、人間による評価入力、非公開テスト）（requirements 19章 Phase 3）
 - 改善候補、比較実験、試験運用、Profile のロールバック API（Phase 4）
 - AI 協議（Review / Debate / Adaptive）（Phase 5）
 - Model Intelligence、複数 Runner、Gmail / GitHub 等の連携（Phase 6）
-- 調査・文書タスク（8.1）
 - タスク分類・task_steps（8.2）
 - 利用者管理・`users` テーブル（15.5, 17）
-- 別端末・遠隔からのアクセス（15.5）
-- Evaloom 側での Project Context 管理（7.1。Phase 1 は `AGENTS.md` が正本）
-- 作業開始時点の既存テストを別に固定して再実行する仕組み（8.5 Gate 2）
+- インターネットへの公開（Tailscale Funnel、公開 HTTPS エンドポイント、トンネル）（18）
+- Evaloom 側での対象リポジトリの文脈（Project Context）の管理。スペシャルハーネスが固定して報告し、Evaloom は記録だけを残す（07）
 
 ## 6. 用語
 
+### 6.1 仕事を動かす3つの層（vision.md 2章）
+
+| 呼び名 | 指すもの | 役目 |
+|---|---|---|
+| マクロハーネス | Evaloom | 仕事を受け取り、振り分け、順番を待たせ、本人の判断を取り、結果を返す |
+| スペシャルハーネス | software-engineer など、仕事の種類ごとのやり方一式 | 指示、スキル、準備・確かめる・出すのプログラムを持ち、仕事の中身をこなす |
+| ミクロハーネス | Claude Code、Codex | 指示を受けて、実際に考えて手を動かす AI の道具 |
+
+仕様では単に「ハーネス」と書かない。必ず「スペシャルハーネス」か「ミクロハーネス」と書き分ける。Evaloom は仕様の中では「Evaloom」と書き、「マクロハーネス」は層の関係を説明するところで使う。
+
+### 6.2 段
+
+| 段 | 動かすもの | 鍵 | 外への接続 |
+|---|---|---|---|
+| `prepare`（準備、任意） | スペシャルハーネスの固定版のプログラム（AI なし） | 読み取り用だけ | 宣言した宛先だけ |
+| `work`（作業） | ミクロハーネス | 無し | モデルの API だけ |
+| `check`（確かめる） | スペシャルハーネスの固定版のプログラム（AI なし） | 無し | 無し |
+| `publish`（出す） | スペシャルハーネスの固定版のプログラム（AI なし） | 宣言したもの | 宣言した宛先だけ |
+
+正本は 02 の 4.1 と契約 6.2 である。
+
+### 6.3 振り分けと本人の判断
+
 | 用語 | 意味 |
 |---|---|
-| Control Plane | Control API、Registry、Task 管理、SQLite を持つ中央のプロセス群 |
-| Trusted Runner | ジョブ管理、隔離環境の作成、成果物の検証を行う Runner。ハーネスより強い権限を持つが、本人用 API の認証情報は持たない |
-| Harness Sandbox | AI（Codex・Claude Code）がコードを変更する隔離環境 |
-| Test Sandbox | セットアップコマンドとテストを実行する隔離環境 |
-| Git Publisher | 検証済み commit の push と PR 作成だけを行う構成要素 |
-| Task | 本人が作った1件の作業依頼。複数の Execution を持てる |
-| Execution | Task の1回の実行。Profile と Context の版はこの単位で固定する |
-| Harness Profile | Harness Version、Model ID、Prompt Version などを一体で定義したもの。SemVer で版を管理する |
-| 割り当て（Project Harness） | プロジェクトの役割（developer 等）に Harness と Profile の版を結び付けたもの |
-| 開始点 SHA（base SHA） | worktree 作成時に取得したリモート Base Branch の commit SHA |
-| 検証 SHA | Runner がテストを実行した commit の SHA。push する commit と一致しなければならない |
+| 振り分け先 | Evaloom が仕事を頼む相手。Project か、スペシャルハーネスそのもの |
+| Project | スペシャルハーネスと渡す値などの組。6項目だけを持つ（4章） |
+| 振り分けの表 | ラベルから振り分け先を1つ引く表（02 の routes）。ラベルは `route:` で始まり、表の中で一意 |
+| 振り分けの提案 | ラベルで振り分け先が決まらないとき、AI が鍵の無い隔離（Proposal Sandbox）で振り分け先を1つ選んだもの。本人が承認するまで実行しない |
+| 本人の判断待ち | 本人が管理画面で判断するのを待っている行（02 の owner_decisions）。種類は振り分け（`route`）、承認（`approval`）、続行（`blocked`）、質問への回答（`question`） |
+| 承認 | 本人が管理画面で、スペシャルハーネスが宣言した操作と中身の識別子に対して与える許可。1回だけ使え、有効期限がある |
+| 承認を省く設定 | Project ごとに、`waivable: true` と宣言された操作の承認を省く設定 |
+
+### 6.4 そのほかの用語
+
+| 用語 | 意味 |
+|---|---|
+| Control Plane | Control API、Registry、振り分け、Task 管理、承認、SQLite を持つ中央のプロセス |
+| Trusted Runner | 作業領域と段ごとの Sandbox を作り、鍵を保管して段に渡す Runner。本人用 API の認証情報と管理 DB への直接アクセスは持たない |
+| 段ごとの Sandbox | Prepare・Work・Check・Publish の段ごとに Runner が作り直す隔離環境。振り分けの提案には Proposal Sandbox を使う |
+| ハーネス契約 | Evaloom とスペシャルハーネスの約束（`docs/contract/harness-contract-v1.md`）。版を付ける |
+| Profile | スペシャルハーネスのある版の宣言（`evaloom/profile.yaml`）と、その版の commit の中身。SemVer で版を管理する |
+| 渡す値（params） | Project がスペシャルハーネスに渡す JSON。中身は Evaloom が解釈しない |
+| 作業領域 | タスクごとに Runner が用意するディレクトリ。準備と作業の段が書き、確かめると出すの段は読むだけ |
+| 中身の識別子（contentId） | スペシャルハーネスが決める、確かめた中身・出す中身を表す文字列。Evaloom は承認の結び付けにだけ使う |
+| 記録 | スペシャルハーネスの成果物のうち、Evaloom が保存して同じスペシャルハーネスの次の仕事に参考として渡すもの |
+| Task | 1件の仕事の依頼。複数の Execution を持てる |
+| Execution | Task の1回の実行。Profile の版と文脈はこの単位で固定する |
 | 暫定運用 | 評価仕様を持たない Profile の状態（11.1） |
-| Blocked | 自動では先へ進めず、本人の確認を待つ状態 |
 
-## 7. 要確認リスト（Phase 1 全体と Phase 2 の下書き。Q42〜Q67 が Phase 2、Q68 以降は Phase 1 の工程表の接続（05 の 3.9））
+## 7. 要確認リスト
 
-requirements で確定しておらず、本仕様書群で「実装時に確定」または「提案」とした事項。各詳細仕様の該当節にも同じ内容を書いている。
+requirements で確定しておらず、本仕様書群で「実装時に確定」または「案」とした事項。各詳細仕様の該当節にも同じ内容を書いている。
+
+### 7.1 この書き直しで立てた要確認（Q110〜Q124）
+
+| # | 事項 | 案 | 記載仕様 |
+|---|---|---|---|
+| Q110 | 鍵の割り当ての単位 | 鍵は `<スペシャルハーネス ID>/<slot>` ごとに1つ保管する。Project ごとに別の鍵が要る場合は後で足す（Project の6項目を増やさないため） | 契約、01 |
+| Q111 | 振り分けを提案する AI をどこで、どのミクロハーネスで動かし、同時実行にどう数えるか | 全体設定 `routing.defaultRunnerId` の Runner が、鍵なし・モデルの API だけの Proposal Sandbox で動かす。使うミクロハーネスとモデルは全体設定 `routing.proposer`。全体2本の枠に数え、振り分け先ごとの枠には数えない | 02、15 |
+| Q112 | 本人が、AI の提案と別の振り分け先を選べるか | 選べる。管理画面で、判断の時点の振り分けの表から1つ選ぶ。表に無い振り分け先は選べない（先に振り分けの表へ足す） | 02、13、15 |
+| Q113 | スペシャルハーネスへ直接振り分けた仕事の承認を省く設定と Runner | 承認は省けない。Runner は全体設定 `routing.defaultRunnerId` | 契約、02、17 |
+| Q114 | 段の通話口の方式 | Runner が段ごとに作る Unix ドメインソケットを Sandbox の中に置く。コンテナと macOS VM の両方で使えるかを実装時に確かめ、使えなければ別のファイル記述子で同じ形の要求と応答をやり取りする | 契約、01 |
+| Q115 | 渡す値の検証 | Profile が `params.schema` を持つなら、Project の登録・更新のときと claim のときに形だけ確かめる。中身の意味は確かめない | 契約、02、03 |
+| Q116 | 鍵の保管場所 | Runner のデータディレクトリの鍵ファイル（1つの鍵に1ファイル、0600）。macOS のキーチェーンは、launchd の常駐から確実に読めることを実測するまで使わない | 01 |
+| Q117 | 本人が振り分けの提案を却下したときのタスク | `cancelled` にする。もう一度実行したいときは、Linear で振り分けのラベルを付けるか、`ai-ready` を外して付け直す | 02、15 |
+| Q118 | Tool Permissions の置き場所 | Profile 定義の `stages.work.toolPermissions` に移す。本人は、Project に固定する版を選ぶことで許可を選ぶ（requirements 15.3 の「本人だけが変更できる」を、版の選択で満たす） | 02、03、08 |
+| Q119 | タスク状態から `planning` と `verifying` を外し、`routing` を足すか（requirements 8.3 は書き換え済み） | 外して足す。段の状態は Execution 状態で見せる | 02、04 |
+| Q120 | 振り分けのラベルの接頭辞の既定 | 決定（2026-11-10 本人）: `route:`。Project にもスペシャルハーネスにも使えるため、`repo:` から変える | 02、15、19 |
+| Q121 | 作業領域の保持期間と削除 | 終端になってから 14 日保持し、Runner が削除して cleaned にする。判断待ちと承認待ちの作業領域は削除しない。本人は管理画面から先に消せる | 02、05 |
+| Q122 | Linear の「管理画面で判断待ち」のコメントに載せる管理画面の URL | 18 で決めた Tailscale の名前の URL（`https://orionmac-mini.tailb76d84.ts.net/decisions/<id>`）を載せる。`-remote-host` の指定が無いときは判断待ちの ID だけを載せる | 01、16 |
+| Q123 | `contentId` の形 | 1〜256 文字の印字可能な ASCII。比べ方は完全一致だけ | 契約、17 |
+| Q124 | 質問の後に同じセッションを再開できないとき | 新しいセッションを始め、元の質問と本人の回答を要求 JSON の `answer` で渡す。Profile が `stages.work.resume: required` と宣言したときは、再開できなければ失敗（`work_failed`）にする | 契約、04、08 |
+
+### 7.2 各仕様の書き直しで立てた要確認（Q125〜Q202）
+
+各仕様の要確認の節を正本とし、ここには一覧として写す。Q152〜Q154、Q168・Q169、Q175〜Q184 は使っていない。
+
+| # | 事項 | 案 | 記載仕様 |
+|---|---|---|---|
+| Q125 | Project とスペシャルハーネスの ID の形 | `^[a-z0-9][a-z0-9-]{0,62}$`（英小文字・数字・ハイフン、先頭は英小文字か数字、63 文字以内）。登録後は変えない | 03 |
+| Q126 | Profile の登録で、タグをどこから読むか | `repoPath` のローカルの複製だけを読む。Evaloom は `repoUrl` から取得しない（Control Plane はスペシャルハーネスの鍵を持たないため）。本人が先に `git fetch --tags` しておく。管理画面に、タグが見つからないときはこの手順を案内する | 03 |
+| Q127 | 全体設定 `linear.routingLabelPrefix` を変えたとき、新しい接頭辞で始まらないラベルが振り分けの表に残る場合 | 残っている間は設定の変更を 422 にする。本人が先にラベルを登録し直す | 03 |
+| Q128 | 振り分けのラベルが Linear 側に無いとき | 登録は拒否しない。`linear.teamId` が設定されていれば、登録時に Team のラベルを照会し、無ければ応答に警告を入れる。Evaloom が Linear にラベルを作ることはしない。振り分けの承認の後のラベルの追加が失敗したら、通知の失敗として出す（[`16-linear-feedback.md`](./16-linear-feedback.md)） | 03 |
+| Q129 | 渡す値（`params`）の大きさの上限 | 正規化した JSON の UTF-8 で 64 KiB まで。超えたら 400 | 03 |
+| Q130 | Project・スペシャルハーネス・Profile を消せるか | この版では消さない（Execution と記録が参照しているため）。使わなくするには振り分けのラベルを消す。消す機能は、参照の扱いを決めてから足す | 03 |
+| Q131 | 再実行を受け付けるタスクの状態（旧仕様は `blocked` からの再実行も受け付けていた） | 終端（`failed` / `timed_out` / `cancelled` / `completed`）だけにする。判断待ちの `blocked` と `waiting_approval` は、判断待ちと承認が残ったままになるのを避けるため、先に中止か abort で終えてから再実行する | 04 |
+| Q132 | claim で、振り分けの提案と Execution のどちらを先に渡すか | 提案を先に渡す。提案は短く、本人の判断待ちを早く出せるためである。提案が続いても Execution が待ち続けないよう、提案は全体の枠の1本までに絞る案も実装時に確かめる | 04 |
+| Q133 | 振り分けの提案の途中で、タスクの中止や Runner の再起動が起きたときの値 | route_proposals.status に `cancelled` を、error_class に `interrupted` を足す（02 に反映済み）。中止は heartbeat の応答で Runner に止めさせて `cancelled`、再起動は `failed`（`interrupted`）にし、タスクが `routing` のままなら提案なしの route の判断待ちを作る | 04 |
+| Q134 | 作業領域のパス（task_workspaces.path）を誰が決めるか（Control Plane は Runner のルートを知らない） | claim の要求に Runner が `workspaceRoot`（絶対パス）を入れ、Control Plane が `<workspaceRoot>/<task_workspaces.id>` を書く。Runner はディレクトリを作るときに、実パスがルートの下にあることを確かめる | 04 |
+| Q135 | Profile を登録した後に全体設定 `limits.stageTimeoutMaxSec` を下げ、Profile の `timeoutSec` が上限を超えたとき | claim で `failed`（`config_error`）にする。上限を黙って縮めて Profile の宣言と違う時間で止めるより、本人に設定か版を見直してもらう | 04 |
+| Q136 | 本人の判断の後に再開するとき、前の段の `out` が Runner のデータディレクトリに残っていない場合（Runner の入れ替えやディスクの掃除） | 作業領域が無いときと同じく `blocked`（cause=`workspace_missing`、abort だけ）にする。本人は fresh で再実行する。Runner が Control Plane から成果物を取り戻す API は作らない（Runner 用 API を増やさないため） | 05 |
+| Q137 | 作業領域の削除（02 の Q121）を Runner にどう伝え、どう報告させるか | heartbeat の応答に `cleanWorkspaceIds` を載せ、Runner が削除した ID を次の heartbeat の `cleanedWorkspaceIds` で返す。Control Plane はそれを受けて task_workspaces を `cleaned` にする。Runner 用 API のエンドポイントは増やさない | 05 |
+| Q138 | 鍵の `slot` の名前の形（環境変数 `EVALOOM_SECRET_<SLOT>` と保管のファイル名に使う） | `^[a-z][a-z0-9_]{0,31}$`。契約 5.2 に書き足した。Profile の登録で検証する | 03 |
+| Q139 | ミクロハーネスの Evaloom 専用の認証ファイルの単位（旧仕様はスペシャルハーネスの ID ごと） | ミクロハーネスごと（`claude_code`、`codex`）に1つ持つ。スペシャルハーネスは鍵を持たない約束（契約 11章）であり、モデルの認証はミクロハーネスの側の値であるため。スペシャルハーネスごとに課金を分けたくなったら、そのとき単位を足す | 05 |
+| Q140 | Global Context をどう選ぶか（以前は「開発タスク向けに指定したファイル」） | `context/global/` の下のファイルを全部、すべての仕事の作業の段に渡す。仕事の種類で選び分けない（Evaloom は仕事の種類を知らないため。vision.md 4章）。仕事の種類ごとの指示は、スペシャルハーネスの `stages.work.instructions` に書く | 07 |
+| Q141 | 質問への回答の後に作業の段を再開するとき、文脈を固定し直すか | 固定し直さない。同じ Execution で最初に固定した Global・Harness・記録・Task をそのまま使い、本人の回答は要求 JSON の `answer`（契約 8章）だけで渡す。同じ Execution の中で文脈が変わると、再開した AI の前提がずれるため | 07 |
+| Q142 | `stages.work.instructions` の指示ファイルを、ミクロハーネスにどう読ませるか | Claude Code は `CLAUDE_CONFIG_DIR` の直下の `CLAUDE.md`、Codex は `CODEX_HOME` の直下の `AGENTS.md` に、宣言の順に連結して置く（どちらの CLI もユーザー単位の指示として読む場所）。Execution Context の指示文は起動の入力で渡す。実際に読まれることを [`14-security-tests.md`](./14-security-tests.md) 3.1 のカナリア B で確かめ、読まれなければ起動の入力に連結する | 08 |
+| Q143 | 質問の後に同じセッションを再開するため、セッションのファイルをどこに保持するか | 作業の段の結果が `question` のとき、認証ファイルを除いた作業用の設定コピーを Runner のデータディレクトリの中のタスクごとの保管場所（0700）に移す。再開のときに新しい作業用の設定コピーとして戻し、Profile から置いたファイルのハッシュを確かめ直してから `Resume` を呼ぶ。判断待ちが回答・取り下げ・中止で閉じたら消す。保持期間は作業領域と同じ（02 の Q121） | 08 |
+| Q144 | `out/question.json` と `out/summary.md` の検査 | `out/question.json` は 64 KiB 以下の通常ファイルで、契約 8章の形（`question` は 1〜4000 文字、`options` は任意で 10 個以内の文字列、ほかの項目は無い）でなければ `work_failed` にし、ファイルは成果物として残す。`out/summary.md` は 64 KiB 以下の通常ファイルだけを読み、超えた分は切り捨てて切り捨てたことを表示する。シンボリックリンクはどちらも読まない | 08 |
+| Q145 | Tool Permissions の検査をいつ行うか | Profile の登録のときに、`stages.work.microHarness` の Adapter の変換で確かめ、変換できなければ 422（`precondition_failed`）で登録を拒否する。claim の後にも同じ検査を行う（Adapter の版が変わった場合に備える） | 08 |
+| Q146 | 準備の段と出す段からモデル API を外す方法 | 登録済みのすべての Adapter が宣言したモデル API の宛先を1つの一覧にまとめ、Profile の登録で `stages.prepare.network.allow` と `stages.publish.network.allow` にその宛先があれば 422（`precondition_failed`）で拒否する。段の開始のときにも同じ一覧で確かめ、あれば `config_error` にする。一覧に無いモデルの宛先は見分けられないため、契約 12章の5の義務に頼ることを契約 5.2 に明記した | 09 |
+| Q147 | 段を動かす環境（コンテナのイメージ、macOS VM）を誰がどう決めるか（Project は6項目だけになり、Xcode が要るかどうかを持たなくなった） | 契約 第1版の任意項目として、Profile の `stages.<段>.runtime`（契約 5.2 に足した）に `{ "kind": "container", "image": "<ダイジェスト付きのイメージ>" }` または `{ "kind": "macos_vm", "image": "<Tart のイメージ>" }` を足す。省略したら Runner の設定ファイルの既定のコンテナのイメージを使う。作業の段は Runner の既定のイメージだけとする（ミクロハーネスの認証と設定の置き方を Adapter が決めるため）。macOS VM の実装までは `macos_vm` の Profile を登録で拒否する | 09 |
+| Q148 | Execution の無い判断待ち（kind=`route`）の通知を、再起動の後に二重に送らないための記録 | execution_events には書けないため、通知を送ったら audit_logs に action=`notification.sent`、target_type=`owner_decision` で1行残し、送る前にその行の有無を確かめる。送信に失敗したときは Control Plane のログにだけ残す（3.5 の Dashboard 通知と同じ扱い） | 12 |
+| Q149 | ヘルパーが開いてよい URL に、判断待ちの詳細（`/decisions/<decisionId>`）を足すか（Q77 で決めた許可範囲の変更） | 足す。判断を受け付けるのは管理画面の判断待ちの詳細だけであり（本人決定 3、[`13-management-ui.md`](./13-management-ui.md) 3.4）、通知から直接開けるようにするため。条件はタスク詳細と同じにする（ID が空でない、クエリ・フラグメントなし） | 12 |
+| Q150 | テスト用の外部の宛先をどう用意するか（ループバックは遮断するため使えない） | Mac mini の上に、Sandbox のネットワークから見える別のアドレス（コンテナ方式ではテスト用のコンテナ、macOS VM では Softnet で許可した IP）でテスト用のサーバを動かし、テストのときだけ宣言した宛先の名前をそのアドレスに解決させる。本物の外部のサービスには接続しない | 14 |
+| Q151 | 契約への適合テストで、実際のスペシャルハーネス（software-engineer など）も流すか | Evaloom のリポジトリでは、プローブ用スペシャルハーネスで Evaloom の義務（契約 15章）と検査の規則だけを確かめる。スペシャルハーネスの義務（契約 12章）は各スペシャルハーネスのリポジトリで確かめる。software-engineer へ移した requirements 20章の条件12・15・18 は、software-engineer の受け入れ条件として書き直す | 14 |
+| Q155 | 同じ Execution で承認待ちが複数あるとき（操作ごとに owner_decisions が1件ずつ）、画面でまとめて判断させるか | 1つの画面に並べ、操作ごとに承認・却下を選ばせる。「すべて承認」のボタンは作らない（操作ごとに対象と content_id を見てから判断するため）。1つでも却下すると Execution が失敗になることを画面に示す | 13 |
+| Q156 | スマートフォン向けの表示をどこまで作るか（18 で別端末から使えるようになったため、旧 7章の「スマートフォン・別端末向けの表示はスコープ外」を外した） | 本人の判断待ちの一覧と詳細だけを、幅 375px でも読めて操作できるようにする。登録や設定の画面は横幅の広い画面を前提にしたままにする | 13 |
+| Q157 | 受け入れ条件の要否は振り分け先の Profile で決まるため、振り分けが決まらないタスクの受け入れ条件をいつ判定するか | 振り分け先が決まった後（ラベルで決まったとき、本人が振り分けを承認したとき、Linear でラベルを付けて決まったとき）に判定する。振り分けを待つ間は判定しない。承認の後に受け入れ条件が無くて保留になったら、記入を求めるコメントを返す | 15 |
+| Q158 | 全体設定 `linear.teamId` を変えたとき、前の Team の Issue と、それに対応する終端でないタスクをどう扱うか | 前の Team の Issue は照会の対象から外れる。終端でないタスクは中止せず、そのまま進める（Linear への返却も続ける）。ただし以後の `ai-ready` の取り外しとキャンセルは検出しない。前の Team の linear_issue_states と linear_poll_teams の行は消さずに残す。変更の前に、終端でないタスクがあることを管理画面で示す | 15 |
+| Q159 | 振り分けを待つ間に本人が Linear でラベルを変えたが、まだ決まらない（2つ以上、知らないラベル）とき、提案を作り直すか | 作り直さない。開いている判断待ちをそのまま残し、本人が管理画面で選ぶ。提案は判定したときのラベル（seen_labels）で作ったことを画面に示す | 15 |
+| Q160 | 振り分けのラベルの接頭辞と起動の合図のラベル名を変えたときの整合 | 変更の後に、routes に接頭辞で始まらないラベルが残るなら 422 で拒否する（先に振り分けの表を直す）。起動の合図のラベル名が振り分けのラベルの接頭辞で始まる値は 400 で拒否する（`ai-ready` を振り分けのラベルとして数えず、Evaloom が付けないようにするため） | 15 |
+| Q161 | 状態の名前 PR Review を、PR に限らない名前に変えるか | 決定（2026-11-10 本人）: In Review に変える。本人が Linear の Team に In Review の状態を作る | 16 |
+| Q162 | 「管理画面で判断待ち」のコメントを、判断待ちの行ごとに出すか。同じ Execution で操作ごとに複数の承認待ちができると、コメントが続けて複数付く | 判断待ちの行ごとに1回とし、同じトランザクションで作った複数の承認待ちは1つのコメントにまとめる（dedupe_key の対象を、承認待ちでは Execution と段の実行の ID にする） | 16 |
+| Q163 | 振り分けの判断待ち（kind=`route`）と取り込みの保留で、Issue の状態を変えるか | 変えない。まだ仕事を始めておらず、本人が Linear で振り分けのラベルを付けて決めることもできるため、Issue は本人が置いた状態のままにする。判断待ちはコメントで知らせる | 16 |
+| Q164 | 振り分けのラベルを付けるときに、そのラベルが Linear の Team に無かったら | ラベルを作らない（Evaloom の API キーにラベルを作る権限を求めないため）。再試行せず failed にし、reason は新しい値 `label_not_found` にする（[`02-data-model.md`](./02-data-model.md) 5.3 と 3.4.2 の表に足した）。タスクの振り分けと実行は進める。振り分けの表にラベルを登録するときに、Linear に同じ名前のラベルがあるかを管理画面で示す | 16 |
+| Q165 | 承認を省く操作を足すとき、管理画面で何を確かめさせるか（旧仕様の `direct_push` の確認ダイアログを一般化） | 確認ダイアログを出し、省く操作の名前と Profile の description と、「この Project では、この操作を本人の承認なしにスペシャルハーネスが行う」ことを示す。パスワードの入れ直しは求めない（18 の 3.7 の決定どおり） | 17 |
+| Q166 | 承認してから publish の段が問い合わせるまでに有効期限が切れたとき（Runner が止まっていて、承認から 24 時間たって claim された、など） | claim の時点で Execution の承認の有効期限を確かめ、切れた承認があれば publish の段を始めない。その承認を `expired` にし、Execution とタスクを `waiting_approval` に戻して、期限切れを示す判断待ちを作る（本人は renew で承認し直す）。段が始まった後の問い合わせで切れていたときは、契約どおり `expired` で許可せず、Execution は失敗になる | 17 |
+| Q167 | 承認待ちの間に、外の対象が本人の手で変わったとき（PR を GitHub で直接マージした、投稿を手で公開した、など）、Evaloom は気付くべきか | Evaloom は外を読まず、何もしない（本人決定 5、vision.md 4章）。本人は判断待ちの画面で却下するか、タスクを中止する。承認した場合は、publish の段が始めに外の状態を確かめて、すでに行われた操作を繰り返さない（契約 7.5、12章の 9） | 17 |
+| Q170 | Evaloom の古い開発の部品（worktree、Gate、Git Publisher のコードと projects の開発の列）をいつ消すか | requirements の Q190 の条件（software-engineer の Profile で開発のタスクを3件、出す段まで通し、条件12・15・18 に当たる software-engineer の受け入れ条件がテストで確かめられた）を満たした後に消す（Phase 2A）。それまで古い部品は使わないが残す | 19 |
+| Q171 | 同じスペシャルハーネスを使う複数の Project の記録を分けるか | 分けない。記録はスペシャルハーネス単位で1つにまとめる（契約 9章）。Project ごとに分けたくなったら、スペシャルハーネスが `params` を見て `out` のファイル名を分ける | 19 |
+| Q172 | 受け入れ条件の要否を Project の設定で上書きできるか | できない。Profile の宣言だけで決める（Project の6項目を増やさないため、本人決定 6） | 19 |
+| Q173 | 契約に合っているかを確かめる試験用のスペシャルハーネスをどこに置くか | evaloom リポジトリの試験用データ（例 `testdata/special-harness-fixture/`）に、AI を呼ばない最小のものを置く。作業の段はミクロハーネスの代わりに決まった出力を返す試験用の Adapter で動かす。requirements 20章の条件12・15・18 の代わりの受け入れ条件にする | 19 |
+| Q174 | `records.keep` に宣言したファイルが `out` に無いとき | その記録だけを残さず、Execution は成功のままにする。記録しなかった理由を実行ログ（execution_events の `log`）に残す | 19 |
+| Q185 | 15.3 の Evaloom の既定の承認対象（ハーネス契約・評価基準・全体のセキュリティポリシーの変更、承認を省く設定と Profile の版の変更）を、どの仕組みで本人だけに限るか | 承認（owner_decisions）にはしない。ハーネス契約と評価基準はリポジトリの変更として本人がレビューする。承認を省く設定と Profile の版は、本人用 API（ログインと CSRF）でだけ変えられ、Runner とスペシャルハーネスには変更の経路を作らず、audit_logs に残す | requirements |
+| Q186 | 出す段が `write` の鍵を宣言しているのに `approvals` が空の Profile を登録するときの扱い | 登録は拒否しない。管理画面で「承認の宣言が無い」と警告を出し、本人が確認して登録を確定する。Evaloom は外への操作の意味を解釈しないため、拒否の条件にはしない | requirements |
+| Q187 | 10章の協議（Review、Debate）の単位を、スペシャルハーネス同士にするか、1つのスペシャルハーネスの中のミクロハーネス同士にするか | Phase 5 で決める。当面は、1つのスペシャルハーネスの中のレビューはそのスペシャルハーネスの中で完結させ、Evaloom が扱うのは別のスペシャルハーネスへのレビューの依頼（新しいタスク）だけとする | requirements |
+| Q188 | 11章の評価と、スペシャルハーネスの確かめる段の合否の分担 | 1件ごとの合否は確かめる段（スペシャルハーネス）だけで決める。Evaloom の評価は Phase 3 で、分野別の採点と版の比較を受け持つ。採点基準の正本は分野のスペシャルハーネスのリポジトリ、非公開データは別の非公開リポジトリに置く（11.6） | requirements |
+| Q189 | 12.5 の指標のうち、PR を前提にした指標（差し戻し率、差し戻し回数、人間の修正負担）の一般化 | Evaloom が共通に持つのは、仕事の種類によらない指標（実行時間、費用、確かめる段の合格率、本人の判断の回数、失敗率）だけにする。仕事の種類に固有の指標は、スペシャルハーネスが記録（ハーネス契約 9章）として報告し、Evaloom は保存して表示する | requirements |
+| Q190 | Phase 2A で旧部品を Evaloom から消す条件 | software-engineer の Profile で開発のタスクを3件、出す段（PR の作成）まで通し、20章の条件12・15・18 に当たる software-engineer の受け入れ条件がテストで確かめられたら消す | requirements |
+| Q191 | Phase 2B で作る、開発以外の最初のスペシャルハーネス | 調査（Issue の問いを調べ、結果を作業の段の `out/summary.md` に書く）。出す段は結果を報告するだけの最小のプログラムにし、Linear へのコメントは Evaloom の結果の返却（6.4）で行う。鍵と承認の宣言が要らず、リポジトリを持たない直接の振り分けを確かめるのに向く | requirements |
+| Q192 | Model Registry（5.3）を作る時期と、Profile の `stages.work.model` との関係 | Model Intelligence（Phase 6）まで作らない。それまでは Profile 定義の `stages.work.model` を Model ID の正本とする | requirements |
+| Q193 | 7.4 の Global Context への更新候補を、どこから、どの形で受け付けるか | Phase 3 以降で決める。受け付けるときは、結果 JSON の任意の項目として足し（ハーネス契約 3章の同じ版の中で足せる項目）、本人の判断の種類を増やすかは specs 02 の変更として扱う。それまでは本人が Global Context を直接直す | requirements |
+| Q194 | 6.4 の結果の返却で、確かめた結果をどこまで Linear に載せるか | 確かめる段の `summary` と、finding の `error` の件数だけを載せる。finding の本文は管理画面へのリンクで見せる（Issue に長文と作業の詳細を残さないため） | requirements |
+| Q195 | 14.3 のハーネス契約への適合テストを、Evaloom がスペシャルハーネスの作り手に道具として渡すか | Evaloom のリポジトリに適合テストの道具（Profile 定義と結果 JSON の検証、段を模擬して要求 JSON を渡し、結果 JSON と通話口の使い方を確かめる実行）を置く。スペシャルハーネスは版のタグを付ける前にこれを通す（4.4 の2） | requirements |
+| Q196 | 振り分け先が決まった後（`queued` 以降）に、Linear の Issue の振り分けのラベルが変わったときの扱い | 振り分け先は変えない（specs 02 の tasks）。管理画面に「ラベルが変わった」と表示する。振り分け先を変えたいときは、本人がタスクを中止し、`ai-ready` を付け直す | requirements |
+| Q200 | 承認の有効時間を、本人が承認するときに変えられるか（17 の Q55 は「既定 24 時間、承認時に本人が変えられる」と決めたが、回答の形に入れる項目が無かった） | 決定（2026-11-10 本人）: 変えられるようにする。5.6 の kind=`approval` の回答に任意の `ttlSec`（60 秒以上。上限は設けない）を足す。省略したら `approval.ttlSec` を使う。expires_at は承認した時刻 + `ttlSec` | 02 |
+| Q201 | 振り分けの提案の上限時間（09 の 3.2 と 05 の 3.13 がこの文書に任せていたが、値が無かった。04 の 3.3.1 の claim の応答の例は 300 秒） | 300 秒の固定値（実装の定数）とする。全体設定のキーは足さない。超えたら `failed`（`timeout`）にし、提案なしの判断待ちを作る | 15 |
+| Q202 | 振り分けの提案の AI が書く結果のファイルの形（08 の 3.10 がこの文書に任せていた） | `out/proposal.json` に `{ "label": "<candidates のラベル>", "reason": "<2000 文字以内>" }` だけを書かせる。64 KiB 以下の通常ファイルでなければ、またはほかの項目があれば `failed`（`contract_error`）。Runner はファイルを成果物（kind=`proposal_result`、02 の artifacts）として登録し、中身を `POST /api/route-proposals/{id}/result` で送る | 15 |
+
+### 7.3 前からの要確認（Q1〜Q109）の扱い
+
+Q101 は本人決定（2026-11-10、vision.md）で解決した。Evaloom はマクロハーネスとして受け取る・振り分ける・順番待ち・承認・返すを受け持ち、仕事の中身はスペシャルハーネスが持つ。06・10・11 は software-engineer へ移して消した。
+
+Q102〜Q109 は [`19-routing-and-stages.md`](./19-routing-and-stages.md) の 10.1 で扱いを決めた。
+
+次の Q は開発の仕事の中身であるため、software-engineer へ移した（`~/workspace/harnesses/software-engineer/docs/design.md`）。本文は 558549e の版で読める。
+
+Q10、Q11、Q12、Q13、Q22、Q26、Q27、Q28、Q29、Q30、Q31、Q32、Q33、Q35、Q36、Q37、Q38、Q39、Q40、Q54、Q56、Q58、Q62、Q63、Q69、Q70、Q73、Q74、Q87
+
+次の Q は、vision.md と本人決定（2026-11-10）で置き換えた。
+
+| # | 置き換えた先 |
+|---|---|
+| Q2 | 18 の ID とパスワードのログインに置き換えた（Q88〜Q95） |
+| Q4 | 01 の 5.1 の API 一覧に置き換えた。止まった仕事の続行は `POST /api/decisions/{id}/answer` |
+| Q5 | 契約 4章・5章（`evaloom/profile.yaml` と `profile/v<SemVer>` のタグ）で決めた |
+| Q6 | 契約 6章（要求 JSON と結果 JSON）で決めた |
+| Q14 | 02 の 5.6 の basis（中身の識別子）に置き換えた |
+| Q15 | Project ごとのタイムアウトは持たない。Profile の段ごとの `timeoutSec` と、全体設定 `limits.stageTimeoutMaxSec` に置き換えた（契約 10.2、02 の 3.8、04 の Q135） |
+| Q18 | Linear へのコメントは 16 で行う。Phase の区別はなくした |
+| Q25 | 承認は 17、承認を省く設定は projects.approval_waivers（本人決定 6）、作業の段に許す道具は Profile の宣言（Q118）に置き換えた |
+| Q45 | 保留の理由は 02 の 5.7 の2つだけにした。振り分けが決まらないときは保留ではなく振り分けの提案に回す（本人決定 2） |
+| Q50 | projects に Linear の列を持たない。照会先は全体設定 `linear.teamId`、振り分けは routes（本人決定 2・6）。管理画面で本人が振り分けを承認したら、Evaloom が Linear に振り分けのラベルを付ける書き戻しを足した（16 の 3.6.5） |
+| Q51 | 状態を変えること、ai-ready を変えないことは保つ。状態を変える契機を PR から段の結果と本人の判断待ちに直した。管理画面の判断の結果（再開、振り分けの承認）を Linear に書き戻す経路を足した（16 の 3.6、3.6.5） |
+| Q53 | 承認の対象は、スペシャルハーネスが Profile で宣言した操作にした（契約 7章、17） |
+| Q57 | 却下で failed（approval_rejected）にすることは保つ（02 の 5.2）。PR の扱いは software-engineer へ移した |
+| Q59 | 承認待ちと判断待ちは枠に数えない（02 の 5.2）。merging の状態はなくした |
+| Q60 | projects.approval_waivers（省く操作の名前の配列）に置き換えた（本人決定 6、契約 7.3） |
+| Q61 | 出す直前に承認を省く設定を読み直すことは保つ（02 の approvals）。直接 push の判断は software-engineer へ移した |
+| Q72 | Profile の `stages.work.toolPermissions` に移した（Q118） |
+| Q75 | 出口と確かめる中身はスペシャルハーネスが決める（vision.md 4章、19）。Typefully の出口は Evaloom の仕様には置かない |
+| Q81 | 再判定の契機を 15 の 3.6.3 で書き直した（Linear の Team と割り当ての列が無くなったため） |
+
+次の Q は、前の決定のまま残す。2026-11-10 に言葉を直したところと、補足を足したところがある。
 
 | # | 事項 | 選択肢・提案 | 記載仕様 |
 |---|---|---|---|
-| Q1 | ハーネスとテストの隔離方式（OS ユーザー分離 / macOS sandbox / コンテナ / VM） | 決定（2026-10-29）: macOS 専用ツールチェーンが要らない Project はコンテナ。決定（2026-11-05、実測後）: Xcode 等が要る Project は、実行ごとに使い捨てる macOS VM（Tart + Softnet）。Softnet は `0.0.0.0/0` を遮断して要る宛先だけ許可する。実測結果と条件は 09 の 3.4 | 09 |
-| Q2 | 本人用 API の認証方式と CSRF 対策 | 起動時生成のセッショントークン + SameSite=Strict Cookie + CSRF トークン（提案） | 01 |
+| Q1 | 段ごとの Sandbox の隔離方式（OS ユーザー分離 / macOS sandbox / コンテナ / VM） | 決定（2026-10-29）: macOS 専用ツールチェーンが要らない Project はコンテナ。決定（2026-11-05、実測後）: Xcode 等が要る Project は、実行ごとに使い捨てる macOS VM（Tart + Softnet）。Softnet は `0.0.0.0/0` を遮断して要る宛先だけ許可する。実測結果と条件は 09 の 3.4。2026-11-10: Project ではなく段ごとに、Profile の `stages.<段>.runtime` で宣言する（09 の Q147） | 09 |
 | Q3 | Runner 専用 API のエンドポイント（18章には claim だけがある） | heartbeat / events / result / cancel 確認を追加（提案） | 01 |
-| Q4 | 18章に無い本人用 API（Project 更新、Harness・Profile 登録、Blocked からの続行 など） | 01 の API 一覧で「追加案」として明記 | 01 |
-| Q5 | Harness Profile の定義ファイルの置き場所と読み込み方式（21章） | ハーネスリポジトリ内の定義ファイル + SemVer タグ（提案） | 02, 03 |
-| Q6 | 共通契約の各項目の厳密な定義（9.5, 21章） | 02 に Phase 1 案を記載 | 02, 08 |
 | Q7 | Claude Code・Codex の認証方式（サブスクリプション / API キー）と各社規約での自動実行の可否 | 決定（2026-10-29）: サブスクリプション。規約の確認（2026-11-05）: 本人だけが自分の Mac mini で使う範囲なら、両社の規約で自動実行してよいと判断した。条件は 09 の 3.5 | 08, 09 |
-| Q8 | モデル API の認証情報をハーネスから見えないようにする方式（15.6） | 決定（2026-10-29）: Q7 でサブスクリプションを採ったため、認証付与プロキシは使わず、Evaloom 専用で用途を絞った認証情報を渡す。詳細は 09 の 3.5 | 09 |
-| Q9 | ハーネスの専用設定環境の作り方（7.5） | 実行ごとの専用 HOME と各 CLI の設定ディレクトリ指定（提案）。実際に読み込んだ指示を 14 のテストで検証する | 08 |
-| Q10 | テストの弱体化として検出する具体的な判定規則（8.5, 21章） | Q36 で Gate 1 を廃止したため不要 | 10 |
-| Q11 | 既存テストの ID 一覧・件数をどこから得るか | 開始点 SHA でテストを1回実行して基準値を取る案と、テストランナーの一覧出力を使う案。10 に比較 | 10 |
-| Q12 | テストランナーの結果形式（ID・実行数・skip 数の取り出し方） | Project Registry にレポート形式（JUnit XML 等）と出力パスを登録（提案） | 03, 10 |
-| Q13 | Gate 1 の基準 SHA：再実行で同じブランチに追加 commit するとき、前回本人が確認済みの差分を再び止めるか | Q36 で Gate 1 を廃止したため不要 | 10 |
-| Q14 | Blocked から続行を選ぶ操作を、どの SHA に結び付けるか | 続行の判断を、その時点の HEAD SHA に結び付け、SHA が変わったら無効（提案） | 04, 10 |
-| Q15 | タイムアウト値（ハーネス実行・setup・テスト） | 決定（2026-11-06）: Project の timeouts を優先し、無ければ Runner の設定ファイルの既定値（setup 15分、ハーネス 60分、テスト 30分）を使う（[`05-runner.md`](./05-runner.md) 4.1） | 03, 05 |
+| Q8 | モデル API の認証情報を作業の段から見えないようにする方式（15.6） | 決定（2026-10-29）: Q7 でサブスクリプションを採ったため、認証付与プロキシは使わず、Evaloom 専用で用途を絞った認証情報を渡す。詳細は 09 の 3.5 | 09 |
+| Q9 | ミクロハーネスの専用設定環境の作り方（7.5） | 実行ごとの専用 HOME と各 CLI の設定ディレクトリ指定（提案）。実際に読み込んだ指示を 14 のテストで検証する | 08 |
 | Q16 | 費用上限（15.2 必須対策）を Phase 1 で実装するか | 15.2 は必須対策に挙げるが Phase 1 の範囲が不明。トークン数・実行時間の記録（usage_records）は Phase 1 で行う案 | 02, 05 |
 | Q17 | macOS 通知の実現方式（21章） | 決定（2026-10-27 実機確認）: 自作の通知用ヘルパーアプリ。クリックでタスク詳細を開く。詳細は 12 の 3.3 | 12 |
-| Q18 | Linear コメントによる通知（8.8）を Phase 1 で行うか | Linear API キーの利用が Phase 2（6.6）のため、Phase 1 は macOS 通知だけとする案。Phase 2 では 16 で Linear コメントの Notifier を足す案（Q52） | 12, 16 |
 | Q19 | Model Registry（5.3）を Phase 1 で作るか | Phase 1 ロードマップに無い。Profile に Model ID 文字列を持たせ、models テーブルは後の Phase とする案 | 02, 03 |
-| Q20 | Global Context と Harness Context の Phase 1 での置き場所 | Global は evaloom リポジトリの `context/`、Harness はハーネスリポジトリ内（Profile の commit SHA で固定）とする案 | 07 |
+| Q20 | Global Context と Harness Context の Phase 1 での置き場所 | Global は evaloom リポジトリの `context/`、Harness はスペシャルハーネスのリポジトリ内（Profile の commit SHA で固定）とする案 | 07 |
 | Q21 | Go バックエンドのモジュール境界（21章） | 01 に構成要素ごとのパッケージ案 | 01 |
-| Q22 | 最初からやり直す場合のブランチ名（8.5, 21章） | `evaloom/<task-id>-<短い名前>-r<n>` 案 | 11 |
-| Q23 | Blocked のタスクが同時実行の枠を占有するか | 占有しない案（プロセスは止まっているため）。worktree は保持する | 04 |
+| Q23 | Blocked のタスクが同時実行の枠を占有するか | 占有しない案（プロセスは止まっているため）。作業領域は保持する | 04 |
 | Q24 | ログの機密情報除外（15.2）の判定規則と保存期間（21章） | 既知の秘密情報の値との一致で伏せる案。保存期間は未定 | 05 |
-| Q25 | 権限設定（許可操作・承認ポリシー・Tool Permissions）の Phase 1 での中身 | 承認が Phase 2 のため、Phase 1 では「値の保存と表示」と、Runner が拒否する操作の固定リストまでとする案。Phase 2 の承認ポリシーの形と効果は 17 の 3.2（Q60） | 03, 09, 17 |
-| Q26 | worktree のクリーンアップの契機（自動か本人の操作か） | PR がマージ・クローズ済みでタスクが終端状態なら削除してよい案。ブランチは残す | 06 |
-| Q27 | worktree の元を本人のローカルリポジトリにするか、Evaloom の作業用クローンにするか | 決定（2026-10-29）: 作業用クローン（06 の 3.2.2 の A）。worktree は `.git` を共有するため、ハーネスが本人のリポジトリの ref や設定を書き換えられる | 06, 09 |
-| Q28 | setup とテスト実行のネットワークポリシー（パッケージレジストリをどこまで許可するか） | 決定（2026-10-29）: setup はプロジェクトごとに登録した宛先だけ許可、テスト実行は全遮断 | 09 |
-| Q29 | Git Publisher の GitHub 認証方式（fine-grained token / GitHub App） | 決定（2026-10-30）: GitHub App（evaloom-publisher）。対象リポジトリだけにインストールし、権限は contents と pull_requests の write、metadata の read に限る。マージの防止は GitHub 側のルールセットで行う（11 の 3.5） | 11 |
-| Q30 | 開始点で既存テストの基準値を取るための実行が、requirements 8.5 の「既存テストを別に固定して再実行する仕組みは作らない」に反しないか | 反しないと解釈した（Gate 2 の後の再実行ではないため）。本人の確認が要る | 10 |
-| Q31 | ハーネスが commit を1つも作らなかった場合の扱い | failed（execution_failed、理由「変更なし」）の案 | 05 |
-| Q32 | fresh で再実行するときに前の PR が開いていたら、Evaloom が自動でクローズするか | 自動ではクローズせず Blocked にして本人に整理を求める案 | 11 |
-| Q33 | 実行中にハーネスが `AGENTS.md` 等の指示ファイルを変更した場合に Block するか | 知らせるだけで Block しない案 | 07, 10 |
-| Q34 | ハーネスが Web で調べものをしたいときの接続方法（ハーネス用 Sandbox はモデル API にしかつながらない） | 1. モデル側の Web 検索機能に任せる（検索とページ取得はモデル提供元のサーバー側で行われ、Sandbox の接続先は増えない）を推奨。足りなければ 2. コードも認証情報も持たせず結果を文章で返すだけの調査専用 Sandbox を別に用意する。ハーネス用 Sandbox を Web に開放する案は採らない（プロンプトインジェクションとコード・認証情報の持ち出しのため）。ハーネスを Sandbox で実際に動かすタスクの前に決める | 08, 09 |
-| Q35 | 本人が見ずに main へ入れてよい Project（例: ハーネスのリポジトリ）で、PR を経ずにベースブランチへ push するか | 決定（2026-10-30）: Phase 2 で、承認ポリシーで PR マージを承認対象から外した Project に限り、Gate 1〜3 を通った commit をベースブランチへ fast-forward で push し（Q36 の後は Gate 2・3）、PR は作らない（requirements 8.5, 15.3 に追記）。既定は今のまま PR を作り本人がマージする。Phase 1 の仕様と実装は変えない。承認ポリシーの値の形、push 前の確認（3.1 のブランチ名の接頭辞の扱い）、GitHub のルールセットで App を例外にする手順は Phase 2 の仕様で決める。Phase 2 の下書きでの案は 17 の 3.2・3.7・3.8（Q60〜Q63） | 11, 17 |
-| Q36 | 作業結果の確かめ方のうち、テストの弱体化の検出（Gate 1、受け入れ条件17）を Evaloom 本体に持たせるか | 決定（2026-10-31）: Gate 1 をなくし、開発タスクの確認は Gate 2（登録したテストコマンドをハーネスの外で流し、既存テストの ID がすべて実行され skip が増えないことを照合）と Gate 3（テストした commit と push する commit の一致）、本人の PR レビューとする。理由: 差分のファイル名パターンで弱体化を検出する方式は、テストの道具・設定ファイル・期待値ファイルの種類だけ列挙が要り、codex のレビューを6回受けても影響度大の指摘が残った。Evaloom は将来開発以外のタスクも扱うため、開発に固有の判定は本体に置かない。調査（`docs/research/2026-10-31-ai-coding-verification.md`）でも、差分パターンで検出する製品は無かった。次の改善の候補は、テストを書く回と実装する回に分け、Gate 2 の前に1回目のテストを強制的に戻す方式（SWE-bench と同じ考え方）。requirements 8.5・15.3・15.7・21章、受け入れ条件17（欠番にした）、10 と関連する仕様は書き換え済み。Gate 1 の試作のブランチ（`feat/pdy.1-gate1-diff`、未マージ）は 2026-11-01 に削除した | 10 |
-| Q37 | Gate の Finding の `rule` に入れる名前の一覧 | 決定（2026-11-01）: 一覧を先に全部決めず、場面ごとに名前を付ける。新しい名前が要るときは AI が候補を4つ出し、本人が選ぶ。現時点の5つ（`existing_test_not_run` / `test_report_missing` / `test_failed` / `count_only_check` / `changed_after_test`）は 10 の 3.6 | 10 |
-| Q38 | JUnit XML のどの属性からテストの ID を作るか | 決定（2026-11-01）: `classname` と `name` を `.` でつなぐ。`classname` が空なら `name` だけ | 10 |
-| Q39 | 開始点で基準値を取るとき、テストが失敗した・レポートが無い場合の扱い | 決定（2026-11-01）: 失敗するテストがあっても記録して続ける。レポートも件数も取れなければ作業を始めず `failed`（`config_error`） | 10 |
-| Q40 | Runner が再起動した後に、保存済みの基準値のテスト ID 一覧を読む方法（`test_ids` の成果物の形式を含む） | 決定（2026-11-01）: 本人の判断は要らない。Runner と Gate をつなぐタスクで、既存の API の範囲で実装側が決め、仕様に書き足す。書き足した先: 10 の 3.3.3（形式と経路）、04 の 3.3.1（claim の応答の `worktree`） | 04, 05, 10 |
+| Q34 | 作業の段の AI が Web で調べものをしたいときの接続方法（Work Sandbox はモデル API にしかつながらない） | 1. モデル側の Web 検索機能に任せる（検索とページ取得はモデル提供元のサーバー側で行われ、Sandbox の接続先は増えない）を推奨。足りなければ 2. コードも認証情報も持たせず結果を文章で返すだけの調査専用 Sandbox を別に用意する。Work Sandbox を Web に開放する案は採らない（プロンプトインジェクションとコード・認証情報の持ち出しのため）。作業の段を Sandbox で実際に動かすタスクの前に決める | 08, 09 |
 | Q41 | Dashboard のエラー状況に通知失敗を出す方法（全 Execution の `notification_failed` を集めて返す API が無かった） | 決定（2026-11-01）: 本人用 API `GET /api/notification-failures` を追加する。全 Execution の `notification_failed` を新しい順に、共通のページネーションで返す。既読・解決済みの印は持たない。書き足した先: 01 の 5.1、12 の 5（応答の形）と 9（実装単位）、13 の 3.2 | 01, 12, 13 |
 | Q42 | Linear Webhook を受ける公開 HTTPS 経路の構成（requirements 6.6, 21章） | 決定を取り消し（2026-11-06）: 本人の決定で Linear の取り込みを Webhook からポーリング（Q43）に切り替えたため、公開 HTTPS 経路は不要になった。理由は、Webhook には Mac mini に外から届く住所が要り、トンネル（Cloudflare Tunnel はドメインが要る）・署名シークレット・Webhook の登録が必要になるのに対し、ポーリングは Linear の API キーだけで済み、Mac mini の停止中の取りこぼしも起きないため。失うのは即時性（照会の間隔ぶんの遅れ）だけで、受け入れ条件19〜22 は Webhook を求めていない。requirements 2.2, 6.3, 6.6, 8.1, 15.2, 18章, 19章, 21章を書き換えた | 15 |
-| Q43 | Linear の変化をどう取り込むか（旧: 取りこぼした Webhook を補うか） | 決定（2026-11-07、案を採用）: 決定（2026-11-06、本人）: Control Plane が一定間隔で Linear API に照会する方式を本線にする（requirements 6.6）。照会の対象は linear_team_id を登録した Team の ai-ready 付き Issue。前回の照会結果（linear_issue_states）との差分で付与と取り外しを判定する（15 の 3.3〜3.5）。照会の間隔は1分とする案で、本人の確認が要る | 15 |
+| Q43 | Linear の変化をどう取り込むか（旧: 取りこぼした Webhook を補うか） | 決定（2026-11-07、案を採用）: 決定（2026-11-06、本人）: Control Plane が一定間隔で Linear API に照会する方式を本線にする（requirements 6.6）。照会の対象は linear_team_id を登録した Team の ai-ready 付き Issue。前回の照会結果（linear_issue_states）との差分で付与と取り外しを判定する（15 の 3.3〜3.5）。照会の間隔は1分とする案で、本人の確認が要る（2026-11-10: 照会の対象は全体設定 `linear.teamId` の1つの Team にした。本人決定 2） | 15 |
 | Q44 | Issue 本文のどこを受け入れ条件とみなすか（requirements 6.3） | 決定（2026-11-06、15〜17 の確定時に案を採用）: 見出し「受け入れ条件」または「Acceptance Criteria」から、次の同じ階層以上の見出しまで。空白だけなら書かれていないとみなす案 | 15 |
-| Q45 | ルーティングや受け入れ条件で保留したタスクの持ち方と、解除の手順 | 決定（2026-11-07、案を採用）: 決定（2026-11-06、15〜17 の確定時に案を採用）: tasks.project_id を NULL 可にし、intake_block_cause に理由を持つ。Execution は作らない。保留中に Issue の更新が届いたら（2026-11-06 のポーリングへの切り替え後は、照会で Issue の更新時刻が進んでいたら）判定をやり直し、通れば同じタスクを起動する案（requirements 6.2「付いたまま更新されても再び起動しない」の例外になる） | 15 |
 | Q46 | 作成後の Issue の更新と、ai-ready の付け直しを、タスクにどう反映するか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 本文と受け入れ条件はタスク作成時に固定し、以後の編集は反映しない。付け直したとき、前のタスクが終端状態なら新しいタスクを作り、終端でないタスクがあれば何もしない案 | 15 |
-| Q47 | Linear Project を使ったルーティング（requirements 6.1 の任意機能）を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らない案。条件19・20 は Team + Label で満たせる | 15 |
-| Q48 | トリガーのラベル名（`ai-ready`）と実行先ラベルの接頭辞（`repo:`）を固定するか、設定にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: requirements 6.2 は推奨例としているため、全体設定で持ち、既定値をこの2つにする案 | 15 |
+| Q47 | Linear Project を使ったルーティング（requirements 6.1 の任意機能）を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らない案。条件19・20 は Team + Label で満たせる（2026-11-10: 条件19 はラベルだけで満たす。本人決定 2） | 15 |
+| Q48 | トリガーのラベル名（`ai-ready`）と実行先ラベルの接頭辞（`repo:`）を固定するか、設定にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: requirements 6.2 は推奨例としているため、全体設定で持ち、既定値をこの2つにする案（2026-11-10: 振り分けのラベルの接頭辞は `route:` に変えた。Q120） | 15 |
 | Q49 | Linear の API キーの置き場所と、どの Linear ユーザーのキーを使うか | 決定（2026-11-06、15〜17 の確定時に案を採用。同日、ポーリングへの切り替えで署名シークレットは不要になった）: API キーを `~/.config/evaloom/`（権限 0600）に置き、Control Plane だけが読む案（GitHub App の秘密鍵と同じ扱い）。本人とは別の Evaloom 専用の Linear ユーザーのキーを使う案。ポーリングでは操作者で見分ける循環防止は行わないため、専用ユーザーにする理由は、Evaloom のコメントを本人のコメントと見分けられることと、キーを無効にしても本人に影響しないことになる（16 の 3.5）。キーの権限を絞れるかは実装時に Linear で確かめる ファイル名は `~/.config/evaloom/linear-api-key` とする（2026-11-07 決定）。 | 15, 16 |
-| Q50 | requirements 17章の project_integrations を Phase 2 で作るか | 決定（2026-11-06、15〜17 の確定時に案を採用）: 作らず、projects に linear_team_id と linear_routing_label の列を足す案。連携先が Linear だけのため | 02, 15 |
-| Q51 | Evaloom が Linear の Issue の状態（Workflow state）やラベルを変えるか | 見直し（2026-11-09、本人）: 状態を変える。実行開始→In Progress、PR 作成・承認待ち→PR Review、マージ・完了→Done、失敗・Blocked→変えない、Evaloom で中止→Canceled。ラベル（ai-ready）は変えない。Uslab では種類 started の状態が In Progress と PR Review の2つあるため、状態は種類でなく名前で選ぶ（16 の 3.6）。旧決定（2026-11-06）: コメントだけを返し、状態とラベルは変えない | 16 |
-| Q52 | Linear にコメントを出す場面と、本文に載せない情報 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 受付時は出さず、保留・Blocked・承認待ち・完了・失敗・マージ・中止で出す。ログ本文、テストの出力、Runner のパスは載せない案（ワークスペースの他のメンバーも読めるため） | 16 |
-| Q53 | Phase 2 で承認を経て Evaloom が実際に行う操作 | 決定（2026-11-06、15〜17 の確定時に案を採用）: PR マージだけ。ほかの承認対象操作は Phase 2 でも権限で拒否する案 | 17 |
-| Q54 | 承認後の PR マージを誰が、どの権限で行うか | 決定（2026-11-06、15〜17 の確定時に案を採用）: Runner の Git Publisher が claim で「承認済みの操作」を受け取って行う。GitHub はルールセット B の Bypass に evaloom-publisher を足し、A（PR 必須・CI 必須）の Bypass は空のままにする案。Phase 1 で決めた「Evaloom はマージしない」（05, 09, 11）を書き換えることになる | 11, 17 |
-| Q55 | 承認の有効期限の既定値（requirements 15.8「承認ごとに設定する」） | 決定（2026-11-06、15〜17 の確定時に案を採用）: 既定 24 時間、承認時に本人が変えられる案 | 17 |
-| Q56 | PR のマージ方式（merge commit / squash / rebase） | 決定（2026-11-06、15〜17 の確定時に案を採用）: merge commit 案。テストした commit がそのまま履歴に残るため。Project ごとに変えるかは未定 | 17 |
-| Q57 | 本人が承認を却下したときのタスクの状態 | 決定（2026-11-06、15〜17 の確定時に案を採用）: タスクを failed（理由 approval_rejected）にし、PR は開いたまま残す。本人は continue の再実行で直せる案 | 17 |
-| Q58 | 承認待ちの間に、本人が GitHub 上で直接マージ・クローズした場合 | 決定（2026-11-06、15〜17 の確定時に案を採用）: Runner が承認待ちの PR を定期的に読み、承認を invalidated にする。マージならタスクを completed、クローズなら failed にする案 | 17 |
-| Q59 | `waiting_approval` と `merging` の Execution を同時実行の枠に数えるか | 決定（2026-11-06、15〜17 の確定時に案を採用）: どちらも数えない案（Blocked と同じく、ハーネスのプロセスが動いていないため） | 04, 17 |
-| Q60 | 承認ポリシー（projects.approval_policy）の値の形（Q35 で Phase 2 に回した点） | 決定（2026-11-06、15〜17 の確定時に案を採用）: `{ "version": 1, "mergePullRequest": "require_approval" }`。値は `require_approval` か `direct_push`。ほかの項目は持たせない。既定は `require_approval` とする案 | 03, 17 |
-| Q61 | 直接 push の判断に使う承認ポリシーを、claim の時点の値にするか、push 直前の値にするか | 決定（2026-11-06、15〜17 の確定時に案を採用）: push 直前に Control Plane から読み直し、claim の時点と違えば安全側（PR を作る）を選ぶ案。読めなければ push しない | 11, 17 |
-| Q62 | 直接 push で、ベースブランチが先へ進んでいて fast-forward できない場合 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 強制 push せず、PR を作る経路へ切り替えて本人のレビューに回す案 | 11, 17 |
-| Q63 | 直接 push の Project で、GitHub のルールセットに App を例外として入れる手順（Q35 で Phase 2 に回した点） | 決定（2026-11-06、15〜17 の確定時に案を採用）: force push と削除の禁止を Bypass 空のルールセット C に分け、A と B の Bypass に App を足す案。Bypass の種類は実機で確かめる | 11, 17 |
-| Q64 | ポーリングを始めた最初の照会で、すでに ai-ready が付いている Issue を起動するか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Team ごとの最初の照会では記録するだけで起動しない。導入前から付いている Issue を一斉に起動しないため。起動したい Issue は本人が ai-ready を外して付け直す。Project から Team を外して登録し直したときも、最初の照会からやり直す | 15 |
+| Q52 | Linear にコメントを出す場面と、本文に載せない情報 | 決定（2026-11-06、15〜17 の確定時に案を採用）: 受付時は出さず、保留・Blocked・承認待ち・完了・失敗・マージ・中止で出す。ログ本文、テストの出力、Runner のパスは載せない案（ワークスペースの他のメンバーも読めるため）。2026-11-10: Blocked と承認待ちは「管理画面で判断待ち」（`decision_open`）にまとめ、マージは software-engineer へ移した（16 の 3.2） | 16 |
+| Q55 | 承認の有効期限の既定値（requirements 15.8「承認ごとに設定する」） | 決定（2026-11-06、15〜17 の確定時に案を採用）: 既定 24 時間、承認時に本人が変えられる案。2026-11-10: 承認時に変える項目は回答の `ttlSec`（02 の Q200） | 17 |
+| Q64 | ポーリングを始めた最初の照会で、すでに ai-ready が付いている Issue を起動するか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Team ごとの最初の照会では記録するだけで起動しない。導入前から付いている Issue を一斉に起動しないため。起動したい Issue は本人が ai-ready を外して付け直す。Project から Team を外して登録し直したときも、最初の照会からやり直す（2026-11-10: 照会先は全体設定 `linear.teamId` の1つにした。照会先を変えたときに最初の照会からやり直す。本人決定 2） | 15 |
 | Q65 | 照会と照会の間（案では1分）に ai-ready を付けて外した、または外して付け直した変化を見逃してよいか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: 見逃してよい。前者は何も起きず、後者は付いたままとして扱う。Linear の Issue の履歴を読めば見分けられるが、照会の回数と処理が増えるため Phase 2 では行わない | 15 |
 | Q66 | requirements 17章の event_inbox を Phase 2 で作るか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: 作らない。Webhook をやめたため、受け取った本文を先に保存して後で処理する必要が無い。前回の照会結果は linear_issue_states、判定の結果は linear_issue_states と audit_logs に残す。Linear 以外のイベント入力（Phase 6）で受信口が要るようになったら作り直す | 02, 15 |
-| Q67 | ai-ready が付いたまま、登録していない Team へ移された Issue をどう扱うか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: 取り外しと同じく、待機中・実行中のタスクを中止する（理由 linear_issue_moved）。照会の対象から外れて、以後の取り外しやキャンセルを検出できなくなるため | 15 |
+| Q67 | ai-ready が付いたまま、登録していない Team へ移された Issue をどう扱うか | 決定（2026-11-07、仕様の確定時に案を採用）: 案: 取り外しと同じく、待機中・実行中のタスクを中止する（理由 linear_issue_moved）。照会の対象から外れて、以後の取り外しやキャンセルを検出できなくなるため（2026-11-10: 「登録していない Team」は、全体設定 `linear.teamId` 以外の Team と読む） | 15 |
 | Q68 | （Phase 1、工程表の接続）Sandbox 1つあたりの CPU・メモリの上限（09 の 3.2 が「実装時に確定」としていた値） | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Runner の設定ファイルに `container.cpus`（既定 4）と `container.memoryMiB`（既定 8192）を足す。実測した Mac mini（14 コア、64 GB）で同時実行2本でも収まり、Tart の実測で使った VM の既定（4 CPU、8 GB）と同じ値。宛先を許可する実行ではプロキシのコンテナ2つにも同じ上限が付くため、1本あたり最大で3つ分の枠になる点に注意（上限であって確保ではない）。Docker の VM に割り当てたメモリより大きくしない | 05, 09 |
-| Q69 | （Phase 1、工程表の接続）工程2で確かめる「前回の PR」をどう取り出すか（claim の `previous` は直前の1件だけで、fresh では null） | 決定（2026-11-07、仕様の確定時に案を採用）: 案: claim に `pullRequests`（タスクの過去の Execution が記録した PR を番号ごとに1件、新しい順）を足す。continue は引き継ぐブランチと同じブランチの最新の1件に 3.4 の表を当てる。fresh は全件を見て、1件でもマージ済みなら failed（pr_merged）、開いていれば blocked（git_state）。fresh の Block の headSha は開いている PR の head の SHA を使う | 04, 11 |
-| Q70 | （Phase 1、工程表の接続）非公開リポジトリの clone・fetch・PR 取得に使う読み取り用の認証情報 | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Git Publisher と同じ GitHub App のインストールアクセストークンを、権限を contents・metadata・pull_requests の read に絞って発行する。Git には環境変数の `http.extraHeader` で渡し、ファイルや URL に残さない。本人の SSH 鍵・`gh` のログイン・Project ごとの deploy key は採らない | 06, 11 |
-| Q71 | （Phase 1、工程表の接続）Harness Sandbox から接続してよいモデル API の宛先 | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Adapter のパッケージに定数で持つ。Codex は `chatgpt.com:443`・`auth.openai.com:443`・`api.openai.com:443`、Claude Code は `api.anthropic.com:443`・`console.anthropic.com:443`・`claude.ai:443` を候補とし、実モデル試験（14 の 3.1）で認証確認と本実行が通る最小の一覧に絞って確定する。CLI が更新確認・テレメトリの宛先に届かないと動かない場合は、宛先を足す前に CLI の設定で止められるかを先に確かめる | 08, 09 |
-| Q72 | （Phase 1、工程表の接続）Tool Permissions（harnesses.tool_permissions）の形と、CLI の設定への変換 | 決定（2026-11-07、仕様の確定時に案を採用）: 案: 形は `{ "deny": [CLI の表記のツール名・規則] }`、`{}` は追加の禁止なし。Claude Code は `permissions.allow` に Profile の allowedTools、`permissions.deny` に deny を入れる。Codex（0.163.0）はツールごとの設定が無いため、allowedTools と deny がどちらも空のときだけ起動する。実際の制限は Harness Sandbox で行う | 03, 08 |
-| Q73 | （Phase 1、工程表の接続）Q28 の「setup は Project ごとに登録した宛先だけ許可」の登録先（projects に列が無かった） | 決定（2026-11-07、仕様の確定時に案を採用）: 案: projects に setup_allowed_hosts（`host:port` の JSON 配列、既定は空）を足し、Project の登録・更新 API で受け付ける。決まるまでは claim が空配列を返し、setup もネットワークを全遮断する | 02, 03, 09 |
-| Q74 | （Phase 1、工程表の接続）Blocked から続行した Execution の PR 本文に載せる作業概要を、どこから取るか（ハーネスを再実行しないため HarnessResult が手元に無い） | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Runner が工程9で HarnessResult の JSON を既存の成果物の種類 `harness_output` で登録し、Control Plane が claim の `execution.resumeHarnessSummary` に summary を入れて返す（Q40 の test_ids と同じ経路）。読めなければ null とし、PR 本文には「作業概要を取得できなかった」と書いて PR 作成は止めない | 02, 04, 11 |
-| Q75 | （開発以外のタスクを扱う Phase）タスクの種類ごとの出口と、出口の前の検証を、Project ごとに選べるようにするか。例: X の投稿文を作って Typefully に登録するタスクには、Gate 2・3（テストの弱体化への対策）は当てはまらない | 方針（2026-11-07、本人）: 選べるようにする。Typefully への登録は予約・下書きで、本人が Typefully 上で確認してから公開されるため、登録そのものが PR と同じ確認の場になる。この Project では出口の前の検証を省ける設定にしたい。案: 出口（開発は Git Publisher、X 投稿は Typefully への登録）と、出口の前の検証（開発は Gate 2・3、X 投稿は無し、または文字数などの機械的なチェック）を、タスクの種類または Project ごとに差し替えられる形にする。原則13 により、Typefully の API キーはハーネスに渡さず Runner が登録する。登録した時点で公開される出口を作る場合は、15.3 の承認対象に加えるかを別に決める。Phase 1 の仕様と実装は変えない | - |
+| Q71 | （Phase 1、工程表の接続）Work Sandbox（前の名前は Harness Sandbox）と Proposal Sandbox から接続してよいモデル API の宛先 | 決定（2026-11-07、仕様の確定時に案を採用）: 案: Adapter のパッケージに定数で持つ。Codex は `chatgpt.com:443`・`auth.openai.com:443`・`api.openai.com:443`、Claude Code は `api.anthropic.com:443`・`console.anthropic.com:443`・`claude.ai:443` を候補とし、実モデル試験（14 の 3.1）で認証確認と本実行が通る最小の一覧に絞って確定する。CLI が更新確認・テレメトリの宛先に届かないと動かない場合は、宛先を足す前に CLI の設定で止められるかを先に確かめる | 08, 09 |
 | Q76 | Linear の全体設定（linear.triggerLabel / linear.routingLabelPrefix）をどこに保存するか（PR #66 ではプロセス内に持ち、再起動で既定値に戻っていた） | 決定（2026-11-08、本人）: DB に保存して再起動後も保つ。保存先は全体設定の表 settings（02 の 3.4、1キー1行、行が無いキーは既定値）を新しく作る。PATCH は未知のキーと null・空白だけの値を 400 にし、1つでも拒否したら何も変えない。値を変えたら変わったキーごとに audit_logs（settings.update）へ残す。DB の値が空・不正なら既定値を使いログに出す | 02, 15 |
 | Q77 | Dashboard を開く macOS 通知を仕様12 に足すか（PR #66 で Linear の照会の5回連続失敗の通知がクリックで / を開くようにし、ヘルパーが受け付ける URL を広げた） | 決定（2026-11-08、本人）: 足す。ヘルパーが開いてよい URL は http://127.0.0.1:<port>/tasks/<taskId> と http://127.0.0.1:<port>/ だけ（12 の 3.6）。この通知は Execution を持たないため execution_events に記録せず、送信の失敗はログにだけ残す。配置済みのヘルパーは作り直して配置し直す | 12, 15 |
 | Q78 | 削除・アーカイブされた Linear Issue の linear_issue_states の行を消すか（PR #66 では消すため attach_seq が 0 に戻り、元に戻された Issue が以前のタスクと同じ冪等キーになって何も起きなかった） | 決定（2026-11-08、本人）: 行を消さず削除済みの印（removed_at）を付け、attach_seq を保つ。元に戻されて一覧に再び現れたら ai_ready=1 として記録するだけで起動しない（終わった Issue を戻しただけで再実行しないため。Q51、Q64 と揃える）。もう一度実行したいときは本人が ai-ready を外して付け直し、attach_seq が進んで新しいタスクを作る | 15 |
 | Q79 | 削除・アーカイブした Issue を元に戻した後、Evaloom が照会する前に ai-ready を外し、後で付け直した場合をどう扱うか（Evaloom からは元に戻されたことと区別できない） | 決定（2026-11-08、仕様の確定時に案を採用）: 案: 元に戻された場合と同じく記録するだけで起動しない。本人は、Evaloom が記録した後（GET /api/linear/status に出た後）にもう一度外して付け直す。Linear の Issue の履歴を読めば見分けられるが、Q65 と同じく Phase 2 では行わない | 15 |
 | Q80 | Linear コメントの送信（16 の 3.4）を何回まで再試行し、間隔をどう空けるか（16 は「上限回数（実装時に確定）」としていた） | 決定（2026-11-08、本人）: 上限は5回。間隔は1分・2分・4分・8分と倍にし、5回目も失敗したら failed と notification_failed（channel=linear）にする。最初の失敗からおよそ15分で諦める | 16 |
-| Q81 | 保留したタスクを、Issue の更新以外の契機でも再判定するか（15 の 3.6.3 は Issue の更新時刻が進んだときだけ再判定するため、config_missing_assignment と routing_unknown_label の保留は、管理画面で直しても Issue を更新するまで解けなかった） | 決定（2026-11-08、本人）: Project の linear_team_id・linear_routing_label、default_role、Harness Profile の割り当てを変えたときも、その変更で結果が変わりうる保留（routing_unknown_label・routing_team_mismatch と、その Project の config_missing_assignment）を再判定する。設定を変える API が同じトランザクションで linear_issue_states.recheck_requested_at に印を付け、次の照会で、その回に取得した Issue の中身で判定し直す | 15, 16 |
 | Q82 | Execution の無い契機（intake_blocked・missing_acceptance_criteria・保留したタスクの中止）の Linear コメントの送信の失敗を、管理画面に出すか（execution_events に書けないため、linear_outbox の status とログにしか残らなかった） | 決定（2026-11-08、本人）: すべて通知失敗の一覧（GET /api/notification-failures）に出す。linear_outbox に execution_id・failure_reason・failed_at を足し、execution_id が NULL で failed の行を一覧に足す。混ざった一覧の並びは記録した時刻の新しい順にし、cursor はその並びの位置を表す値にする。既存の failed の行は failure_reason=other、failed_at=created_at で埋める | 12, 16 |
 | Q83 | 送った結果が分からない Linear コメントを、再起動をまたいで照合するか（PR #69 は照合の要否をプロセスの中に持ち、停止で中断した送信は照合せずに再送していた） | 決定（2026-11-08、本人）: 結果が分からない状態を linear_outbox.outcome_unknown に残す。送る前に 1 にしてコミットし、結果が分かったら 0 に戻す。1 の行は再起動の後も Linear のコメントを読み、同じ dedupe_key が無いことを確かめてから送る | 16 |
 | Q84 | Linear コメントの送信が API キーの認証エラーで失敗したとき、macOS 通知を出すか（16 の 6章は案で、PR #69 はログにだけ出していた） | 決定（2026-11-08、本人）: 出す。取り込み側の通知（12 の 3.5、Dashboard を開く）と同じ扱い・同じ抑止にする。取り込み側（15 の Linear Poller）と送信側（16 の送信 Worker）で認証エラーの通知の抑止を1つにまとめ、同じ API キーが無効になっても通知は1回だけ出す（2回出す案は採らない）。抑止は、取り込みの照会か送信のどちらかが1回成功したら解く | 12, 15, 16 |
 | Q85 | notification_failed の reason に Linear 用の値を足すか（12 の 3.4 の分類は macOS 通知のヘルパー用で、PR #69 は Linear の失敗をすべて other にしている） | 決定（2026-11-08、本人）: channel=linear 用として auth（認証エラー）・issue_removed（Issue が削除・アーカイブされていた）・retries_exhausted（5回目も失敗した）を足し、02 の 5.3 の列挙に載せる。どれにも当てはまらない失敗は other にする | 02, 12, 16 |
 | Q86 | 取り込み側と送信側で1つにまとめた認証エラーの通知の抑止（Q84）と、取り込み側の「5回続けて失敗した」通知（15 の 6章、Team ごとの抑止）をどう分けるか。API キーのファイルが無い・読めない場合も共通の抑止に含めるか | 決定（2026-11-08、本人）: 認証エラーの通知は共通の抑止だけで扱う。5回続けて失敗した通知は、5回目の失敗の分類が auth 以外のときだけ Team ごとの抑止で出す。API キーのファイルが無い・読めない・権限が 0600 でない場合も認証エラーとして共通の抑止に含める | 12, 15, 16 |
-| Q87 | （Phase 1）setup の許可宛先（03 の 3.3.1）で拒否するローカルの名前の範囲、同じ宛先の重複の扱い、管理画面の入力欄 | 決定（2026-11-08、本人）: 拒否するローカルの名前は、ドットを含まない1語の名前と、最後のラベルが localhost・local・internal の名前とする（PR #71 の実装どおり）。同じ宛先を2回含む入力は 400 で拒否する（PR #71 の実装は受け付けるため直す）。管理画面の Project の登録・編集に入力欄を作る | 03, 13 |
 | Q88 | 許可する Tailscale の名前の指定方法（18 の 3.2） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: 起動時のフラグ `evaloomd -remote-host <名前>` で1つだけ指定する。指定が無ければ `127.0.0.1:<port>` だけを許可する。値は決定（2026-11-09、本人）: `orionmac-mini.tailb76d84.ts.net` | 18 |
 | Q89 | 本人の ID とパスワードの設定方法、`make demo`・E2E でのログイン（18 の 3.3、3.6） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: Mac mini の CLI `evaloomd -db <DB> owner set-password -id <ID>` だけで設定・再設定する（管理画面からは設定しない）。再設定ですべてのセッションを無効にする。`make demo` と E2E は起動前にテスト用のパスワードを CLI で設定する | 18 |
 | Q90 | パスワードのハッシュの方式と最小の長さ（18 の 3.3） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: argon2id。最小の長さは実装時に確定 | 18 |
@@ -317,9 +422,8 @@ requirements で確定しておらず、本仕様書群で「実装時に確定�
 | Q93 | Cookie の Secure の付け方（18 の 3.5） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: tailnet からの HTTPS では付け、Mac mini からの `http://127.0.0.1` では付けない | 18 |
 | Q94 | 自分の端末からのログアウトを作るか（18 の 3.5）。ほかの端末のセッションを切る操作は作らない（決定、2026-11-09、本人） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: `POST /auth/logout` でそのセッションを消す | 18 |
 | Q95 | Tailscale の ACL で管理画面に届く端末を絞るか（18 の 3.1） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: 本人の端末だけに絞る。設定は本人が Tailscale の管理画面で行う | 18 |
-| Q96 | Linear の状態の名前を固定にするか設定にするか、名前の一致の判定（16 の 3.6.2） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: In Progress / PR Review / Done / Canceled に固定し、完全一致（大文字・小文字、空白を区別）で選ぶ。名前の状態が Team に無ければ代用せず failed（reason=state_not_found） | 16 |
+| Q96 | Linear の状態の名前を固定にするか設定にするか、名前の一致の判定（16 の 3.6.2） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: In Progress / PR Review / Done / Canceled（2026-11-10: PR Review は In Review に変えた。Q161） に固定し、完全一致（大文字・小文字、空白を区別）で選ぶ。名前の状態が Team に無ければ代用せず failed（reason=state_not_found）（2026-11-10: PR Review は PR を前提にした名前のため、名前を変えるかを 16 の Q161 で扱う） | 16 |
 | Q97 | 本人が Linear で手で終わらせた Issue の状態を Evaloom が上書きするか（16 の 3.6.3） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: 現在の状態の種類が completed か canceled で、目的の状態と異なるときは変えない | 16 |
 | Q98 | 同じタスクの状態の変更の送る順序と、送れていない古い変更の扱い（16 の 3.6.3） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: 作った順に送る。新しい変更ができたら、pending のままの古い変更は送らず status=skipped にする（通知失敗の一覧には出さない） | 16 |
 | Q99 | どの中止で Canceled を付けるか（16 の 3.6.1） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: 本人が管理画面で中止したとき（保留したタスクを含む）だけ。Linear 起因の中止（ai-ready の取り外し、キャンセル、削除・アーカイブ、Team の移動）では変えない | 16 |
-| Q100 | 実行開始（In Progress）の契機の単位（16 の 3.6.1） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: Execution ごとに1回。続行・再実行で新しい Execution が running になったときも In Progress を付ける（すでに In Progress なら何も変わらない） | 16 |
-| Q101 | Evaloom の中心と、仕事の種類ごとの部品をどう分けるか（開発以外の仕事、例えば X の投稿を載せるため） | 方針（2026-11-09、本人）: Evaloom の中心は、Linear からの取り込み・振り分け・状態の管理・承認・通知とする。作業と「確かめて出す部分」（開発ならテストの流し直しと push・PR、X なら投稿の検査と Typefully への下書きの登録）はハーネスの単位で持つ。「確かめて出す部分」は作業中の AI が書き換えられず、鍵にも触れられない権限で動かす（requirements 原則13・15）。その場所を用意するのが Evaloom の役目である。06・10・11 は開発の仕事の部品とする（3章の分類）。開発以外の仕事を載せる Phase（評価基盤の Phase 3 より前に入れる）で次を変える。(1) 振り分け先に、Project（Git リポジトリ）を通さずハーネスを直接選べるようにする（requirements 原則2・6.1）。(2) 実行の流れ（worktree → ハーネス → Gate → PR）を仕事の種類ごとに差し替えられるようにし、いまの流れは開発用として残す。(3) 受け入れ条件を必須にするかを振り分け先ごとに選べるようにする（requirements 6.3・9.5）。Q75 の出口と検証の差し替えは (2) に含める。(1)〜(3) とハーネスの記録の形は 19（draft、Q102〜Q109）に書いた。Phase 1・2 の確定した仕様と実装はこの方針では変えない | 00, 03, 05, 06, 08, 10, 11, 15 |
+| Q100 | 実行開始（In Progress）の契機の単位（16 の 3.6.1） | 決定（2026-11-09、仕様の確定時に案を採用）: 案: Execution ごとに1回。続行・再実行で新しい Execution が running になったときも In Progress を付ける（すでに In Progress なら何も変わらない）。2026-11-10 に書き換え: 本人の判断の後は同じ Execution が再開するため、契機を「Execution の最初の開始と、判断の後の再開ごとに1回」にした。再開の dedupe_key は回答した判断待ちの ID を使う（02 の 3.7、16 の 3.6.3） | 16 |

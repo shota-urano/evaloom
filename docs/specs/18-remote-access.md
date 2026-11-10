@@ -15,7 +15,7 @@ confirmed_rev: 79ef932
 - MacBook Air やスマートフォンなど、Mac mini 以外の本人の端末から管理画面を使えるようにする（requirements 15.5）。
 - 公開するのは Tailscale のネットワーク（tailnet）の中だけにする。インターネットには公開しない。Mac mini のポートも開けない（requirements 2.2、15.2）。
 - 起動のたびに一回限りのログイン URL を取りに行く手間をなくす。本人は ID とパスワードでログインし、一度ログインした端末は有効期限まで、Control Plane を再起動してもログインしたままにする。
-- 同じマシンの不正なプログラムと、ブラウザ経由の CSRF・DNS リバインディングへの対策（[`01-architecture.md`](./01-architecture.md) 3.4）は弱めない。
+- 同じマシンの不正なプログラムと、ブラウザ経由の CSRF・DNS リバインディングへの対策（[`01-architecture.md`](./01-architecture.md) 3.6）は弱めない。
 
 ## 2. 入出力
 
@@ -38,7 +38,7 @@ confirmed_rev: 79ef932
 
 ### 3.2 許可する Host と Origin
 
-01 の 3.4 は Host / Origin が `127.0.0.1:<port>` 以外の要求を拒否している。これに、Tailscale の名前を1つ足す。
+01 の 3.6 は Host / Origin が `127.0.0.1:<port>` 以外の要求を拒否している。これに、Tailscale の名前を1つ足す。
 
 | 経路 | Host | Origin |
 |---|---|---|
@@ -48,7 +48,7 @@ confirmed_rev: 79ef932
 - 許可する Tailscale の名前は、起動時の設定で1つだけ指定する（案: `evaloomd -remote-host <名前>`、Q88）。指定が無ければ今までどおり `127.0.0.1:<port>` だけを許可する。
 - 値は完全一致で照合する。ワイルドカードや接頭辞での一致は使わない。
 - `tailscale serve` が中継するときの Host と送信元アドレスの実際の値は、実装時に実測して確かめる。中継された要求は `127.0.0.1` から届くため、送信元アドレスでは区別しない。
-- Vite の開発サーバの例外（01 の 3.4）は変えない。
+- Vite の開発サーバの例外（01 の 3.6）は変えない。
 
 ### 3.3 本人の資格情報
 
@@ -82,7 +82,7 @@ confirmed_rev: 79ef932
 
 ### 3.6 一回限りのログイン URL の廃止
 
-- 起動時に一回限りのログイン URL を作らない。標準出力・標準エラー・ログにも出さない（01 の 3.4 の Q2 の案を置き換える）。
+- 起動時に一回限りのログイン URL を作らない。標準出力・標準エラー・ログにも出さない（01 の 3.6 の Q2 の案を置き換える）。
 - `/auth/login?token=...` の GET は受け付けない（404）。
 - テスト・`make demo`・E2E は、起動の前に CLI でテスト用のパスワードを設定し、`POST /auth/login` でログインする形に変える。`make demo` は、表示していたログイン URL の代わりに、管理画面の URL とテスト用の ID・パスワードを表示する（案、Q89）。
 
@@ -163,9 +163,9 @@ API の共通規約（エラーの形、401 / 403 の使い分け）は [`01-arc
 | セッションの期限切れ・不明な値 | 401。管理画面はログイン画面へ移る |
 | Host / Origin が許可の値以外 | 403。audit_logs に残す（01 の 6章） |
 | CSRF トークンが無い・違う | 403。audit_logs に残す |
-| DB への書き込みに失敗 | ログイン・ログアウトを失敗させる（Fail Closed、01 の 3.5） |
+| DB への書き込みに失敗 | ログイン・ログアウトを失敗させる（Fail Closed、01 の 3.7） |
 
-14 の権限境界テストに足す項目:
+14 の権限境界テストに足す項目は次のとおりとする。
 
 - 許可していない Host（例: `evil.example`）と、許可した名前に似た Host（例: `orionmac-mini.tailb76d84.ts.net.evil.example`）の要求が 403 になる。
 - 期限切れのセッションの Cookie で本人用 API を呼ぶと 401 になる。
@@ -187,7 +187,7 @@ API の共通規約（エラーの形、401 / 403 の使い分け）は [`01-arc
 ## 8. 関連仕様
 
 - [`00-overview.md`](./00-overview.md) 全体仕様と要確認リスト
-- [`01-architecture.md`](./01-architecture.md) 3.2 プロセス配置、3.4 認証、5章 API
+- [`01-architecture.md`](./01-architecture.md) 3.2 プロセス配置、3.6 認証、5章 API
 - [`02-data-model.md`](./02-data-model.md) テーブルの共通の約束
 - [`13-management-ui.md`](./13-management-ui.md) 管理画面
 - [`14-security-tests.md`](./14-security-tests.md) 権限境界テスト
