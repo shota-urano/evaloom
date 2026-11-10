@@ -234,4 +234,4 @@ func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigg
 
 // Runner directories are local configuration. Without a DB copy, exclude
 // absolute paths in free text while preserving URL paths (preceded by ':').
-var localPathPattern = regexp.MustCompile(`(^|[\s"'(])(/[^\s"')]+)`)
+var localPathPattern = regexp.MustCompile(`(^|[\s"'(=\[（])(/[^\s"')\]）]+)`)
