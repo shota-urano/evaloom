@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 0ad23d9
 written: 2026-11-10
 範囲: 手動タスク作成、タスクと Execution の状態遷移、claim と同時実行制御、段の報告、本人の判断の後の再開、中止、再起動時の回収、再実行
 ---
