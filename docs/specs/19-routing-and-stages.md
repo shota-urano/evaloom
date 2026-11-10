@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: bc5e1d7
 written: 2026-11-10
 範囲: 振り分け先（Project とスペシャルハーネス）、スペシャルハーネスの登録と版の固定、段と段ごとの安全な場所、中身の識別子と承認の結び付け、鍵の受け渡し、承認の宣言、結果の受け取りと返却、記録の受け渡し、受け入れ条件の要否、同時実行の単位、software-engineer への切り替えの順番
 ---
