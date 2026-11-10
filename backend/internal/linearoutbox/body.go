@@ -200,7 +200,12 @@ func readExecution(ctx context.Context, tx *sql.Tx, t Trigger) (executionFacts, 
 func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger, f executionFacts) {
 	clean := func(text string) string {
 		out, _ := logredact.Text(text, nil)
-		out = localPathPattern.ReplaceAllString(out, "$1[REDACTED]")
+		out = localPathPattern.ReplaceAllStringFunc(out, func(match string) string {
+			if strings.HasPrefix(match, "/") {
+				return "[REDACTED]"
+			}
+			return match
+		})
 		return strings.TrimSpace(out)
 	}
 	if f.harnessID.Valid {
@@ -233,5 +238,7 @@ func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigg
 }
 
 // Runner directories are local configuration. Without a DB copy, exclude
-// absolute paths in free text while preserving URL paths (preceded by ':').
-var localPathPattern = regexp.MustCompile(`(^|[\s"'(=\[（])(/[^\s"')\]）]+)`)
+// absolute paths regardless of the preceding character. Match scheme:// URLs
+// first so that their slashes are preserved rather than treated as local paths.
+// \x60 is the backtick delimiter for Markdown inline code.
+var localPathPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s\x60"')\]）]+|/[^\s\x60"')\]）]*`)
