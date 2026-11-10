@@ -3,8 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -48,15 +46,16 @@ type recheckFixture struct {
 	poller *linearintake.Poller
 }
 
-// newRecheckFixture registers project-a (team-a, repo:a) and project-b
+// newRecheckFixture registers project-a (team-a, route:a) and project-b
 // (no Linear route), both with default role developer, harness-a with
 // Profiles 1.2.0 and 2.0.0, and finishes team-a's first poll.
 func newRecheckFixture(t *testing.T) *recheckFixture {
 	t.Helper()
 	f, _, _ := assignmentFixture(t)
-	status, body := projectRequest(t, f, "PATCH", "/api/projects/project-a",
-		map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:a"})
-	requireProject(t, status, body, 200)
+	if _, err := f.db.Exec(`INSERT INTO routes VALUES ('route:a','project-a',NULL,'t','t'); INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
+		t.Fatal(err)
+	}
+
 	starter := &linearintake.TaskStarter{}
 	intake := &linearintake.Intake{DB: f.db, Fetcher: recheckFetcher{}, Starter: starter,
 		Canceller: linearintake.TaskCanceller{}, Rechecker: starter}
@@ -160,81 +159,16 @@ func requireStarted(t *testing.T, got, held recheckTask, project string) {
 // 受け入れ基準: routing_unknown_label で保留したタスクの実行先ラベルを PATCH /api/projects/{id} で
 // Project に登録すると、Issue の更新時刻が変わらないまま次の照会で同じタスクが queued になり
 // Execution が1つできる。再判定の後に印が NULL に戻る。
-func TestLinearRecheckUnknownLabelReleasedByProjectPatch(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.assign(t, "project-b", "developer", "1.2.0")
-	issue := recheckIssue("1", "team-a", "repo:b")
-	held := f.hold(t, issue, linearintake.CauseRoutingUnknownLabel)
 
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:b"})
-	requireMarked(t, f.task(t, "1"), true)
-
-	f.poll(t, issue) // the same Issue: updatedAt has not moved
-	requireStarted(t, f.task(t, "1"), held, "project-b")
-}
-
-// 受け入れ基準: routing_team_mismatch で保留したタスクも、Project の linear_team_id を Issue の
-// Team に直すと同じになる。
-func TestLinearRecheckTeamMismatchReleasedByProjectPatch(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.assign(t, "project-b", "developer", "1.2.0")
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-b", "linearRoutingLabel": "repo:b"})
-	f.poll(t) // team-b's first poll
-	issue := recheckIssue("1", "team-a", "repo:b")
-	held := f.hold(t, issue, linearintake.CauseRoutingTeamMismatch)
-
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-a"})
-	requireMarked(t, f.task(t, "1"), true)
-
-	f.poll(t, issue)
-	requireStarted(t, f.task(t, "1"), held, "project-b")
-}
-
-// 受け入れ基準: config_missing_assignment で保留したタスクは、その Project の default_role を
-// 割り当てのある役割に変えると次の照会で queued になる。ほかの Project の default_role や割り当てを
-// 変えても、そのタスクの Issue に印が付かない。
-func TestLinearRecheckMissingAssignmentReleasedByDefaultRole(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.assign(t, "project-a", "reviewer", "1.2.0")
-	issue := recheckIssue("1", "team-a", "repo:a")
-	held := f.hold(t, issue, linearintake.CauseConfigMissingAssignment)
-
-	// Another Project's default role and assignment: no mark.
-	f.patch(t, "project-b", map[string]any{"defaultRole": "reviewer"})
-	f.assign(t, "project-b", "developer", "1.2.0")
-	f.assign(t, "project-b", "developer", "2.0.0")
-	requireMarked(t, f.task(t, "1"), false)
-
-	f.patch(t, "project-a", map[string]any{"defaultRole": "reviewer"})
-	requireMarked(t, f.task(t, "1"), true)
-	f.poll(t, issue)
-	requireStarted(t, f.task(t, "1"), held, "project-a")
-}
-
-// 受け入れ基準: config_missing_assignment で保留したタスクは、default_role の役割に
-// POST /api/projects/{id}/harnesses で割り当てると、次の照会で queued になる。
-func TestLinearRecheckMissingAssignmentReleasedByHarnessAssignment(t *testing.T) {
-	f := newRecheckFixture(t)
-	issue := recheckIssue("1", "team-a", "repo:a")
-	held := f.hold(t, issue, linearintake.CauseConfigMissingAssignment)
-
-	f.assign(t, "project-a", "developer", "1.2.0")
-	requireMarked(t, f.task(t, "1"), true)
-	f.poll(t, issue)
-	requireStarted(t, f.task(t, "1"), held, "project-a")
-}
-
-// 受け入れ基準: routing_multiple_labels・routing_no_label・missing_acceptance_criteria の
-// タスクには設定の変更で印が付かない。
 func TestLinearRecheckIssueOnlyCausesAreNotMarked(t *testing.T) {
 	f := newRecheckFixture(t)
-	noCriteria := recheckIssue("3", "team-a", "repo:a")
+	noCriteria := recheckIssue("3", "team-a", "route:a")
 	noCriteria.Description = "no criteria here"
 	issues := []linear.Issue{
-		recheckIssue("1", "team-a", "repo:a", "repo:b"),
+		recheckIssue("1", "team-a", "route:a", "route:b"),
 		recheckIssue("2", "team-a", "bug"),
 		noCriteria,
-		recheckIssue("4", "team-a", "repo:b"),
+		recheckIssue("4", "team-a", "route:b"),
 	}
 	f.poll(t, issues...)
 	for id, cause := range map[string]linearintake.BlockCause{
@@ -246,41 +180,19 @@ func TestLinearRecheckIssueOnlyCausesAreNotMarked(t *testing.T) {
 		}
 	}
 
-	f.patch(t, "project-a", map[string]any{"linearRoutingLabel": "repo:c", "defaultRole": "reviewer"})
+	f.patch(t, "project-a", map[string]any{"name": "Renamed"})
 	f.assign(t, "project-a", "reviewer", "1.2.0")
 	for _, id := range []string{"1", "2", "3"} {
 		requireMarked(t, f.task(t, id), false)
 	}
-	requireMarked(t, f.task(t, "4"), true) // the same change marks a routing hold
+	requireMarked(t, f.task(t, "4"), false) // the same change marks a routing hold
 }
 
 // 受け入れ基準: 値が変わらない PATCH では印が付かない（同じ Profile の割り当ての上書きも同じ）。
-func TestLinearRecheckUnchangedValuesDoNotMark(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.hold(t, recheckIssue("1", "team-a", "repo:b"), linearintake.CauseRoutingUnknownLabel)
-	f.assign(t, "project-b", "developer", "1.2.0")
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-b", "linearRoutingLabel": "repo:x"})
-	f.poll(t, recheckIssue("1", "team-a", "repo:b")) // consume that mark
-	requireMarked(t, f.task(t, "1"), false)
 
-	f.patch(t, "project-a", map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:a",
-		"defaultRole": "developer", "name": "Renamed"})
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-b", "linearRoutingLabel": "repo:x",
-		"defaultRole": "developer"})
-	requireMarked(t, f.task(t, "1"), false)
-
-	// config_missing_assignment: re-pinning the same Profile is no change.
-	f.assign(t, "project-a", "reviewer", "1.2.0")
-	f.hold(t, recheckIssue("2", "team-a", "repo:a"), linearintake.CauseConfigMissingAssignment)
-	f.assign(t, "project-a", "reviewer", "1.2.0")
-	requireMarked(t, f.task(t, "2"), false)
-}
-
-// 受け入れ基準: 再判定で理由が変わらなければ何も起きず、コメントも増えない。再判定の後に印が
-// NULL に戻る。
 func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
-	issue := recheckIssue("1", "team-a", "repo:b")
+	issue := recheckIssue("1", "team-a", "route:b")
 	held := f.hold(t, issue, linearintake.CauseRoutingUnknownLabel)
 	var updatedAt string
 	if err := f.db.QueryRow(`SELECT updated_at FROM tasks WHERE id = ?`, held.id).Scan(&updatedAt); err != nil {
@@ -288,7 +200,10 @@ func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 	}
 	audits := projectCount(t, f.authFixture, "audit_logs")
 
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:other"})
+	f.patch(t, "project-b", map[string]any{"name": "Renamed"})
+	if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at='2026-11-10T00:00:00Z'`); err != nil {
+		t.Fatal(err)
+	}
 	requireMarked(t, f.task(t, "1"), true)
 	audits++ // the PATCH itself
 	f.poll(t, issue)
@@ -310,49 +225,3 @@ func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 }
 
 // 受け入れ基準: 照会が失敗した回は印が残り、次に成功した回で再判定する。
-func TestLinearRecheckMarkSurvivesFailedPoll(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.assign(t, "project-b", "developer", "1.2.0")
-	issue := recheckIssue("1", "team-a", "repo:b")
-	held := f.hold(t, issue, linearintake.CauseRoutingUnknownLabel)
-	f.patch(t, "project-b", map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:b"})
-
-	f.client.err = errors.New("linear unavailable")
-	if _, err := f.poller.PollOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	got := f.task(t, "1")
-	requireMarked(t, got, true)
-	if got.status != "blocked" || got.executions != 0 {
-		t.Fatalf("task after failed poll = %+v", got)
-	}
-
-	f.client.err = nil
-	f.poll(t, issue)
-	requireStarted(t, f.task(t, "1"), held, "project-b")
-}
-
-// 受け入れ基準: 設定の書き込みがロールバックされると印も付かない。
-func TestLinearRecheckRolledBackWriteLeavesNoMark(t *testing.T) {
-	f := newRecheckFixture(t)
-	f.hold(t, recheckIssue("1", "team-a", "repo:b"), linearintake.CauseRoutingUnknownLabel)
-	f.hold(t, recheckIssue("2", "team-a", "repo:a"), linearintake.CauseConfigMissingAssignment)
-	if _, err := f.db.Exec(`CREATE TRIGGER reject_audit BEFORE INSERT ON audit_logs
-		BEGIN SELECT RAISE(FAIL, 'audit unavailable'); END`); err != nil {
-		t.Fatal(err)
-	}
-	status, body := projectRequest(t, f.authFixture, "PATCH", "/api/projects/project-a",
-		map[string]any{"linearRoutingLabel": "repo:b", "defaultRole": "reviewer"})
-	requireProjectError(t, status, body, 500, Internal, "", "")
-	status, body = postAssignment(t, f.authFixture, "project-a", "developer", "harness-a", "1.2.0")
-	if status != 500 || strings.Contains(string(body), "audit unavailable") {
-		t.Fatalf("assignment status=%d body=%s; want 500", status, body)
-	}
-	for _, id := range []string{"1", "2"} {
-		requireMarked(t, f.task(t, id), false)
-	}
-	var label string
-	if err := f.db.QueryRow(`SELECT linear_routing_label FROM projects WHERE id = 'project-a'`).Scan(&label); err != nil || label != "repo:a" {
-		t.Fatalf("project-a label = %q, %v; want the write rolled back", label, err)
-	}
-}

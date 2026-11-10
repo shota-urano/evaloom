@@ -48,10 +48,8 @@ function seedHarness(db: string, repo: Repo) {
   const sql = (value: string) => `'${value.replaceAll("'", "''")}'`
   const now = sql(new Date().toISOString())
   run('sqlite3', [db, `INSERT INTO harnesses
-    (id, name, specialty, supported_tasks, adapter, repo_path, repo_url, supported_models,
-     available_tools, tool_permissions, contract_version, created_at, updated_at)
-    VALUES ('claude-developer', 'Demo Harness', 'developer', '["development"]', 'claude_code',
-      ${sql(repo.path)}, ${sql(repo.url)}, '["claude-e2e-model"]', '["read","write"]', '{}', '1', ${now}, ${now});`])
+    (id, name, repo_path, repo_url, created_at, updated_at)
+    VALUES ('claude-developer', 'Demo Harness', ${sql(repo.path)}, ${sql(repo.url)}, ${now}, ${now});`])
 }
 
 async function seedAPI(server: Evaloomd) {
@@ -69,13 +67,14 @@ async function seedAPI(server: Evaloomd) {
       body: JSON.stringify(body),
     })
     if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`)
-    await response.arrayBuffer()
+    return await response.json() as { id: string }
   }
+  let profileId = ''
   for (const version of ['1.0.0', '1.1.0']) {
-    await post('/api/harness-profiles', { harnessId: 'claude-developer', version })
+    const profile = await post('/api/harness-profiles', { harnessId: 'claude-developer', version })
+    if (version === '1.0.0') profileId = profile.id
   }
-  await post('/api/projects', { id: 'demo-app', name: 'Demo Project', runnerId: 'local', defaultRole: 'developer' })
-  await post('/api/projects/demo-app/harnesses', { role: 'developer', harnessId: 'claude-developer', version: '1.0.0' })
+  await post('/api/projects', { id: 'demo-app', name: 'Demo Project', runnerId: 'local', harnessId: 'claude-developer', profileId })
 }
 
 async function main() {

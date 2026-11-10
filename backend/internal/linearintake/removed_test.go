@@ -136,7 +136,7 @@ func TestRestoredIssueReattachStartsNewTask(t *testing.T) {
 			f.mustRound(t, issue) // restored: skipped_restored
 
 			detached := issue
-			detached.Labels = []string{"repo:one"}
+			detached.Labels = []string{"route:one"}
 			f.fetcher.issues[issue.ID] = detached
 			f.mustRound(t)
 			if s := mustState(t, f.db, issue.ID); s.aiReady || s.seq != 1 || s.removedAt != "" {
@@ -168,8 +168,8 @@ func TestUnmarkedRowsDecideAsBefore(t *testing.T) {
 			t.Fatalf("%s: %+v, want ai_ready=%v seq=%d %s removed_at NULL", id, s, aiReady, seq, decision)
 		}
 	}
-	a := routedIssue("a", "repo:one")
-	cancelled := routedIssue("c", "repo:one")
+	a := routedIssue("a", "route:one")
+	cancelled := routedIssue("c", "route:one")
 	cancelled.StateType = "canceled"
 	f.mustRound(t, a, cancelled)
 	assertRow("a", true, 1, DecisionStarted)          // no row: attach
@@ -178,7 +178,7 @@ func TestUnmarkedRowsDecideAsBefore(t *testing.T) {
 	assertRow("a", true, 1, DecisionStarted) // still attached: nothing
 
 	detached := a
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues["a"] = detached
 	f.mustRound(t, cancelled)
 	assertRow("a", false, 1, DecisionCancelled) // detach

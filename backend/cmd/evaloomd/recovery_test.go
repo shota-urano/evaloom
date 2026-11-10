@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,14 +13,14 @@ import (
 
 func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
+	db, err := testregistry.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	started := time.Now().UTC()
 	for i, runner := range []string{"silent", "resumed", "never-heartbeat"} {
-		if err := store.RegisterRunner(ctx, db, runner, runner, "unused-"+runner, "/worktrees", "2020-01-01T00:00:00Z"); err != nil {
+		if err := store.RegisterRunner(ctx, db, runner, runner, "unused-"+runner, "2020-01-01T00:00:00Z"); err != nil {
 			t.Fatal(err)
 		}
 		if runner != "never-heartbeat" {
@@ -27,8 +28,7 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 				t.Fatal(err)
 			}
 		}
-		if _, err := db.Exec(`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-			VALUES (?, ?, ?, 'developer', '', '')`, runner, runner, runner); err != nil {
+		if _, err := db.Exec(`INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES (?, ?, ?, '', '', 'fixture-harness', 'fixture-profile')`, runner, runner, runner); err != nil {
 			t.Fatal(err)
 		}
 		taskID := fmt.Sprintf("task-%03d", i+1)

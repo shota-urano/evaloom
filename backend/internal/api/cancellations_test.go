@@ -197,7 +197,7 @@ func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
 				}
 			}
 			var runnerStatus, runnerAt, executionAt string
-			if err := f.db.QueryRow(`SELECT r.status, r.last_heartbeat_at, e.last_heartbeat_at
+			if err := f.db.QueryRow(`SELECT r.status, coalesce(r.last_heartbeat_at, ''), e.last_heartbeat_at
 				FROM executions e JOIN runners r ON r.id = e.runner_id WHERE e.id = ?`, id).
 				Scan(&runnerStatus, &runnerAt, &executionAt); err != nil || runnerStatus != "online" || runnerAt != executionAt {
 				t.Fatalf("liveness: %s %s %s err=%v", runnerStatus, runnerAt, executionAt, err)
@@ -466,7 +466,7 @@ func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
 	assertAuthError(t, status, body, 500, Internal)
 	var runnerStatus, runnerAt string
 	var executionAt sql.NullString
-	if err := f.db.QueryRow(`SELECT r.status, r.last_heartbeat_at, e.last_heartbeat_at
+	if err := f.db.QueryRow(`SELECT r.status, coalesce(r.last_heartbeat_at, ''), e.last_heartbeat_at
 		FROM executions e JOIN runners r ON r.id = e.runner_id WHERE e.id = ?`, id).
 		Scan(&runnerStatus, &runnerAt, &executionAt); err != nil || runnerStatus != "offline" || runnerAt != "" || executionAt.Valid {
 		t.Fatalf("partial heartbeat survived: %s %s %+v err=%v", runnerStatus, runnerAt, executionAt, err)

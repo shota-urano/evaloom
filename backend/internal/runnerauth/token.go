@@ -26,7 +26,7 @@ func ValidateRegistration(id, name, root string) error {
 	if strings.TrimSpace(name) == "" || !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
 		return fmt.Errorf("runner: name must be non-empty and contain no control characters")
 	}
-	if !filepath.IsAbs(root) || strings.ContainsRune(root, 0) {
+	if root != "" && (!filepath.IsAbs(root) || strings.ContainsRune(root, 0)) {
 		return fmt.Errorf("runner: worktree root must be an absolute path")
 	}
 	return nil
@@ -43,7 +43,7 @@ func Register(ctx context.Context, db *sql.DB, id, name, root string) (string, e
 		return "", fmt.Errorf("runner: generate token: %w", err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(secret)
-	if err := store.RegisterRunner(ctx, db, id, name, tokenHash(token), filepath.Clean(root), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := store.RegisterRunner(ctx, db, id, name, tokenHash(token), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return "", err
 	}
 	return token, nil

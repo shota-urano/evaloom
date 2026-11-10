@@ -25,7 +25,7 @@ function UsageSummary({ usages }: { usages: readonly HarnessUsage[] }) {
   )
 }
 
-/** Harnesses 一覧（13 3.2）。Harness、Adapter、使用中プロジェクト。 */
+/** Harnesses 一覧（13 3.2）。Harness、既定の Profile、使用中プロジェクト。 */
 export function HarnessListPage() {
   const { api } = useSession()
   const harnesses = useResource((signal) => registry.listHarnesses(api, signal), 'harnesses')
@@ -64,7 +64,7 @@ export function HarnessListPage() {
                   Harness
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  Adapter
+                  既定の Profile
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   ハーネスリポジトリのパス
@@ -83,7 +83,7 @@ export function HarnessListPage() {
                     </Link>
                     <div className="text-muted-foreground font-mono text-xs">{harness.id}</div>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">{harness.adapter}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{harness.defaultProfileId ?? '未設定'}</td>
                   <td className="px-4 py-3 font-mono text-xs break-all">{harness.repoPath}</td>
                   <td className="px-4 py-3">
                     <UsageSummary usages={usagesOf(projects.data ?? [], harness.id)} />

@@ -24,12 +24,8 @@ const (
 // read through the Control Plane's ArtifactStore as evaloomd does.
 func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	t.Helper()
-	mustExec(t, db, `INSERT INTO harnesses (id, name, specialty, supported_tasks, adapter, repo_path, repo_url,
-		supported_models, available_tools, tool_permissions, contract_version, created_at, updated_at)
-		VALUES ('h', 'Harness', 'developer', '["development"]', 'codex', '/repos/h', '', '[]', '[]', '{}', '1', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition,
-		definition_hash, model_id, operation_status, registered_at)
-		VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?)`, sha40, testTime)
+	mustExec(t, db, `INSERT INTO harnesses (id, name, repo_path, repo_url, created_at, updated_at) VALUES ('h', 'Harness', '/repos/h', '', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition, definition_hash, model_id, operation_status, registered_at, contract_version) VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?, '1')`, sha40, testTime)
 	mustExec(t, db, `UPDATE executions SET runner_id = 'runner', harness_id = 'h', profile_id = 'p',
 		profile_version = '1.0.0', profile_commit_sha = ? WHERE id = 'linear-1-e1'`, sha40)
 	files, err := store.NewArtifactStore(db, t.TempDir())
@@ -160,9 +156,11 @@ func TestCommentBodyRedactsSecretFormsInFreeText(t *testing.T) {
 // 受け入れ基準: ログの本文と Runner のパスが本文に入らない。
 func TestCommentBodyHasNoLogTextOrRunnerPath(t *testing.T) {
 	db := outboxDB(t)
-	claimedLinearExecution(t, db, "変更は "+worktreePath+"/main.go と /worktrees/other にある")
+	claimedLinearExecution(t, db, "変更は "+worktreePath+"/main.go と /worktrees/other にある\n"+
+		"path=/worktrees/private/main.go 失敗（/worktrees/private/main.go） [/worktrees/private/main.go]\n"+
+		"URL=https://example.com/worktrees/private/main.go")
 	mustExec(t, db, `UPDATE executions SET error_class = 'execution_failed',
-		error_message = 'cannot open /worktrees/linear-1-r1/.git' WHERE id = 'linear-1-e1'`)
+		error_message = 'cannot open /worktrees/linear-1-r1/.git path=/worktrees/private/main.go 失敗（/worktrees/private/main.go） [/worktrees/private/main.go] URL=https://example.com/worktrees/private/main.go' WHERE id = 'linear-1-e1'`)
 	mustExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
 		VALUES ('linear-1-e1', 'log', '{"sourceId":"s1","stream":"harness","text":"LOG-BODY-CANARY"}', ?)`, testTime)
 	mustExec(t, db, `INSERT INTO artifacts (id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
@@ -170,9 +168,46 @@ func TestCommentBodyHasNoLogTextOrRunnerPath(t *testing.T) {
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed)
 	checkBody(t, onlyBody(t, db), []string{
-		"変更は [REDACTED]/linear-1-r1/main.go と [REDACTED]/other にある",
-		"- エラー情報: execution_failed（cannot open [REDACTED]/linear-1-r1/.git）\n",
-	}, []string{"LOG-BODY-CANARY", "LOG-PATH-CANARY", "/worktrees", "artifacts/"})
+		"変更は [REDACTED] と [REDACTED] にある\n" +
+			"path=[REDACTED] 失敗（[REDACTED]） [[REDACTED]]\n" +
+			"URL=https://example.com/worktrees/private/main.go\n",
+		"- エラー情報: execution_failed（cannot open [REDACTED] path=[REDACTED] 失敗（[REDACTED]） [[REDACTED]] URL=https://example.com/worktrees/private/main.go）\n",
+	}, []string{"LOG-BODY-CANARY", "LOG-PATH-CANARY", worktreePath, "path=/worktrees", "（/worktrees", "[/worktrees", "artifacts/"})
+
+	for _, tc := range []struct{ name, before, after string }{
+		{"space", "変更は ", ""},
+		{"equals", "path=", ""},
+		{"colon", "path:", ""},
+		{"backtick", "変更は `", "`"},
+		{"parenthesis", "(", ")"},
+		{"closing parenthesis", ")", ""},
+		{"fullwidth parenthesis", "失敗（", "）"},
+		{"closing fullwidth parenthesis", "）", ""},
+		{"bracket", "[", "]"},
+		{"closing bracket", "]", ""},
+		{"single quote", "'", "'"},
+		{"double quote", "\"", "\""},
+		{"line start", "", ""},
+		{"new line", "変更は\n", ""},
+		{"letter", "path", ""},
+		{"Japanese text", "変更は", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const localPath = "/worktrees/private/main.go"
+			const urls = "http://example.com/worktrees/public/main.go https://example.com/worktrees/public/main.go"
+			text := tc.before + localPath + tc.after + " " + urls
+			redacted := tc.before + "[REDACTED]" + tc.after + " " + urls
+			db := outboxDB(t)
+			claimedLinearExecution(t, db, text)
+			mustExec(t, db, `UPDATE executions SET error_class = 'execution_failed', error_message = ? WHERE id = 'linear-1-e1'`, text)
+			setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
+			transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed)
+			checkBody(t, onlyBody(t, db), []string{
+				"\n作業概要:\n" + redacted + "\n",
+				"- エラー情報: execution_failed（" + strings.Join(strings.Fields(redacted), " ") + "）\n",
+			}, []string{localPath})
+		})
+	}
 }
 
 // Without the artifact reader (evaloomd without -data-dir) a succeeded body

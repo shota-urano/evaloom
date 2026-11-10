@@ -31,7 +31,7 @@ func RecoverStaleRunners(ctx context.Context, db *sql.DB, startedAt, now time.Ti
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT id, last_heartbeat_at FROM runners r
+	rows, err := tx.QueryContext(ctx, `SELECT id, coalesce(last_heartbeat_at, '') FROM runners r
 		WHERE EXISTS (SELECT 1 FROM executions e WHERE e.runner_id = r.id AND e.status IN `+activeExecutionStatuses+`)
 		ORDER BY id`)
 	if err != nil {

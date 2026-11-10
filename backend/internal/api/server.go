@@ -78,7 +78,6 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("POST /api/projects", writeProject(db, logger, true))
 	mux.HandleFunc("GET /api/projects/{id}", getProject(db, logger))
 	mux.HandleFunc("PATCH /api/projects/{id}", writeProject(db, logger, false))
-	mux.HandleFunc("POST /api/projects/{id}/harnesses", assignProjectHarness(db, logger))
 	mux.HandleFunc("GET /api/harnesses", listHarnesses(db, logger))
 	mux.HandleFunc("POST /api/harnesses", writeHarness(db, logger, adapters, true))
 	mux.HandleFunc("PATCH /api/harnesses/{id}", writeHarness(db, logger, adapters, false))
@@ -107,8 +106,8 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 		items := make([]runnerResponse, 0, len(rows))
 		for _, row := range rows {
 			var heartbeat *Timestamp
-			if row.LastHeartbeatAt != "" {
-				parsed, err := ParseTimestamp(row.LastHeartbeatAt)
+			if row.LastHeartbeatAt != nil {
+				parsed, err := ParseTimestamp(*row.LastHeartbeatAt)
 				if err != nil {
 					WriteError(w, logger, fmt.Errorf("runner %q: invalid stored heartbeat", row.ID))
 					return

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -59,7 +60,6 @@ var taskStatusNames = map[model.TaskStatus]string{
 type executionFacts struct {
 	harnessID, profileVersion sql.NullString
 	errorClass, errorMessage  sql.NullString
-	runnerWorktreeDir         sql.NullString
 }
 
 // Body builds linear_outbox.body for t inside tx (spec 16 3.3).
@@ -76,8 +76,8 @@ type executionFacts struct {
 // a path column. Free text written by the harness or the Runner (summary,
 // error message) passes the log exclusion of spec 05 3.5 (logredact.Text);
 // the summary was already excluded with the Runner's own secrets before the
-// Runner stored it. The Runner's worktree root is excluded from that text as
-// a literal, so Runner paths do not leak.
+// Runner stored it. Absolute local paths are excluded without persisting
+// Runner directory configuration in the Control Plane.
 // The body shows the task ID for the management UI (3.3) and ends with the
 // dedupe_key used to match a comment whose send result is unknown (3.4).
 func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
@@ -182,10 +182,9 @@ func statusName(status model.TaskStatus) string {
 func readExecution(ctx context.Context, tx *sql.Tx, t Trigger) (executionFacts, bool, error) {
 	var f executionFacts
 	err := tx.QueryRowContext(ctx, `SELECT e.harness_id, e.profile_version,
-		e.error_class, e.error_message,
-		(SELECT r.worktree_root FROM runners r WHERE r.id = e.runner_id)
+		e.error_class, e.error_message
 		FROM executions e WHERE e.id = ? AND e.task_id = ?`, t.TargetID, t.TaskID).Scan(
-		&f.harnessID, &f.profileVersion, &f.errorClass, &f.errorMessage, &f.runnerWorktreeDir)
+		&f.harnessID, &f.profileVersion, &f.errorClass, &f.errorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
 		if t.Kind == KindCancelled && t.TargetID == t.TaskID {
 			return f, false, nil
@@ -199,14 +198,14 @@ func readExecution(ctx context.Context, tx *sql.Tx, t Trigger) (executionFacts, 
 }
 
 func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger, f executionFacts) {
-	var paths []string
-	for _, path := range []sql.NullString{f.runnerWorktreeDir} {
-		if path.Valid && path.String != "" {
-			paths = append(paths, path.String)
-		}
-	}
 	clean := func(text string) string {
-		out, _ := logredact.Text(text, paths)
+		out, _ := logredact.Text(text, nil)
+		out = localPathPattern.ReplaceAllStringFunc(out, func(match string) string {
+			if strings.HasPrefix(match, "/") {
+				return "[REDACTED]"
+			}
+			return match
+		})
 		return strings.TrimSpace(out)
 	}
 	if f.harnessID.Valid {
@@ -237,3 +236,9 @@ func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigg
 		}
 	}
 }
+
+// Runner directories are local configuration. Without a DB copy, exclude
+// absolute paths regardless of the preceding character. Match scheme:// URLs
+// first so that their slashes are preserved rather than treated as local paths.
+// \x60 is the backtick delimiter for Markdown inline code.
+var localPathPattern = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s\x60"')\]）]+|/[^\s\x60"')\]）]*`)

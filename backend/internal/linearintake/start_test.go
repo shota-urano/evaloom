@@ -15,26 +15,15 @@ import (
 
 const criteriaBody = "Fix the login.\n\n## Acceptance Criteria\n- login works\n- tests pass\n\n## Notes\nnone"
 
-// startDB registers p1 (team-a, repo:one) and p2 (team-b, repo:two) with a
-// Default Harness assignment, and p3 (team-a, repo:three) without one.
+// startDB registers p1 (team-a, route:one) and p2 (team-b, route:two) with a
+// Default Harness assignment, and p3 (team-a, route:three) without one.
 func startDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:two")
-	addProject(t, db, "p3", "team-a", "repo:three")
-	exec(t, db, `INSERT INTO harnesses (id, name, specialty, supported_tasks, adapter, repo_path, repo_url,
-		supported_models, available_tools, tool_permissions, contract_version, created_at, updated_at)
-		VALUES ('h1', 'Developer', 'developer', '["development"]', 'codex', '/repos/h', 'https://example.invalid/h.git',
-		'["m"]', '[]', '{}', '1', 't', 't')`)
-	exec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition,
-		definition_hash, model_id, operation_status, registered_at)
-		VALUES ('hp1', 'h1', '1', 'sha', 'v1', '{}', 'hash', 'm', 'provisional', 't')`)
-	for _, project := range []string{"p1", "p2"} {
-		// addProject fills default_role with "x".
-		exec(t, db, `INSERT INTO project_harnesses (project_id, role, harness_id, profile_id, assigned_at)
-			VALUES (?, 'x', 'h1', 'hp1', 't')`, project)
-	}
+	addProject(t, db, "p1", "team-a", "route:one")
+	addProject(t, db, "p2", "team-b", "route:two")
+	addProject(t, db, "p3", "team-a", "route:three")
+
 	return db
 }
 
@@ -84,7 +73,7 @@ func readStarted(t *testing.T, db *sql.DB, issueID string, seq int) startedTask 
 // field and routing uses only Team and label (spec 15 1章, requirements 6.1).
 func TestStartLinearTaskQueuesRoutedIssue(t *testing.T) {
 	db := startDB(t)
-	issue := routedIssue("1", "repo:one", "bug")
+	issue := routedIssue("1", "route:one", "bug")
 	d, err := start(t, db, issue, 2)
 	if err != nil || d != DecisionStarted {
 		t.Fatalf("decision = %q, err = %v", d, err)
@@ -128,11 +117,9 @@ func TestStartLinearTaskHoldsUnroutableIssue(t *testing.T) {
 		cause  BlockCause
 		projID string
 	}{
-		{"two routing labels", routedIssue("1", "repo:one", "repo:three"), CauseRoutingMultipleLabels, ""},
-		{"unregistered label", routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel, ""},
+		{"two routing labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels, ""},
+		{"unregistered label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel, ""},
 		{"no routing label", routedIssue("1", "bug"), CauseRoutingNoLabel, ""},
-		{"team mismatch", routedIssue("1", "repo:two"), CauseRoutingTeamMismatch, ""},
-		{"no assignment", routedIssue("1", "repo:three"), CauseConfigMissingAssignment, "p3"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := startDB(t)
@@ -161,12 +148,12 @@ func TestStartLinearTaskHoldsIssueWithoutCriteria(t *testing.T) {
 		labels     []string
 		projID     string
 	}{
-		{"no heading", "Fix the login.\n\n## Notes\n- tests pass", []string{"repo:one"}, "p1"},
-		{"blank section", "Fix it.\n## 受け入れ条件\n   \n\n## Notes\nx", []string{"repo:one"}, "p1"},
-		{"empty body", "", []string{"repo:one"}, "p1"},
+		{"no heading", "Fix the login.\n\n## Notes\n- tests pass", []string{"route:one"}, "p1"},
+		{"blank section", "Fix it.\n## 受け入れ条件\n   \n\n## Notes\nx", []string{"route:one"}, "p1"},
+		{"empty body", "", []string{"route:one"}, "p1"},
 		// Both routing and criteria fail: only this cause permits the empty
 		// acceptance_criteria the schema requires (spec 15 3.8).
-		{"also unroutable", "no criteria", []string{"repo:unknown"}, ""},
+		{"also unroutable", "no criteria", []string{"route:unknown"}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := startDB(t)
@@ -233,7 +220,7 @@ func TestIntakeWithTaskStarterRetriesFailedCreation(t *testing.T) {
 	exec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
 		VALUES ('blocker', 'p1', 't', 'b', 'ac', 's', 'development', 'solo', 'completed', 'linear:1:1', 't', 't')`)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	if err := round(issue); err == nil {
 		t.Fatal("failed creation was not reported")
 	}

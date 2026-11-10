@@ -36,7 +36,10 @@ func TestOwnerMigrationPreservesExistingDatabaseAndCredentialsOnRestart(t *testi
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db, err = open(context.Background(), path, migrationsBefore(t, 25))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := migrationRows(t, db, `SELECT * FROM runners`); !reflect.DeepEqual(got, before) {
 		t.Fatal("migration modified existing registry data")
 	}
@@ -55,7 +58,10 @@ func TestOwnerMigrationPreservesExistingDatabaseAndCredentialsOnRestart(t *testi
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db, err = open(context.Background(), path, migrationsBefore(t, 25))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := migrationRows(t, db, `SELECT * FROM owner_credentials`); !reflect.DeepEqual(got, credentials) {
 		t.Fatal("restart changed owner credentials")
 	}

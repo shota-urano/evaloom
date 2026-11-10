@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -102,7 +103,7 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 			ProjectID: projectID, Role: role.String, HarnessID: harnessID.String, ProfileID: profileID.String,
 		}
 	} else {
-		c.Assignment, err = GetProjectHarness(ctx, tx, projectID, c.Project.DefaultRole)
+		c.Assignment, err = GetProjectHarness(ctx, tx, projectID, "")
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrClaimAssignmentMissing
 		}
@@ -118,9 +119,34 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	if err != nil {
 		return nil, err
 	}
-	c.Profile = ClaimProfile{HarnessID: harness.ID, Adapter: harness.Adapter,
+	// Read execution configuration from the pinned definition, never the mutable
+	// Harness registration. Legacy definitions remain readable during migration.
+	var definition struct {
+		ExecutionConfiguration struct {
+			Adapter string `json:"adapter"`
+		} `json:"executionConfiguration"`
+		Stages struct {
+			Work struct {
+				MicroHarness    string         `json:"microHarness"`
+				ToolPermissions map[string]any `json:"toolPermissions"`
+			} `json:"work"`
+		} `json:"stages"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(profile.Definition))
+	decoder.UseNumber()
+	if err := decoder.Decode(&definition); err != nil {
+		return nil, err
+	}
+	adapter := definition.Stages.Work.MicroHarness
+	if adapter == "" {
+		adapter = definition.ExecutionConfiguration.Adapter
+	}
+	if adapter == "" {
+		return nil, fmt.Errorf("store: pinned Profile has no work adapter")
+	}
+	c.Profile = ClaimProfile{HarnessID: harness.ID, Adapter: adapter,
 		Version: profile.Version, CommitSHA: profile.CommitSHA, Definition: profile.Definition,
-		HarnessRepoPath: harness.RepoPath, ToolPermissions: harness.ToolPermissions}
+		HarnessRepoPath: harness.RepoPath, ToolPermissions: definition.Stages.Work.ToolPermissions}
 	if c.profilePinned {
 		c.Profile.Version = version.String
 		c.Profile.CommitSHA = commitSHA.String

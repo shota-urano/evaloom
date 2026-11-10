@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
@@ -173,7 +173,7 @@ func TestTransitionTxCommitAndRollbackAreAtomicToObservers(t *testing.T) {
 	if err := db.QueryRow("PRAGMA database_list").Scan(&seq, &name, &path); err != nil {
 		t.Fatal(err)
 	}
-	observer, err := store.Open(context.Background(), path)
+	observer, err := testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,15 +387,13 @@ func TestCancelledContextIsNotAConflict(t *testing.T) {
 
 func lifecycleDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "lifecycle.db"))
+	db, err := testregistry.Open(context.Background(), filepath.Join(t.TempDir(), "lifecycle.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-		VALUES ('project', 'Project', 'runner', 'developer', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('runner', 'Runner', 'hash', 'online', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'runner', ?, ?, 'fixture-harness', 'fixture-profile')`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
 		task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
 		VALUES ('task-1', 'project', 'Title', 'Body', 'tests pass', 'test', 'development', 'solo', 'queued', 'key-1', ?, ?)`, testTime, testTime)

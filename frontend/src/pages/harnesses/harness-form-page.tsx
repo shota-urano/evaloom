@@ -4,7 +4,7 @@ import { preconditionFieldErrors, type FieldErrors } from '@/api/errors'
 import { registry, type Harness, type HarnessInput } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
-import { SelectField, TextAreaField, TextField } from '@/components/form-field'
+import { TextField } from '@/components/form-field'
 import { Loading, PageTitle } from '@/components/page'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,85 +12,21 @@ import { useApiErrors } from '@/hooks/use-api-errors'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { navigate } from '@/lib/router'
-import { ADAPTERS, HARNESS_LABELS as L, HARNESS_REPOSITORY_FIELDS, HARNESS_REPOSITORY_LABELS, harnessNotFound, harnessPath } from './labels'
+import { HARNESS_LABELS as L, HARNESS_REPOSITORY_FIELDS, HARNESS_REPOSITORY_LABELS, harnessNotFound, harnessPath } from './labels'
 
-type FormValues = {
-  id: string
-  name: string
-  adapter: string
-  repoPath: string
-  repoUrl: string
-  supportedModels: string
-  availableTools: string
-  toolPermissions: string
-}
-
-// サーバーの details[].field と同じ名前。400 の details をこの名前の項目へ出す（13 6節）。
-const FIELDS = ['id', 'name', 'adapter', 'repoPath', 'repoUrl', 'supportedModels', 'availableTools', 'toolPermissions'] as const
-
-const REQUIRED = ['name', 'adapter', 'repoPath', 'repoUrl'] as const
-
-const EMPTY: FormValues = {
-  id: '',
-  name: '',
-  adapter: '',
-  repoPath: '',
-  repoUrl: '',
-  supportedModels: '',
-  availableTools: '',
-  toolPermissions: '{}',
-}
-
+type FormValues = { id: string; name: string; repoPath: string; repoUrl: string }
+const FIELDS = ['id', 'name', 'repoPath', 'repoUrl'] as const
+const REQUIRED = ['name', 'repoPath', 'repoUrl'] as const
+const EMPTY: FormValues = { id: '', name: '', repoPath: '', repoUrl: '' }
 function toValues(harness: Harness): FormValues {
-  return {
-    id: harness.id,
-    name: harness.name,
-    adapter: harness.adapter,
-    repoPath: harness.repoPath,
-    repoUrl: harness.repoUrl,
-    supportedModels: harness.supportedModels.join('\n'),
-    availableTools: harness.availableTools.join('\n'),
-    toolPermissions: JSON.stringify(harness.toolPermissions, null, 2),
-  }
+  return { id: harness.id, name: harness.name, repoPath: harness.repoPath, repoUrl: harness.repoUrl }
 }
-
-const lines = (value: string) =>
-  value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
-
-function parseObject(value: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(value.trim() === '' ? '{}' : value)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  } catch {
-    // 下で項目のエラーにする。
-  }
-  return undefined
-}
-
-/** 画面での検証（正本はサーバー、13 3.1）。通れば送信内容を返す。 */
 function validate(values: FormValues, create: boolean): { input?: HarnessInput; errors: FieldErrors } {
   const errors: FieldErrors = {}
-  for (const field of create ? (['id', ...REQUIRED] as const) : REQUIRED) {
-    if (values[field].trim() === '') errors[field] = [field === 'adapter' ? '選択してください' : '入力してください']
+  for (const field of create ? ['id', ...REQUIRED] as const : REQUIRED) {
+    if (!values[field].trim()) errors[field] = ['入力してください']
   }
-  const toolPermissions = parseObject(values.toolPermissions)
-  if (!toolPermissions) errors.toolPermissions = ['JSON のオブジェクト（{ … }）で入力してください']
-  if (Object.keys(errors).length > 0 || !toolPermissions) return { errors }
-  return {
-    errors,
-    input: {
-      name: values.name.trim(),
-      adapter: values.adapter,
-      repoPath: values.repoPath.trim(),
-      repoUrl: values.repoUrl.trim(),
-      supportedModels: lines(values.supportedModels),
-      availableTools: lines(values.availableTools),
-      toolPermissions,
-    },
-  }
+  return Object.keys(errors).length ? { errors } : { errors, input: { name: values.name.trim(), repoPath: values.repoPath.trim(), repoUrl: values.repoUrl.trim() } }
 }
 
 function HarnessForm({ harness, onReload }: { harness?: Harness; onReload?: () => void }) {
@@ -101,9 +37,6 @@ function HarnessForm({ harness, onReload }: { harness?: Harness; onReload?: () =
   const [submitting, setSubmitting] = useState(false)
   const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
   const repositoryErrors = preconditionFieldErrors(error, HARNESS_REPOSITORY_FIELDS)
-  // 拡張として登録された Adapter（03 3.4）で保存済みなら、その値も選べるようにする。
-  const adapters =
-    harness && !ADAPTERS.some((a) => a.value === harness.adapter) ? [...ADAPTERS, { value: harness.adapter, label: harness.adapter }] : ADAPTERS
 
   const errorsFor = (field: string) => {
     const messages = [...(localErrors[field] ?? []), ...(fieldErrors[field] ?? []), ...(repositoryErrors[field] ?? [])]
@@ -163,59 +96,13 @@ function HarnessForm({ harness, onReload }: { harness?: Harness; onReload?: () =
             {...bind('id')}
           />
           <TextField label={L.name} autoComplete="off" {...bind('name')} />
-          <TextField
-            name="specialty"
-            label={L.specialty}
-            value={harness?.specialty ?? 'developer'}
-            disabled
-            readOnly
-            hint="Phase 1 は developer のみです。"
-          />
-          <SelectField label={L.adapter} hint="Profile の定義ファイルの executionConfiguration.adapter と一致させます。" {...bind('adapter')}>
-            <option value="">選択してください</option>
-            {adapters.map((adapter) => (
-              <option key={adapter.value} value={adapter.value}>
-                {adapter.label}
-              </option>
-            ))}
-          </SelectField>
-          <TextField
-            label={L.repoPath}
-            placeholder="/Users/you/workspace/harness"
-            autoComplete="off"
-            spellCheck={false}
-            hint="Control Plane のマシン上の絶対パス。"
-            {...bind('repoPath')}
-          />
-          <TextField
-            label={L.repoUrl}
-            placeholder="git@github.com:you/harness.git"
-            autoComplete="off"
-            spellCheck={false}
-            hint="git remote get-url origin と同じ値。"
-            {...bind('repoUrl')}
-          />
+          <TextField label={L.repoPath} autoComplete="off" {...bind('repoPath')} />
+          <TextField label={L.repoUrl} autoComplete="off" {...bind('repoUrl')} />
+
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>モデルとツール</CardTitle>
-          <CardDescription>Tool Permissions は本人だけがこの画面から変更できます。Runner とハーネスからは変更できません。</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextAreaField label={L.supportedModels} rows={3} spellCheck={false} hint="1行に1つ。" {...bind('supportedModels')} />
-          <TextAreaField label={L.availableTools} rows={3} spellCheck={false} hint="1行に1つ。" {...bind('availableTools')} />
-          <TextAreaField
-            label={L.toolPermissions}
-            rows={4}
-            spellCheck={false}
-            className="font-mono"
-            hint="JSON のオブジェクト。"
-            {...bind('toolPermissions')}
-          />
-        </CardContent>
-      </Card>
+
 
       <div className="flex gap-3">
         <Button type="submit" disabled={submitting}>

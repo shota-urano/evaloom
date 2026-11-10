@@ -35,7 +35,7 @@ func harnessFixture(t *testing.T) *authFixture {
 func harnessInput(t *testing.T, id string) map[string]any {
 	t.Helper()
 	repo, remote := gitRepository(t)
-	return map[string]any{"id": id, "name": "Harness " + id, "adapter": "codex",
+	return map[string]any{"id": id, "name": "Harness " + id,
 		"repoPath": repo, "repoUrl": remote}
 }
 
@@ -74,9 +74,6 @@ func TestHarnessesRegisterAndListWithPagination(t *testing.T) {
 	registered := map[string]model.Harness{}
 	for _, id := range []string{"harness-b", "harness-a"} {
 		input := harnessInput(t, id)
-		if id == "harness-b" {
-			input["adapter"] = "claude_code"
-		}
 		original := input["repoPath"].(string)
 		link := filepath.Join(t.TempDir(), "alias")
 		if err := os.Symlink(original, link); err != nil {
@@ -86,9 +83,7 @@ func TestHarnessesRegisterAndListWithPagination(t *testing.T) {
 		status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
 		h := requireHarness(t, status, body, 201)
 		real, err := filepath.EvalSymlinks(original)
-		if err != nil || h.RepoPath != real || h.RepoURL != input["repoUrl"] || h.Adapter != input["adapter"] ||
-			h.Specialty != "developer" || !reflect.DeepEqual(h.SupportedTasks, []string{"development"}) || h.ContractVersion != "1" ||
-			h.SupportedModels == nil || h.AvailableTools == nil || h.ToolPermissions == nil {
+		if err != nil || h.RepoPath != real || h.RepoURL != input["repoUrl"] || h.DefaultProfileID != nil || h.ApprovalWaivers == nil {
 			t.Fatalf("registered=%+v input=%v err=%v", h, input, err)
 		}
 		registered[id] = h
@@ -118,144 +113,6 @@ func TestHarnessesRegisterAndListWithPagination(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(detail), &history); err != nil || history.Before != nil || !reflect.DeepEqual(history.After, registered["harness-a"].HarnessSettings) {
 		t.Fatalf("registration audit=%s err=%v", detail, err)
-	}
-}
-
-func TestHarnessesUnregisteredAdapterRejectedOnPostAndPatch(t *testing.T) {
-	f := harnessFixture(t)
-	input := harnessInput(t, "harness-a")
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	before := requireHarness(t, status, body, 201)
-	for _, name := range []string{"unknown", "Codex", "codex "} {
-		for _, method := range []string{"POST", "PATCH"} {
-			request := map[string]any{"adapter": name, "toolPermissions": map[string]any{"write": true}}
-			endpoint := "/api/harnesses/harness-a"
-			if method == "POST" {
-				for key, value := range input {
-					if key != "adapter" {
-						request[key] = value
-					}
-				}
-				request["id"], endpoint = "harness-b", "/api/harnesses"
-			}
-			status, body := projectRequest(t, f, method, endpoint, request)
-			requireProjectError(t, status, body, 400, ValidationFailed, "adapter", "invalid")
-			if !reflect.DeepEqual(storedHarness(t, f, before.ID), before) || projectCount(t, f, "harnesses") != 1 || projectCount(t, f, "audit_logs") != 1 {
-				t.Fatalf("unregistered adapter %q on %s changed persisted data", name, method)
-			}
-		}
-	}
-	// Even the specified initial names must actually be registered.
-	f = projectFixture(t)
-	status, body = projectRequest(t, f, "POST", "/api/harnesses", input)
-	requireProjectError(t, status, body, 400, ValidationFailed, "adapter", "invalid")
-	if projectCount(t, f, "harnesses") != 0 || projectCount(t, f, "audit_logs") != 0 {
-		t.Fatal("empty registry must fail closed")
-	}
-}
-
-func TestHarnessesRegisteredExtensionRequiresNoAPIAllowlistChange(t *testing.T) {
-	f := harnessFixture(t)
-	if err := f.adapters.Register("new_harness", &registryOnlyAdapter{}); err != nil {
-		t.Fatal(err)
-	}
-	input := harnessInput(t, "harness-a")
-	input["adapter"] = "new_harness"
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	if got := requireHarness(t, status, body, 201); got.Adapter != "new_harness" || storedHarness(t, f, got.ID).Adapter != "new_harness" {
-		t.Fatalf("registered extension was not saved: %+v", got)
-	}
-	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"adapter": "claude_code"})
-	if got := requireHarness(t, status, body, 200); got.Adapter != "claude_code" {
-		t.Fatalf("adapter=%s", got.Adapter)
-	}
-}
-
-func TestHarnessesToolPermissionsPatchRecordsBeforeAndAfter(t *testing.T) {
-	f := harnessFixture(t)
-	input := harnessInput(t, "harness-a")
-	input["supportedModels"], input["availableTools"] = []string{"test-model"}, []string{"read", "write"}
-	input["toolPermissions"] = map[string]any{"read": true, "write": false, "scope": map[string]any{"paths": []string{"src"}}}
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	before := requireHarness(t, status, body, 201)
-	permissions := map[string]any{"write": true}
-	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"toolPermissions": permissions})
-	after := requireHarness(t, status, body, 200)
-	if !reflect.DeepEqual(after.ToolPermissions, permissions) || after.CreatedAt != before.CreatedAt || after.UpdatedAt == before.UpdatedAt ||
-		!reflect.DeepEqual(after.SupportedModels, before.SupportedModels) || !reflect.DeepEqual(after.AvailableTools, before.AvailableTools) || after.RepoPath != before.RepoPath {
-		t.Fatalf("PATCH=%+v before=%+v", after, before)
-	}
-	var actor, targetType, targetID, detail string
-	if err := f.db.QueryRow(`SELECT actor, target_type, target_id, detail FROM audit_logs WHERE action = 'harness.update'`).Scan(&actor, &targetType, &targetID, &detail); err != nil {
-		t.Fatal(err)
-	}
-	var history struct{ Before, After model.HarnessSettings }
-	if err := json.Unmarshal([]byte(detail), &history); err != nil || actor != "owner" || targetType != "harness" || targetID != before.ID ||
-		!reflect.DeepEqual(history.Before, before.HarnessSettings) || !reflect.DeepEqual(history.After, after.HarnessSettings) {
-		t.Fatalf("audit=%s actor=%s target=%s/%s err=%v", detail, actor, targetType, targetID, err)
-	}
-	if !reflect.DeepEqual(storedHarness(t, f, before.ID), after) || projectCount(t, f, "audit_logs") != 2 {
-		t.Fatal("update was not persisted with audit history")
-	}
-	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"toolPermissions": map[string]any{}})
-	if got := requireHarness(t, status, body, 200); len(got.ToolPermissions) != 0 {
-		t.Fatal("empty object did not clear permissions")
-	}
-}
-
-func TestHarnessesRepositoryPreconditionsFailClosed(t *testing.T) {
-	f := harnessFixture(t)
-	input := harnessInput(t, "harness-a")
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	before := requireHarness(t, status, body, 201)
-	root, err := store.RunnerWorktreeRoot(context.Background(), f.db, "mac-mini")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ key, value, field, reason string }{
-		{"repoPath", filepath.Join(t.TempDir(), "missing"), "path", "not_found"},
-		{"repoPath", "relative", "path", "not_absolute"},
-		{"repoPath", t.TempDir(), "path", "not_git_repository"},
-		{"repoPath", root, "path", "within_worktree_root"},
-		{"repoUrl", "https://user:secret@example.invalid/other.git", "url", "remote_mismatch"},
-	} {
-		for _, method := range []string{"POST", "PATCH"} {
-			request := map[string]any{tc.key: tc.value}
-			endpoint := "/api/harnesses/harness-a"
-			if method == "POST" {
-				for k, v := range input {
-					request[k] = v
-				}
-				request["id"], request[tc.key], endpoint = "harness-b", tc.value, "/api/harnesses"
-			}
-			status, body := projectRequest(t, f, method, endpoint, request)
-			requireProjectError(t, status, body, 422, PreconditionFailed, tc.field, tc.reason)
-			if strings.Contains(string(body), "secret") {
-				t.Fatal("URL credentials leaked")
-			}
-		}
-	}
-	if !reflect.DeepEqual(storedHarness(t, f, before.ID), before) || projectCount(t, f, "harnesses") != 1 || projectCount(t, f, "audit_logs") != 1 {
-		t.Fatal("failed preconditions mutated data")
-	}
-}
-
-func TestHarnessesAllRunnerRootsAndNoRunner(t *testing.T) {
-	f := harnessFixture(t)
-	input := harnessInput(t, "harness-a")
-	if err := store.RegisterRunner(context.Background(), f.db, "other", "Other", "hash", input["repoPath"].(string), "2026-10-26T00:00:00Z"); err != nil {
-		t.Fatal(err)
-	}
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	requireProjectError(t, status, body, 422, PreconditionFailed, "path", "within_worktree_root")
-	f = newAuthFixture(t)
-	if err := f.adapters.Register("codex", &registryOnlyAdapter{}); err != nil {
-		t.Fatal(err)
-	}
-	status, body = projectRequest(t, f, "POST", "/api/harnesses", input)
-	requireProjectError(t, status, body, 422, PreconditionFailed, "worktreeRoot", "not_found")
-	if projectCount(t, f, "harnesses") != 0 || projectCount(t, f, "audit_logs") != 0 {
-		t.Fatal("unvalidated path was saved")
 	}
 }
 
@@ -317,7 +174,7 @@ func TestHarnessesAuditFailureRollsBackCreateAndUpdate(t *testing.T) {
 	if _, err := f.db.Exec(`CREATE TRIGGER reject_harness_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'audit unavailable'); END`); err != nil {
 		t.Fatal(err)
 	}
-	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"toolPermissions": map[string]any{"write": true}})
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"name": "Changed"})
 	requireProjectError(t, status, body, 500, Internal, "", "")
 	if strings.Contains(string(body), "audit unavailable") {
 		t.Fatal("internal DB error leaked")
@@ -364,11 +221,11 @@ func TestHarnessesInvalidInputsAndPagination(t *testing.T) {
 		value         any
 		field, reason string
 	}{
-		{"name", "", "name", "required"}, {"toolPermissions", nil, "toolPermissions", "required"},
+		{"name", "", "name", "required"}, {"toolPermissions", nil, "body", "invalid_json"},
 		{"toolPermissions", []string{}, "body", "invalid_json"}, {"supportedModels", "model", "body", "invalid_json"},
-		{"supportedModels", []any{nil}, "supportedModels", "invalid_format"}, {"availableTools", []string{" "}, "availableTools", "invalid_format"},
-		{"specialty", "reviewer", "specialty", "invalid"}, {"supportedTasks", []string{}, "supportedTasks", "invalid"},
-		{"contractVersion", "2", "contractVersion", "invalid"}, {"unknown", true, "body", "invalid_json"},
+		{"supportedModels", []any{nil}, "body", "invalid_json"}, {"availableTools", []string{" "}, "body", "invalid_json"},
+		{"specialty", "reviewer", "body", "invalid_json"}, {"supportedTasks", []string{}, "body", "invalid_json"},
+		{"contractVersion", "2", "body", "invalid_json"}, {"unknown", true, "body", "invalid_json"},
 		{"id", "renamed", "body", "invalid_json"}, {"createdAt", "2026-10-26T00:00:00Z", "body", "invalid_json"},
 	} {
 		status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{tc.key: tc.value})
@@ -384,28 +241,5 @@ func TestHarnessesInvalidInputsAndPagination(t *testing.T) {
 	requireProjectError(t, status, body, 400, ValidationFailed, "id", "invalid_format")
 	if !reflect.DeepEqual(storedHarness(t, f, before.ID), before) || projectCount(t, f, "audit_logs") != 1 {
 		t.Fatal("invalid input mutated data")
-	}
-}
-
-func TestHarnessesPermissionNumbersAndAuditURL(t *testing.T) {
-	f := harnessFixture(t)
-	input := harnessInput(t, "harness-a")
-	const number = "9007199254740993"
-	input["toolPermissions"] = map[string]any{"limit": json.Number(number)}
-	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
-	requireHarness(t, status, body, 201)
-	for _, method := range []string{"GET", "PATCH", "GET"} {
-		endpoint := "/api/harnesses"
-		if method == "PATCH" {
-			endpoint += "/harness-a"
-		}
-		status, body = projectRequest(t, f, method, endpoint, map[string]any{"name": "Renamed"})
-		if status != 200 || !strings.Contains(string(body), `"limit":`+number) {
-			t.Fatalf("number changed on %s: %d %s", method, status, body)
-		}
-	}
-	h := model.HarnessSettings{RepoURL: "https://user:secret@example.invalid/repo.git?token=secret#secret"}
-	if got := auditHarnessSettings(h); got.RepoURL != "https://example.invalid/repo.git" || h.RepoURL == got.RepoURL {
-		t.Fatalf("audit remote=%s", got.RepoURL)
 	}
 }

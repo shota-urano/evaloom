@@ -1,15 +1,16 @@
 package model
 
-// ProjectSettings is the owner-editable Registry configuration (spec 02, 3.2).
+import "encoding/json"
+
+// ProjectSettings contains only the six owner-managed items in spec 02, 3.2.
+// Routing labels live in routes, separately from this configuration.
 type ProjectSettings struct {
-	Name        string `json:"name"`
-	RunnerID    string `json:"runnerId"`
-	DefaultRole string `json:"defaultRole"`
-	// LinearTeamID and LinearRoutingLabel route Linear Issues to this Project
-	// (spec 15 3.6, 3.8). A Project with either one null is never run from
-	// Linear.
-	LinearTeamID       *string `json:"linearTeamId"`
-	LinearRoutingLabel *string `json:"linearRoutingLabel"`
+	Name            string          `json:"name"`
+	HarnessID       string          `json:"harnessId"`
+	ProfileID       string          `json:"profileId"`
+	Params          json.RawMessage `json:"params"`
+	ApprovalWaivers []string        `json:"approvalWaivers"`
+	RunnerID        string          `json:"runnerId"`
 }
 
 type Project struct {

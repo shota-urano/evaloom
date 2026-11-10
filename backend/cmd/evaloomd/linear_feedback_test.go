@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -51,16 +52,16 @@ func (c commentClient) SetIssueState(context.Context, string, string) error { re
 // which sends a pending linear_outbox row and records it as sent.
 func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
-	db, err := store.Open(context.Background(), path)
+	db, err := testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const now = "2026-11-08T00:00:00Z"
 	for _, q := range []string{
-		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-			VALUES ('p1', 'P', 'r1', 'developer', '` + now + `', '` + now + `')`,
+		`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at)
+			VALUES ('r1', 'r1', 'h', 'online', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, harness_id, profile_id, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'fixture-harness', 'fixture-profile', '` + now + `', '` + now + `')`,
 		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
 			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'completed', 'k1', '` + now + `', '` + now + `', 'linear')`,
@@ -113,7 +114,7 @@ func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	db, err = store.Open(context.Background(), path)
+	db, err = testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,17 +146,17 @@ func TestDefaultLinearFeedbackUsesProductionConfiguration(t *testing.T) {
 func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	dir := t.TempDir()
 	path, dataDir := filepath.Join(dir, "evaloom.db"), filepath.Join(dir, "data")
-	db, err := store.Open(context.Background(), path)
+	db, err := testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	const now = "2026-11-08T00:00:00Z"
 	for _, q := range []string{
-		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-			VALUES ('p1', 'P', 'r1', 'developer', '` + now + `', '` + now + `')`,
+		`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at)
+			VALUES ('r1', 'r1', 'h', 'online', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, harness_id, profile_id, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'fixture-harness', 'fixture-profile', '` + now + `', '` + now + `')`,
 		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
 			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'verifying', 'k1', '` + now + `', '` + now + `', 'linear')`,

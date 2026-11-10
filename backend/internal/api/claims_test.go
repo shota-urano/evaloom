@@ -27,7 +27,7 @@ func claimFixture(t *testing.T) (*authFixture, string, []model.HarnessProfile) {
 	}
 	for _, id := range []string{"project-a", "project-b"} {
 		status, body := postAssignment(t, f, id, "developer", "harness-a", profiles[0].Version)
-		requireAssignment(t, status, body, 201)
+		requireAssignment(t, status, body, 200)
 	}
 	return f, token, profiles
 }
@@ -81,7 +81,7 @@ func TestClaimConcurrentLimitsAndCreationOrder(t *testing.T) {
 		status, body := projectRequest(t, f, "POST", "/api/projects", input)
 		requireProject(t, status, body, 201)
 		status, body = postAssignment(t, f, id, "developer", "harness-a", "1.2.0")
-		requireAssignment(t, status, body, 201)
+		requireAssignment(t, status, body, 200)
 	}
 	var tasks []model.Task
 	for i, project := range []string{"project-a", "project-a", "project-b", "project-c", "project-d"} {
@@ -168,7 +168,7 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 	status, body = requestClaim(t, f, token)
 	claim := requireClaim(t, status, body)
 	pin := readExecutionPin(t, f, claim.Execution.ID)
-	want := executionPin{"claim-runner", "developer", "harness-a", profiles[1].ID, profiles[1].Version, profiles[1].CommitSHA, pin.ClaimedAt}
+	want := executionPin{"claim-runner", "", "harness-a", profiles[1].ID, profiles[1].Version, profiles[1].CommitSHA, pin.ClaimedAt}
 	if pin != want || pin.ClaimedAt == "" {
 		t.Fatalf("saved pin=%+v want=%+v", pin, want)
 	}
@@ -404,16 +404,11 @@ func TestClaimRollsBackEveryWriteOnFailure(t *testing.T) {
 	requireClaim(t, status, body)
 }
 
-func TestClaimMissingAssignmentAndStateConflictLeaveNoPins(t *testing.T) {
+func TestClaimStateConflictLeavesNoPins(t *testing.T) {
 	f, token, _ := claimFixture(t)
 	created := createClaimTask(t, f, "project-a", "preconditions")
-	status, body := projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"defaultRole": "unassigned"})
-	requireProject(t, status, body, 200)
-	status, body = requestClaim(t, f, token)
-	requireProjectError(t, status, body, 422, PreconditionFailed, "projectId", "default_harness_missing")
-	assertUnclaimed(t, f, created.ID)
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"defaultRole": "developer"})
-	requireProject(t, status, body, 200)
+	var status int
+	var body []byte
 	if _, err := f.db.Exec(`UPDATE tasks SET status = 'cancelled' WHERE id = ?`, created.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -119,7 +119,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		before := model.Project{ID: id}
+		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{Params: json.RawMessage(`{}`), ApprovalWaivers: []string{}}}
 		if !create {
 			var err error
 			before, err = store.GetProject(r.Context(), db, id)
@@ -128,7 +128,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 				return
 			}
 		}
-		settings, err := decodeSettings(before.ProjectSettings, patch, create, "linearTeamId", "linearRoutingLabel")
+		settings, err := decodeSettings(before.ProjectSettings, patch, create)
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -157,7 +157,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			}
 		}
 		// The Runner's existence is checked in the saving transaction.
-		_, err = store.RunnerWorktreeRoot(r.Context(), tx, settings.RunnerID)
+		err = store.RunnerExists(r.Context(), tx, settings.RunnerID)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = &Error{Code: PreconditionFailed, Message: "Runner not found", Details: []Detail{{Field: "runnerId", Reason: "not_found"}}}
 		}
@@ -165,18 +165,9 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		// UNIQUE(linear_team_id, linear_routing_label) (spec 15 3.8): name the
-		// field so the form can show which value collided.
-		if settings.LinearTeamID != nil && settings.LinearRoutingLabel != nil {
-			taken, err := store.LinearRouteTaken(r.Context(), tx, *settings.LinearTeamID, *settings.LinearRoutingLabel, id)
-			if err == nil && taken {
-				err = &Error{Code: Conflict, Message: "Linear Team and routing label already registered to another Project",
-					Details: []Detail{{Field: "linearRoutingLabel", Reason: "duplicate"}}}
-			}
-			if err != nil {
-				WriteError(w, logger, err)
-				return
-			}
+		if err := validateProjectProfile(r.Context(), tx, settings); err != nil {
+			WriteError(w, logger, err)
+			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		after := model.Project{ID: id, ProjectSettings: settings, CreatedAt: before.CreatedAt, UpdatedAt: now}
@@ -187,9 +178,6 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			action, status, old = "project.register", http.StatusCreated, nil
 		}
 		err = store.SaveProject(r.Context(), tx, after, create)
-		if err == nil {
-			err = store.PruneLinearPollTeams(r.Context(), tx)
-		}
 		if err == nil && !create {
 			err = markLinearRecheck(r.Context(), tx, before.ProjectSettings, after, now)
 		}
@@ -210,36 +198,64 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 	}
 }
 
-// markLinearRecheck puts the recheck mark on the Issues of the held tasks a
-// Project update may release (spec 15 3.6.3, the table of setting changes,
-// Q81), in the update's transaction. An update that leaves linear_team_id,
-// linear_routing_label and default_role unchanged marks nothing.
+// markLinearRecheck keeps existing held tasks eligible for reassessment when
+// their direct Profile pin changes. Routing is managed separately in routes.
 func markLinearRecheck(ctx context.Context, tx *sql.Tx, before model.ProjectSettings, after model.Project, at string) error {
-	routing := !reflect.DeepEqual(before.LinearTeamID, after.LinearTeamID) ||
-		!reflect.DeepEqual(before.LinearRoutingLabel, after.LinearRoutingLabel)
-	if !routing && before.DefaultRole == after.DefaultRole {
+	if before.HarnessID == after.HarnessID && before.ProfileID == after.ProfileID {
 		return nil
 	}
-	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID, Routing: routing}, at)
+	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID}, at)
 }
 
 func validateProjectSettings(p model.ProjectSettings) error {
-	for _, field := range []struct{ name, value string }{
-		{"name", p.Name}, {"runnerId", p.RunnerID}, {"defaultRole", p.DefaultRole},
-	} {
+	for _, field := range []struct{ name, value string }{{"name", p.Name}, {"runnerId", p.RunnerID}, {"harnessId", p.HarnessID}, {"profileId", p.ProfileID}} {
 		if strings.TrimSpace(field.value) == "" {
 			return invalid(field.name, "required")
 		}
 	}
-	// Clearing uses null; a blank value would never match a Linear Team or
-	// label and is rejected rather than stored.
-	for _, field := range []struct {
-		name  string
-		value *string
-	}{{"linearTeamId", p.LinearTeamID}, {"linearRoutingLabel", p.LinearRoutingLabel}} {
-		if field.value != nil && strings.TrimSpace(*field.value) == "" {
-			return invalid(field.name, "required")
+	if p.ApprovalWaivers == nil {
+		return invalid("approvalWaivers", "invalid_format")
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(p.Params, &params) != nil || params == nil {
+		return invalid("params", "invalid_format")
+	}
+	return nil
+}
+
+func validateProjectProfile(ctx context.Context, tx *sql.Tx, settings model.ProjectSettings) error {
+	profile, err := store.GetHarnessProfileByID(ctx, tx, settings.ProfileID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && profile.HarnessID != settings.HarnessID) {
+		return &Error{Code: PreconditionFailed, Message: "Profile does not belong to this Harness", Details: []Detail{{Field: "profileId", Reason: "invalid"}}}
+	}
+	if err != nil {
+		return err
+	}
+	return validateProfileWaivers(profile.Definition, settings.ApprovalWaivers)
+}
+
+// Only waivable operations explicitly declared by the pinned Profile may be
+// skipped. Full Profile/params schema validation belongs to the contract task.
+func validateProfileWaivers(definition json.RawMessage, waivers []string) error {
+	var def struct {
+		Approvals []struct {
+			Operation string `json:"operation"`
+			Waivable  bool   `json:"waivable"`
+		} `json:"approvals"`
+	}
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return err
+	}
+	allowed := map[string]bool{}
+	for _, a := range def.Approvals {
+		allowed[a.Operation] = a.Waivable
+	}
+	seen := map[string]bool{}
+	for _, w := range waivers {
+		if !allowed[w] || seen[w] {
+			return &Error{Code: PreconditionFailed, Message: "Operation is not waivable in this Profile", Details: []Detail{{Field: "approvalWaivers", Reason: "invalid"}}}
 		}
+		seen[w] = true
 	}
 	return nil
 }

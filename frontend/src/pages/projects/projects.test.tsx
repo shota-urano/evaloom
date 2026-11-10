@@ -1,282 +1,52 @@
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
-
 import { ApiClient } from '@/api/client'
 import { registry, type Project } from '@/api/registry'
-import { matchPath } from '@/lib/router'
-import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
+import { fakeFetch, json, type Recorded } from '@/test/fake-fetch'
 import App from '@/App'
 
 const RUNNERS = { items: [{ id: 'local', name: 'local', status: 'online', lastHeartbeatAt: null, createdAt: '2026-10-27T00:00:00Z' }], nextCursor: '' }
-
-const PROJECT: Project = {
-  id: 'alpha',
-  name: 'Alpha',
-  runnerId: 'local',
-  defaultRole: 'developer',
-  createdAt: '2026-10-27T00:00:00Z',
-  updatedAt: '2026-10-27T00:00:00Z',
-  harnesses: [],
-}
-
+const PROJECT: Project = { id: 'alpha', name: 'Alpha', runnerId: 'local', harnessId: 'engineer', profileId: 'profile-1', params: {}, approvalWaivers: [], createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }
 function renderAt(path: string, handler: (request: Recorded) => Response) {
   window.history.pushState(null, '', path)
-  const fake = fakeFetch((request) => (request.url === '/api/session' ? json(200, { csrfToken: 't' }) : handler(request)))
+  const fake = fakeFetch((request) => request.url === '/api/session' ? json(200, { csrfToken: 't' }) : handler(request))
   render(<App api={new ApiClient(fake.fetch)} />)
   return fake
 }
-
-function fieldOf(label: string) {
-  return screen.getByLabelText(label).closest('[data-field]') as HTMLElement
-}
-
 afterEach(() => window.history.pushState(null, '', '/'))
 
-describe('matchPath', () => {
-  it.each([
-    ['/projects/:id', '/projects/alpha', { id: 'alpha' }],
-    ['/projects/:id/edit', '/projects/alpha/edit', { id: 'alpha' }],
-    ['/projects/:id', '/projects/alpha/edit', null],
-    ['/projects/:id', '/harnesses/alpha', null],
-  ])('%s と %s', (pattern, path, want) => {
-    expect(matchPath(pattern, path)).toEqual(want)
-  })
-})
-
-describe('一覧 API', () => {
-  it('nextCursor が空になるまで続きを読む', async () => {
-    const fake = fakeFetch((request) =>
-      request.url.includes('cursor=')
-        ? json(200, { items: [{ id: 'b' }], nextCursor: '' })
-        : json(200, { items: [{ id: 'a' }], nextCursor: 'next+1' }),
-    )
-    const items = await registry.listProjects(new ApiClient(fake.fetch))
-    expect(items.map((p) => p.id)).toEqual(['a', 'b'])
-    expect(fake.calls.map((c) => c.url)).toEqual(['/api/projects?limit=200', '/api/projects?limit=200&cursor=next%2B1'])
-  })
-})
-
-describe('プロジェクトの登録', () => {
-  it('必須項目が空なら送信せず、項目ごとにエラーを出す', async () => {
-    const fake = renderAt('/projects/_new', (request) => (request.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(500, {})))
+describe('Project の直接登録', () => {
+  it('必須項目と JSON を検証し、旧項目を表示しない', async () => {
+    const fake = renderAt('/projects/_new', () => json(200, RUNNERS))
     await userEvent.click(await screen.findByRole('button', { name: '登録' }))
-    for (const label of ['Project ID', '名称', 'Runner']) {
-      expect(within(fieldOf(label)).getByText('入力してください')).toBeVisible()
+    for (const label of ['Project ID', '名称', 'Runner', 'Harness ID', 'Profile ID']) {
+      expect(within(screen.getByLabelText(label).closest('[data-field]') as HTMLElement).getByText('入力してください')).toBeVisible()
     }
-    // 開発の部品（リポジトリ・テスト・setup・コピー許可リスト・承認ポリシー）の入力欄は無い。
-    for (const label of ['ローカルリポジトリのパス', 'Git リポジトリ URL', 'Base Branch', 'テストコマンド', 'setup の許可宛先', 'コピー許可リスト', '承認ポリシー']) {
-      expect(screen.queryByLabelText(label)).toBeNull()
-    }
-    expect(fake.calls.some((c) => c.method === 'POST')).toBe(false)
+    for (const label of ['既定の役割', 'Linear Team ID', '実行先ラベル']) expect(screen.queryByLabelText(label)).toBeNull()
+    expect(fake.calls.some((call) => call.method === 'POST')).toBe(false)
   })
-
-  it('送信内容は API の項目名で、空欄の任意項目は null になり、削除した開発の部品の項目は送らない', async () => {
-    const fake = renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'POST') return json(201, { ...PROJECT })
-      return json(200, PROJECT)
-    })
+  it('新しい登録項目だけを送り、版と渡す値を保存する', async () => {
+    const fake = renderAt('/projects/_new', (r) => r.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(r.method === 'POST' ? 201 : 200, PROJECT))
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
+    await userEvent.type(screen.getByLabelText('Harness ID'), 'engineer')
+    await userEvent.type(screen.getByLabelText('Profile ID'), 'profile-1')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
     expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
-    const post = fake.calls.find((c) => c.method === 'POST')
-    expect(JSON.parse(post?.body ?? '')).toEqual({
-      id: 'alpha',
-      name: 'Alpha',
-      runnerId: 'local',
-      defaultRole: 'developer',
-      linearTeamId: null,
-      linearRoutingLabel: null,
-    })
+    expect(JSON.parse(fake.calls.find((r) => r.method === 'POST')?.body ?? '')).toEqual({ id: 'alpha', name: 'Alpha', runnerId: 'local', harnessId: 'engineer', profileId: 'profile-1', params: {}, approvalWaivers: [] })
   })
-
-  it('Linear Team ID と実行先ラベルを送り、詳細画面に表示する（15 3.8）', async () => {
-    const saved = { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' }
-    const fake = renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'POST') return json(201, { ...saved })
-      return json(200, saved)
-    })
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
-    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.type(screen.getByLabelText('Linear Team ID'), ' team-eng ')
-    await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
-    const post = fake.calls.find((c) => c.method === 'POST')
-    expect(JSON.parse(post?.body ?? '')).toMatchObject({ linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' })
-    expect(screen.getByText('Linear Team ID').nextElementSibling).toHaveTextContent('team-eng')
-    expect(screen.getByText('実行先ラベル').nextElementSibling).toHaveTextContent('repo:alpha')
-  })
-
-  it('409 の Linear Team ID と実行先ラベルの組の重複は、実行先ラベルの項目と一覧に出し、読み直しボタンは出さない', async () => {
-    renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      return apiError(409, 'conflict', 'Linear Team and routing label already registered to another Project', [
-        { field: 'linearRoutingLabel', reason: 'duplicate' },
-      ])
-    })
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
-    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.type(screen.getByLabelText('Linear Team ID'), 'team-eng')
-    await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    const message = 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています'
-    expect(await within(fieldOf('実行先ラベル')).findByText(message)).toBeVisible()
-    expect(screen.getByLabelText('実行先ラベル')).toHaveAttribute('aria-invalid', 'true')
-    const alert = screen.getByRole('alert')
-    expect(alert).toHaveTextContent('Linear の実行先が重複しています')
-    expect(alert).toHaveTextContent(`実行先ラベル: ${message}`)
-    expect(alert).not.toHaveTextContent('状態が変わりました')
-    expect(screen.queryByRole('button', { name: '最新を読み直す' })).toBeNull()
-  })
-
-  it('400 の details は同じ名前の項目に、422 の Runner の理由は Runner の項目と一覧に出す', async () => {
-    let status = 400
-    renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      return status === 400
-        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'defaultRole', reason: 'required' }])
-        : apiError(422, 'precondition_failed', 'runner not found', [{ field: 'runnerId', reason: 'not_found' }])
-    })
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
-    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('既定の役割')).findByText('入力してください')).toBeVisible()
-
-    status = 422
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('Runner')).findByText('見つかりません')).toBeVisible()
-    expect(screen.getByRole('alert')).toHaveTextContent('Runner: 見つかりません')
-    expect(within(fieldOf('既定の役割')).queryByText('入力してください')).toBeNull()
-  })
-})
-
-describe('Project ID「new」（slug として正当な値）', () => {
-  it('詳細 /projects/new は登録画面ではなく詳細を開き、一覧のリンクと登録後の遷移も詳細へ行く', async () => {
-    const project = { ...PROJECT, id: 'new', name: 'New という名前の Project' }
-    let registered = false
-    const fake = renderAt('/projects', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
-      if (request.method === 'POST') {
-        registered = true
-        return json(201, { ...project })
-      }
-      if (request.url.startsWith('/api/projects?')) return json(200, { items: registered ? [project] : [], nextCursor: '' })
-      return json(200, project)
-    })
-    await userEvent.click(await screen.findByRole('link', { name: 'プロジェクトを登録' }))
-    expect(window.location.pathname).toBe('/projects/_new')
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'new')
-    await userEvent.type(screen.getByLabelText('名称'), project.name)
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await screen.findByRole('heading', { name: project.name })).toBeVisible()
-    expect(window.location.pathname).toBe('/projects/new')
-    expect(screen.getByText('Harness Profile の割り当て')).toBeVisible()
-    expect(screen.queryByRole('button', { name: '登録' })).toBeNull()
-
-    await userEvent.click(screen.getByRole('link', { name: '一覧へ戻る' }))
-    await userEvent.click(await screen.findByRole('link', { name: project.name }))
-    expect(await screen.findByRole('heading', { name: project.name })).toBeVisible()
-    expect(fake.calls.filter((c) => c.url === '/api/projects/new').length).toBeGreaterThanOrEqual(2)
-  })
-})
-
-describe('プロジェクトの編集', () => {
-  it('PATCH には id を送らず、読み込んだ値を入力欄に出す', async () => {
-    let current = PROJECT
-    const fake = renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
-      if (request.method === 'PATCH') {
-        current = { ...PROJECT, name: 'Alpha 2' }
-        return json(200, { ...current })
-      }
-      return json(200, current)
-    })
-    const name = await screen.findByLabelText('名称')
-    expect(name).toHaveValue('Alpha')
-    expect(screen.getByLabelText('Project ID')).toBeDisabled()
-    expect(screen.getByLabelText('既定の役割')).toHaveValue('developer')
-    await userEvent.clear(name)
-    await userEvent.type(name, 'Alpha 2')
+  it('更新時にも固定した Profile と承認を省く設定を保持する', async () => {
+    const project = { ...PROJECT, params: { target: 'opaque' }, approvalWaivers: ['send'] }
+    const fake = renderAt('/projects/alpha/edit', (r) => r.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(200, project))
+    await userEvent.clear(await screen.findByLabelText('名称'))
+    await userEvent.type(screen.getByLabelText('名称'), 'Renamed')
     await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha 2' })
-    const patch = fake.calls.find((c) => c.method === 'PATCH')
-    expect(patch?.url).toBe('/api/projects/alpha')
-    const body = JSON.parse(patch?.body ?? '')
-    expect(body).not.toHaveProperty('id')
-    expect(body).not.toHaveProperty('allowedOperations')
-    expect(body).not.toHaveProperty('timeouts')
-    expect(body).toMatchObject({ name: 'Alpha 2', runnerId: 'local', defaultRole: 'developer' })
+    expect(JSON.parse(fake.calls.find((r) => r.method === 'PATCH')?.body ?? '')).toEqual({ name: 'Renamed', runnerId: 'local', harnessId: 'engineer', profileId: 'profile-1', params: { target: 'opaque' }, approvalWaivers: ['send'] })
   })
-
-  it('編集では登録済みの Linear 項目を入力欄に出して送り直し、空欄にすると null で解除する', async () => {
-    const fake = renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'PATCH') return json(200, { ...PROJECT })
-      return json(200, { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' })
-    })
-    expect(await screen.findByDisplayValue('team-eng')).toBeVisible()
-    expect(screen.getByLabelText('実行先ラベル')).toHaveValue('repo:alpha')
-    await userEvent.clear(screen.getByLabelText('実行先ラベル'))
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    const body = JSON.parse(fake.calls.find((c) => c.method === 'PATCH')?.body ?? '')
-    expect(body).toMatchObject({ linearTeamId: 'team-eng', linearRoutingLabel: null })
-  })
-
-  it('409 は最新を読み直すボタンを出し、押すと読み直した値で入力欄を作り直す', async () => {
-    let reads = 0
-    renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'PATCH') return apiError(409, 'conflict', 'Project changed; retry the request')
-      reads += 1
-      return json(200, reads === 1 ? PROJECT : { ...PROJECT, name: 'Alpha（別の操作で変更）', updatedAt: '2026-10-27T01:00:00Z' })
-    })
-    await userEvent.type(await screen.findByLabelText('名称'), ' edited')
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('状態が変わりました')
-    await userEvent.click(screen.getByRole('button', { name: '最新を読み直す' }))
-    expect(await screen.findByDisplayValue('Alpha（別の操作で変更）')).toBeVisible()
-    expect(screen.queryByRole('alert')).toBeNull()
-  })
-})
-
-describe('Harness Profile の割り当て', () => {
-  it('Harness を選ぶとその版だけを読み、役割・Harness・版を送る。422 の理由は版の項目に出す', async () => {
-    const fake = renderAt('/projects/alpha', (request) => {
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [{ id: 'h1', name: 'H1', adapter: 'codex', specialty: '' }], nextCursor: '' })
-      if (request.url.startsWith('/api/harness-profiles')) {
-        return json(200, {
-          items: [{ id: 'p1', harnessId: 'h1', version: '1.2.0', commitSha: 'abcdef0123456789', modelId: 'm', operationStatus: 'provisional', registeredAt: '' }],
-          nextCursor: '',
-        })
-      }
-      if (request.method === 'POST') {
-        return apiError(422, 'precondition_failed', 'Profile version is not registered for this Harness', [{ field: 'version', reason: 'not_found' }])
-      }
-      return json(200, PROJECT)
-    })
-    await screen.findByRole('option', { name: 'H1（h1）' })
-    await userEvent.selectOptions(screen.getByLabelText('Harness'), 'h1')
-    const version = screen.getByLabelText('版')
-    await screen.findByRole('option', { name: '1.2.0（abcdef0・暫定運用）' })
-    await userEvent.selectOptions(version, '1.2.0')
-    await userEvent.click(screen.getByRole('button', { name: '割り当てる' }))
-    expect(await within(fieldOf('版')).findByText('見つかりません')).toBeVisible()
-    expect(screen.getByRole('alert')).toHaveTextContent('版: 見つかりません')
-    expect(fake.calls.some((c) => c.url === '/api/harness-profiles?harnessId=h1&limit=200')).toBe(true)
-    const post = fake.calls.find((c) => c.method === 'POST')
-    expect(post?.url).toBe('/api/projects/alpha/harnesses')
-    expect(JSON.parse(post?.body ?? '')).toEqual({ role: 'developer', harnessId: 'h1', version: '1.2.0' })
+  it('一覧 API のページを最後まで読む', async () => {
+    const fake = fakeFetch((r) => json(200, r.url.includes('cursor=') ? { items: [{ ...PROJECT, id: 'b' }], nextCursor: '' } : { items: [{ ...PROJECT, id: 'a' }], nextCursor: 'next+1' }))
+    expect((await registry.listProjects(new ApiClient(fake.fetch))).map((p) => p.id)).toEqual(['a', 'b'])
   })
 })

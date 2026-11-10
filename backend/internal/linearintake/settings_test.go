@@ -16,7 +16,7 @@ import (
 // A key without a settings row uses its default (spec 02 3.4, spec 15 3.4).
 func TestLabelSettingsWithoutRowsUseDefaults(t *testing.T) {
 	db := openDB(t)
-	if got := NewLabelSettings(db, nil).LinearLabels(context.Background()); got != (Labels{TriggerLabel: "ai-ready", RoutingLabelPrefix: "repo:"}) {
+	if got := NewLabelSettings(db, nil).LinearLabels(context.Background()); got != (Labels{TriggerLabel: "ai-ready", RoutingLabelPrefix: "route:"}) {
 		t.Fatalf("defaults = %+v", got)
 	}
 	if got := roundLabels(context.Background()); got != DefaultLabels() {
@@ -121,7 +121,7 @@ func TestUpdateLinearLabelsWritesChangedKeysWithAudit(t *testing.T) {
 	update(LabelsPatch{TriggerLabel: &goLabel}) // same value again
 	want := []auditRow{
 		{"owner", "settings.update", "settings", "linear.triggerLabel", "ai-ready", "go"},
-		{"owner", "settings.update", "settings", "linear.routingLabelPrefix", "repo:", "to:"},
+		{"owner", "settings.update", "settings", "linear.routingLabelPrefix", "route:", "to:"},
 	}
 	if got := settingsAudits(t, db); len(got) != 2 || !slices.Contains(got, want[0]) || !slices.Contains(got, want[1]) {
 		t.Fatalf("audits = %+v", got)
@@ -153,7 +153,7 @@ func TestPollerUsesDefaultForEmptyStoredSetting(t *testing.T) {
 	p.Settings = NewLabelSettings(db, p.Logger)
 	pollOnce(t, p)
 	calls, _, _ := client.snapshot()
-	if len(calls) != 2 || calls[0] != "team-a/ai-ready" || calls[1] != "team-b/ai-ready" {
+	if len(calls) != 1 || calls[0] != "team-a/ai-ready" {
 		t.Fatalf("calls = %v", calls)
 	}
 	if !strings.Contains(logs.String(), "setting is empty; using the default") || !strings.Contains(logs.String(), "key=linear.triggerLabel") {
@@ -166,7 +166,7 @@ func TestPollerUsesDefaultForEmptyStoredSetting(t *testing.T) {
 // to TaskStarter's routing and Intake's detach check, uses them.
 func TestPollerUsesGlobalLabelSettings(t *testing.T) {
 	db := startDB(t)
-	exec(t, db, `UPDATE projects SET linear_routing_label = 'to:one' WHERE id = 'p1'`)
+	exec(t, db, `UPDATE routes SET label='to:one' WHERE project_id='p1'`)
 	settings := NewLabelSettings(db, nil)
 	goLabel, toPrefix := "go", "to:"
 	if _, err := settings.UpdateLinearLabels(context.Background(), LabelsPatch{TriggerLabel: &goLabel, RoutingLabelPrefix: &toPrefix}); err != nil {
@@ -174,7 +174,7 @@ func TestPollerUsesGlobalLabelSettings(t *testing.T) {
 	}
 
 	issue := linear.Issue{ID: "1", Identifier: "ENG-1", URL: "https://linear.app/x/ENG-1", Title: "t",
-		Description: criteriaBody, TeamID: "team-a", Labels: []string{"go", "to:one", "repo:three"},
+		Description: criteriaBody, TeamID: "team-a", Labels: []string{"go", "to:one", "route:three"},
 		StateType: "unstarted", UpdatedAt: base}
 	var listed []linear.Issue
 	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
@@ -199,7 +199,7 @@ func TestPollerUsesGlobalLabelSettings(t *testing.T) {
 			t.Fatalf("calls = %v; want the trigger label from the settings", calls)
 		}
 	}
-	// "repo:three" is not a routing label under the prefix "to:", so the
+	// "route:three" is not a routing label under the prefix "to:", so the
 	// Issue routes to p1 alone instead of being held for two labels.
 	got := readStarted(t, db, "1", 1)
 	if got.status != "queued" || got.project.String != "p1" || got.cause.Valid {

@@ -16,12 +16,13 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 )
 
 func projectFixture(t *testing.T) *authFixture {
 	t.Helper()
 	f := newAuthFixture(t)
-	if err := store.RegisterRunner(context.Background(), f.db, "mac-mini", "Mac mini", "hash", t.TempDir(), "2026-10-26T00:00:00Z"); err != nil {
+	if err := store.RegisterRunner(context.Background(), f.db, "mac-mini", "Mac mini", "hash", "2026-10-26T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -59,12 +60,17 @@ func gitRepository(t *testing.T) (repo, remote string) {
 
 func projectInput(t *testing.T, id string) map[string]any {
 	t.Helper()
-	return map[string]any{"id": id, "name": "Project " + id, "runnerId": "mac-mini", "defaultRole": "developer"}
+	return map[string]any{"id": id, "name": "Project " + id, "runnerId": "mac-mini", "harnessId": "fixture-harness", "profileId": "fixture-profile"}
 }
 
 func projectRequest(t *testing.T, f *authFixture, method, endpoint string, value any) (int, []byte) {
 	t.Helper()
 	var data []byte
+	if input, ok := value.(map[string]any); ok && method == "POST" && endpoint == "/api/projects" && input["harnessId"] == "fixture-harness" {
+		if err := testregistry.Seed(context.Background(), f.db); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if value != nil {
 		var err error
 		data, err = json.Marshal(value)
@@ -124,7 +130,7 @@ func TestProjectsRegisterAndRetrieveTwoProjects(t *testing.T) {
 	for _, input := range inputs {
 		status, body := projectRequest(t, f, "POST", "/api/projects", input)
 		p := requireProject(t, status, body, 201)
-		if p.Name != input["name"] || p.RunnerID != "mac-mini" || p.DefaultRole != "developer" {
+		if p.Name != input["name"] || p.RunnerID != "mac-mini" || p.HarnessID != "fixture-harness" || p.ProfileID != "fixture-profile" {
 			t.Fatalf("registered=%+v input=%v", p, input)
 		}
 		// The development settings moved to software-engineer (spec 19 3.11);
@@ -160,11 +166,11 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	input := projectInput(t, "project-a")
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
-	patch := map[string]any{"name": "Renamed", "defaultRole": "reviewer"}
+	patch := map[string]any{"name": "Renamed", "params": map[string]any{"target": "value"}}
 	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", patch)
 	after := requireProject(t, status, body, 200)
 	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.Name != "Renamed" || after.RunnerID != before.RunnerID ||
-		after.UpdatedAt == before.UpdatedAt || after.DefaultRole != "reviewer" {
+		after.UpdatedAt == before.UpdatedAt || string(after.Params) != `{"target":"value"}` {
 		t.Fatalf("before=%+v after=%+v", before, after)
 	}
 	var actor, targetType, targetID, detail string
@@ -230,7 +236,7 @@ func TestProjectsInvalidInputReturns400Details(t *testing.T) {
 	}{
 		{"id", "Invalid_ID", "id", "invalid_format"},
 		{"name", "", "name", "required"}, {"name", nil, "name", "required"},
-		{"runnerId", "", "runnerId", "required"}, {"defaultRole", "", "defaultRole", "required"},
+		{"runnerId", "", "runnerId", "required"}, {"harnessId", "", "harnessId", "required"},
 		{"unknown", true, "body", "invalid_json"}, {"createdAt", "2026-10-26T00:00:00Z", "body", "invalid_json"},
 		// The development settings moved to software-engineer (spec 19 3.11);
 		// 02 projects has no allowed operations, timeouts or review role.

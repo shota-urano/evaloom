@@ -40,7 +40,7 @@ func outboxKeys(t *testing.T, db *sql.DB, taskID string) map[string][]string {
 // comment in the hold's transaction; a routed Issue writes none.
 func TestHoldWritesOutboxRow(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	got := outboxKeys(t, f.db, held.id)
 	if len(got) != 1 || len(got["intake_blocked"]) != 1 ||
 		got["intake_blocked"][0] != held.id+":intake_blocked:routing_unknown_label" {
@@ -48,7 +48,7 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 	}
 
 	f2 := newRecheckFixture(t)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
 	held2 := f2.hold(t, issue, CauseMissingAcceptanceCriteria)
 	got = outboxKeys(t, f2.db, held2.id)
@@ -58,7 +58,7 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 	}
 
 	f3 := newRecheckFixture(t)
-	f3.mustRound(t, routedIssue("1", "repo:one"))
+	f3.mustRound(t, routedIssue("1", "route:one"))
 	if n := countRows(t, f3.db, `SELECT count(*) FROM linear_outbox`); n != 0 {
 		t.Fatalf("started task wrote %d outbox rows", n)
 	}
@@ -69,16 +69,16 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 // writes none.
 func TestRecheckOutboxRows(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 
-	same := routedIssue("1", "repo:other")
+	same := routedIssue("1", "route:other")
 	same.UpdatedAt = base.Add(time.Minute)
 	f.mustRound(t, same)
 	if got := outboxKeys(t, f.db, held.id); len(got["intake_blocked"]) != 1 {
 		t.Fatalf("same cause outbox = %v", got)
 	}
 
-	changed := routedIssue("1", "repo:one", "repo:three")
+	changed := routedIssue("1", "route:one", "route:three")
 	changed.UpdatedAt = base.Add(2 * time.Minute)
 	f.mustRound(t, changed)
 	got := outboxKeys(t, f.db, held.id)
@@ -86,7 +86,7 @@ func TestRecheckOutboxRows(t *testing.T) {
 		t.Fatalf("changed cause outbox = %v", got)
 	}
 
-	fixed := routedIssue("1", "repo:one")
+	fixed := routedIssue("1", "route:one")
 	fixed.UpdatedAt = base.Add(3 * time.Minute)
 	f.mustRound(t, fixed)
 	if got := outboxKeys(t, f.db, held.id); len(got) != 1 || len(got["intake_blocked"]) != 2 {
@@ -147,16 +147,12 @@ func TestRoutingHoldCommentHasReasonAndFix(t *testing.T) {
 		cause       BlockCause
 		reason, fix string
 	}{
-		{"two labels", routedIssue("1", "repo:one", "repo:three"), CauseRoutingMultipleLabels,
-			"実行先ラベル（repo: で始まるラベル）が2つ以上付いている", "直し方: 実行先ラベルを1つにする"},
-		{"unknown label", routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel,
-			"実行先ラベル（repo: で始まるラベル）が Evaloom に登録されていない", "直し方: Evaloom に登録済みの実行先ラベルを付ける"},
-		{"team mismatch", routedIssue("1", "repo:two"), CauseRoutingTeamMismatch,
-			"Linear Team がこの Issue の Team と違う", "直し方: この Issue の Team で登録済みの実行先ラベルを付ける"},
+		{"two labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels,
+			"実行先ラベル（route: で始まるラベル）が2つ以上付いている", "直し方: 実行先ラベルを1つにする"},
+		{"unknown label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel,
+			"実行先ラベル（route: で始まるラベル）が Evaloom に登録されていない", "直し方: Evaloom に登録済みの実行先ラベルを付ける"},
 		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel,
-			"実行先ラベル（repo: で始まるラベル）が付いていない", "直し方: Evaloom に登録済みの実行先ラベルを1つ付ける"},
-		{"no assignment", routedIssue("1", "repo:three"), CauseConfigMissingAssignment,
-			"default role にハーネスが割り当てられていない", "直し方: 管理画面で Project の default role にハーネスを割り当てる"},
+			"実行先ラベル（route: で始まるラベル）が付いていない", "直し方: Evaloom に登録済みの実行先ラベルを1つ付ける"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRecheckFixture(t)
@@ -171,7 +167,7 @@ func TestRoutingHoldCommentHasReasonAndFix(t *testing.T) {
 	}
 }
 
-// The prefix in the reason is the round's setting, not a fixed "repo:".
+// The prefix in the reason is the round's setting, not a fixed "route:".
 func TestHoldCommentUsesRoundPrefix(t *testing.T) {
 	f := newRecheckFixture(t)
 	f.intake.Starter.(*TaskStarter).RoutingLabelPrefix = "run:"
@@ -185,7 +181,7 @@ func TestHoldCommentUsesRoundPrefix(t *testing.T) {
 // still lack the criteria write no second row (spec 16 3.5 rule 3, 3.7).
 func TestMissingCriteriaHoldAsksOnce(t *testing.T) {
 	f := newRecheckFixture(t)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
 	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
 	bodyHas(t, outboxBody(t, f.db, held.id), "受け入れ条件の記入をお願いします",
@@ -233,7 +229,7 @@ func outboxExecutionIDs(t *testing.T, db *sql.DB, taskID string) map[string]stri
 // タスクの中止の行では NULL になる。
 func TestOutboxExecutionIDByTrigger(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	if got := outboxExecutionIDs(t, f.db, held.id); len(got) != 1 || got["intake_blocked"] != "" {
 		t.Fatalf("intake_blocked execution_id = %v", got)
 	}
@@ -242,7 +238,7 @@ func TestOutboxExecutionIDByTrigger(t *testing.T) {
 	}
 
 	f2 := newRecheckFixture(t)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
 	held2 := f2.hold(t, issue, CauseMissingAcceptanceCriteria)
 	if n := countRows(t, f2.db, `SELECT count(*) FROM linear_outbox WHERE task_id = '`+held2.id+`'

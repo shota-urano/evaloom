@@ -66,10 +66,7 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			WriteError(w, logger, err)
 			return
 		}
-		before := model.Harness{ID: id, HarnessSettings: model.HarnessSettings{
-			Specialty: "developer", SupportedTasks: []string{"development"}, ContractVersion: "1",
-			SupportedModels: []string{}, AvailableTools: []string{}, ToolPermissions: map[string]any{},
-		}}
+		before := model.Harness{ID: id, HarnessSettings: model.HarnessSettings{ApprovalWaivers: []string{}}}
 		if !create {
 			var err error
 			before, err = store.GetHarness(r.Context(), db, id)
@@ -78,7 +75,7 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 				return
 			}
 		}
-		settings, err := decodeSettings(before.HarnessSettings, patch, create)
+		settings, err := decodeSettings(before.HarnessSettings, patch, create, "defaultProfileId")
 		if err == nil {
 			err = validateHarnessSettings(settings, adapters)
 		}
@@ -86,25 +83,14 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			WriteError(w, logger, err)
 			return
 		}
-		roots, err := store.RunnerWorktreeRoots(r.Context(), db)
-		if err == nil && len(roots) == 0 {
-			err = &Error{Code: PreconditionFailed, Message: "No Runner Worktree Root registered", Details: []Detail{{Field: "worktreeRoot", Reason: "not_found"}}}
-		}
+		settings.RepoPath, err = registry.ValidateRepository(r.Context(), registry.RepositoryInput{
+			Path: settings.RepoPath, URL: settings.RepoURL,
+		})
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		// Reuse the existing deadline-bound Git checks outside the transaction.
-		// Harnesses have no Base Branch and are shared across registered Runners.
-		for _, root := range roots {
-			settings.RepoPath, err = registry.ValidateRepository(r.Context(), registry.RepositoryInput{
-				Path: settings.RepoPath, URL: settings.RepoURL, WorktreeRoot: root,
-			})
-			if err != nil {
-				WriteError(w, logger, err)
-				return
-			}
-		}
+
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
 			WriteError(w, logger, err)
@@ -121,14 +107,7 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 				return
 			}
 		}
-		currentRoots, err := store.RunnerWorktreeRoots(r.Context(), tx)
-		if err == nil && !reflect.DeepEqual(currentRoots, roots) {
-			err = &Error{Code: Conflict, Message: "Runner Worktree Roots changed during repository validation; retry the request"}
-		}
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
+
 		paths, err := store.HarnessRepositoryPaths(r.Context(), tx, id)
 		if err == nil {
 			var duplicate bool
@@ -139,6 +118,22 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 		}
 		if err != nil {
 			WriteError(w, logger, harnessError(err))
+			return
+		}
+		if settings.DefaultProfileID != nil {
+			profile, profileErr := store.GetHarnessProfileByID(r.Context(), tx, *settings.DefaultProfileID)
+			if errors.Is(profileErr, sql.ErrNoRows) || (profileErr == nil && profile.HarnessID != id) {
+				profileErr = &Error{Code: PreconditionFailed, Message: "Default Profile does not belong to this Harness", Details: []Detail{{Field: "defaultProfileId", Reason: "invalid"}}}
+			}
+			if profileErr == nil {
+				profileErr = validateProfileWaivers(profile.Definition, settings.ApprovalWaivers)
+			}
+			if profileErr != nil {
+				WriteError(w, logger, profileErr)
+				return
+			}
+		} else if len(settings.ApprovalWaivers) != 0 {
+			WriteError(w, logger, invalid("approvalWaivers", "invalid"))
 			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -167,35 +162,14 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 	}
 }
 
-func validateHarnessSettings(h model.HarnessSettings, adapters *adapter.Registry) error {
-	for _, field := range []struct{ name, value string }{
-		{"name", h.Name}, {"adapter", h.Adapter}, {"repoPath", h.RepoPath}, {"repoUrl", h.RepoURL},
-	} {
+func validateHarnessSettings(h model.HarnessSettings, _ *adapter.Registry) error {
+	for _, field := range []struct{ name, value string }{{"name", h.Name}, {"repoPath", h.RepoPath}, {"repoUrl", h.RepoURL}} {
 		if strings.TrimSpace(field.value) == "" {
 			return invalid(field.name, "required")
 		}
 	}
-	if _, err := adapters.Lookup(h.Adapter); err != nil {
-		return invalid("adapter", "invalid")
-	}
-	if h.Specialty != "developer" {
-		return invalid("specialty", "invalid")
-	}
-	if len(h.SupportedTasks) != 1 || h.SupportedTasks[0] != "development" {
-		return invalid("supportedTasks", "invalid")
-	}
-	if h.ContractVersion != "1" {
-		return invalid("contractVersion", "invalid")
-	}
-	for _, field := range []struct {
-		name   string
-		values []string
-	}{{"supportedModels", h.SupportedModels}, {"availableTools", h.AvailableTools}} {
-		for _, value := range field.values {
-			if strings.TrimSpace(value) == "" {
-				return invalid(field.name, "invalid_format")
-			}
-		}
+	if h.ApprovalWaivers == nil {
+		return invalid("approvalWaivers", "invalid_format")
 	}
 	return nil
 }

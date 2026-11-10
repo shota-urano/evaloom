@@ -91,19 +91,22 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 		return "", rejected("path", "not_readable")
 	}
 
-	if !filepath.IsAbs(input.WorktreeRoot) {
-		return "", rejected("worktreeRoot", "not_absolute")
-	}
-	root, err := resolveWorktreeRoot(input.WorktreeRoot)
-	if err != nil {
-		return "", rejected("worktreeRoot", "not_resolvable")
-	}
-	withinRoot, err := withinWorktreeRoot(realPath, root)
-	if err != nil {
-		return "", rejected("worktreeRoot", "not_resolvable")
-	}
-	if withinRoot {
-		return "", rejected("path", "within_worktree_root")
+	if input.WorktreeRoot != "" {
+		if !filepath.IsAbs(input.WorktreeRoot) {
+			return "", rejected("worktreeRoot", "not_absolute")
+		}
+		root, err := resolveWorktreeRoot(input.WorktreeRoot)
+		if err != nil {
+			return "", rejected("worktreeRoot", "not_resolvable")
+		}
+		withinRoot, err := withinWorktreeRoot(realPath, root)
+		if err != nil {
+			return "", rejected("worktreeRoot", "not_resolvable")
+		}
+		if withinRoot {
+			return "", rejected("path", "within_worktree_root")
+		}
+
 	}
 
 	top, err := repositoryGit(ctx, realPath, "rev-parse", "--show-toplevel")

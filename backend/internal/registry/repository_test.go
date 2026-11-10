@@ -38,7 +38,6 @@ func TestValidateRepositoryRejectsFailedPreconditions(t *testing.T) {
 		{"different URL", func(i *registry.RepositoryInput) { i.URL = "https://user:secret@example.invalid/other.git" }, "url", "remote_mismatch"},
 		{"empty URL", func(i *registry.RepositoryInput) { i.URL = "" }, "url", "remote_mismatch"},
 		{"missing remote", func(i *registry.RepositoryInput) { i.Remote = "missing" }, "url", "remote_not_found"},
-		{"empty worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = "" }, "worktreeRoot", "not_absolute"},
 		{"file worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = file }, "worktreeRoot", "not_resolvable"},
 		{"inside worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = filepath.Dir(i.Path) }, "path", "within_worktree_root"},
 		{"equal worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = i.Path }, "path", "within_worktree_root"},

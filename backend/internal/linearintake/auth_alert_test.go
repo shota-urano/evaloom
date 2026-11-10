@@ -14,8 +14,8 @@ func classErr(class linear.ErrorClass) error { return &linear.Error{Op: "list is
 // 照会が1回成功した後にまた認証エラーになると、もう一度出る（spec 16 3.4.3、Q84）。
 func TestPollerAuthAlertUsesSharedGate(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
+
 	var okTeam atomic.Value // team that succeeds; "" = all fail auth
 	okTeam.Store("")
 	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
@@ -53,7 +53,7 @@ func TestPollerAuthAlertUsesSharedGate(t *testing.T) {
 	// One Team's success lifts the suppression; the next auth alerts again.
 	// team-a fails auth while the gate is still held (no alert), then
 	// team-b succeeds and releases it.
-	okTeam.Store("team-b")
+	okTeam.Store("team-a")
 	pollOnce(t, p)
 	if got := alerter.count(); got != 1 {
 		t.Fatalf("alerts in the round with a success = %d; want 1", got)
@@ -70,7 +70,7 @@ func TestPollerAuthAlertUsesSharedGate(t *testing.T) {
 // 失敗した」通知が出ず、通知は共通の抑止に従う認証エラーの通知だけになる（Q86）。
 func TestFifthFailureAuthDoesNotSendStreakAlert(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
 	var class atomic.Value
 	class.Store(linear.ClassNetwork)
 	client := &stubClient{list: func(string) ([]linear.Issue, error) { return nil, classErr(class.Load().(linear.ErrorClass)) }}
@@ -107,7 +107,7 @@ func TestFifthFailureNonAuthSendsStreakAlertOnce(t *testing.T) {
 	for _, class := range []linear.ErrorClass{linear.ClassRateLimited, linear.ClassNetwork, linear.ClassOther} {
 		t.Run(string(class), func(t *testing.T) {
 			db := openDB(t)
-			addProject(t, db, "p1", "team-a", "repo:one")
+			addProject(t, db, "p1", "team-a", "route:one")
 			client := &stubClient{list: func(string) ([]linear.Issue, error) { return nil, classErr(class) }}
 			alerter := &recordingAlerter{}
 			gate := &linear.AuthAlertGate{}
@@ -133,26 +133,3 @@ func TestFifthFailureNonAuthSendsStreakAlertOnce(t *testing.T) {
 
 // A round whose Teams fail both auth and non-auth (threshold) sends one
 // notification, the auth one, whose suppression is already held.
-func TestRoundWithAuthAndStreakSendsAuthAlertOnly(t *testing.T) {
-	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
-	var authB atomic.Bool
-	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
-		if teamID == "team-b" && authB.Load() {
-			return nil, classErr(linear.ClassAuth)
-		}
-		return nil, classErr(linear.ClassNetwork)
-	}}
-	alerter := &recordingAlerter{}
-	p := newPoller(db, client, nil)
-	p.Alerter = alerter
-	for range FailureAlertThreshold - 1 {
-		pollOnce(t, p)
-	}
-	authB.Store(true)
-	pollOnce(t, p) // team-a reaches 5 (network), team-b turns auth
-	if alerter.count() != 1 || alerter.alerts[0].Class != linear.ClassAuth {
-		t.Fatalf("alerts = %+v; want one auth alert", alerter.alerts)
-	}
-}

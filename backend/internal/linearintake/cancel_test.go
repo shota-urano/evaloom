@@ -62,9 +62,9 @@ var taskStates = map[string]string{
 // by TaskStarter; the later states stand in for the Runner's progress.
 func (f *cancelFixture) attach(t *testing.T, state string) (linear.Issue, string) {
 	t.Helper()
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	if state == "held" {
-		issue = routedIssue("1", "repo:unknown")
+		issue = routedIssue("1", "route:unknown")
 	}
 	f.mustRound(t, issue)
 	task := readStarted(t, f.db, "1", 1)
@@ -117,7 +117,7 @@ var detachTriggers = []struct {
 	run    func(t *testing.T, f *cancelFixture, issue linear.Issue)
 }{
 	{"label removed", ReasonLabelRemoved, func(t *testing.T, f *cancelFixture, issue linear.Issue) {
-		issue.Labels = []string{"repo:one"}
+		issue.Labels = []string{"route:one"}
 		f.fetcher.issues[issue.ID] = issue
 		f.mustRound(t)
 	}},
@@ -216,7 +216,7 @@ func TestLinearCancellationStopsOnlyActiveTaskOfIssue(t *testing.T) {
 	f := newCancelFixture(t)
 	issue, first := f.attach(t, "completed")
 	detached := issue
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues[issue.ID] = detached
 	f.mustRound(t)
 	f.mustRound(t, issue) // attached again: a second task
@@ -243,7 +243,7 @@ func TestLinearCancellationFailureIsRetried(t *testing.T) {
 	exec(t, f.db, `UPDATE tasks SET status = 'running' WHERE id = ?`, taskID)
 	before := mustState(t, f.db, "1")
 	detached := issue
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues[issue.ID] = detached
 	if err := f.round(t); err == nil {
 		t.Fatal("round succeeded with a conflicting task")

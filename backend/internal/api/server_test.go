@@ -61,9 +61,7 @@ func runnerDB(t *testing.T, count int) *sql.DB {
 	// Insert in reverse order so tests cannot pass by relying on insertion order.
 	for i := count; i > 0; i-- {
 		id := fmt.Sprintf("runner-%03d", i)
-		_, err := db.Exec(`INSERT INTO runners
-			(id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-			VALUES (?, ?, 'sensitive-token-hash', '/private/worktrees', 'online', ?, ?)`,
+		_, err := db.Exec(`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES (?, ?, 'sensitive-token-hash', 'online', ?, ?)`,
 			id, "Runner "+id, "2026-10-26T00:00:00Z", "2026-10-25T00:00:00Z")
 		if err != nil {
 			t.Fatal(err)

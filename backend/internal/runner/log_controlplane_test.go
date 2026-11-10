@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"io"
 	"log/slog"
 	"net"
@@ -81,8 +82,7 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-		VALUES ('project', 'Project', 'mac-mini', 'developer', 'now', 'now')`,
+		`INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'mac-mini', 'now', 'now', 'fixture-harness', 'fixture-profile')`,
 		`INSERT INTO tasks (id,project_id,title,body,acceptance_criteria,short_name,task_type,collaboration_mode,status,idempotency_key,created_at,updated_at)
 		VALUES ('task-001','project','Title','','logs','logs','development','solo','running','logs','now','now')`,
 		`INSERT INTO executions (id,task_id,seq,mode,status,runner_id,created_at)
@@ -99,7 +99,7 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 func (f *logControlPlane) start() {
 	f.t.Helper()
 	var err error
-	f.db, err = store.Open(context.Background(), f.dbPath)
+	f.db, err = testregistry.Open(context.Background(), f.dbPath)
 	if err != nil {
 		f.t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 // ContextExecution reads only saved Execution pins and its Task input, never the
-// current project_harnesses assignment or a moving Profile tag.
+// current Project pin or a moving Profile tag.
 type ContextExecution struct {
 	ID, TaskID, RunnerID, HarnessID, ProfileID, ProfileVersion, ProfileCommitSHA string
 	Status                                                                       model.ExecutionStatus
