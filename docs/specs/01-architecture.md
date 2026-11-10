@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: f1df129
 written: 2026-11-10
 範囲: 整合性アンカー。構成要素・段ごとの Sandbox・鍵の保管・プロセス配置・権限境界・認証・API 一覧と共通規約
 ---
