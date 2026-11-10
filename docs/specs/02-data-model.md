@@ -73,6 +73,7 @@ ID の例外は次のとおりとする。
 | repo_url | TEXT | スペシャルハーネスのリポジトリの URL |
 | repo_path | TEXT | Control Plane と Runner がタグと commit を読むローカルの複製のパス |
 | default_profile_id | TEXT NULL FK→harness_profiles | スペシャルハーネスへ直接振り分けたタスクで使う版。NULL なら直接振り分けたタスクを実行しない（`config_missing_profile`） |
+| approval_waivers | TEXT (JSON 配列) | スペシャルハーネスへ直接振り分けたタスクで、承認を省く操作の名前の配列。既定 `[]`（すべての承認を求める）。default_profile_id の Profile で `waivable: true` と宣言された操作だけを入れられる（契約 7.3、Q113）。Project 経由のタスクには使わない |
 | created_at / updated_at | TEXT | |
 
 専門分野、対応タスク、Adapter、対応モデル、利用可能ツール、Tool Permissions の列は持たない。どれも Profile 定義（契約 5章）が宣言する（Q118）。ミクロハーネスの一覧は、Evaloom のコードに登録した Adapter（`claude_code` / `codex`、[`08-harness-adapter.md`](./08-harness-adapter.md)）である。
@@ -122,6 +123,7 @@ Project が持つのは、vision.md 4章の6項目だけとする（本人決定
 - ローカルのパス、Git の URL、ベースブランチ、テストコマンド、setup、コピー許可リスト、Context の置き場所、許可操作、タイムアウトの列は持たない。必要ならスペシャルハーネスが params として受け取るか、対象から自分で読む（本人決定 1、6）。
 - profile_id を別の版に変えるとき、新しい版で `waivable: true` でない操作が approval_waivers に残っていれば、その変更を 422 で拒否する。
 - approval_waivers と profile_id の変更は audit_logs に残す。Runner とスペシャルハーネスには変更の経路を作らない（requirements 15.3）。
+- harnesses.approval_waivers と default_profile_id にも同じ規則を当てる（Q113）。default_profile_id を別の版に変えるとき、新しい版で `waivable: true` でない操作が残っていれば 422 で拒否する。
 
 #### routes（振り分けの表）
 
@@ -351,7 +353,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 
 - 同じ execution_id と operation で、status が `pending` / `approved` の行は1件までとする。新しく求めたら前の行を `invalidated`（`superseded`）にする（契約 7.2）。
 - 消費は、出す段の問い合わせ（契約 7.4）を受けた Runner が `POST /api/executions/{id}/authorize`（[`01-architecture.md`](./01-architecture.md) 5.2）を呼び、Control Plane が期待する現在値を条件にした1つの UPDATE で行う。content_id が違えば `invalidated`（`content_changed`）にする。
-- 承認を省いた操作（projects.approval_waivers）は行を作らず、execution_events に `approval_waived` を残す。出す段の問い合わせの時点で Project の approval_waivers を読み直し、省く設定が外れていれば許可しない（[`17-approval.md`](./17-approval.md) Q61 と同じ考え方）。
+- 承認を省いた操作（projects.approval_waivers）は行を作らず、execution_events に `approval_waived` を残す。出す段の問い合わせの時点で振り分け先の approval_waivers（Project なら projects、直接振り分けたタスクなら harnesses）を読み直し、省く設定が外れていれば許可しない（[`17-approval.md`](./17-approval.md) Q61 と同じ考え方）。
 
 ### 3.5 記録の表
 
@@ -706,13 +708,13 @@ worktree_ready、gate_result、pushed、pr_created、harness_started、harness_f
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q111 | 振り分けを提案する AI をどこで、どのミクロハーネスで動かし、同時実行にどう数えるか | 全体設定 `routing.defaultRunnerId` の Runner が、鍵なし・モデルの API だけの `proposal` の隔離で動かす。使うミクロハーネスとモデルは全体設定 `routing.proposer`。全体2本の枠に数え、振り分け先ごとの枠には数えない |
-| Q112 | 本人が、AI の提案と別の振り分け先を選べるか | 選べる。管理画面で、判断の時点の振り分けの表から1つ選ぶ。表に無い振り分け先は選べない（先に振り分けの表へ足す） |
-| Q113 | スペシャルハーネスへ直接振り分けたタスクの承認を省く設定と Runner | 承認は省けない。Runner は `routing.defaultRunnerId` |
-| Q115 | 渡す値の検証 | Profile の `params.schema` で、Project の登録・更新と claim のときに形だけ確かめる |
-| Q117 | 本人が振り分けの提案を却下したときのタスク | `cancelled` にする。もう一度実行したいときは、Linear で振り分けのラベルを付けるか、`ai-ready` を外して付け直す |
-| Q118 | Tool Permissions の置き場所（いまは harnesses.tool_permissions で本人だけが変える） | Profile 定義の `stages.work.toolPermissions` に移す。本人は、Project に固定する版を選ぶことで許可を選ぶ（requirements 15.3 の「本人だけが変更できる」を、版の選択で満たす） |
-| Q119 | タスク状態から `planning` と `verifying` を外し、`routing` を足すか（requirements 8.3 は書き換え済み） | 外して足す。段の状態は Execution 状態で見せる |
+| Q111 | 振り分けを提案する AI をどこで、どのミクロハーネスで動かし、同時実行にどう数えるか | 決定（2026-11-10 本人、案を採用）: 全体設定 `routing.defaultRunnerId` の Runner が、鍵なし・モデルの API だけの `proposal` の隔離で動かす。使うミクロハーネスとモデルは全体設定 `routing.proposer`。全体2本の枠に数え、振り分け先ごとの枠には数えない |
+| Q112 | 本人が、AI の提案と別の振り分け先を選べるか | 決定（2026-11-10 本人、案を採用）: 選べる。管理画面で、判断の時点の振り分けの表から1つ選ぶ。表に無い振り分け先は選べない（先に振り分けの表へ足す） |
+| Q113 | スペシャルハーネスへ直接振り分けたタスクの承認を省く設定と Runner | 決定（2026-11-10 本人、案を変更）: 直接振り分けた仕事の承認を省く設定は、スペシャルハーネスの登録（harnesses.approval_waivers）に持つ。既定は `[]` で、宣言したすべての操作で止まる。本人が、もう止めなくてよい操作を後から足していく。足せるのは既定の版で `waivable: true` と宣言された操作だけ。Runner は全体設定 `routing.defaultRunnerId` |
+| Q115 | 渡す値の検証 | 決定（2026-11-10 本人、案を採用）: Profile の `params.schema` で、Project の登録・更新と claim のときに形だけ確かめる |
+| Q117 | 本人が振り分けの提案を却下したときのタスク | 決定（2026-11-10 本人、案を採用）: `cancelled` にする。もう一度実行したいときは、Linear で振り分けのラベルを付けるか、`ai-ready` を外して付け直す |
+| Q118 | Tool Permissions の置き場所（いまは harnesses.tool_permissions で本人だけが変える） | 決定（2026-11-10 本人、案を採用）: Profile 定義の `stages.work.toolPermissions` に移す。本人は、Project に固定する版を選ぶことで許可を選ぶ（requirements 15.3 の「本人だけが変更できる」を、版の選択で満たす） |
+| Q119 | タスク状態から `planning` と `verifying` を外し、`routing` を足すか（requirements 8.3 は書き換え済み） | 決定（2026-11-10 本人、案を採用）: 外して足す。段の状態は Execution 状態で見せる |
 | Q120 | 振り分けのラベルの接頭辞の既定 | 決定（2026-11-10 本人）: `route:`。Project にもスペシャルハーネスにも使えるため、`repo:` から変える |
-| Q121 | 作業領域の保持期間と削除 | 終端になってから 14 日保持し、Runner が削除して cleaned にする。判断待ちと承認待ちの作業領域は削除しない。本人は管理画面から先に消せる |
+| Q121 | 作業領域の保持期間と削除 | 決定（2026-11-10 本人、案を採用）: 終端になってから 14 日保持し、Runner が削除して cleaned にする。判断待ちと承認待ちの作業領域は削除しない。本人は管理画面から先に消せる |
 | Q200 | 承認の有効時間を、本人が承認するときに変えられるか（17 の Q55 は「既定 24 時間、承認時に本人が変えられる」と決めたが、回答の形に入れる項目が無かった） | 決定（2026-11-10 本人）: 変えられるようにする。5.6 の kind=`approval` の回答に任意の `ttlSec`（60 秒以上。上限は設けない）を足す。省略したら `approval.ttlSec` を使う。expires_at は承認した時刻 + `ttlSec` |

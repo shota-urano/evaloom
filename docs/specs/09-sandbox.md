@@ -296,5 +296,5 @@ Runner が `SandboxSpec` に入れる値は次のとおりとする。
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q146 | 準備の段と出す段からモデル API を外す方法 | 登録済みのすべての Adapter が宣言したモデル API の宛先を1つの一覧にまとめ、Profile の登録で `stages.prepare.network.allow` と `stages.publish.network.allow` にその宛先があれば 422（`precondition_failed`）で拒否する。段の開始のときにも同じ一覧で確かめ、あれば `config_error` にする。一覧に無いモデルの宛先は見分けられないため、契約 12章の5の義務に頼ることを契約 5.2 に明記した |
-| Q147 | 段を動かす環境（コンテナのイメージ、macOS VM）を誰がどう決めるか（Project は6項目だけになり、Xcode が要るかどうかを持たなくなった） | 契約 第1版の任意項目として、Profile の `stages.<段>.runtime`（契約 5.2 に足した）に `{ "kind": "container", "image": "<ダイジェスト付きのイメージ>" }` または `{ "kind": "macos_vm", "image": "<Tart のイメージ>" }` を足す。省略したら Runner の設定ファイルの既定のコンテナのイメージを使う。作業の段は Runner の既定のイメージだけとする（ミクロハーネスの認証と設定の置き方を Adapter が決めるため）。macOS VM の実装までは `macos_vm` の Profile を登録で拒否する |
+| Q146 | 準備の段と出す段からモデル API を外す方法 | 決定（2026-11-10 本人、案を採用）: 登録済みのすべての Adapter が宣言したモデル API の宛先を1つの一覧にまとめ、Profile の登録で `stages.prepare.network.allow` と `stages.publish.network.allow` にその宛先があれば 422（`precondition_failed`）で拒否する。段の開始のときにも同じ一覧で確かめ、あれば `config_error` にする。一覧に無いモデルの宛先は見分けられないため、契約 12章の5の義務に頼ることを契約 5.2 に明記した |
+| Q147 | 段を動かす環境（コンテナのイメージ、macOS VM）を誰がどう決めるか（Project は6項目だけになり、Xcode が要るかどうかを持たなくなった） | 決定（2026-11-10 本人、案を採用）: 契約 第1版の任意項目として、Profile の `stages.<段>.runtime`（契約 5.2 に足した）に `{ "kind": "container", "image": "<ダイジェスト付きのイメージ>" }` または `{ "kind": "macos_vm", "image": "<Tart のイメージ>" }` を足す。省略したら Runner の設定ファイルの既定のコンテナのイメージを使う。作業の段は Runner の既定のイメージだけとする（ミクロハーネスの認証と設定の置き方を Adapter が決めるため）。macOS VM の実装までは `macos_vm` の Profile を登録で拒否する |

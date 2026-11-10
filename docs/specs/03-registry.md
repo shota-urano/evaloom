@@ -81,7 +81,7 @@ Project を作っても、振り分けのラベルは自動では作らない。
 
 ### 3.3 スペシャルハーネスの登録・更新
 
-入力は `id`、`name`、`repoUrl`、`repoPath` とする。更新（PATCH）では `name`、`repoUrl`、`repoPath`、`defaultProfileId` を変えられる（[`01-architecture.md`](./01-architecture.md) 5.1）。
+入力は `id`、`name`、`repoUrl`、`repoPath` とする。更新（PATCH）では `name`、`repoUrl`、`repoPath`、`defaultProfileId`、`approvalWaivers` を変えられる（[`01-architecture.md`](./01-architecture.md) 5.1）。
 
 | 項目 | 検証 |
 |---|---|
@@ -90,11 +90,12 @@ Project を作っても、振り分けのラベルは自動では作らない。
 | `repoUrl` | 表示用の URL。`https://` で始まる。Evaloom はここから取得しない（Q126） |
 | `repoPath` | スペシャルハーネスのリポジトリのローカルの複製。絶対パスで、ディレクトリがあり、`git -C <path> rev-parse --show-toplevel` が同じ実パスを返す。シンボリックリンクを解決した実パスで保存する。失敗は 422 |
 | `defaultProfileId` | NULL か、このスペシャルハーネスの harness_profiles の行。違えば 422 |
+| `approvalWaivers` | 任意（既定 `[]`）。直接振り分けたタスクで承認を省く操作。3.5 のとおり（`profileId` を `defaultProfileId` と読む）。`defaultProfileId` が NULL のときは `[]` だけを受け付ける |
 
 - スペシャルハーネスのリポジトリは独立した Git リポジトリである（契約 4.1）。Evaloom が `repoPath` で行うのは、タグの解決と、記録した commit の中身の読み出しだけである。作業ツリーとブランチは使わず、書き込みもしない。
 - 専門分野、対応タスク、Adapter、対応モデル、利用可能ツール、Tool Permissions は登録しない。どれも Profile 定義が宣言する（02 の harnesses、Q118）。
 - `defaultProfileId` は、スペシャルハーネスへ直接振り分けたタスクで使う版である。これを設定したとき、`config_missing_profile` で保留しているタスクの再判定を要求する（[`15-linear-intake.md`](./15-linear-intake.md)）。
-- `repoPath` と `defaultProfileId` の変更は audit_logs（`harness.update`）に変更前後の値を残す。
+- `repoPath`、`defaultProfileId`、`approvalWaivers` の変更は audit_logs（`harness.update`）に変更前後の値を残す。
 
 ### 3.4 Profile の版の登録と検証（requirements 5.4、契約 4.2・5章）
 
@@ -139,7 +140,7 @@ Project を作っても、振り分けのラベルは自動では作らない。
 
 ### 3.5 承認を省く設定の検証
 
-Project の `approvalWaivers` は、承認を省く操作の名前の配列である（本人決定 6、契約 7.3）。
+Project の `approvalWaivers` は、承認を省く操作の名前の配列である（本人決定 6、契約 7.3）。スペシャルハーネスの `approvalWaivers`（直接振り分けたタスク用、Q113）も同じ表で確かめる。そのときは `profileId` を `defaultProfileId` と読む。
 
 | 確認 | 失敗したとき |
 |---|---|
@@ -148,8 +149,8 @@ Project の `approvalWaivers` は、承認を省く操作の名前の配列で�
 | その操作が `waivable: true` と宣言されている | 422 `precondition_failed`（reason は `not_waivable`） |
 
 - 承認を省く設定を変えられるのは本人だけである。Runner とスペシャルハーネスには変える経路を作らない（requirements 15.3）。変更前後の値を audit_logs に残す。
-- 省いた操作でも、出す段の直前の問い合わせ（中止の確認）は省かない。問い合わせの時点で Project の `approvalWaivers` を読み直し、省く設定が外れていれば許可しない（02 の approvals、[`17-approval.md`](./17-approval.md)）。
-- スペシャルハーネスへ直接振り分けた仕事には、承認を省く設定は無い（02 の Q113）。
+- 省いた操作でも、出す段の直前の問い合わせ（中止の確認）は省かない。問い合わせの時点で振り分け先の `approvalWaivers` を読み直し、省く設定が外れていれば許可しない（02 の approvals、[`17-approval.md`](./17-approval.md)）。
+- スペシャルハーネスへ直接振り分けた仕事は、スペシャルハーネスの `approvalWaivers` を使う。既定は `[]` で、すべての承認を求める。本人が、もう止めなくてよい操作を後から足していく（02 の Q113）。
 
 ## 4. 設定値・確定値
 
@@ -229,10 +230,10 @@ Project・スペシャルハーネス・Profile を消すエンドポイント�
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q125 | Project とスペシャルハーネスの ID の形 | `^[a-z0-9][a-z0-9-]{0,62}$`（英小文字・数字・ハイフン、先頭は英小文字か数字、63 文字以内）。登録後は変えない |
-| Q126 | Profile の登録で、タグをどこから読むか | `repoPath` のローカルの複製だけを読む。Evaloom は `repoUrl` から取得しない（Control Plane はスペシャルハーネスの鍵を持たないため）。本人が先に `git fetch --tags` しておく。管理画面に、タグが見つからないときはこの手順を案内する |
-| Q127 | 全体設定 `linear.routingLabelPrefix` を変えたとき、新しい接頭辞で始まらないラベルが振り分けの表に残る場合 | 残っている間は設定の変更を 422 にする。本人が先にラベルを登録し直す |
-| Q128 | 振り分けのラベルが Linear 側に無いとき | 登録は拒否しない。`linear.teamId` が設定されていれば、登録時に Team のラベルを照会し、無ければ応答に警告を入れる。Evaloom が Linear にラベルを作ることはしない。振り分けの承認の後のラベルの追加が失敗したら、通知の失敗として出す（[`16-linear-feedback.md`](./16-linear-feedback.md)） |
-| Q129 | 渡す値（`params`）の大きさの上限 | 正規化した JSON の UTF-8 で 64 KiB まで。超えたら 400 |
-| Q130 | Project・スペシャルハーネス・Profile を消せるか | この版では消さない（Execution と記録が参照しているため）。使わなくするには振り分けのラベルを消す。消す機能は、参照の扱いを決めてから足す |
-| Q138 | 鍵の `slot` の名前の形（環境変数 `EVALOOM_SECRET_<SLOT>` と保管のファイル名に使う） | `^[a-z][a-z0-9_]{0,31}$`。契約 5.2 に書き足した。Profile の登録で検証する |
+| Q125 | Project とスペシャルハーネスの ID の形 | 決定（2026-11-10 本人、案を採用）: `^[a-z0-9][a-z0-9-]{0,62}$`（英小文字・数字・ハイフン、先頭は英小文字か数字、63 文字以内）。登録後は変えない |
+| Q126 | Profile の登録で、タグをどこから読むか | 決定（2026-11-10 本人、案を採用）: `repoPath` のローカルの複製だけを読む。Evaloom は `repoUrl` から取得しない（Control Plane はスペシャルハーネスの鍵を持たないため）。本人が先に `git fetch --tags` しておく。管理画面に、タグが見つからないときはこの手順を案内する |
+| Q127 | 全体設定 `linear.routingLabelPrefix` を変えたとき、新しい接頭辞で始まらないラベルが振り分けの表に残る場合 | 決定（2026-11-10 本人、案を採用）: 残っている間は設定の変更を 422 にする。本人が先にラベルを登録し直す |
+| Q128 | 振り分けのラベルが Linear 側に無いとき | 決定（2026-11-10 本人、案を採用）: 登録は拒否しない。`linear.teamId` が設定されていれば、登録時に Team のラベルを照会し、無ければ応答に警告を入れる。Evaloom が Linear にラベルを作ることはしない。振り分けの承認の後のラベルの追加が失敗したら、通知の失敗として出す（[`16-linear-feedback.md`](./16-linear-feedback.md)） |
+| Q129 | 渡す値（`params`）の大きさの上限 | 決定（2026-11-10 本人、案を採用）: 正規化した JSON の UTF-8 で 64 KiB まで。超えたら 400 |
+| Q130 | Project・スペシャルハーネス・Profile を消せるか | 決定（2026-11-10 本人、案を採用）: この版では消さない（Execution と記録が参照しているため）。使わなくするには振り分けのラベルを消す。消す機能は、参照の扱いを決めてから足す |
+| Q138 | 鍵の `slot` の名前の形（環境変数 `EVALOOM_SECRET_<SLOT>` と保管のファイル名に使う） | 決定（2026-11-10 本人、案を採用）: `^[a-z][a-z0-9_]{0,31}$`。契約 5.2 に書き足した。Profile の登録で検証する |

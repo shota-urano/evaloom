@@ -334,6 +334,6 @@ heartbeat の要求と応答は次のとおりとする。
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q136 | 本人の判断の後に再開するとき、前の段の `out` が Runner のデータディレクトリに残っていない場合（Runner の入れ替えやディスクの掃除） | 作業領域が無いときと同じく `blocked`（cause=`workspace_missing`、abort だけ）にする。本人は fresh で再実行する。Runner が Control Plane から成果物を取り戻す API は作らない（Runner 用 API を増やさないため） |
-| Q137 | 作業領域の削除（02 の Q121）を Runner にどう伝え、どう報告させるか | heartbeat の応答に `cleanWorkspaceIds` を載せ、Runner が削除した ID を次の heartbeat の `cleanedWorkspaceIds` で返す。Control Plane はそれを受けて task_workspaces を `cleaned` にする。Runner 用 API のエンドポイントは増やさない |
-| Q139 | ミクロハーネスの Evaloom 専用の認証ファイルの単位（旧仕様はスペシャルハーネスの ID ごと） | ミクロハーネスごと（`claude_code`、`codex`）に1つ持つ。スペシャルハーネスは鍵を持たない約束（契約 11章）であり、モデルの認証はミクロハーネスの側の値であるため。スペシャルハーネスごとに課金を分けたくなったら、そのとき単位を足す |
+| Q136 | 本人の判断の後に再開するとき、前の段の `out` が Runner のデータディレクトリに残っていない場合（Runner の入れ替えやディスクの掃除） | 決定（2026-11-10 本人、案を採用）: 作業領域が無いときと同じく `blocked`（cause=`workspace_missing`、abort だけ）にする。本人は fresh で再実行する。Runner が Control Plane から成果物を取り戻す API は作らない（Runner 用 API を増やさないため） |
+| Q137 | 作業領域の削除（02 の Q121）を Runner にどう伝え、どう報告させるか | 決定（2026-11-10 本人、案を採用）: heartbeat の応答に `cleanWorkspaceIds` を載せ、Runner が削除した ID を次の heartbeat の `cleanedWorkspaceIds` で返す。Control Plane はそれを受けて task_workspaces を `cleaned` にする。Runner 用 API のエンドポイントは増やさない |
+| Q139 | ミクロハーネスの Evaloom 専用の認証ファイルの単位（旧仕様はスペシャルハーネスの ID ごと） | 決定（2026-11-10 本人、案を採用）: ミクロハーネスごと（`claude_code`、`codex`）に1つ持つ。スペシャルハーネスは鍵を持たない約束（契約 11章）であり、モデルの認証はミクロハーネスの側の値であるため。スペシャルハーネスごとに課金を分けたくなったら、そのとき単位を足す |

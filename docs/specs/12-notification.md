@@ -211,5 +211,5 @@ Linear へのコメント（「管理画面で判断待ち」と結果の返却�
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q148 | Execution の無い判断待ち（kind=`route`）の通知を、再起動の後に二重に送らないための記録 | execution_events には書けないため、通知を送ったら audit_logs に action=`notification.sent`、target_type=`owner_decision` で1行残し、送る前にその行の有無を確かめる。送信に失敗したときは Control Plane のログにだけ残す（3.5 の Dashboard 通知と同じ扱い） |
-| Q149 | ヘルパーが開いてよい URL に、判断待ちの詳細（`/decisions/<decisionId>`）を足すか（Q77 で決めた許可範囲の変更） | 足す。判断を受け付けるのは管理画面の判断待ちの詳細だけであり（本人決定 3、[`13-management-ui.md`](./13-management-ui.md) 3.4）、通知から直接開けるようにするため。条件はタスク詳細と同じにする（ID が空でない、クエリ・フラグメントなし） |
+| Q148 | Execution の無い判断待ち（kind=`route`）の通知を、再起動の後に二重に送らないための記録 | 決定（2026-11-10 本人、案を採用）: execution_events には書けないため、通知を送ったら audit_logs に action=`notification.sent`、target_type=`owner_decision` で1行残し、送る前にその行の有無を確かめる。送信に失敗したときは Control Plane のログにだけ残す（3.5 の Dashboard 通知と同じ扱い） |
+| Q149 | ヘルパーが開いてよい URL に、判断待ちの詳細（`/decisions/<decisionId>`）を足すか（Q77 で決めた許可範囲の変更） | 決定（2026-11-10 本人、案を採用）: 足す。判断を受け付けるのは管理画面の判断待ちの詳細だけであり（本人決定 3、[`13-management-ui.md`](./13-management-ui.md) 3.4）、通知から直接開けるようにするため。条件はタスク詳細と同じにする（ID が空でない、クエリ・フラグメントなし） |

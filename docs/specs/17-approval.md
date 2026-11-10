@@ -1,7 +1,7 @@
 ---
 status: draft
 written: 2026-11-10
-範囲: 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止
+範囲: 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（Project と、直接振り分けたときのスペシャルハーネスの approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止
 ---
 
 # 17. 承認 仕様
@@ -42,17 +42,17 @@ written: 2026-11-10
 - 値は、承認を省く操作の名前の配列である。既定は `[]`（すべての承認を求める）。
 - 入れられるのは、Project が固定した版（projects.profile_id）の Profile で `waivable: true` と宣言された操作だけである（契約 5.2、7.3）。それ以外の名前は 422（`not_waivable`）で拒否する。
 - Project の固定する版を別の版に変えるとき、新しい版で `waivable: true` でない操作が承認を省く設定に残っていれば、その変更を 422 で拒否する。
-- スペシャルハーネスへ直接振り分けた仕事では、承認を省く設定は無い。宣言したすべての承認を求める（Q113）。
+- スペシャルハーネスへ直接振り分けた仕事では、スペシャルハーネスの承認を省く設定（harnesses.approval_waivers）を使う。既定は `[]` で、宣言したすべての承認を求める。本人が、もう止めなくてよい操作を後から足していく。入れられる操作と拒否の規則は Project と同じで、版は harnesses.default_profile_id と読む（Q113）。変更は `PATCH /api/harnesses/{id}` から行い、audit_logs（`harness.update`）に残す。
 - 承認を省く設定を変えられるのは本人だけで、管理画面の `PATCH /api/projects/{id}` から行う。Runner 用 API とスペシャルハーネスには変更の経路を作らない（requirements 15.3）。変更は audit_logs（`project.update`）に変更前後の値を残す。
 - 承認を省く操作を足すときは、管理画面で確認ダイアログを出す（Q165）。
-- 省いた操作は承認待ちを作らず、execution_events に `approval_waived` を残す。出す直前の問い合わせ（3.5）の時点で Project の承認を省く設定を読み直し、省く設定が外れていれば許可しない（2026-11-06 決定の Q61 と同じ考え方）。
+- 省いた操作は承認待ちを作らず、execution_events に `approval_waived` を残す。出す直前の問い合わせ（3.5）の時点で振り分け先の承認を省く設定を読み直し、省く設定が外れていれば許可しない（2026-11-06 決定の Q61 と同じ考え方）。
 
 ### 3.3 承認待ちの発生
 
 check または publish の段が `needs_approval` を返したとき（check が `succeeded` で `approvalRequests` を書いたときを含む、契約 6.5）、Control Plane は次を1つのトランザクションで行う。
 
 1. `approvalRequests` の各要求の operation が、Execution に固定した Profile の `approvals` に宣言されていることを確かめる。1つでも宣言していなければ、Execution を失敗（`contract_error`）にして終える。
-2. 承認を省く操作（Project の approval_waivers にある操作）は、承認待ちを作らず、execution_events に `approval_waived`（operation、contentId）を書く。
+2. 承認を省く操作（振り分け先の approval_waivers にある操作。Project なら projects、直接振り分けたタスクなら harnesses）は、承認待ちを作らず、execution_events に `approval_waived`（operation、contentId）を書く。
 3. それ以外の操作ごとに、同じ Execution・同じ operation の未使用の承認（status が `pending` / `approved`）があれば `invalidated`（理由 `superseded`）にし、その判断待ちを `withdrawn`（理由 `superseded`）にする（契約 7.2）。
 4. 操作ごとに approvals に `pending` の行を作る。結び付ける値は 3.4 の表のとおり。
 5. 操作ごとに owner_decisions に kind=`approval` の行を作る（subject_id=approvals.id、basis=content_id）。
@@ -96,7 +96,7 @@ Control Plane は、次の判定と書き込みを1つの書き込みトラン�
 | 要求の Runner が claim した Runner でない、または Execution が `publishing` でない | 403 / 409（[`01-architecture.md`](./01-architecture.md) 5.3）。Runner は段に `allowed: false`（`unavailable`）を返す | 変えない |
 | operation が `publish`（承認の要らない操作） | `allowed: true` | 行は無い |
 | operation が Profile の `approvals` に無い（`publish` 以外） | `allowed: false`、`not_approved` | 行は無い |
-| approvalId が null で、operation が Project の現在の approval_waivers にある（3.2） | `allowed: true` | 行は無い。execution_events に `approval_consumed`（approvalId null）を書く |
+| approvalId が null で、operation が振り分け先（Project かスペシャルハーネス）の現在の approval_waivers にある（3.2） | `allowed: true` | 行は無い。execution_events に `approval_consumed`（approvalId null）を書く |
 | approvalId が null で、上に当てはまらない（省く設定が外された場合を含む） | `allowed: false`、`not_approved` | 行は無い |
 | approvalId の行が、この Execution・この operation のものでない、または status が `approved` でない（`pending` / `rejected` / `invalidated`） | `allowed: false`、`not_approved` | 変えない |
 | 行の status が `consumed`、または use_count が max_uses に達している | `allowed: false`、`already_used` | 変えない |
@@ -188,6 +188,7 @@ Q55（有効期限の既定 24 時間）、Q57（却下で failed）、Q59（承
 | GET | /api/approvals/{id} | 本人用 | 承認の詳細（使用・無効の記録を含む） |
 | POST | /api/approvals/{id}/renew | 本人用 | 期限切れの承認から新しい承認待ちを作る |
 | PATCH | /api/projects/{id} | 本人用 | `approvalWaivers` の変更（3.2） |
+| PATCH | /api/harnesses/{id} | 本人用 | 直接振り分けたタスク用の `approvalWaivers` の変更（3.2、Q113） |
 | POST | /api/executions/{id}/authorize | Runner 用 | 出す直前の照合と消費（3.5、契約 7.4） |
 
 `POST /api/decisions/{id}/answer`（kind=`approval`）の応答は次のとおりとする。
@@ -260,7 +261,7 @@ Q55（有効期限の既定 24 時間）、Q57（却下で failed）、Q59（承
 - [ ] [Backend] 承認・却下・作り直しの本人用 API（decisions の answer、approvals の一覧・詳細・renew）
   - 受け入れ基準: contentId が違うと 422; 判断済みの判断待ちへの回答が 409; すべて承認すると Execution が pending（resume_stage=publish）になる; 一部だけ承認すると waiting_approval のまま; 却下でタスクと Execution が failed（approval_rejected）になり、ほかの未使用の承認が invalidated（cancelled）になる; 期限切れの承認から renew で新しい pending と判断待ちができる; 判断が audit_logs に残る; Runner トークンで回答すると 403
 - [ ] [Backend] 承認を省く設定の検証と変更の監査記録（3.2）
-  - 受け入れ基準: waivable でない操作、Profile に無い操作を approvalWaivers に入れると 422; 版を変えて waivable でない操作が残ると 422; 変更が audit_logs に変更前後の値で残る; Runner トークンでは変更できない; スペシャルハーネスへ直接振り分けたタスクでは、宣言したすべての操作で承認待ちができる
+  - 受け入れ基準: waivable でない操作、Profile に無い操作を approvalWaivers に入れると 422; 版を変えて waivable でない操作が残ると 422; 変更が audit_logs に変更前後の値で残る; Runner トークンでは変更できない; スペシャルハーネスへ直接振り分けたタスクでは、スペシャルハーネスの approvalWaivers が `[]` なら宣言したすべての操作で承認待ちができ、足した操作だけ承認待ちを作らない; スペシャルハーネスの approvalWaivers の検証と audit_logs も Project と同じ
 - [ ] [Backend] 出す直前の照合と消費（`POST /api/executions/{id}/authorize`、3.5）
   - 受け入れ基準: 3.5 の表の各行に対応するテストで allowed・reason と approvals の status が期待どおりになる; 同じ承認に並行に2回問い合わせると allowed=true が1回だけ; 承認の後に contentId を変えて問い合わせると allowed=false（content_changed）で承認が invalidated になる（条件22）; 承認を省いた後に Project の省く設定から外すと、approvalId=null の問い合わせが not_approved になる; operation=publish は中止要求が無ければ許可される; 中止要求があると cancelled; 有効期限を過ぎると expired; DB の書き込みを失敗させると allowed=false; 結果が execution_events と audit_logs に残る
 - [ ] [Backend] 承認の受け入れテスト（条件21、22）を 14 のテスト群に足す
@@ -274,6 +275,6 @@ Q55（有効期限の既定 24 時間）、Q57（却下で failed）、Q59（承
 
 | # | 内容 | 案 |
 |---|---|---|
-| Q165 | 承認を省く操作を足すとき、管理画面で何を確かめさせるか（旧仕様の `direct_push` の確認ダイアログを一般化） | 確認ダイアログを出し、省く操作の名前と Profile の description と、「この Project では、この操作を本人の承認なしにスペシャルハーネスが行う」ことを示す。パスワードの入れ直しは求めない（18 の 3.7 の決定どおり） |
-| Q166 | 承認してから publish の段が問い合わせるまでに有効期限が切れたとき（Runner が止まっていて、承認から 24 時間たって claim された、など） | claim の時点で Execution の承認の有効期限を確かめ、切れた承認があれば publish の段を始めない。その承認を `expired` にし、Execution とタスクを `waiting_approval` に戻して、期限切れを示す判断待ちを作る（本人は renew で承認し直す）。段が始まった後の問い合わせで切れていたときは、契約どおり `expired` で許可せず、Execution は失敗になる |
-| Q167 | 承認待ちの間に、外の対象が本人の手で変わったとき（PR を GitHub で直接マージした、投稿を手で公開した、など）、Evaloom は気付くべきか | Evaloom は外を読まず、何もしない（本人決定 5、vision.md 4章）。本人は判断待ちの画面で却下するか、タスクを中止する。承認した場合は、publish の段が始めに外の状態を確かめて、すでに行われた操作を繰り返さない（契約 7.5、12章の 9） |
+| Q165 | 承認を省く操作を足すとき、管理画面で何を確かめさせるか（旧仕様の `direct_push` の確認ダイアログを一般化） | 決定（2026-11-10 本人、案を採用）: 確認ダイアログを出し、省く操作の名前と Profile の description と、「この Project では、この操作を本人の承認なしにスペシャルハーネスが行う」ことを示す。パスワードの入れ直しは求めない（18 の 3.7 の決定どおり） |
+| Q166 | 承認してから publish の段が問い合わせるまでに有効期限が切れたとき（Runner が止まっていて、承認から 24 時間たって claim された、など） | 決定（2026-11-10 本人、案を採用）: claim の時点で Execution の承認の有効期限を確かめ、切れた承認があれば publish の段を始めない。その承認を `expired` にし、Execution とタスクを `waiting_approval` に戻して、期限切れを示す判断待ちを作る（本人は renew で承認し直す）。段が始まった後の問い合わせで切れていたときは、契約どおり `expired` で許可せず、Execution は失敗になる |
+| Q167 | 承認待ちの間に、外の対象が本人の手で変わったとき（PR を GitHub で直接マージした、投稿を手で公開した、など）、Evaloom は気付くべきか | 決定（2026-11-10 本人、案を採用）: Evaloom は外を読まず、何もしない（本人決定 5、vision.md 4章）。本人は判断待ちの画面で却下するか、タスクを中止する。承認した場合は、publish の段が始めに外の状態を確かめて、すでに行われた操作を繰り返さない（契約 7.5、12章の 9） |
