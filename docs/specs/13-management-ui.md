@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: a095baa
 written: 2026-11-10
 範囲: 管理画面（ログイン、Dashboard、本人の判断待ち、Projects、振り分けの表、スペシャルハーネスと版、記録の一覧、Tasks、Settings）、SSE によるログ表示
 ---
