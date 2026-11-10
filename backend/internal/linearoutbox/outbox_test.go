@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -22,15 +22,13 @@ const testTime = "2026-11-08T00:00:00Z"
 // manual task "manual-1", each with Execution "<task>-e1" in the given states.
 func outboxDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "outbox.db"))
+	db, err := testregistry.Open(context.Background(), filepath.Join(t.TempDir(), "outbox.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-		VALUES ('project', 'Project', 'runner', 'developer', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('runner', 'Runner', 'hash', 'online', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'runner', ?, ?, 'fixture-harness', 'fixture-profile')`, testTime, testTime)
 	for _, source := range []string{"linear", "manual"} {
 		id := source + "-1"
 		mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,

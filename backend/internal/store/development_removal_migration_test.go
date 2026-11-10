@@ -38,7 +38,10 @@ func TestDevelopmentRemovalMigrationKeepsRemainingData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db = openRegistry(t, path)
+	db, err = open(context.Background(), path, migrationsBefore(t, 26))
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25})
 	if got := migrationRows(t, db, keptProject); !reflect.DeepEqual(got, projects) {
 		t.Fatalf("projects = %#v; want %#v", got, projects)

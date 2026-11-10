@@ -83,7 +83,7 @@ type Poller struct {
 
 // Result summarizes one round.
 type Result struct {
-	// Polled is false when no Project registers a linear_team_id.
+	// Polled is false when settings.linear.teamId is unset.
 	Polled bool
 	// ResumeAt is Linear's restart hint after rate limiting; zero otherwise.
 	ResumeAt time.Time

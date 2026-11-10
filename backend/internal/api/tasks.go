@@ -83,7 +83,7 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			err = invalid("projectId", "not_found")
 		}
 		if err == nil {
-			_, err = store.GetProjectHarness(ctx, tx, project.ID, project.DefaultRole)
+			_, err = store.GetProjectHarness(ctx, tx, project.ID, "")
 			if errors.Is(err, sql.ErrNoRows) {
 				err = &Error{Code: PreconditionFailed, Message: "Project has no Default Harness assignment",
 					Details: []Detail{{Field: "projectId", Reason: "default_harness_missing"}}}

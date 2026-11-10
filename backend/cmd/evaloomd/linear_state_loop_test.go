@@ -113,7 +113,7 @@ func cancelLoopTask(t *testing.T, h *loopHarness, held bool) {
 	if held {
 		body = "no criteria"
 	}
-	id := attachLoopIssue(t, h, body, "ai-ready", "repo:p")
+	id := attachLoopIssue(t, h, body, "ai-ready", "route:p")
 	// Deliver the hold comment first, if present, so only cancellation is due.
 	h.send(t)
 	tx, err := h.db.Begin()
@@ -185,7 +185,7 @@ func TestLinearReattachedCanceledIssueDoesNotStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, labels := range [][]string{{"repo:p"}, {"ai-ready", "repo:p"}} {
+	for i, labels := range [][]string{{"route:p"}, {"ai-ready", "route:p"}} {
 		issue := linearIssueJSON("issue-1", loopCriteria, at.Add(time.Duration(i+1)*time.Minute), labels...)
 		issue["state"] = map[string]any{"id": state.ID, "name": state.Name, "type": state.Type}
 		h.fake.set("issue-1", issue)
@@ -214,7 +214,7 @@ func TestLinearReattachedCanceledIssueDoesNotStart(t *testing.T) {
 // タスクの重複防止だけでは防げない再起動も検出する (16 3.5.4、3.6.4)。
 func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 	h := newLoopHarness(t)
-	id := attachLoopIssue(t, h, loopCriteria, "ai-ready", "repo:p")
+	id := attachLoopIssue(t, h, loopCriteria, "ai-ready", "route:p")
 	var executionID string
 	if err := h.db.QueryRow(`SELECT id FROM executions WHERE task_id = ?`, id).Scan(&executionID); err != nil {
 		t.Fatal(err)
@@ -281,8 +281,8 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 	for _, hold := range []struct {
 		cause, body, label string
 	}{
-		{"missing_acceptance_criteria", "no criteria", "repo:p"},
-		{"routing_unknown_label", loopCriteria, "repo:unknown"},
+		{"missing_acceptance_criteria", "no criteria", "route:p"},
+		{"routing_unknown_label", loopCriteria, "route:unknown"},
 	} {
 		t.Run(hold.cause, func(t *testing.T) {
 			h := newLoopHarness(t)

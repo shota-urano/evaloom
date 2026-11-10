@@ -8,13 +8,13 @@ import (
 )
 
 const harnessProfileColumns = `id, harness_id, version, commit_sha, tag_name,
-	definition, definition_hash, model_id, operation_status, registered_at`
+	contract_version, definition, definition_hash, model_id, operation_status, registered_at`
 
 func scanHarnessProfile(row interface{ Scan(...any) error }) (model.HarnessProfile, error) {
 	var p model.HarnessProfile
 	var definition string
 	err := row.Scan(&p.ID, &p.HarnessID, &p.Version, &p.CommitSHA, &p.TagName,
-		&definition, &p.DefinitionHash, &p.ModelID, &p.OperationStatus, &p.RegisteredAt)
+		&p.ContractVersion, &definition, &p.DefinitionHash, &p.ModelID, &p.OperationStatus, &p.RegisteredAt)
 	p.Definition = []byte(definition)
 	return p, err
 }
@@ -51,7 +51,7 @@ func ListHarnessProfiles(ctx context.Context, db *sql.DB, harnessID, after strin
 // existing versions and records the audit log in the same transaction.
 func InsertHarnessProfile(ctx context.Context, tx *sql.Tx, p model.HarnessProfile) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO harness_profiles (`+harnessProfileColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.ID, p.HarnessID, p.Version, p.CommitSHA,
-		p.TagName, string(p.Definition), p.DefinitionHash, p.ModelID, p.OperationStatus, p.RegisteredAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.ID, p.HarnessID, p.Version, p.CommitSHA,
+		p.TagName, p.ContractVersion, string(p.Definition), p.DefinitionHash, p.ModelID, p.OperationStatus, p.RegisteredAt)
 	return err
 }

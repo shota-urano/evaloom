@@ -111,13 +111,13 @@ func TestHarnessProfilesRejectDefinitionVersionMismatch(t *testing.T) {
 	}
 }
 
-func TestHarnessProfilesRejectAdapterMismatch(t *testing.T) {
+func TestHarnessProfilesAdapterComesFromDefinition(t *testing.T) {
 	f, repo := profileFixture(t)
 	commitProfile(t, repo, "1.2.0", strings.Replace(validProfileYAML, `adapter: "codex"`, `adapter: "claude_code"`, 1), false)
 	status, body := postProfile(t, f, "1.2.0")
-	requireProjectError(t, status, body, 422, PreconditionFailed, "executionConfiguration.adapter", "invalid")
-	if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
-		t.Fatal("mismatched adapter was persisted")
+	p := requireProfile(t, status, body, 201)
+	if !strings.Contains(string(p.Definition), `"adapter":"claude_code"`) {
+		t.Fatal(string(p.Definition))
 	}
 }
 

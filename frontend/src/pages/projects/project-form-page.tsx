@@ -4,7 +4,7 @@ import { conflictFieldErrors, preconditionFieldErrors, type FieldErrors } from '
 import { registry, type Project, type ProjectInput, type Runner } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
-import { SelectField, TextField } from '@/components/form-field'
+import { SelectField, TextField, TextAreaField } from '@/components/form-field'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
@@ -14,68 +14,25 @@ import { navigate } from '@/lib/router'
 import { Loading, PageTitle } from '@/components/page'
 import { ERROR_FIELD_LABELS, LINEAR_CONFLICT_FIELDS, PRECONDITION_FIELDS, PROJECT_LABELS as L } from './labels'
 
-type FormValues = {
-  id: string
-  name: string
-  runnerId: string
-  defaultRole: string
-  linearTeamId: string
-  linearRoutingLabel: string
-}
-
-// サーバーの details[].field と同じ名前。400 の details をこの名前の項目へ出す（13 6節）。
-const FIELDS = [
-  'id',
-  'name',
-  'runnerId',
-  'defaultRole',
-  'linearTeamId',
-  'linearRoutingLabel',
-] as const
-
-const REQUIRED = ['name', 'runnerId', 'defaultRole'] as const
-
-const EMPTY: FormValues = {
-  id: '',
-  name: '',
-  runnerId: '',
-  defaultRole: 'developer',
-  linearTeamId: '',
-  linearRoutingLabel: '',
-}
-
+type FormValues = { id: string; name: string; runnerId: string; harnessId: string; profileId: string; params: string; approvalWaivers: string }
+const FIELDS = ['id', 'name', 'runnerId', 'harnessId', 'profileId', 'params', 'approvalWaivers'] as const
+const REQUIRED = ['name', 'runnerId', 'harnessId', 'profileId'] as const
+const EMPTY: FormValues = { id: '', name: '', runnerId: '', harnessId: '', profileId: '', params: '{}', approvalWaivers: '' }
 function toValues(project: Project): FormValues {
-  return {
-    id: project.id,
-    name: project.name,
-    runnerId: project.runnerId,
-    defaultRole: project.defaultRole,
-    linearTeamId: project.linearTeamId ?? '',
-    linearRoutingLabel: project.linearRoutingLabel ?? '',
-  }
+  return { id: project.id, name: project.name, runnerId: project.runnerId, harnessId: project.harnessId, profileId: project.profileId,
+    params: JSON.stringify(project.params, null, 2), approvalWaivers: project.approvalWaivers.join('\n') }
 }
-
-const optional = (value: string) => (value.trim() === '' ? null : value.trim())
-
-/** 画面での検証（正本はサーバー、13 3.1）。通れば送信内容を返す。 */
 function validate(values: FormValues, create: boolean): { input?: ProjectInput; errors: FieldErrors } {
   const errors: FieldErrors = {}
-  const fields = create ? (['id', ...REQUIRED] as const) : REQUIRED
-  for (const field of fields) {
+  for (const field of create ? ['id', ...REQUIRED] as const : REQUIRED) {
     if (values[field].trim() === '') errors[field] = ['入力してください']
   }
-  if (Object.keys(errors).length > 0) return { errors }
-  return {
-    errors,
-    input: {
-      name: values.name.trim(),
-      runnerId: values.runnerId,
-      defaultRole: values.defaultRole.trim(),
-      // 空欄は null で送って解除する（省略しても null 扱いなので、編集時も毎回送る。backend/internal/api/projects.md）。
-      linearTeamId: optional(values.linearTeamId),
-      linearRoutingLabel: optional(values.linearRoutingLabel),
-    },
-  }
+  let params: unknown
+  try { params = JSON.parse(values.params) } catch { /* reported below */ }
+  if (!params || typeof params !== 'object' || Array.isArray(params)) errors.params = ['JSON のオブジェクトを入力してください']
+  if (Object.keys(errors).length) return { errors }
+  return { errors, input: { name: values.name.trim(), runnerId: values.runnerId, harnessId: values.harnessId.trim(), profileId: values.profileId.trim(),
+    params: params as Record<string, unknown>, approvalWaivers: values.approvalWaivers.split('\n').map((value) => value.trim()).filter(Boolean) } }
 }
 
 function runnerLabel(runner: Runner): string {
@@ -185,33 +142,19 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
               </option>
             ))}
           </SelectField>
-          <TextField
-            label={L.defaultRole}
-            autoComplete="off"
-            spellCheck={false}
-            hint="タスクの実行に使う役割。プロジェクト詳細で、この役割に Harness と版を割り当てます。"
-            {...bind('defaultRole')}
-          />
+          <TextField label={L.harnessId} autoComplete="off" {...bind('harnessId')} />
+          <TextField label={L.profileId} autoComplete="off" {...bind('profileId')} />
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Linear 連携</CardTitle>
-          <CardDescription>
-            両方を設定すると、この Team の Issue のうち、この実行先ラベルが付いたものをこのプロジェクトで実行します。どちらかが空欄なら
-            Linear からは実行しません。
-          </CardDescription>
+          <CardTitle>スペシャルハーネスへの入力</CardTitle>
+          <CardDescription>鍵やパスワードを渡す値に入れないでください。</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextField label={L.linearTeamId} autoComplete="off" spellCheck={false} {...bind('linearTeamId')} />
-          <TextField
-            label={L.linearRoutingLabel}
-            placeholder="repo:customer-system"
-            autoComplete="off"
-            spellCheck={false}
-            {...bind('linearRoutingLabel')}
-          />
+        <CardContent className="grid gap-4">
+          <TextAreaField label={L.params} rows={5} spellCheck={false} {...bind('params')} />
+          <TextAreaField label={L.approvalWaivers} rows={3} hint="操作の名前を1行に1つ。Profile が省略を認めた操作だけを指定できます。" {...bind('approvalWaivers')} />
         </CardContent>
       </Card>
 

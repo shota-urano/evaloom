@@ -18,7 +18,7 @@ func taskFixture(t *testing.T) *authFixture {
 	t.Helper()
 	f, _, _ := assignmentFixture(t)
 	status, body := postAssignment(t, f, "project-a", "developer", "harness-a", "1.2.0")
-	requireAssignment(t, status, body, 201)
+	requireAssignment(t, status, body, 200)
 	return f
 }
 
@@ -149,30 +149,11 @@ func TestManualTaskRejectsEmptyAcceptanceCriteriaWithoutRows(t *testing.T) {
 	}
 }
 
-func TestManualTaskRequiresAssignmentForActualDefaultRole(t *testing.T) {
-	f := taskFixture(t)
-	// developer is assigned, but it is no longer this Project's default role.
-	if _, err := f.db.Exec(`UPDATE projects SET default_role = 'custom role' WHERE id = 'project-a'`); err != nil {
-		t.Fatal(err)
-	}
-	status, body := taskRequest(t, f, "missing-default", manualTaskInput(), nil)
-	requireProjectError(t, status, body, 422, PreconditionFailed, "projectId", "default_harness_missing")
-	requireTaskCounts(t, f, 0)
-	status, body = postAssignment(t, f, "project-a", "custom role", "harness-a", "1.2.0")
-	requireAssignment(t, status, body, 201)
-	status, body = taskRequest(t, f, "missing-default", manualTaskInput(), nil)
-	requireTask(t, status, body, 201)
-	requireTaskCounts(t, f, 1)
-}
-
 func TestManualTaskIdempotencyReturnsOriginalAcrossChangedInputAndAssignment(t *testing.T) {
 	f := taskFixture(t)
 	status, body := taskRequest(t, f, "replay", manualTaskInput(), nil)
 	original := requireTask(t, status, body, 201)
 	// Replays do not require the original assignment to remain current.
-	if _, err := f.db.Exec(`UPDATE projects SET default_role = 'unassigned' WHERE id = 'project-a'`); err != nil {
-		t.Fatal(err)
-	}
 	for _, project := range []string{"project-a", "project-b", "missing"} {
 		input := manualTaskInput()
 		input["projectId"], input["title"] = project, "Different title"

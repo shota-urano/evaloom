@@ -28,16 +28,6 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 }
 
 const mono = (value: string) => <span className="font-mono">{value}</span>
-const list = (values: readonly string[]) =>
-  values.length === 0 ? (
-    <span className="text-muted-foreground">なし</span>
-  ) : (
-    <ul className="grid gap-0.5 font-mono">
-      {values.map((value) => (
-        <li key={value}>{value}</li>
-      ))}
-    </ul>
-  )
 
 function SettingsCard({ harness }: { harness: Harness }) {
   return (
@@ -47,15 +37,8 @@ function SettingsCard({ harness }: { harness: Harness }) {
       </CardHeader>
       <CardContent>
         <dl className="divide-y">
-          <Row label={L.specialty}>{mono(harness.specialty)}</Row>
-          <Row label={L.adapter}>{mono(harness.adapter)}</Row>
           <Row label={L.repoPath}>{mono(harness.repoPath)}</Row>
           <Row label={L.repoUrl}>{mono(harness.repoUrl)}</Row>
-          <Row label={L.supportedModels}>{list(harness.supportedModels)}</Row>
-          <Row label={L.availableTools}>{list(harness.availableTools)}</Row>
-          <Row label={L.toolPermissions}>
-            <pre className="bg-muted/50 rounded-md p-2 font-mono text-xs">{JSON.stringify(harness.toolPermissions, null, 2)}</pre>
-          </Row>
         </dl>
       </CardContent>
     </Card>

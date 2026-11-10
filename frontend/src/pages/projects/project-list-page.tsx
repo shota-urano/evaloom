@@ -14,8 +14,8 @@ export function AssignmentSummary({ harnesses }: { harnesses: readonly ProjectHa
   return (
     <ul className="grid gap-0.5">
       {harnesses.map((h) => (
-        <li key={h.role}>
-          <span className="font-medium">{h.role}</span>: {h.harnessId} <span className="font-mono">v{h.version}</span>
+        <li key={h.profileId}>
+          <span className="font-medium">{h.harnessId}</span> <span className="font-mono">v{h.version}</span>
         </li>
       ))}
     </ul>

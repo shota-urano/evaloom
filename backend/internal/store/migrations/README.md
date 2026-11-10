@@ -17,3 +17,12 @@ SQL に `BEGIN`、`COMMIT`、`ROLLBACK` やトランザクション外での実�
 
 `evaloomd` の起動例は `go run ./cmd/evaloomd -db /existing/data/evaloom.db`。
 DB の保存先には明示したファイルパスを使い、親ディレクトリは事前に作成する。
+
+0026は登録の5表を仕様02の形に移す。Projectには旧`default_role`の割り当てを引き継ぎ、
+ラベルを`routes`へ移す。旧設定の照会先Teamが1つなら`settings.linear.teamId`に引き継ぐ。
+旧ラベルを使っていて接頭辞の設定行が無い場合は、旧既定値`repo:`を設定行に保存する。
+
+旧Projectの既定の役割に割り当てが無い場合、同じラベルを異なるTeamで使っていた場合、
+複数の旧Teamを単一の全体設定へ移せない場合は、0026全体を取り消して起動を失敗させる。
+架空のHarnessやProfile、振り分け先を補って移行はしない。
+`runners.worktree_root`は削除し、Runnerの設定ファイルに作業領域のディレクトリを持たせる。

@@ -284,7 +284,7 @@ func TestLinearCommentOnAttachedIssueDoesNotRestart(t *testing.T) {
 	ctx := context.Background()
 	h.poll(t) // first poll of team-a: baseline only
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at, "ai-ready", "repo:p"))
+	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at, "ai-ready", "route:p"))
 	h.poll(t)
 
 	var taskID, executionID string
@@ -354,9 +354,9 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 		labels                  []string
 	}{
 		{name: "missing acceptance criteria", body: "no criteria", kind: "missing_acceptance_criteria",
-			cause: "missing_acceptance_criteria", labels: []string{"ai-ready", "repo:p"}},
+			cause: "missing_acceptance_criteria", labels: []string{"ai-ready", "route:p"}},
 		{name: "routing", body: "## Acceptance Criteria\n- login works", kind: "intake_blocked",
-			labels: []string{"ai-ready", "repo:unknown"}},
+			labels: []string{"ai-ready", "route:unknown"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newLoopHarness(t)
@@ -423,9 +423,9 @@ func TestLinearPollQueriesDoNotRequestComments(t *testing.T) {
 	h := newLoopHarness(t)
 	h.poll(t) // baseline
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at, "ai-ready", "repo:p"))
+	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at, "ai-ready", "route:p"))
 	h.poll(t) // list: attach
-	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(time.Minute), "repo:p"))
+	h.fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(time.Minute), "route:p"))
 	h.poll(t) // list + per-Issue refetch: detach
 	_, queries := h.fake.snapshot()
 

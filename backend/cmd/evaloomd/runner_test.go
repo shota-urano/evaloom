@@ -46,12 +46,13 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var id, name, hash, root, status, heartbeat, created string
-	if err := db.QueryRow(`SELECT id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at FROM runners`).Scan(&id, &name, &hash, &root, &status, &heartbeat, &created); err != nil {
+	var id, name, hash, status, created string
+	var heartbeat sql.NullString
+	if err := db.QueryRow(`SELECT id, name, token_hash, status, last_heartbeat_at, created_at FROM runners`).Scan(&id, &name, &hash, &status, &heartbeat, &created); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(token))
-	if id != "mac-mini" || name != "Mac mini" || hash != hex.EncodeToString(digest[:]) || root != "/private/worktrees" || status != "offline" || heartbeat != "" {
+	if id != "mac-mini" || name != "Mac mini" || hash != hex.EncodeToString(digest[:]) || status != "offline" || heartbeat.Valid {
 		t.Fatal("registered Runner does not match the hash-only, offline contract")
 	}
 	if _, err := api.ParseTimestamp(created); err != nil {
@@ -211,7 +212,6 @@ func TestRunnerRegisterRejectsInvalidInputBeforeCreatingDatabase(t *testing.T) {
 		{"empty id", "", "/worktrees"}, {"multiple segments", "other/runner", "/worktrees"},
 		{"dot id", "..", "/worktrees"}, {"whitespace", "runner one", "/worktrees"},
 		{"control", "runner\n", "/worktrees"}, {"relative root", "mac-mini", "worktrees"},
-		{"missing root", "mac-mini", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "evaloom.db")
@@ -244,5 +244,22 @@ func TestRunnerRegistrationWriteFailureDoesNotDisplayToken(t *testing.T) {
 	var count int
 	if err := db.QueryRow(`SELECT count(*) FROM runners`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed registration left a Runner: count=%d err=%v", count, err)
+	}
+}
+
+func TestRunnerRegistrationDoesNotRequireWorkspaceDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-root.db")
+	var output bytes.Buffer
+	if err := run(context.Background(), []string{"-db", path, "runner", "register", "local"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var removed int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('runners') WHERE name='worktree_root'`).Scan(&removed); err != nil || removed != 0 {
+		t.Fatal(removed, err)
 	}
 }

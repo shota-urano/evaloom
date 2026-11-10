@@ -15,6 +15,7 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 )
 
 const (
@@ -25,11 +26,12 @@ const (
 
 func seedStreamExecutions(t *testing.T, f *authFixture) {
 	t.Helper()
+	if err := testregistry.Seed(context.Background(), f.db); err != nil {
+		t.Fatal(err)
+	}
 	for _, statement := range []string{
-		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		 VALUES ('seed-runner', 'Runner', 'unused', '/worktrees', 'offline', '', '2026-10-26T00:00:00Z')`,
-		`INSERT INTO projects (id, name, runner_id, default_role, created_at, updated_at)
-		 VALUES ('project-a', 'Project', 'seed-runner', 'developer', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z')`,
+		`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('seed-runner', 'Runner', 'unused', 'offline', '', '2026-10-26T00:00:00Z')`,
+		`INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project-a', 'Project', 'seed-runner', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z', 'fixture-harness', 'fixture-profile')`,
 		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 		 collaboration_mode, status, idempotency_key, created_at, updated_at)
 		 VALUES ('task-001', 'project-a', 'Title', '', 'events resume', 'sse', 'development', 'solo',

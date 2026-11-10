@@ -326,11 +326,11 @@ func phase1NotificationChannels(goos, home string, port int) []notification.Chan
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "register" {
-		return fmt.Errorf("usage: evaloomd -db <database file path> runner register -worktree-root <absolute path> [-name <display name>] <id>")
+		return fmt.Errorf("usage: evaloomd -db <database file path> runner register [-name <display name>] <id>")
 	}
 	flags := flag.NewFlagSet("evaloomd runner register", flag.ContinueOnError)
 	flags.SetOutput(output)
-	root := flags.String("worktree-root", "", "absolute directory for Runner worktrees (required)")
+	root := flags.String("worktree-root", "", "deprecated compatibility option; configure the workspace directory on the Runner")
 	name := flags.String("name", "", "display name (defaults to Runner ID)")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

@@ -7,11 +7,11 @@ export type Page<T> = { items: T[]; nextCursor: string }
 
 export type ProjectSettings = {
   name: string
+  harnessId: string
+  profileId: string
+  params: Record<string, unknown>
+  approvalWaivers: string[]
   runnerId: string
-  defaultRole: string
-  /** Linear Team ID と実行先ラベル（15-linear-intake 3.8・5章）。null は未設定。どちらかが null だと Linear から実行されない。 */
-  linearTeamId?: string | null
-  linearRoutingLabel?: string | null
 }
 
 /** 役割ごとに固定した Harness Profile（GET /api/projects・/api/projects/{id} の harnesses）。 */
@@ -40,20 +40,14 @@ export type Runner = { id: string; name: string; status: 'online' | 'offline'; l
 /** 本人が画面で編集する Harness の項目（03 3.4、backend/internal/model/harness.go）。 */
 export type HarnessInput = {
   name: string
-  adapter: string
   repoPath: string
   repoUrl: string
-  supportedModels: string[]
-  availableTools: string[]
-  toolPermissions: Record<string, unknown>
 }
 
-/** specialty・supportedTasks・contractVersion は Phase 1 では固定値（developer・["development"]・"1"）なので送らない。 */
 export type Harness = HarnessInput & {
   id: string
-  specialty: string
-  supportedTasks: string[]
-  contractVersion: string
+  defaultProfileId: string | null
+  approvalWaivers: string[]
   createdAt: string
   updatedAt: string
 }
@@ -92,8 +86,6 @@ export const registry = {
   getProject: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<Project>(projectPath(id), { signal }),
   createProject: (api: ApiClient, id: string, input: ProjectInput) => api.post<Project>('/api/projects', { id, ...input }),
   updateProject: (api: ApiClient, id: string, input: ProjectInput) => api.patch<Project>(projectPath(id), input),
-  assignHarness: (api: ApiClient, id: string, input: { role: string; harnessId: string; version: string }) =>
-    api.post<Assignment>(`${projectPath(id)}/harnesses`, input),
   listRunners: (api: ApiClient, signal?: AbortSignal) => listAll<Runner>(api, '/api/runners', signal),
   listHarnesses: (api: ApiClient, signal?: AbortSignal) => listAll<Harness>(api, '/api/harnesses', signal),
   /** 個別の GET は API に無い（backend/internal/api/harnesses.md）ので、一覧から探す。無ければ undefined。 */

@@ -47,7 +47,7 @@ func taskIDs(page taskListPage) []string {
 func TestListTasksFiltersByStatusAndProjectNewestFirst(t *testing.T) {
 	f := taskFixture(t)
 	status, body := postAssignment(t, f, "project-b", "developer", "harness-a", "1.2.0")
-	requireAssignment(t, status, body, 201)
+	requireAssignment(t, status, body, 200)
 	for i, project := range []string{"project-a", "project-b", "project-a"} {
 		input := manualTaskInput()
 		input["projectId"] = project

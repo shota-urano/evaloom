@@ -25,8 +25,8 @@ func TestBootIdentityMigrationPreservesExistingRunnerAndPersistsHeartbeat(t *tes
 	}
 	db = openRegistry(t, path)
 	var boot sql.NullString
-	var hash, root string
-	if err := db.QueryRow(`SELECT boot_id, token_hash, worktree_root FROM runners WHERE id = 'mac-mini'`).Scan(&boot, &hash, &root); err != nil {
+	var hash string
+	if err := db.QueryRow(`SELECT boot_id, token_hash FROM runners WHERE id = 'mac-mini'`).Scan(&boot, &hash); err != nil {
 		t.Fatal(err)
 	}
 	if boot.Valid {
@@ -39,11 +39,11 @@ func TestBootIdentityMigrationPreservesExistingRunnerAndPersistsHeartbeat(t *tes
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	var gotBoot, gotHash, gotRoot, status, heartbeat string
-	if err := db.QueryRow(`SELECT boot_id, token_hash, worktree_root, status, last_heartbeat_at FROM runners WHERE id = 'mac-mini'`).Scan(&gotBoot, &gotHash, &gotRoot, &status, &heartbeat); err != nil {
+	var gotBoot, gotHash, status, heartbeat string
+	if err := db.QueryRow(`SELECT boot_id, token_hash, status, last_heartbeat_at FROM runners WHERE id = 'mac-mini'`).Scan(&gotBoot, &gotHash, &status, &heartbeat); err != nil {
 		t.Fatal(err)
 	}
-	if gotBoot != "persisted-boot" || gotHash != hash || gotRoot != root || status != "online" || heartbeat == "" {
+	if gotBoot != "persisted-boot" || gotHash != hash || status != "online" || heartbeat == "" {
 		t.Fatalf("Runner not preserved across migration/reopen: boot=%s status=%s heartbeat=%s", gotBoot, status, heartbeat)
 	}
 }

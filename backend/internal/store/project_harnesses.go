@@ -8,27 +8,15 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
-func GetProjectHarness(ctx context.Context, reader projectReader, projectID, role string) (model.ProjectHarness, error) {
-	var assignment model.ProjectHarness
-	err := reader.QueryRowContext(ctx, `SELECT project_id, role, harness_id, profile_id, assigned_at
-		FROM project_harnesses WHERE project_id = ? AND role = ?`, projectID, role).
-		Scan(&assignment.ProjectID, &assignment.Role, &assignment.HarnessID, &assignment.ProfileID, &assignment.AssignedAt)
-	return assignment, err
+// GetProjectHarness is the existing execution-input boundary. The role argument
+// is ignored: spec 02 assigns one immutable Profile directly to the Project.
+func GetProjectHarness(ctx context.Context, reader projectReader, projectID, _ string) (model.ProjectHarness, error) {
+	var a model.ProjectHarness
+	err := reader.QueryRowContext(ctx, `SELECT id, harness_id, profile_id, updated_at FROM projects WHERE id=?`, projectID).
+		Scan(&a.ProjectID, &a.HarnessID, &a.ProfileID, &a.AssignedAt)
+	return a, err
 }
 
-// SaveProjectHarness replaces only this Project role's pin. The caller resolves
-// the Profile and records the assignment history in the same transaction.
-func SaveProjectHarness(ctx context.Context, tx *sql.Tx, assignment model.ProjectHarness) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO project_harnesses
-		(project_id, role, harness_id, profile_id, assigned_at) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(project_id, role) DO UPDATE SET harness_id = excluded.harness_id,
-		profile_id = excluded.profile_id, assigned_at = excluded.assigned_at`,
-		assignment.ProjectID, assignment.Role, assignment.HarnessID, assignment.ProfileID, assignment.AssignedAt)
-	return err
-}
-
-// ListProjectHarnesses returns the pinned Profile of every role for the given
-// Projects, with the Profile's version and commit SHA, ordered by Project and role.
 func ListProjectHarnesses(ctx context.Context, db *sql.DB, projectIDs []string) ([]model.ProjectHarnessView, error) {
 	views := []model.ProjectHarnessView{}
 	if len(projectIDs) == 0 {
@@ -39,17 +27,15 @@ func ListProjectHarnesses(ctx context.Context, db *sql.DB, projectIDs []string) 
 	for i, id := range projectIDs {
 		args[i] = id
 	}
-	rows, err := db.QueryContext(ctx, `SELECT ph.project_id, ph.role, ph.harness_id, ph.profile_id,
-		hp.version, hp.commit_sha, ph.assigned_at
-		FROM project_harnesses ph JOIN harness_profiles hp ON hp.id = ph.profile_id
-		WHERE ph.project_id IN (`+placeholders+`) ORDER BY ph.project_id, ph.role`, args...)
+	rows, err := db.QueryContext(ctx, `SELECT p.id, p.harness_id, p.profile_id, hp.version, hp.commit_sha, p.updated_at
+ FROM projects p JOIN harness_profiles hp ON hp.id=p.profile_id WHERE p.id IN (`+placeholders+`) ORDER BY p.id`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var v model.ProjectHarnessView
-		if err := rows.Scan(&v.ProjectID, &v.Role, &v.HarnessID, &v.ProfileID, &v.Version, &v.CommitSHA, &v.AssignedAt); err != nil {
+		if err := rows.Scan(&v.ProjectID, &v.HarnessID, &v.ProfileID, &v.Version, &v.CommitSHA, &v.AssignedAt); err != nil {
 			return nil, err
 		}
 		views = append(views, v)

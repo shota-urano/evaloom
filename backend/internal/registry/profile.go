@@ -64,6 +64,7 @@ func ReadProfile(parent context.Context, repo, version, adapter string) (model.H
 	}
 	hash := sha256.Sum256(p.Definition)
 	p.DefinitionHash = hex.EncodeToString(hash[:])
+	p.ContractVersion = "1"
 	return p, nil
 }
 
@@ -119,7 +120,8 @@ func validateProfileDefinition(data []byte, version, adapter string) (json.RawMe
 	if def.ProfileVersion != version {
 		return nil, "", rejected("profileVersion", "invalid")
 	}
-	if def.ExecutionConfiguration.Adapter != adapter {
+	if (adapter != "" && def.ExecutionConfiguration.Adapter != adapter) ||
+		(adapter == "" && def.ExecutionConfiguration.Adapter != "codex" && def.ExecutionConfiguration.Adapter != "claude_code") {
 		return nil, "", rejected("executionConfiguration.adapter", "invalid")
 	}
 	if raw, present := document["contextFiles"]; present {

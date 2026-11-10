@@ -166,26 +166,20 @@ func InsertLinearIssueLink(ctx context.Context, tx *sql.Tx, l LinearIssueLink) e
 	return nil
 }
 
-// LinearRoute is a Project registered for Linear routing: both
-// linear_team_id and linear_routing_label are set (spec 15 3.8).
-type LinearRoute struct {
-	ProjectID string
-	TeamID    string
-}
+// LinearRoute is the Project destination consumed by the existing intake
+// boundary. Special-harness intake is implemented separately from this task.
+type LinearRoute struct{ ProjectID string }
 
-// ListLinearRoutesByLabel returns the Projects whose routing label is label
-// and whose Team is set, ordered by Project ID. A Project with either column
-// NULL is never run from Linear and is not returned.
+// ListLinearRoutesByLabel resolves the globally unique label without Team scope.
 func ListLinearRoutesByLabel(ctx context.Context, tx *sql.Tx, label string) ([]LinearRoute, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, linear_team_id FROM projects
-		WHERE linear_routing_label = ? AND linear_team_id IS NOT NULL ORDER BY id`, label)
+	rows, err := tx.QueryContext(ctx, `SELECT project_id FROM routes WHERE label = ? AND project_id IS NOT NULL`, label)
 	if err != nil {
 		return nil, fmt.Errorf("store: list linear routes: %w", err)
 	}
 	var routes []LinearRoute
 	for rows.Next() {
 		var r LinearRoute
-		if err := rows.Scan(&r.ProjectID, &r.TeamID); err != nil {
+		if err := rows.Scan(&r.ProjectID); err != nil {
 			rows.Close()
 			return nil, err
 		}

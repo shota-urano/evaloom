@@ -24,12 +24,8 @@ const (
 // read through the Control Plane's ArtifactStore as evaloomd does.
 func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	t.Helper()
-	mustExec(t, db, `INSERT INTO harnesses (id, name, specialty, supported_tasks, adapter, repo_path, repo_url,
-		supported_models, available_tools, tool_permissions, contract_version, created_at, updated_at)
-		VALUES ('h', 'Harness', 'developer', '["development"]', 'codex', '/repos/h', '', '[]', '[]', '{}', '1', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition,
-		definition_hash, model_id, operation_status, registered_at)
-		VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?)`, sha40, testTime)
+	mustExec(t, db, `INSERT INTO harnesses (id, name, repo_path, repo_url, created_at, updated_at) VALUES ('h', 'Harness', '/repos/h', '', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition, definition_hash, model_id, operation_status, registered_at, contract_version) VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?, '1')`, sha40, testTime)
 	mustExec(t, db, `UPDATE executions SET runner_id = 'runner', harness_id = 'h', profile_id = 'p',
 		profile_version = '1.0.0', profile_commit_sha = ? WHERE id = 'linear-1-e1'`, sha40)
 	files, err := store.NewArtifactStore(db, t.TempDir())
@@ -170,8 +166,8 @@ func TestCommentBodyHasNoLogTextOrRunnerPath(t *testing.T) {
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed)
 	checkBody(t, onlyBody(t, db), []string{
-		"変更は [REDACTED]/linear-1-r1/main.go と [REDACTED]/other にある",
-		"- エラー情報: execution_failed（cannot open [REDACTED]/linear-1-r1/.git）\n",
+		"変更は [REDACTED] と [REDACTED] にある",
+		"- エラー情報: execution_failed（cannot open [REDACTED]）\n",
 	}, []string{"LOG-BODY-CANARY", "LOG-PATH-CANARY", "/worktrees", "artifacts/"})
 }
 

@@ -66,12 +66,12 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	f := newAuthFixture(t)
 	// No settings rows: the defaults (spec 15 3.4).
 	status, body := getJSON(t, f, "/api/settings")
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"repo:"}}`+"\n" {
+	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"route:"}}`+"\n" {
 		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 	// Omitted keys keep their values.
 	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"triggerLabel": "go"}})
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"repo:"}}`+"\n" {
+	if status != 200 || string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"route:"}}`+"\n" {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}
 	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"routingLabelPrefix": "to:"}})
@@ -91,7 +91,7 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 		rows: map[string]string{"linear.triggerLabel": `"go"`, "linear.routingLabelPrefix": `"to:"`},
 		audits: []string{
 			`owner settings linear.triggerLabel {"after":"go","before":"ai-ready"}`,
-			`owner settings linear.routingLabelPrefix {"after":"to:","before":"repo:"}`,
+			`owner settings linear.routingLabelPrefix {"after":"to:","before":"route:"}`,
 		},
 	}
 	if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
@@ -158,91 +158,8 @@ func TestSettingsEmptyStoredValueIsServedAsDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, body := getJSON(t, f, "/api/settings")
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"repo:"}}`+"\n" {
+	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"route:"}}`+"\n" {
 		t.Fatalf("GET status=%d body=%s", status, body)
-	}
-}
-
-func requireLinearRoute(t *testing.T, p model.Project, team, label *string) {
-	t.Helper()
-	if !equalOptional(p.LinearTeamID, team) || !equalOptional(p.LinearRoutingLabel, label) {
-		t.Fatalf("linear = %v %v; want %v %v", deref(p.LinearTeamID), deref(p.LinearRoutingLabel), deref(team), deref(label))
-	}
-}
-
-func equalOptional(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-
-func deref(s *string) string {
-	if s == nil {
-		return "<nil>"
-	}
-	return *s
-}
-
-func ptr(s string) *string { return &s }
-
-// spec 15 5章: PATCH /api/projects/{id} takes linearTeamId and
-// linearRoutingLabel; UNIQUE(linear_team_id, linear_routing_label) answers 409.
-func TestProjectsLinearRoutingFields(t *testing.T) {
-	f := projectFixture(t)
-	a := projectInput(t, "project-a")
-	a["linearTeamId"], a["linearRoutingLabel"] = "team-a", "repo:one"
-	status, body := projectRequest(t, f, "POST", "/api/projects", a)
-	requireLinearRoute(t, requireProject(t, status, body, 201), ptr("team-a"), ptr("repo:one"))
-
-	// Omitted on registration: both null.
-	status, body = projectRequest(t, f, "POST", "/api/projects", projectInput(t, "project-b"))
-	requireLinearRoute(t, requireProject(t, status, body, 201), nil, nil)
-	if !strings.Contains(string(body), `"linearTeamId":null,"linearRoutingLabel":null`) {
-		t.Fatalf("body = %s", body)
-	}
-
-	// The same pair on a second Project is 409, by registration and update.
-	c := projectInput(t, "project-c")
-	c["linearTeamId"], c["linearRoutingLabel"] = "team-a", "repo:one"
-	status, body = projectRequest(t, f, "POST", "/api/projects", c)
-	requireProjectError(t, status, body, 409, Conflict, "linearRoutingLabel", "duplicate")
-	if n := projectCount(t, f, "projects"); n != 2 {
-		t.Fatalf("projects = %d after rejected registration", n)
-	}
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-b",
-		map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:one"})
-	requireProjectError(t, status, body, 409, Conflict, "linearRoutingLabel", "duplicate")
-	if p, err := store.GetProject(context.Background(), f.db, "project-b"); err != nil || p.LinearTeamID != nil {
-		t.Fatalf("project-b changed by a rejected update: %+v %v", p, err)
-	}
-
-	// Same Team with another label, or the same label in another Team, is fine.
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-b",
-		map[string]any{"linearTeamId": "team-a", "linearRoutingLabel": "repo:two"})
-	requireLinearRoute(t, requireProject(t, status, body, 200), ptr("team-a"), ptr("repo:two"))
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-b", map[string]any{"linearTeamId": "team-b", "linearRoutingLabel": "repo:one"})
-	requireLinearRoute(t, requireProject(t, status, body, 200), ptr("team-b"), ptr("repo:one"))
-	// Re-saving a Project's own pair is not a conflict.
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"name": "Renamed"})
-	requireLinearRoute(t, requireProject(t, status, body, 200), ptr("team-a"), ptr("repo:one"))
-
-	for _, field := range []string{"linearTeamId", "linearRoutingLabel"} {
-		status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{field: "  "})
-		requireProjectError(t, status, body, 400, ValidationFailed, field, "required")
-	}
-
-	// Removing the Team drops its poll row so a later registration starts
-	// over from the first poll (spec 15 3.8, Q64); other Teams keep theirs.
-	if _, err := f.db.Exec(`INSERT INTO linear_poll_teams (team_id, baseline_done_at, consecutive_failures)
-		VALUES ('team-a', '2026-11-08T00:00:00Z', 0), ('team-b', '2026-11-08T00:00:00Z', 0)`); err != nil {
-		t.Fatal(err)
-	}
-	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"linearTeamId": nil})
-	requireLinearRoute(t, requireProject(t, status, body, 200), nil, ptr("repo:one"))
-	var teams string
-	if err := f.db.QueryRow(`SELECT group_concat(team_id) FROM linear_poll_teams`).Scan(&teams); err != nil || teams != "team-b" {
-		t.Fatalf("poll teams = %q, %v; want team-b", teams, err)
-	}
-	var detail string
-	if err := f.db.QueryRow(`SELECT detail FROM audit_logs WHERE action = 'project.update' AND target_id = 'project-a'
-		ORDER BY rowid DESC LIMIT 1`).Scan(&detail); err != nil || !strings.Contains(detail, `"linearTeamId":null`) {
-		t.Fatalf("audit detail = %s, %v", detail, err)
 	}
 }
 
@@ -287,7 +204,9 @@ func TestLinearStatusNeverContainsAPIKey(t *testing.T) {
 	const secret = "lin_api_SECRETVALUE123"
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
-	input["linearTeamId"], input["linearRoutingLabel"] = "team-a", "repo:one"
+	if _, err := f.db.Exec(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
+		t.Fatal(err)
+	}
 	if status, body := projectRequest(t, f, "POST", "/api/projects", input); status != 201 {
 		t.Fatalf("register status=%d body=%s", status, body)
 	}
@@ -394,4 +313,11 @@ func TestTaskAPIsShowLinearOrigin(t *testing.T) {
 		}
 		check(detail)
 	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
 }
