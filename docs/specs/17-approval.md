@@ -1,345 +1,279 @@
 ---
-status: confirmed
-confirmed_rev: c8f1d9b
-範囲: 承認の対象と承認ポリシー、承認と操作内容の結び付け（head SHA が変わったら無効）、承認の原子的な消費、承認後の PR マージ、PR マージを承認対象から外した Project のベースブランチへの直接 push（Q35）
+status: draft
+written: 2026-11-10
+範囲: 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止
 ---
 
 # 17. 承認 仕様
 
-**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend（承認画面は Frontend） ｜ **範囲**: requirements 8.2 の工程14（必要に応じた承認）、15.3、15.8、16.9、Q35
+**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend（承認の画面は Frontend） ｜ **範囲**: requirements 8.2 の工程14（必要に応じた承認）、15.3、15.8、16.9
 
-この文書は Phase 2 の下書きである。requirements で確定していない点は「案」とし、00-overview.md の要確認リスト（Q53〜Q63）に載せている。
+この文書は [`../vision.md`](../vision.md) と本人決定（2026-11-10、[`../vision-alignment.md`](../vision-alignment.md) 5章・6章）に合わせて、目標の形で書き直した。承認の対象はスペシャルハーネスが Profile で宣言する操作にし、承認は PR の head SHA ではなく、スペシャルハーネスが報告する中身の識別子（content_id）に結び付ける（本人決定 5）。承認は管理画面だけで受け付ける（本人決定 3）。GitHub のマージ、ベースブランチへの直接 push、GitHub のルールセットとマージ方式は開発の仕事の中身であり、software-engineer へ移した（本人決定 1、3.9）。スペシャルハーネスとの約束はハーネス契約 [`../contract/harness-contract-v1.md`](../contract/harness-contract-v1.md)（以下「契約」）7章、テーブルと列挙値は [`02-data-model.md`](./02-data-model.md) 3.4、API は [`01-architecture.md`](./01-architecture.md) に従う。
 
 ## 1. 目的
 
-- 重要操作を人間の承認対象にできるようにする（条件21、requirements 15.3）。
-- 承認を、操作・対象・内容の版に結び付ける。承認した後に対象の内容（PR の head commit SHA など）が変わったら、その承認では操作を実行しない（条件22、requirements 15.8）。
-- 承認は本人だけが、操作の直前に行う。事後承認にしない（requirements 15.3, 15.5）。
-- 承認ポリシーで PR マージを承認対象から外した Project では、検証を通った commit を PR を経ずにベースブランチへ push する（requirements 8.5, 15.3、Q35）。
+- 外へ出す操作のうち、スペシャルハーネスが本人の承認が要ると宣言したものを、本人の承認の対象にする（条件21、requirements 15.3、vision.md 3章）。
+- 承認を、操作の名前と中身の識別子に結び付ける。承認した後に中身が変わったら、その承認では操作をさせない（条件22、requirements 15.8、本人決定 5）。
+- 承認は本人だけが、管理画面で、操作の直前に行う。事後承認にしない（requirements 15.3, 15.5、本人決定 3）。
+- 承認の照合と消費を1つの書き込みで行い、同じ承認で2回操作させない（requirements 15.8）。
+- Project ごとに、スペシャルハーネスが省いてよいと宣言した承認だけを省けるようにする（本人決定 6）。
 
 ## 2. 入出力
 
 | 区分 | 内容 |
 |---|---|
-| 入力 | PR の作成（[`11-git-publisher.md`](./11-git-publisher.md)）、本人の承認・却下（管理画面）、Runner が GitHub から読んだ PR の現在の状態、Project の承認ポリシー |
-| 出力 | approvals、tasks / executions の状態、PR のマージ、ベースブランチへの push、audit_logs、通知（[`12-notification.md`](./12-notification.md)、[`16-linear-feedback.md`](./16-linear-feedback.md)） |
+| 入力 | check / publish の段の結果（契約 6.5 の `needs_approval` と `approvalRequests`）、本人の判断（`POST /api/decisions/{id}/answer`）、publish の段の出す直前の問い合わせ（`POST /api/executions/{id}/authorize`、契約 7.4）、Project の承認を省く設定（projects.approval_waivers）、Profile の承認の宣言（契約 5章 `approvals`） |
+| 出力 | approvals、owner_decisions（kind=`approval`）、tasks / executions の状態、execution_events（`approval_requested` / `approval_waived` / `approval_consumed`）、audit_logs、通知（[`12-notification.md`](./12-notification.md)、[`16-linear-feedback.md`](./16-linear-feedback.md)） |
 
 ## 3. 処理詳細
 
-### 3.1 承認の対象（requirements 15.3、Q53）
+### 3.1 承認の対象（requirements 15.3）
 
-requirements 15.3 の承認対象操作のうち、Evaloom が Phase 2 で実際に行う操作は PR マージだけとする（案）。ほかの操作は Phase 2 でも Evaloom とハーネスが行わず、Phase 1 と同じく Runner の実行権限で拒否する（[`09-sandbox.md`](./09-sandbox.md) 3.7）。
+- 承認の対象になる操作は、スペシャルハーネスが Profile の `approvals` に宣言した操作だけである（契約 5章、7.1）。操作の名前（operation）は英小文字・数字・`_` で 64 文字以内で、Profile の中で一意である。Evaloom は操作の名前の一覧を持たない。
+- 例えば software-engineer は、PR のマージ（`merge_pull_request`）を承認の要る操作として宣言する。X の運用のスペシャルハーネスなら、投稿の公開を宣言する、という形になる。何を宣言するかはスペシャルハーネスが決める（vision.md 3章）。
+- 宣言していない操作の承認を求めた結果は、契約に合わない結果として Execution を失敗（`contract_error`）にする（契約 7.1）。
+- requirements 15.3 の承認対象操作（本番環境へのデプロイ、外部メール送信、重要ファイルの削除など）を行うスペシャルハーネスは、その操作を `approvals` に宣言する。宣言していない外への操作を行ってよいかは、スペシャルハーネスの責任であり、Evaloom は出す段の宣言した宛先と鍵の範囲（[`01-architecture.md`](./01-architecture.md) 3.1）で外への到達を絞る。
+- 認証・権限の変更、ハーネス契約・評価基準・セキュリティポリシーの変更のうち、本人が管理画面で行う設定の変更は、承認の仕組みを通さない（requirements 15.3）。
 
-| 操作 | operation の値 | Phase 2 の扱い |
-|---|---|---|
-| PR マージ | `merge_pull_request` | 承認の後に Evaloom が行う（3.4）。承認ポリシーで外した Project では行わず、ベースブランチへ直接 push する（3.7） |
-| 本番環境へのデプロイ | `deploy_production` | 行わない（権限で拒否） |
-| 外部メール送信 | `send_external_email` | 行わない（権限で拒否） |
-| 重要ファイル削除 | `delete_important_file` | 行わない（権限で拒否） |
-| 認証・権限変更 | `change_auth` | 行わない（権限で拒否）。本人が管理画面で行う設定変更は承認の仕組みを通さない（requirements 15.3） |
-| 共通契約・評価基準・中央セキュリティポリシーの変更 | `change_contract` / `change_evaluation_criteria` / `change_security_policy` | 行わない（権限で拒否） |
+### 3.2 承認を省く設定（approval_waivers）
 
-operation の値は、将来ほかの操作を足すときにも approvals を作り直さずに済むよう、列挙値として先に決めておく。Phase 2 で approvals に書くのは `merge_pull_request` だけである。
+旧仕様の承認ポリシー（projects.approval_policy、Q60）を、Project の承認を省く設定（projects.approval_waivers、[`02-data-model.md`](./02-data-model.md) 3.2）に置き換えた。
 
-requirements 8.2 の工程14「実行結果に対する承認」は、Phase 2 では PR マージの承認として実現する（案）。
-
-### 3.2 承認ポリシー（requirements 15.3、Q60）
-
-projects.approval_policy（Phase 1 は保存と表示だけ、Q25）を、Phase 2 で次の形にする（案）。
-
-```json
-{ "version": 1, "mergePullRequest": "require_approval" }
-```
-
-| 値 | 意味 |
-|---|---|
-| `require_approval`（既定） | PR を作り、本人の承認の後に Evaloom がマージする（3.3〜3.5） |
-| `direct_push` | PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push する（3.7） |
-
-- 外せるのは PR マージだけで、ほかの操作の項目は持たせない（requirements 15.3）。未知の項目や値は 400 で拒否する。
-- 既定は `require_approval` とする（requirements 15.3）。Phase 1 で保存した値がこの形でなければ、マイグレーションで `require_approval` にする（案）。
-- `direct_push` にする変更は、管理画面で本人が確認ダイアログを経て行う。確認ダイアログでは、PR のレビューに任せていた範囲（既存テストの書き換え、テストの実行設定・CI の定義の変更など）を確認する人がいなくなることを示す（requirements 15.3）。変更は audit_logs に残す。
-- Runner とハーネスは承認ポリシーを変更できない（requirements 15.3）。Runner 用 API に変更の経路を作らない。
+- 値は、承認を省く操作の名前の配列である。既定は `[]`（すべての承認を求める）。
+- 入れられるのは、Project が固定した版（projects.profile_id）の Profile で `waivable: true` と宣言された操作だけである（契約 5.2、7.3）。それ以外の名前は 422（`not_waivable`）で拒否する。
+- Project の固定する版を別の版に変えるとき、新しい版で `waivable: true` でない操作が承認を省く設定に残っていれば、その変更を 422 で拒否する。
+- スペシャルハーネスへ直接振り分けた仕事では、承認を省く設定は無い。宣言したすべての承認を求める（Q113）。
+- 承認を省く設定を変えられるのは本人だけで、管理画面の `PATCH /api/projects/{id}` から行う。Runner 用 API とスペシャルハーネスには変更の経路を作らない（requirements 15.3）。変更は audit_logs（`project.update`）に変更前後の値を残す。
+- 承認を省く操作を足すときは、管理画面で確認ダイアログを出す（Q165）。
+- 省いた操作は承認待ちを作らず、execution_events に `approval_waived` を残す。出す直前の問い合わせ（3.5）の時点で Project の承認を省く設定を読み直し、省く設定が外れていれば許可しない（2026-11-06 決定の Q61 と同じ考え方）。
 
 ### 3.3 承認待ちの発生
 
-承認ポリシーが `require_approval` の Project で、Git Publisher が PR を作成または更新したら（[`11-git-publisher.md`](./11-git-publisher.md) 3.3）、Control Plane は次を1つのトランザクションで行う。
+check または publish の段が `needs_approval` を返したとき（check が `succeeded` で `approvalRequests` を書いたときを含む、契約 6.5）、Control Plane は次を1つのトランザクションで行う。
 
-1. その PR を対象にした未使用の承認（status が `pending` / `approved`）があれば、`invalidated`（理由 `superseded`）にする。PR に新しい commit が足されたためである。
-2. approvals に `pending` の行を作る。結び付ける値は 3.4 の表のとおり。
-3. Execution を `waiting_approval`、タスクを `waiting_approval` にする。
-4. 承認待ちを通知する（macOS 通知、Linear 起因のタスクなら Linear コメント）。
+1. `approvalRequests` の各要求の operation が、Execution に固定した Profile の `approvals` に宣言されていることを確かめる。1つでも宣言していなければ、Execution を失敗（`contract_error`）にして終える。
+2. 承認を省く操作（Project の approval_waivers にある操作）は、承認待ちを作らず、execution_events に `approval_waived`（operation、contentId）を書く。
+3. それ以外の操作ごとに、同じ Execution・同じ operation の未使用の承認（status が `pending` / `approved`）があれば `invalidated`（理由 `superseded`）にし、その判断待ちを `withdrawn`（理由 `superseded`）にする（契約 7.2）。
+4. 操作ごとに approvals に `pending` の行を作る。結び付ける値は 3.4 の表のとおり。
+5. 操作ごとに owner_decisions に kind=`approval` の行を作る（subject_id=approvals.id、basis=content_id）。
+6. 承認待ちが1つ以上あれば、Execution を `waiting_approval`、タスクを `waiting_approval` にする。execution_events に `approval_requested` を書く。
+7. 本人に知らせる。macOS 通知と、Linear 起因のタスクなら「管理画面で判断待ち」のコメントと状態の変更（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2、3.6.1）を linear_outbox に書く。
+8. すべての操作を省いたときは、承認待ちを作らない。check の結果なら publish の段へ進み、publish の結果なら publish の段を新しく始める（Execution を `pending`、resume_stage=`publish`）。
 
-`waiting_approval` の Execution は同時実行の枠に数えない（案、Q59）。プロセスは動いていないためである。
+- `waiting_approval` の Execution は同時実行の枠に数えない（Q59）。段のプロセスは終了している（契約 7.1）。
+- check の段が `blocked` を返し、結果に `approvalRequests` があるときは、本人が続行を選んだ時点で、この手順で承認待ちを作る（[`02-data-model.md`](./02-data-model.md) 5.6）。
+- Evaloom は、承認の対象の中身（PR、下書き、投稿の本文など）を読まず、外の状態も照合しない。本人に見せるのは、スペシャルハーネスが報告した `target`、`summary`、content_id と、確かめる段の結果と成果物である。
 
-### 3.4 承認と操作内容の結び付け（requirements 15.8）
+### 3.4 承認と中身の結び付け（requirements 15.8、本人決定 5）
 
-| 項目 | approvals の列 | PR マージでの値 |
+| 項目 | approvals の列 | 値 |
 |---|---|---|
-| 操作の種類 | operation | `merge_pull_request` |
-| 対象 | target | `{ "repository": "<owner>/<repo>", "prNumber": 12, "baseBranch": "main", "headBranch": "evaloom/task-001-..." }` |
-| 内容の版 | content_version | PR の head commit SHA（executions.pushed_sha） |
-| 操作パラメータのハッシュ | params_hash | operation・target・content_version・マージ方式（Q56）を正規化した JSON の SHA-256 |
-| 承認者 | decided_by | `owner`（本人だけ、requirements 15.5） |
+| 操作の名前 | operation | Profile の `approvals[].operation` |
+| 対象の表示 | target | 結果 JSON の `target`（`label`、`url`）。表示用の不透明な値 |
+| 説明 | summary | 結果 JSON の `summary` |
+| 中身の識別子 | content_id | 承認を求めたときにスペシャルハーネスが報告した `contentId`（契約 6.5、Q123）。開発なら commit SHA など |
+| 承認を求めた段 | requested_stage | `check` / `publish` |
+| 操作の内容のハッシュ | params_hash | operation・target・content_id を正規化した JSON の SHA-256 |
 | 使用回数の上限 | max_uses | 1 |
-| 有効期限 | expires_at | 承認した時刻 + 有効時間。有効時間の既定値は Q55 |
+| 有効期限 | expires_at | 承認した時刻 + 回答の `ttlSec`。省略したら全体設定 `approval.ttlSec`（既定 24 時間、Q55、02 の Q200） |
 
-本人は管理画面で、承認待ちの対象（PR の URL、head SHA、差分、Gate の結果）を見て、承認か却下を選ぶ。送信時に、画面に表示していた content_version を一緒に送る。Control Plane は、送られた値が行の content_version と一致しなければ 422 を返す（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8 の Blocked からの続行と同じ考え方）。
+- 本人は管理画面の判断待ちの画面（[`13-management-ui.md`](./13-management-ui.md) 3.4）で、操作の名前と Profile の description、対象の表示、説明、content_id、確かめる段の結果を見て、承認か却下を選ぶ。
+- 回答は `{ "action": "approve" | "reject", "contentId": "<basis>" }` である（[`02-data-model.md`](./02-data-model.md) 5.6）。送られた contentId が判断待ちの basis と違えば 422 を返す（Blocked からの続行と同じ考え方）。
+- 承認者は本人だけである（requirements 15.5）。判断は audit_logs（actor `owner`、action `decision.answer`）に残す。
+- 同じ Execution のすべての承認待ちが承認されたら、Execution を `pending`（resume_stage=`publish`）、タスクを `queued` にする。publish の段の要求 JSON の `approvals` に、承認した操作（`status: "approved"`、`id`、`contentId`）と省いた操作（`status: "waived"`、`id: null`）を入れる（契約 6.1、7.1）。
+- 一部だけ承認されたときは、残りの判断を待つ。Execution は `waiting_approval` のままである。
+- Evaloom が比べるのは、承認したときの content_id と、出す直前にスペシャルハーネスが送る content_id だけである（3.5）。確かめる段で確かめた中身と出す中身が同じであることは、スペシャルハーネスが見張る（本人決定 5、契約 12章の 3）。
 
-### 3.5 承認の後のマージ（requirements 15.8）
+### 3.5 出す直前の照合と消費（authorize）
 
-#### 3.5.1 実行する主体（Q54）
+publish の段は、外へ出す操作を1つ行うたびに、その直前に通話口へ問い合わせる（契約 7.4）。Runner は問い合わせを `POST /api/executions/{id}/authorize` に中継する（[`01-architecture.md`](./01-architecture.md) 5.2）。この API は、旧仕様の `POST /api/approvals/{id}/consume` と `POST /api/executions/{id}/publish-check` を置き換える。
 
-Control Plane は GitHub の書き込み権限を持たない（[`01-architecture.md`](./01-architecture.md) 3.1）。そのためマージは Runner の Git Publisher が行う案とする。
+Control Plane は、次の判定と書き込みを1つの書き込みトランザクションの中で行い、`allowed` と `reason` を返す（Fail Closed）。上から順に判定し、最初に当てはまった行で答える。
 
-1. 本人が承認すると、approvals は `approved`、Execution は `merging` の待ち（pending のマージ）になる。
-2. Runner は claim の応答で、通常の Execution とは別の種類の仕事「承認済みの操作」を受け取る（claim の応答に `operation` を足す。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.1 の拡張）。
-3. Runner の Git Publisher が 3.5.2 の手順でマージする。
-
-GitHub 側の権限は 3.8。
-
-#### 3.5.2 操作の直前の確認と消費
-
-1. Git Publisher は GitHub から PR の現在の状態（head SHA、base ブランチ、開いているか、マージ済みか）を読む。
-2. Runner は読んだ値を添えて `POST /api/approvals/{id}/consume` を呼ぶ。Control Plane は1つの書き込みトランザクションの中で、次の表のとおり判定する（requirements 15.8）。
-
-| 状況 | 扱い | approvals の status |
+| 状況 | 応答 | approvals の status |
 |---|---|---|
-| 内容が一致する（head SHA、対象、params_hash） | 消費して、操作してよいと返す | `consumed`（use_count=1） |
-| head SHA が変わった | 操作しない。承認は無効 | `invalidated`（理由 `content_changed`） |
-| 対象が変わった（base ブランチ、PR が閉じた） | 操作しない。承認は無効 | `invalidated`（理由 `target_changed`） |
-| 使用済み | 操作しない | 変えない |
-| 有効期限切れ | 操作しない。再承認を求める | `expired` |
-| タスクの中止要求がある | 操作しない | `invalidated`（理由 `cancelled`） |
+| タスクの中止要求がある | `allowed: false`、`cancelled` | 未使用の承認を `invalidated`（理由 `cancelled`） |
+| 要求の Runner が claim した Runner でない、または Execution が `publishing` でない | 403 / 409（[`01-architecture.md`](./01-architecture.md) 5.3）。Runner は段に `allowed: false`（`unavailable`）を返す | 変えない |
+| operation が `publish`（承認の要らない操作） | `allowed: true` | 行は無い |
+| operation が Profile の `approvals` に無い（`publish` 以外） | `allowed: false`、`not_approved` | 行は無い |
+| approvalId が null で、operation が Project の現在の approval_waivers にある（3.2） | `allowed: true` | 行は無い。execution_events に `approval_consumed`（approvalId null）を書く |
+| approvalId が null で、上に当てはまらない（省く設定が外された場合を含む） | `allowed: false`、`not_approved` | 行は無い |
+| approvalId の行が、この Execution・この operation のものでない、または status が `approved` でない（`pending` / `rejected` / `invalidated`） | `allowed: false`、`not_approved` | 変えない |
+| 行の status が `consumed`、または use_count が max_uses に達している | `allowed: false`、`already_used` | 変えない |
+| expires_at を過ぎている | `allowed: false`、`expired` | `expired` |
+| 送られた contentId が行の content_id と違う | `allowed: false`、`content_changed` | `invalidated`（理由 `content_changed`） |
+| 上のどれにも当てはまらない | `allowed: true` | `consumed`（use_count=1、consumed_at） |
 
-   消費は `UPDATE approvals SET status='consumed', use_count=use_count+1, consumed_at=? WHERE id=? AND status='approved' AND use_count < max_uses AND expires_at > ?` のように、期待する現在値を条件にした更新で行う。更新できた行が0件なら操作しない（requirements 15.8「承認の消費は DB で原子的に管理する」）。
+- 消費は `UPDATE approvals SET status='consumed', use_count=use_count+1, consumed_at=? WHERE id=? AND execution_id=? AND operation=? AND status='approved' AND use_count < max_uses AND expires_at > ? AND content_id=?` のように、期待する現在値を条件にした1つの更新で行う。更新できた行が0件なら許可しない（requirements 15.8「承認の消費は DB で原子的に管理する」）。
+- 判定の結果は execution_events に `approval_consumed`（approvalId、operation、allowed、reason）として残し、audit_logs（actor `runner:<id>`、action `approval.consume`）にも残す。
+- Control Plane の DB の書き込みに失敗したら `allowed: false` を返す。Runner が Control Plane に届かないときは、Runner が段に `allowed: false`（`unavailable`）を返す（[`01-architecture.md`](./01-architecture.md) 3.7）。
+- スペシャルハーネスは `allowed: true` を受け取ったときだけ、その操作を1回行う。許可されなかったときは操作せず、`publish_failed` を返す（契約 7.4）。この Execution は失敗になる。
+- 承認の要る操作を `publish` と名乗って問い合わせることを Evaloom は見分けられない。宣言した操作は必ずその名前で問い合わせることは、スペシャルハーネスの義務である（契約 12章の 4）。
 
-3. 消費できたら、Git Publisher は GitHub のマージ API に `sha` パラメータとして content_version を渡してマージする。PR の head がその SHA と一致しなければ GitHub が拒否する（requirements 15.8）。
-4. マージの結果（マージ commit の SHA）を報告する。Execution は `succeeded`、タスクは `completed` になる。マージ完了を通知する。
+### 3.6 却下・無効・期限切れ・中止
 
-`sha` パラメータではベースブランチの変更までは防げない（requirements 15.8）。ベースブランチ側は、GitHub のルールセット（PR と CI を必須にする、[`11-git-publisher.md`](./11-git-publisher.md) 3.5.1 のルールセット A）で守る。
-
-#### 3.5.3 結果が分からないとき（requirements 15.8）
-
-マージの要求を送った後に応答が無いなど、結果が分からなくなったら、同じ承認で再びマージを要求しない。Git Publisher は GitHub から PR を読み直し、次のとおり扱う。
-
-| PR の状態 | 扱い |
-|---|---|
-| マージ済みで、マージされた head が content_version と一致 | 成功として報告する |
-| 開いたまま | 失敗（`publish_failed`、理由 `merge_unknown`）として報告する。承認は消費済みのため、本人が再承認する |
-| 読めない | 同上。本人が GitHub で状態を確かめる |
-
-### 3.6 却下・無効・中止
-
-| 契機 | approvals | タスク・Execution |
-|---|---|---|
-| 本人が却下 | `rejected` | タスクを `failed`（理由 `approval_rejected`）にする案（Q57）。PR は開いたまま残し、本人は continue の再実行で直せる |
-| PR に新しい commit が足された（再実行の continue など） | `invalidated`（`superseded`） | 3.3 で新しい承認待ちを作る |
-| 有効期限切れ | `expired` | `waiting_approval` のまま。本人は再承認を求める操作（`POST /api/approvals/{id}/renew`、追加案）で新しい承認待ちを作る |
-| タスクの中止（本人、または Linear 起因、[`15-linear-intake.md`](./15-linear-intake.md) 3.7） | 未使用なら `invalidated`（`cancelled`） | `cancelled`。PR は閉じない |
-| 承認待ちの間に、本人が GitHub 上で直接マージ・クローズした | `invalidated`（`target_changed`） | マージなら `completed`、クローズなら `failed` とする案（Q58）。Runner が承認待ちの PR の状態を定期的に読んで照合する |
-
-### 3.7 ベースブランチへの直接 push（requirements 8.5, 15.3、Q35）
-
-承認ポリシーが `direct_push` の Project に限り、Git Publisher は PR を作らず、Gate 2・3 を通った commit（verified_sha）をベースブランチへ fast-forward で push する。
-
-#### 3.7.1 push 直前の確認（[`11-git-publisher.md`](./11-git-publisher.md) 3.1 の拡張）
-
-1. 中止要求の有無を Control Plane に問い合わせる（11 の 3.1 と同じ）。
-2. 承認ポリシーの現在値を Control Plane から読み直す（Q61）。claim の時点の値と違えば、安全側（PR を作る）を選ぶ。`direct_push` から `require_approval` へ変えた直後に直接 push しないためである。問い合わせできなければ push しない（Fail Closed）。
-3. HEAD が verified_sha と一致し、作業ツリーに未コミットの変更が無いことを確かめる（11 の 3.1 と同じ）。
-4. push 先の ref の確認を次のように変える。`evaloom/` で始まるブランチに加えて、承認ポリシーが `direct_push` のときに限り、Project の Base Branch と完全に一致する ref だけを許す。それ以外の ref には push しない。
-
-#### 3.7.2 push
-
-1. `git push <remote> <verified_sha>:refs/heads/<base_branch>` で push する。強制 push はしない（11 の 3.2 と同じ）。
-2. push 後にリモートのベースブランチの SHA を読み、verified_sha と一致することを確かめる。
-3. pushed_sha を記録する。Execution は `succeeded`、タスクは `completed` になる。PR は作らない。
-4. ブランチ `evaloom/<task-id>-<短い名前>` は作業の記録として残す（案。push するかは実装時に確定）。
-
-#### 3.7.3 fast-forward できないとき（Q62）
-
-開始点 SHA（base_sha）の後に、ベースブランチが先へ進んでいると fast-forward できない。テストした commit は古い開始点の上にあるため、そのまま押し込まない。案は「PR を作る経路へ切り替え、本人のレビューに回す」とする。PR を作ったら承認ポリシーにかかわらず PR のマージは本人が GitHub で行う（Evaloom はこの PR をマージしない）。
-
-### 3.8 GitHub 側の権限（Q54, Q63）
-
-Phase 1 の設定（[`11-git-publisher.md`](./11-git-publisher.md) 3.5.1）では、ルールセット B（ベースブランチの更新は Repository admin だけ）によって App はマージも push もできない。Phase 2 では次のように変える案とする。本人の判断が要る。
-
-| 対象 | ルールセット A（PR 必須・CI 必須・force push と削除の禁止） | ルールセット B（更新は admin だけ） |
-|---|---|---|
-| `require_approval` の Project のリポジトリ | Bypass は空のまま | Bypass に evaloom-publisher を足す。App は PR と CI を経たマージでだけ main を更新できる |
-| `direct_push` の Project のリポジトリ | force push と削除の禁止を別のルールセット C（Bypass 空）に分け、A の Bypass に App を足す | Bypass に App を足す |
-
-- A の Bypass を空のままにすれば、App が持つ書き込み権限でも、PR と必須ステータスチェック `ci` を経ずに main を更新できない。マージの承認を Evaloom で行っても、GitHub 側の CI の条件は残る。
-- `direct_push` の Project では PR を経ないため、GitHub の CI は push の後に main で動く。push の前の確認は Gate 2・3 だけになる（requirements 15.3 が許す範囲）。
-- App の権限（contents と pull_requests の write、metadata の read）は変えない。マージに必要な権限はこの範囲に含まれる（実装時に GitHub の公式文書で確かめる）。
-- ルールセットの Bypass の種類（常に許可か、PR のときだけか）は、実機で確かめて決める。
-
-### 3.9 データモデル（Phase 2 で追加）
-
-#### approvals
-
-| 列 | 型 | 説明 |
-|---|---|---|
-| id | TEXT PK | ULID |
-| task_id | TEXT FK→tasks | |
-| execution_id | TEXT FK→executions | 承認待ちを作った Execution |
-| operation | TEXT | 3.1 の値 |
-| target | TEXT (JSON) | 3.4 の対象 |
-| content_version | TEXT | PR の head commit SHA |
-| params_hash | TEXT | 3.4 |
-| status | TEXT | `pending` / `approved` / `rejected` / `consumed` / `invalidated` / `expired` |
-| invalidated_reason | TEXT NULL | `content_changed` / `target_changed` / `superseded` / `cancelled` |
-| decided_by | TEXT NULL | `owner` |
-| decided_at | TEXT NULL | |
-| expires_at | TEXT NULL | 承認した時点で決める |
-| max_uses | INTEGER | 1 |
-| use_count | INTEGER | 0 から始める |
-| consumed_at | TEXT NULL | |
-| result | TEXT (JSON) NULL | マージ commit の SHA、失敗の理由 |
-| created_at | TEXT | |
-
-- 同じ execution_id と operation で、status が `pending` / `approved` の行は1件までとする（部分一意インデックス）。
-- 承認の判断、消費、無効化はすべて audit_logs に残す（requirements 15.2 監査ログ）。actor は判断が `owner`、消費が `runner:<id>`、無効化が `system`。
-
-#### 状態の値の追加
-
-| 対象 | 追加する値 | 対応するタスク状態 | 終端か |
+| 契機 | approvals | 判断待ち | タスク・Execution |
 |---|---|---|---|
-| executions.status | `waiting_approval` | `waiting_approval` | 終端ではない。同時実行の枠に数えない（Q59） |
-| executions.status | `merging` | `waiting_approval` | 終端ではない。同時実行の枠に数えない（Q59） |
-| tasks.status | `waiting_approval`（02 の 5.1 で Phase 1 は使わないとした値） | - | - |
+| 本人が却下 | `rejected` | `answered` | Execution を `failed`（`approval_rejected`）、タスクを `failed` にする（Q57）。同じ Execution のほかの未使用の承認は `invalidated`（理由 `cancelled`）にし、その判断待ちを `withdrawn`（理由 `cancelled`）にする。外に出したもの（開いた PR など）は、スペシャルハーネスが出したまま残る。本人は `continue` の再実行で直せる |
+| 同じ Execution・同じ operation の承認を新しく求めた | 前の行を `invalidated`（`superseded`） | 前の行を `withdrawn`（`superseded`） | 3.3 で新しい承認待ちを作る |
+| 出す直前の問い合わせで content_id が違った | `invalidated`（`content_changed`） | 変えない（判断済み） | publish の段が `publish_failed` を返し、Execution は `failed`。本人に通知する |
+| 判断待ちのまま時間がたった | 変えない | 変えない | 有効期限は承認した時刻から数えるため、判断待ちのままでは期限切れにならない |
+| 承認した後、出す直前の問い合わせまでに期限が切れた | `expired` | 変えない（判断済み） | Q166 |
+| 本人が期限切れの承認から承認待ちを作り直す（`POST /api/approvals/{id}/renew`） | 新しい `pending` の行（同じ operation・target・content_id） | 新しい kind=`approval` の行 | Execution とタスクを `waiting_approval` にする |
+| タスクの中止（本人、または Linear 起因、[`15-linear-intake.md`](./15-linear-intake.md) 3.7） | 未使用なら `invalidated`（`cancelled`） | 開いていれば `withdrawn`（`cancelled`） | `cancelled`。外に出したものを Evaloom は取り消さない |
+| 承認待ちの間に、外の対象が本人の手で変わった（GitHub で直接マージした、など） | 変えない | 変えない | Evaloom は外を照合しない。Q167 |
 
-`succeeded` は「PR を作成した」から「マージした、またはベースブランチへ push した」に意味が変わる。`require_approval` の Project では、PR を作った時点で `waiting_approval` になる。
+- 承認の判断、消費、無効化は、すべて audit_logs に残す（requirements 15.2 監査ログ）。actor は判断と作り直しが `owner`、消費が `runner:<id>`、無効化と期限切れが `system`。
 
-### 3.10 既存の仕様への影響
+### 3.7 出す操作の結果がわからないとき
 
-Phase 2 の実装に入るときに、次の確定済みの仕様を書き換える必要がある。書き換えたら、その仕様の status を draft に戻す。
+出す操作を送った後に結果がわからなくなったときの扱いは、契約 7.5 に従う。
 
-| 仕様 | 書き換える箇所 |
-|---|---|
-| [`02-data-model.md`](./02-data-model.md) | 5.1 の `waiting_approval` を「使う」に。5.2 に `waiting_approval` / `merging` を追加。3.3 から approvals を外し、本書 3.9 を参照 |
-| [`03-registry.md`](./03-registry.md) | 3.7 の承認ポリシーを「保存と表示のみ」から 3.2 の形と効果に |
-| [`04-task-lifecycle.md`](./04-task-lifecycle.md) | 3.2 の遷移表に承認待ち・マージ・却下を追加。3.3.1 の claim の応答に `operation` を追加 |
-| [`05-runner.md`](./05-runner.md) | 3.8「Runner が行わない操作」から PR マージを外し、承認済みのマージだけを行うと書く |
-| [`09-sandbox.md`](./09-sandbox.md) | 3.7 の PR マージの行を、承認済みのときだけ Git Publisher が行うに |
-| [`11-git-publisher.md`](./11-git-publisher.md) | 3.1 のブランチ名の接頭辞の確認、3.5 の「マージをしない」とルールセットの設定値、4 の「Evaloom はマージしない」 |
-| [`12-notification.md`](./12-notification.md) | 3.1 に承認待ちとマージ完了の通知を追加 |
-| [`13-management-ui.md`](./13-management-ui.md) | Approvals 画面と Dashboard の承認待ちを追加 |
+- スペシャルハーネスは、同じ承認で同じ操作をもう一度送らない。承認は問い合わせの時点で使用済みになっている。
+- 外の状態を読み直せないとき、publish の段は `unknown`（`publish_unknown`）を返し、Execution は `blocked`（cause=`publish_unknown`）になる（[`02-data-model.md`](./02-data-model.md) 5.6）。本人が続行を選ぶと publish の段を新しく始める。スペシャルハーネスは始めに外の状態を確かめ、まだ行われていない承認の要る操作があれば、新しい `contentId` で承認を求め直す（`needs_approval`）。
+
+### 3.8 データモデル
+
+approvals の列は [`02-data-model.md`](./02-data-model.md) 3.4 の approvals を正本とする。この文書で使う点は次のとおり。
+
+- status は `pending` / `approved` / `rejected` / `consumed` / `invalidated` / `expired`。invalidated_reason は `content_changed` / `superseded` / `cancelled`。
+- 同じ execution_id と operation で、status が `pending` / `approved` の行は1件までとする（部分一意インデックス）。
+- 承認を省いた操作は行を作らない（3.2）。
+- 旧仕様の content_version は content_id に、decided_by は audit_logs の actor に、result は execution_events と executions.outputs に置き換えた。Execution 状態の `merging` は持たない。承認の後は Execution を `pending`（resume_stage=`publish`）に戻し、publish の段で操作する（[`02-data-model.md`](./02-data-model.md) 5.2）。
+
+### 3.9 software-engineer へ移したもの
+
+次は開発の仕事の中身であり、software-engineer の文書（`~/workspace/harnesses/software-engineer/docs/design.md`）へ移した（本人決定 1）。Evaloom の仕様からは消した。
+
+| 旧仕様の内容 | 旧 Q | 移した後の扱い |
+|---|---|---|
+| PR マージを承認の対象にすること、マージの実行（GitHub のマージ API の `sha` パラメータ） | Q53、Q54 | software-engineer が `merge_pull_request` を `approvals` に宣言し、publish の段で `authorize` の後にマージする |
+| PR のマージ方式 | Q56 | software-engineer の設定 |
+| 承認待ちの間に GitHub 上で直接マージ・クローズされた場合 | Q58 | software-engineer の publish の段が始めに外の状態を確かめる（契約 7.5、12章の 9）。Evaloom 側は Q167 |
+| 承認ポリシーの `direct_push` と、ベースブランチへの直接 push、fast-forward できないときの切り替え | Q35、Q60〜Q62 | software-engineer の Profile が、例えば直接 push の操作を `waivable: true` で宣言し、本人が Project の承認を省く設定で選ぶ形にする。push の手順は software-engineer が決める |
+| GitHub のルールセットと Bypass の設定 | Q63 | software-engineer の導入の手順 |
+| マージの結果がわからないときの PR の読み直し | - | 契約 7.5 に従い software-engineer が行う |
+
+Q55（有効期限の既定 24 時間）、Q57（却下で failed）、Q59（承認待ちを同時実行の枠に数えない）は Evaloom に残す。
 
 ## 4. 設定値・確定値
 
 | 項目 | 値 | 出典 |
 |---|---|---|
-| 承認対象操作 | 本番デプロイ、PR マージ、外部メール送信、重要ファイル削除、認証・権限変更、共通契約・評価基準・中央セキュリティポリシーの変更 | requirements 15.3 |
+| 承認の対象 | スペシャルハーネスが Profile の `approvals` に宣言した操作だけ | vision.md 3章、契約 7.1 |
+| 承認の場所 | 管理画面だけ。Linear・Slack・スマートフォンの通知からの操作を承認として扱わない | 本人決定 3、requirements 15.5 |
 | 承認の時点 | 操作の直前。事後承認にしない | requirements 15.3 |
-| 権限と承認状態の確認 | 実行開始時と、副作用のある操作の直前 | requirements 15.3 |
+| 権限と承認状態の確認 | 段の開始時と、外へ出す操作の直前（authorize） | requirements 15.3 |
 | 承認者 | 本人だけ | requirements 15.5 |
-| 承認の使用回数 | 原則1回 | requirements 15.8 |
-| head SHA が変わった | 承認は無効 | requirements 15.8、条件22 |
-| 対象が変わった | 承認は無効 | requirements 15.8 |
-| 使用済み | 実行しない | requirements 15.8 |
-| 有効期限切れ | 再承認を求める | requirements 15.8 |
-| 承認の消費 | DB で原子的に管理する | requirements 15.8 |
-| PR マージ | GitHub のマージ API の `sha` パラメータで PR の HEAD との一致を求め、ブランチ保護と組み合わせる | requirements 15.8 |
-| 承認ポリシーで外せる操作 | PR マージだけ。既定は承認対象のまま | requirements 15.3 |
-| 外した Project の push | Gate 2・3 を通った commit をベースブランチへ fast-forward で push。PR を作らない | requirements 8.5, 15.3、Q35 |
-| 権限設定の変更 | 本人だけ。Runner とハーネスには許可しない | requirements 15.3 |
-| Fail Closed | 認証・承認・検証のどれかに失敗したら操作しない | requirements 15.1 |
+| 承認と中身の結び付け | 承認を求めたときの content_id と、出す直前の content_id を Evaloom が完全一致で比べる。違えば承認は無効 | 本人決定 5、requirements 15.8、条件22 |
+| 確かめたもの＝出すもの | スペシャルハーネスが見張る。Evaloom は照合しない | 本人決定 5 |
+| 承認の使用回数 | 1回 | requirements 15.8 |
+| 使用済み | 許可しない | requirements 15.8 |
+| 有効期限 | 承認した時刻から全体設定 `approval.ttlSec`（既定 24 時間）。切れたら許可せず、再承認を求める | requirements 15.8、Q55 |
+| 承認の消費 | DB の1つの更新で原子的に行う | requirements 15.8 |
+| 承認を省ける操作 | Project が固定した版で `waivable: true` と宣言された操作だけ。既定は省かない | 本人決定 6、契約 7.3 |
+| 承認を省く設定の変更 | 本人だけ。Runner とスペシャルハーネスには許可しない。出す直前に読み直す | requirements 15.3、Q61 |
+| 承認待ちと同時実行 | 同時実行の枠に数えない | Q59 |
+| 却下 | Execution とタスクを failed（`approval_rejected`） | Q57 |
+| Fail Closed | 認証・承認・照合のどれかに失敗したら許可しない | requirements 15.1 |
 
 ## 5. インターフェース
 
-| Method | Endpoint | 認証区分 | 内容 | 出典 |
-|---|---|---|---|---|
-| GET | /api/approvals | 本人用 | 承認の一覧。`?status=` で承認待ち・履歴を絞り込む | 18章 |
-| GET | /api/approvals/{id} | 本人用 | 承認の詳細（対象、content_version、Gate の結果、差分の成果物への参照） | 追加案 |
-| POST | /api/approvals/{id}/decision | 本人用 | 承認・却下。入力は `decision`（`approve` / `reject`）、`contentVersion`、`ttlSec`（任意、Q55） | 18章 |
-| POST | /api/approvals/{id}/renew | 本人用 | 期限切れの承認から新しい承認待ちを作る | 追加案 |
-| POST | /api/approvals/{id}/consume | Runner 用 | 操作の直前の照合と消費（3.5.2） | 追加案 |
-| POST | /api/executions/{id}/publish-check | Runner 用 | push 直前の確認（中止要求、承認ポリシーの現在値）。11 の 3.1 で heartbeat の応答を使っていた確認を置き換える案 | 追加案 |
-| POST | /api/runners/{id}/claim | Runner 用 | 応答に「承認済みの操作」の仕事を足す | 18章（拡張） |
+| Method | Endpoint | 認証区分 | 内容 |
+|---|---|---|---|
+| GET | /api/decisions | 本人用 | 判断待ちの一覧。`?kind=approval` で承認待ちに絞る |
+| GET | /api/decisions/{id} | 本人用 | 承認待ちの詳細（操作、Profile の description、対象の表示、説明、content_id、確かめた結果、成果物への参照） |
+| POST | /api/decisions/{id}/answer | 本人用 | 承認・却下。入力は `{ "action": "approve" \| "reject", "contentId": "<basis>", "ttlSec": <整数> }`。`ttlSec` は approve のときだけ書ける任意の項目（[`02-data-model.md`](./02-data-model.md) 5.6、Q200） |
+| GET | /api/approvals | 本人用 | 承認の履歴。`?status=` で絞り込む |
+| GET | /api/approvals/{id} | 本人用 | 承認の詳細（使用・無効の記録を含む） |
+| POST | /api/approvals/{id}/renew | 本人用 | 期限切れの承認から新しい承認待ちを作る |
+| PATCH | /api/projects/{id} | 本人用 | `approvalWaivers` の変更（3.2） |
+| POST | /api/executions/{id}/authorize | Runner 用 | 出す直前の照合と消費（3.5、契約 7.4） |
 
-`POST /api/approvals/{id}/decision` の応答:
+`POST /api/decisions/{id}/answer`（kind=`approval`）の応答は次のとおりとする。
 
 | HTTP | code | 場面 |
 |---|---|---|
 | 200 | - | 判断を記録した |
-| 409 | `conflict` | すでに判断済み、無効、期限切れ |
-| 422 | `precondition_failed` | `contentVersion` が行の content_version と一致しない |
+| 400 | `validation_failed` | 回答の形が違う |
+| 409 | `conflict` | すでに判断済み、取り下げ済み |
+| 422 | `precondition_failed` | `contentId` が判断待ちの basis と一致しない |
 
-`POST /api/approvals/{id}/consume` の応答（案）:
+`POST /api/executions/{id}/authorize` の要求と応答は次のとおりとする。形は契約 7.4 の通話口と同じで、Runner は段から受け取った要求を中継する。
 
 ```json
-{ "allowed": true, "contentVersion": "<40桁>", "mergeMethod": "merge" }
-// または
+{ "operation": "merge_pull_request", "approvalId": "01J...", "contentId": "<識別子>" }
+```
+
+```json
+{ "allowed": true }
 { "allowed": false, "reason": "content_changed" }
 ```
+
+`reason` は `cancelled` / `content_changed` / `not_approved` / `already_used` / `expired`（契約 7.4）。`unavailable` は Runner が Control Plane に届かないときに Runner が返す値で、この API は返さない。
+
+使わなくなったエンドポイント: `POST /api/approvals/{id}/decision`（`POST /api/decisions/{id}/answer` に置き換えた）、`POST /api/approvals/{id}/consume` と `POST /api/executions/{id}/publish-check`（`POST /api/executions/{id}/authorize` に置き換えた）。claim の応答に「承認済みの操作」の仕事を足す案は取りやめた（承認の後は同じ Execution の publish の段として再開するため）。
 
 ## 6. エラー処理
 
 | 状況 | 処理 |
 |---|---|
-| 承認の送信で content_version が違う | 422。画面を読み直させる |
-| 消費の時点で head SHA・対象が違う | 操作しない。承認を invalidated にし、本人に通知する |
-| 消費の更新が0件（同時に2回呼ばれた等） | 操作しない |
-| マージ API が SHA の不一致で拒否 | 操作しない。承認は消費済みのため invalidated（`content_changed`）にし、本人に通知する |
-| マージの結果が分からない | 3.5.3 |
-| 直接 push で fast-forward できない | 3.7.3 |
-| push 直前に承認ポリシーを読めない | push しない（Fail Closed） |
-| Runner トークンで decision を呼んだ | 403。audit_logs に記録する |
-| 本人のセッションで consume を呼んだ | 403。audit_logs に記録する |
+| 承認の回答で contentId が違う | 422。画面を読み直させる |
+| 判断済み・取り下げ済みの判断待ちへの回答 | 409 |
+| 宣言していない操作の承認を求めた | Execution を失敗（`contract_error`）にする（3.3） |
+| 省けない操作を承認を省く設定に入れた | 422（`not_waivable`） |
+| 出す直前の問い合わせで content_id が違う | 許可しない。承認を invalidated（`content_changed`）にし、本人に通知する |
+| 消費の更新が0件（同時に2回呼ばれた等） | 許可しない |
+| 出す直前の問い合わせで DB に書き込めない | 許可しない（Fail Closed） |
+| Runner が Control Plane に届かない | Runner が段に `allowed: false`（`unavailable`）を返す |
+| Runner トークンで判断の回答を呼んだ | 403。audit_logs に記録する |
+| 本人のセッションで authorize を呼んだ | 403。audit_logs に記録する |
 
 ## 7. スコープ外
 
-- PR マージ以外の承認対象操作の実行（Q53 案。Phase 2 でも権限で拒否する）
+- GitHub のマージ、ベースブランチへの直接 push、GitHub のルールセット、マージ方式、マージキュー（software-engineer へ移した、3.9）
+- Linear・Slack・スマートフォンの通知からの承認（本人決定 3、requirements 15.5。承認は管理画面で本人だけが行う）
+- 承認の対象の中身や外の状態を Evaloom が読んで照合すること（本人決定 5）
 - Context の更新候補の承認（requirements 7.4）
-- 評価結果に基づく承認（Phase 3 以降）
-- Linear・Slack・スマートフォンからの承認（requirements 15.5。承認は管理画面で本人だけが行う）
-- マージキューの利用（requirements 15.8 で組み合わせの例に挙がっている。Phase 2 ではルールセットで守る案）
+- 評価結果に基づく承認（評価と改善の Phase）
 - 複数の承認者・利用者管理（requirements 15.5）
 
 ## 8. 関連仕様
 
+- [`../contract/harness-contract-v1.md`](../contract/harness-contract-v1.md) ハーネス契約 7章（承認、通話口）
 - [`00-overview.md`](./00-overview.md) 全体仕様
-- [`01-architecture.md`](./01-architecture.md) 認証区分と Control Plane の権限
-- [`02-data-model.md`](./02-data-model.md) 状態の値
-- [`03-registry.md`](./03-registry.md) 承認ポリシーの保存
-- [`04-task-lifecycle.md`](./04-task-lifecycle.md) 状態遷移、claim、Blocked からの続行（SHA に結び付ける考え方）
-- [`05-runner.md`](./05-runner.md) Runner が行わない操作
-- [`09-sandbox.md`](./09-sandbox.md) 承認対象操作の拒否
-- [`10-verification-gates.md`](./10-verification-gates.md) Gate 2・3
-- [`11-git-publisher.md`](./11-git-publisher.md) push・PR 作成と GitHub の権限
+- [`01-architecture.md`](./01-architecture.md) 認証区分、authorize、Fail Closed
+- [`02-data-model.md`](./02-data-model.md) approvals、owner_decisions、状態の値
+- [`03-registry.md`](./03-registry.md) Project の承認を省く設定の保存と検証
+- [`04-task-lifecycle.md`](./04-task-lifecycle.md) 状態遷移、本人の判断の後の再開
+- [`05-runner.md`](./05-runner.md) 通話口の中継
 - [`12-notification.md`](./12-notification.md) 通知
-- [`13-management-ui.md`](./13-management-ui.md) 管理画面
+- [`13-management-ui.md`](./13-management-ui.md) 本人の判断待ちの画面
+- [`14-security-tests.md`](./14-security-tests.md) 承認の受け入れテスト
 - [`15-linear-intake.md`](./15-linear-intake.md) Linear 起因の中止
-- [`16-linear-feedback.md`](./16-linear-feedback.md) 必要な承認事項の返却
+- [`16-linear-feedback.md`](./16-linear-feedback.md) 「管理画面で判断待ち」の知らせ
 
 ## 9. 実装単位
 
-- [ ] （人間） Q54・Q63 の GitHub のルールセットの変更を、対象リポジトリで行う（Bypass に evaloom-publisher を足す。direct_push の Project ではルールセット C を分ける）
-- [ ] [Backend] approvals のマイグレーションと、Execution の状態 `waiting_approval` / `merging` の追加、遷移表の更新
-  - 受け入れ基準: 同じ Execution・同じ operation で pending / approved の行を2つ作れない; waiting_approval と merging の Execution が claim の同時実行の数に入らない; 遷移表に無い遷移が 409 になる
-- [ ] [Backend] 承認ポリシーの形の検証とマイグレーション、変更の監査記録
-  - 受け入れ基準: `mergePullRequest` 以外の項目や未知の値が 400; 既存の Project の値が require_approval になる; 変更が audit_logs に残る; Runner トークンでは変更できない
-- [ ] [Backend] PR 作成後の承認待ちの発生（3.3）と、新しい commit による前の承認の無効化
-  - 受け入れ基準: require_approval の Project で PR を作るとタスクが waiting_approval になり approvals に pending の行ができる; 同じ PR に continue で commit を足すと前の承認が invalidated（superseded）になり新しい pending ができる; 承認待ちの通知が1回出る
-- [ ] [Backend] 承認・却下・再承認の本人用 API（decision、renew、一覧、詳細）
-  - 受け入れ基準: contentVersion が違うと 422; 判断済みの承認への decision が 409; 却下でタスクが Q57 の状態になる; 期限切れの承認から renew で新しい pending ができる; 判断が audit_logs に残る
-- [ ] [Backend] 消費 API（consume）と照合の表（3.5.2）
-  - 受け入れ基準: 表の各行に対応するテストで allowed と approvals の status が期待どおりになる; 同じ承認に consume を並行に2回呼ぶと allowed=true が1回だけ; 承認後に head SHA を変えると allowed=false（content_changed）になる（条件22）
-- [ ] [Backend] claim の応答への「承認済みの操作」の追加と、Git Publisher のマージ（sha パラメータ付き）
-  - 受け入れ基準: テスト用の GitHub API に、マージ要求が content_version を sha に入れて1回だけ送られる; consume が allowed=false のときマージ要求が送られない; マージ成功でタスクが completed になる
-- [ ] [Backend] マージの結果が分からないときの照合（3.5.3）
-  - 受け入れ基準: マージ要求の応答を切るテストで、再びマージを要求せず PR を読み直す; マージ済みなら成功、開いたままなら publish_failed（merge_unknown）になる
-- [ ] [Backend] 承認待ちの PR の定期照合（GitHub で直接マージ・クローズされた場合、3.6）
-  - 受け入れ基準: 承認待ちの PR を GitHub 側でマージすると承認が invalidated になりタスクが completed になる; クローズするとタスクが Q58 の状態になる
-- [ ] [Backend] push 直前の確認 API（publish-check）と、直接 push（3.7）
-  - 受け入れ基準: direct_push の Project で Gate を通った commit がベースブランチへ push され PR が作られない; push 後のリモートのベースブランチの SHA が verified_sha と一致する; push の直前に承認ポリシーを require_approval に変えると PR を作る経路になる; Control Plane に届かないと push しない; Base Branch 以外で `evaloom/` で始まらない ref には push しない
-- [ ] [Backend] 直接 push で fast-forward できないときの切り替え（3.7.3）
-  - 受け入れ基準: テスト用のリモートでベースブランチを先に進めておくと、強制 push せず PR を作る経路になる
-- [ ] [Backend] 承認の受け入れテスト（条件21, 22）を 14 のテスト群に足す
-  - 受け入れ基準: PR マージを承認対象にした Project で、承認なしにマージされない; 承認後に head SHA を変えるとマージされない; 使用済みの承認で2回目のマージが行われない; 有効期限切れの承認でマージされない
-- [ ] [Frontend] Approvals 画面（承認待ち一覧、詳細、承認・却下、履歴）と Dashboard の承認待ち
-  - 受け入れ基準: 承認待ちの対象（PR の URL、head SHA、Gate の結果、差分）が表示される; 送信に表示中の contentVersion が含まれる; 422 で読み直しを促す; 承認待ちの件数が Dashboard に出る
-- [ ] [Frontend] Project 編集の承認ポリシーの選択と、direct_push にするときの確認ダイアログ
-  - 受け入れ基準: require_approval / direct_push を選べる; direct_push を選ぶと、PR のレビューに任せていた範囲を確認する人がいなくなることを示すダイアログが出て、確認しないと保存されない
+- [ ] [Backend] 承認待ちの発生（3.3）
+  - 受け入れ基準: check が needs_approval を返すと、省かない操作ごとに approvals の pending の行と kind=approval の判断待ちができ、Execution とタスクが waiting_approval になる; check が succeeded で approvalRequests を書いたときも同じになる; 宣言していない操作の承認要求で Execution が contract_error になる; 省く操作では行ができず approval_waived が記録される; すべて省いたとき check の後に publishing へ進む; 同じ Execution・同じ operation で新しく求めると前の承認が invalidated（superseded）になる; waiting_approval の Execution が claim の同時実行の数に入らない; 承認待ちの通知が1回出て、Linear 起因のタスクには decision_open の行ができる
+- [ ] [Backend] 承認・却下・作り直しの本人用 API（decisions の answer、approvals の一覧・詳細・renew）
+  - 受け入れ基準: contentId が違うと 422; 判断済みの判断待ちへの回答が 409; すべて承認すると Execution が pending（resume_stage=publish）になる; 一部だけ承認すると waiting_approval のまま; 却下でタスクと Execution が failed（approval_rejected）になり、ほかの未使用の承認が invalidated（cancelled）になる; 期限切れの承認から renew で新しい pending と判断待ちができる; 判断が audit_logs に残る; Runner トークンで回答すると 403
+- [ ] [Backend] 承認を省く設定の検証と変更の監査記録（3.2）
+  - 受け入れ基準: waivable でない操作、Profile に無い操作を approvalWaivers に入れると 422; 版を変えて waivable でない操作が残ると 422; 変更が audit_logs に変更前後の値で残る; Runner トークンでは変更できない; スペシャルハーネスへ直接振り分けたタスクでは、宣言したすべての操作で承認待ちができる
+- [ ] [Backend] 出す直前の照合と消費（`POST /api/executions/{id}/authorize`、3.5）
+  - 受け入れ基準: 3.5 の表の各行に対応するテストで allowed・reason と approvals の status が期待どおりになる; 同じ承認に並行に2回問い合わせると allowed=true が1回だけ; 承認の後に contentId を変えて問い合わせると allowed=false（content_changed）で承認が invalidated になる（条件22）; 承認を省いた後に Project の省く設定から外すと、approvalId=null の問い合わせが not_approved になる; operation=publish は中止要求が無ければ許可される; 中止要求があると cancelled; 有効期限を過ぎると expired; DB の書き込みを失敗させると allowed=false; 結果が execution_events と audit_logs に残る
+- [ ] [Backend] 承認の受け入れテスト（条件21、22）を 14 のテスト群に足す
+  - 受け入れ基準: 承認の要る操作を宣言したテスト用のスペシャルハーネスで、承認なしに authorize が許可されない; 承認の後に contentId を変えると許可されない; 使用済みの承認で2回目が許可されない; 有効期限切れの承認で許可されない; 管理画面以外の経路（Linear のコメント、Runner 用 API）で承認できない
+- [ ] [Frontend] 判断待ちの画面の承認の表示と操作（[`13-management-ui.md`](./13-management-ui.md) 3.4）と Dashboard の承認待ちの件数
+  - 受け入れ基準: 承認待ちの対象（操作、description、target の label と url、summary、content_id、確かめた結果）が表示される; 送信に表示中の contentId が含まれる; 422 で読み直しを促す; 承認待ちの件数が Dashboard に出る
+- [ ] [Frontend] Project 編集の承認を省く設定と確認ダイアログ（3.2、Q165）
+  - 受け入れ基準: 固定した版で waivable の操作だけが選べる; 操作を足すと確認ダイアログが出て、確認しないと保存されない; 外すときはダイアログが出ない
+
+## 10. 要確認
+
+| # | 内容 | 案 |
+|---|---|---|
+| Q165 | 承認を省く操作を足すとき、管理画面で何を確かめさせるか（旧仕様の `direct_push` の確認ダイアログを一般化） | 確認ダイアログを出し、省く操作の名前と Profile の description と、「この Project では、この操作を本人の承認なしにスペシャルハーネスが行う」ことを示す。パスワードの入れ直しは求めない（18 の 3.7 の決定どおり） |
+| Q166 | 承認してから publish の段が問い合わせるまでに有効期限が切れたとき（Runner が止まっていて、承認から 24 時間たって claim された、など） | claim の時点で Execution の承認の有効期限を確かめ、切れた承認があれば publish の段を始めない。その承認を `expired` にし、Execution とタスクを `waiting_approval` に戻して、期限切れを示す判断待ちを作る（本人は renew で承認し直す）。段が始まった後の問い合わせで切れていたときは、契約どおり `expired` で許可せず、Execution は失敗になる |
+| Q167 | 承認待ちの間に、外の対象が本人の手で変わったとき（PR を GitHub で直接マージした、投稿を手で公開した、など）、Evaloom は気付くべきか | Evaloom は外を読まず、何もしない（本人決定 5、vision.md 4章）。本人は判断待ちの画面で却下するか、タスクを中止する。承認した場合は、publish の段が始めに外の状態を確かめて、すでに行われた操作を繰り返さない（契約 7.5、12章の 9） |

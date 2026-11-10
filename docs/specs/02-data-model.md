@@ -1,26 +1,28 @@
 ---
 status: draft
-範囲: 整合性アンカー。Phase 1 のテーブル、状態の列挙値、共通契約と Harness Profile のスキーマ
+written: 2026-11-10
+範囲: 整合性アンカー。テーブル、状態の列挙値、段の名前、イベント種別、エラー分類、本人の判断待ちの原因。スペシャルハーネスとの入出力と Profile 定義のスキーマはハーネス契約を参照する
 ---
 
 # 02. データモデル 仕様
 
-**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: SQLite のテーブル、状態の列挙値、共通契約（ハーネスとの入出力）、Harness Profile 定義
+**親**: [`00-overview.md`](./00-overview.md) ｜ **担当**: Backend ｜ **範囲**: SQLite のテーブル、状態の列挙値、段の名前、イベント種別、エラー分類、本人の判断待ちの種類と原因
 
-この文書は整合性アンカーである。テーブル・列挙値・JSON スキーマはここだけで定義し、他の詳細仕様はここを参照する。
+この文書は整合性アンカーである。テーブル・列名・列挙値の名前はここだけで決め、ほかの詳細仕様はここに従う。スペシャルハーネスとの入出力（要求 JSON、結果 JSON、finding、Profile 定義）の形は、ハーネス契約 [`../contract/harness-contract-v1.md`](../contract/harness-contract-v1.md)（以下「契約」）だけで決め、この文書は参照する。
 
-requirements 17章は「詳細な型、外部キー、制約、インデックスは詳細設計時に確定する」としている。以下の列定義は、requirements の保持情報（5.1〜5.4、7.1、8.3〜8.6）から導いた Phase 1 案である。型・インデックスの最終確定は実装時に行う。
+この文書は [`../vision.md`](../vision.md) と本人決定（2026-11-10、[`../vision-alignment.md`](../vision-alignment.md) 5章・6章）に合わせて、目標の形で書き直した。いまの実装との食い違いは扱わない（本人決定 1）。型・インデックスの最終確定は実装時に行う（requirements 17章）。
 
 ## 1. 目的
 
-- 工程間（Control Plane / Runner / Adapter / 管理画面）で同じ名前・同じ値を使えるようにする。
-- 再起動後に未完了の仕事を検出できるよう、状態を永続化する（requirements 8.3）。
-- Execution ごとに、使った Profile と Context の版を後から確認できるようにする（requirements 7.1, 8.3）。
+- Control Plane、Runner、Adapter、管理画面が、同じ名前・同じ値を使えるようにする。
+- Evaloom が仕事の種類に固有の情報を持たないようにする。開発の情報（worktree、テストコマンド、ブランチ、PR、commit SHA）は列として持たず、スペシャルハーネスが決める不透明な値として記録する（vision.md 4章）。
+- 再起動の後に、未完了の仕事と本人の判断待ちを見つけられるよう、状態を保存する（requirements 8.3）。
+- Execution ごとに、使ったスペシャルハーネスの版、渡した値、段ごとの結果を後から確かめられるようにする（requirements 7.1、8.3）。
 
 ## 2. 入出力
 
-- 入力: 各詳細仕様の処理が書き込む行。
-- 出力: API のレスポンス（[`01-architecture.md`](./01-architecture.md)）、管理画面の表示。
+- 入力: 各詳細仕様の処理が書き込む行。Runner が報告する段の結果（契約 6.5）。
+- 出力: API のレスポンス（[`01-architecture.md`](./01-architecture.md)）、管理画面の表示、Linear への書き戻し。
 
 ## 3. 処理詳細
 
@@ -34,19 +36,19 @@ requirements 17章は「詳細な型、外部キー、制約、インデック�
 | ID | 既定は ULID の文字列。例外は下表 |
 | 時刻 | UTC の RFC 3339 文字列 |
 | JSON 列 | TEXT に JSON を保存し、アプリ側で検証する |
-| マイグレーション | Phase ごとに段階的に追加する（requirements 17章）。Phase 1 で作らないテーブルは 3.3 |
+| 不透明な値 | `params`、`content_id`、`outputs`、`target` など、スペシャルハーネスが決める値は、保存・表示・完全一致の比較・受け渡しだけに使い、Evaloom は意味を解釈しない（vision.md 4章） |
+| マイグレーション | 段階的に追加する（requirements 17章） |
 
-ID の例外（提案）:
+ID の例外は次のとおりとする。
 
 | 対象 | 形式 | 理由 |
 |---|---|---|
-| projects.id | 本人が付ける slug（例 `project-a`） | requirements 4.2 の例と、Phase 2 の `repo:*` Label との対応 |
-| harnesses.id | 本人が付ける slug（例 `claude-developer`） | requirements 4.2 の例 |
-| tasks.id | `task-<連番>`（例 `task-001`） | ブランチ名 `evaloom/<task-id>-<短い名前>` に入るため短くする（requirements 3.2 の例） |
+| projects.id | 本人が付ける slug（例 `customer-system`） | 管理画面と振り分けの表で読みやすくする |
+| harnesses.id | 本人が付ける slug（例 `software-engineer`） | 同上。契約の要求 JSON の `profile.harnessId` に入る |
+| tasks.id | `task-<連番>`（例 `task-001`） | 本人が読み上げやすい短い ID にする |
+| routes.label | 振り分けのラベルの名前そのもの | ラベルは振り分けの表の中で一意（本人決定 2） |
 
-### 3.2 Phase 1 で作るテーブル
-
-17章のテーブルのうち Phase 1 で使うものと、Phase 1 の機能に必要な追加案（「追加」と表記）。
+### 3.2 登録の表
 
 #### runners
 
@@ -55,106 +57,110 @@ ID の例外（提案）:
 | id | TEXT PK | Runner ID（例 `mac-mini`） |
 | name | TEXT | 表示名 |
 | token_hash | TEXT | Runner トークンのハッシュ。平文は保存しない |
-| worktree_root | TEXT | worktree を作るディレクトリ（requirements 3.3 Worktree Root） |
 | status | TEXT | `online` / `offline` |
-| last_heartbeat_at | TEXT | 最後の heartbeat |
-| boot_id | TEXT NULL | 最後に受信した heartbeat の bootId。未受信・既存DBの移行直後は NULL |
+| last_heartbeat_at | TEXT NULL | 最後の heartbeat |
+| boot_id | TEXT NULL | 最後に受信した heartbeat の bootId |
 | created_at | TEXT | |
 
-#### projects
+作業領域を作るディレクトリと鍵の保管場所は、Runner の設定ファイルに持ち、この表には持たない（[`05-runner.md`](./05-runner.md)、[`01-architecture.md`](./01-architecture.md) 3.5）。
 
-requirements 5.1 の保持情報に対応する。
-
-| 列 | 型 | 説明 | 5.1 の項目 |
-|---|---|---|---|
-| id | TEXT PK | Project ID | Project ID |
-| name | TEXT | 名称 | 名称 |
-| local_repo_path | TEXT | 絶対パス。登録時に検証（[`03-registry.md`](./03-registry.md)） | Local Repository Path |
-| git_remote_url | TEXT | | Git Repository URL |
-| runner_id | TEXT FK→runners | | Runner ID |
-| base_branch | TEXT | | Base Branch |
-| default_role | TEXT | 既定で使う役割名（例 `developer`）。project_harnesses.role を指す | Default Harness |
-| review_role | TEXT NULL | Phase 5 まで使わない | Review Harness |
-| context_location | TEXT | Phase 1 は `AGENTS.md`（リポジトリ内） | Context Location |
-| test_command | TEXT NULL | テストコマンド。未設定ならテストできないため Gate 2 で止まる | テストコマンド |
-| test_report_format | TEXT NULL | `junit_xml` など（Q12、追加） | - |
-| test_report_path | TEXT NULL | worktree 内のレポート出力パス（Q12、追加） | - |
-| setup_command | TEXT NULL | worktree 作成後に Test Sandbox で実行 | セットアップコマンド |
-| setup_allowed_hosts | TEXT (JSON 配列) | setup の Test Sandbox から接続してよい宛先（`host:port`）。既定は空配列（Q28 の「Project ごとに登録」を受けた追加。案 Q73、[`09-sandbox.md`](./09-sandbox.md) 3.3） | - |
-| copy_allowlist | TEXT (JSON 配列) | worktree へコピーしてよいファイルの相対パス | コピー許可リスト |
-| allowed_operations | TEXT (JSON) | 許可操作 | 許可操作 |
-| approval_policy | TEXT (JSON) | 承認ポリシー。Phase 1 は保存と表示だけ（Q25） | 承認ポリシー |
-| timeouts | TEXT (JSON) | `{ "setupSec", "harnessSec", "testSec" }`（Q15、追加） | - |
-| created_at / updated_at | TEXT | | |
-
-Linear Team ID と Linear Routing Label の列は Phase 2 のマイグレーションで追加する。
-
-#### harnesses
-
-requirements 5.2 の保持情報に対応する。
+#### harnesses（スペシャルハーネス）
 
 | 列 | 型 | 説明 |
 |---|---|---|
-| id | TEXT PK | Harness ID |
-| name | TEXT | 名称 |
-| specialty | TEXT | 専門分野（Phase 1 は `developer`） |
-| supported_tasks | TEXT (JSON 配列) | 対応タスク（Phase 1 は `["development"]`） |
-| adapter | TEXT | `codex` / `claude_code`（4.4） |
-| repo_path | TEXT | ハーネスリポジトリのローカルパス |
-| repo_url | TEXT | ハーネスリポジトリの URL |
-| supported_models | TEXT (JSON 配列) | 対応モデルの Model ID |
-| available_tools | TEXT (JSON 配列) | 利用可能ツール |
-| tool_permissions | TEXT (JSON) | Tool Permissions。本人だけが変更できる |
-| contract_version | TEXT | 対応する共通契約の版（5.1） |
+| id | TEXT PK | スペシャルハーネスの ID |
+| name | TEXT | 表示名 |
+| repo_url | TEXT | スペシャルハーネスのリポジトリの URL |
+| repo_path | TEXT | Control Plane と Runner がタグと commit を読むローカルの複製のパス |
+| default_profile_id | TEXT NULL FK→harness_profiles | スペシャルハーネスへ直接振り分けたタスクで使う版。NULL なら直接振り分けたタスクを実行しない（`config_missing_profile`） |
 | created_at / updated_at | TEXT | |
 
-Harness Version / Prompt Version / Skill Version は harness_profiles 側に持つ（requirements 5.4 で Profile が一体として定義するため）。Evaluation Policy と Improvement History は Phase 3 / 4 で追加する。
+専門分野、対応タスク、Adapter、対応モデル、利用可能ツール、Tool Permissions の列は持たない。どれも Profile 定義（契約 5章）が宣言する（Q118）。ミクロハーネスの一覧は、Evaloom のコードに登録した Adapter（`claude_code` / `codex`、[`08-harness-adapter.md`](./08-harness-adapter.md)）である。
 
-#### harness_profiles
+#### harness_profiles（スペシャルハーネスの版）
 
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | ULID |
 | harness_id | TEXT FK→harnesses | |
 | version | TEXT | SemVer（正本）。`UNIQUE(harness_id, version)` |
-| commit_sha | TEXT | 実体の Git commit SHA（40桁） |
-| tag_name | TEXT | 対応する Git タグ名（Q5） |
-| definition | TEXT (JSON) | 登録時に読み込んだ Profile 定義（4.3）の全文 |
+| commit_sha | TEXT | タグ `profile/v<version>` を解決した commit（契約 4.2） |
+| tag_name | TEXT | `profile/v<version>` |
+| contract_version | TEXT | Profile 定義の `contractVersion` |
+| definition | TEXT (JSON) | 登録時に読んだ Profile 定義（契約 5章）の全文を JSON にしたもの |
 | definition_hash | TEXT | definition の SHA-256 |
-| model_id | TEXT | 正式な Model ID（表示名ではない、requirements 5.3） |
-| operation_status | TEXT | `provisional`（暫定運用）/ `official`（正式運用）。Phase 1 は常に `provisional` |
+| operation_status | TEXT | `provisional`（暫定運用）/ `official`（正式運用）。評価基盤ができるまで `provisional`（requirements 11.1） |
 | registered_at | TEXT | |
 
-一度登録した行は更新しない。同じ版を別の SHA で登録しようとしたら拒否する（タグの付け替え禁止、requirements 5.4）。
+- 一度登録した行は更新しない。同じ版を別の commit で登録しようとしたら拒否する（契約 4.2）。
+- Model ID、ミクロハーネス、段の宣言、承認の宣言は definition の中にある。表示と検索のために列へ写すかは実装時に確定する。
 
-#### project_harnesses
+#### projects（Project）
+
+Project が持つのは、vision.md 4章の6項目だけとする（本人決定 6）。
+
+| 6項目 | 置き場所 |
+|---|---|
+| 名前 | projects.name |
+| 振り分けのラベル | routes（label → project_id）。Project ごとに1つ |
+| 頼むスペシャルハーネス | projects.harness_id と projects.profile_id（固定する版） |
+| そのスペシャルハーネスに渡す値 | projects.params |
+| 承認を省く設定 | projects.approval_waivers |
+| 動かすマシン（Runner）の指定 | projects.runner_id |
 
 | 列 | 型 | 説明 |
 |---|---|---|
-| project_id | TEXT FK→projects | |
-| role | TEXT | 役割名（例 `developer`） |
-| harness_id | TEXT FK→harnesses | |
-| profile_id | TEXT FK→harness_profiles | 固定する版 |
-| assigned_at | TEXT | |
-| PK | (project_id, role) | |
+| id | TEXT PK | Project ID |
+| name | TEXT | 名前 |
+| harness_id | TEXT FK→harnesses | 頼むスペシャルハーネス |
+| profile_id | TEXT FK→harness_profiles | 固定する版。harness_id の版でなければならない。新しい版を登録しても自動では変わらない（requirements 4.3） |
+| params | TEXT (JSON) | 渡す値。既定 `{}`。Evaloom は解釈しない。Profile が `params.schema` を持つなら形だけ確かめる（契約 5.2、Q115） |
+| approval_waivers | TEXT (JSON 配列) | 承認を省く操作の名前の配列。既定 `[]`。profile_id の Profile で `waivable: true` と宣言された操作だけを入れられる（契約 7.3） |
+| runner_id | TEXT FK→runners | 動かすマシン |
+| created_at / updated_at | TEXT | |
 
-割り当ての変更履歴は audit_logs に残す。どの Execution がどの版を使ったかは executions に残す（requirements 12.6）。
+- ローカルのパス、Git の URL、ベースブランチ、テストコマンド、setup、コピー許可リスト、Context の置き場所、許可操作、タイムアウトの列は持たない。必要ならスペシャルハーネスが params として受け取るか、対象から自分で読む（本人決定 1、6）。
+- profile_id を別の版に変えるとき、新しい版で `waivable: true` でない操作が approval_waivers に残っていれば、その変更を 422 で拒否する。
+- approval_waivers と profile_id の変更は audit_logs に残す。Runner とスペシャルハーネスには変更の経路を作らない（requirements 15.3）。
+
+#### routes（振り分けの表）
+
+ラベルから振り分け先を引く表である（本人決定 2、vision.md 3章）。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| label | TEXT PK | 振り分けのラベルの名前（例 `route:customer-system`）。完全一致で照合する |
+| project_id | TEXT NULL FK→projects | 振り分け先が Project のとき |
+| harness_id | TEXT NULL FK→harnesses | 振り分け先がスペシャルハーネスのとき |
+| created_at / updated_at | TEXT | |
+
+- project_id と harness_id は、ちょうど一方だけを入れる（CHECK 制約）。
+- `UNIQUE(project_id)`。1つの Project に振り分けのラベルは1つだけ。harness_id にも `UNIQUE(harness_id)` を付け、スペシャルハーネスへ直接振り分けるラベルも1つだけとする。
+- ラベルは全体設定 `linear.routingLabelPrefix` で始まらなければならない（3.8、Q120）。
+- Linear Team の列は持たない。振り分けに Team を使わない（本人決定 2）。
+
+### 3.3 タスクと実行の表
 
 #### tasks
 
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | `task-<連番>` |
-| project_id | TEXT FK→projects | |
+| source | TEXT | `manual` / `linear` |
+| project_id | TEXT NULL FK→projects | 振り分け先が Project のとき |
+| harness_id | TEXT NULL FK→harnesses | 振り分け先がスペシャルハーネスのとき |
 | title | TEXT | 件名 |
-| body | TEXT | 本文（Issue 本文に相当） |
-| acceptance_criteria | TEXT | 受け入れ条件。空文字は不可（requirements 8.1） |
-| short_name | TEXT | ブランチ名用の短い名前（英小文字・数字・ハイフン） |
-| task_type | TEXT | Phase 1 は `development` のみ |
-| collaboration_mode | TEXT | Phase 1 は `solo` のみ |
+| body | TEXT | 本文。外から来た文として扱う（requirements 15.1） |
+| acceptance_criteria | TEXT | 受け入れ条件。振り分け先の Profile が `acceptanceCriteria: required` なら空を許さない（契約 5.2） |
+| collaboration_mode | TEXT | `solo` だけ（requirements 8.2） |
 | status | TEXT | 5.1 のタスク状態 |
-| idempotency_key | TEXT UNIQUE | 二重送信防止（[`04-task-lifecycle.md`](./04-task-lifecycle.md)） |
+| intake_block_cause | TEXT NULL | 5.7 の保留の理由。保留していなければ NULL |
+| idempotency_key | TEXT UNIQUE | 二重作成の防止（手動は画面が採番、Linear は `linear:<Issue ID>:<attach_seq>`） |
 | created_at / updated_at | TEXT | |
+
+- project_id と harness_id は、多くても一方だけを入れる（CHECK 制約）。両方 NULL（振り分け先が未定）を許すのは、status が `received` / `routing` / `cancelled` のときだけとする（アプリ側で検証する）。
+- 振り分け先は、タスクを `queued` にした時点で決まり、その後は変えない。スペシャルハーネスの版は claim の時点で executions に固定する。
+- task_type と short_name の列は持たない（仕事の種類と、ブランチ名などの名前の付け方はスペシャルハーネスが決める）。
 
 #### executions
 
@@ -162,30 +168,79 @@ Harness Version / Prompt Version / Skill Version は harness_profiles 側に持�
 |---|---|---|
 | id | TEXT PK | ULID |
 | task_id | TEXT FK→tasks | |
-| seq | INTEGER | タスク内の通し番号（1, 2, ...）。`UNIQUE(task_id, seq)` |
-| mode | TEXT | `continue`（前回のブランチ・worktree・PR を引き継ぐ）/ `fresh`（最初から） |
+| seq | INTEGER | タスク内の通し番号。`UNIQUE(task_id, seq)` |
+| mode | TEXT | `continue` / `fresh`（契約 10.3） |
 | status | TEXT | 5.2 の Execution 状態 |
-| runner_id | TEXT NULL | claim した Runner |
-| role | TEXT NULL | 使った役割（claim 時に固定） |
+| resume_stage | TEXT NULL | 本人の判断の後に再開する段。`work`（質問への回答の後）/ `publish`（承認・続行の後）。最初から始めるときは NULL |
+| runner_id | TEXT NULL FK→runners | claim した Runner |
+| route_kind | TEXT NULL | `project` / `harness`。claim 時に固定 |
+| project_id | TEXT NULL | claim 時に固定（route_kind=`project` のとき） |
 | harness_id | TEXT NULL | claim 時に固定 |
 | profile_id | TEXT NULL | claim 時に固定 |
 | profile_version | TEXT NULL | claim 時に固定（表示用の重複保持） |
 | profile_commit_sha | TEXT NULL | claim 時に固定 |
-| worktree_id | TEXT NULL FK→worktrees | |
-| branch_name | TEXT NULL | |
-| base_sha | TEXT NULL | 開始点 SHA（requirements 8.6） |
-| resume_point | TEXT NULL | Blocked から続行したときに再開する工程（`gate3` / `publish`）。[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8 |
-| harness_head_sha | TEXT NULL | ハーネス終了後に Runner が記録した HEAD |
-| verified_sha | TEXT NULL | Gate 2 でテストした commit |
-| pushed_sha | TEXT NULL | push した commit。verified_sha と一致しなければならない |
-| pr_number | INTEGER NULL | |
-| pr_url | TEXT NULL | |
-| harness_session_id | TEXT NULL | Adapter が返す実行セッション識別子 |
-| error_class | TEXT NULL | 5.4 のエラー分類 |
+| contract_version | TEXT NULL | claim 時に固定 |
+| params | TEXT (JSON) NULL | claim 時に固定した渡す値。直接振り分けでは `{}` |
+| workspace_id | TEXT NULL FK→task_workspaces | 使った作業領域 |
+| work_session_id | TEXT NULL | 作業の段でミクロハーネスが返したセッション識別子。質問の後の再開に使う（契約 8章） |
+| content_id | TEXT NULL | 確かめる段が報告した中身の識別子（契約 6.5）。不透明な値 |
+| outputs | TEXT (JSON 配列) NULL | 出す段が報告した外に出したものの参照（`kind`、`label`、`url`）。不透明な値 |
+| error_class | TEXT NULL | 5.5 のエラー分類 |
 | error_message | TEXT NULL | 機密情報を除いた説明 |
 | cancel_requested_at | TEXT NULL | 中止の要求時刻 |
 | claimed_at / started_at / finished_at | TEXT NULL | |
 | last_heartbeat_at | TEXT NULL | Runner の最終報告 |
+| created_at | TEXT | |
+
+- worktree_id、branch_name、base_sha、harness_head_sha、verified_sha、pushed_sha、pr_number、pr_url の列は持たない。開発の値は content_id と outputs と成果物に入る。
+- Evaloom は content_id を、承認の結び付け（3.4 approvals）と表示と次の Execution への受け渡し（契約 6.1 の `previous.checkedContentId`）にだけ使う。確かめた段と出す段の照合はしない（本人決定 5）。
+
+#### task_workspaces（作業領域）
+
+タスクごとに Runner が用意するディレクトリである（契約 0章、6.2）。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | TEXT PK | |
+| task_id | TEXT FK→tasks | |
+| runner_id | TEXT FK→runners | |
+| path | TEXT | Runner の作業領域のルートの下の絶対パス |
+| status | TEXT | `active` / `retained`（中断・失敗・判断待ちで保持中）/ `cleaned` |
+| created_by_execution_id | TEXT FK→executions | |
+| created_at / cleaned_at | TEXT | |
+
+- mode=`continue` は同じタスクの最新の `active` / `retained` の行を引き継ぎ、mode=`fresh` は新しい行を作る。保持期間と削除は Q121。
+
+#### stage_runs（段の実行）
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | TEXT PK | |
+| execution_id | TEXT FK→executions | |
+| stage | TEXT | 4.1 の段の名前 |
+| attempt | INTEGER | 同じ Execution・同じ段の通し番号（再開で増える）。`UNIQUE(execution_id, stage, attempt)` |
+| status | TEXT | `running` / `succeeded` / `failed` / `blocked` / `needs_approval` / `unknown` / `question` / `cancelled` / `timed_out` |
+| exit_code | INTEGER NULL | |
+| error_class | TEXT NULL | 5.5 |
+| request_artifact_id | TEXT NULL FK→artifacts | 渡した要求 JSON（鍵の値は含まない） |
+| result_artifact_id | TEXT NULL FK→artifacts | 受け取った結果 JSON。作業の段では NULL |
+| started_at / finished_at | TEXT | |
+
+- status の `blocked` / `needs_approval` / `unknown` は契約 6.5 の結果の値、`question` は作業の段で `out/question.json` があったとき（契約 8章）に使う。
+
+#### check_results（確かめた結果）
+
+gate_results を置き換える。確かめる段の結果を構造化して残す。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | TEXT PK | |
+| execution_id | TEXT FK→executions | |
+| stage_run_id | TEXT FK→stage_runs | |
+| result | TEXT | `pass`（succeeded・needs_approval）/ `fail`（failed）/ `blocked`（blocked） |
+| content_id | TEXT NULL | 確かめた中身の識別子 |
+| summary | TEXT NULL | 結果 JSON の summary（機密情報除外済み） |
+| findings | TEXT (JSON 配列) | 契約 14章の finding |
 | created_at | TEXT | |
 
 #### execution_events
@@ -200,95 +255,137 @@ Harness Version / Prompt Version / Skill Version は harness_profiles 側に持�
 
 #### context_revisions
 
-Execution ごとに固定した Context を保存する（requirements 7.1, 8.3）。
+Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）。
 
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | |
 | execution_id | TEXT FK→executions | |
-| layer | TEXT | `global` / `harness` / `project` / `task` |
-| kind | TEXT | `agents_md` / `claude_md` / `harness_config` / `harness_prompt` / `global_policy` / `task_input` など |
-| source_path | TEXT | リポジトリ内の相対パス（サブディレクトリの `AGENTS.md` を含む） |
-| source_commit_sha | TEXT | 読み取り元の commit |
+| layer | TEXT | `global` / `harness` / `task` / `reported` |
+| kind | TEXT | `global_policy` / `instructions` / `skill` / `settings` / `record` / `task_input` / `reported` |
+| source_path | TEXT | 読み取り元の相対パス。`reported` では、スペシャルハーネスが報告した `source` と `path` を `<source>:<path>` の形でつないだ値（[`07-context.md`](./07-context.md) 3.4） |
+| source_revision | TEXT | 読み取り元の版（Profile の commit SHA、記録の ID、報告された revision） |
 | content_hash | TEXT | SHA-256 |
-| content | TEXT | 内容 |
+| content | TEXT NULL | 内容。`reported` では持たない（記録だけ） |
 | created_at | TEXT | |
 
-#### worktrees
+- layer=`project`（対象リポジトリの `AGENTS.md` の固定）は持たない。スペシャルハーネスが準備の段で固定して報告したもの（契約 6.5 の `reportedContext`）を layer=`reported` として記録だけ残す（vision-alignment.md 5章の推奨）。
+- 記録の受け渡し（契約 9章）は layer=`harness`、kind=`record` で残す。
+
+### 3.4 本人の判断の表
+
+本人の判断（振り分けの承認、操作の承認、止まった仕事の続行、作業中の AI の質問への回答）は、すべて owner_decisions の行として管理画面に出す（本人決定 3）。種類ごとの詳しい値は、route_proposals と approvals に持つ。execution_blocks は owner_decisions に置き換える。
+
+#### owner_decisions（本人の判断待ち）
 
 | 列 | 型 | 説明 |
 |---|---|---|
-| id | TEXT PK | |
-| project_id | TEXT FK | |
-| task_id | TEXT FK | |
-| runner_id | TEXT FK | |
-| path | TEXT | 絶対パス（Worktree Root 配下） |
-| branch_name | TEXT | |
-| base_sha | TEXT | 開始点 SHA |
-| status | TEXT | `active` / `retained`（中断・失敗・Blocked で保持中）/ `cleaned` |
-| setup_status | TEXT | `pending` / `succeeded` / `failed`（[`06-worktree.md`](./06-worktree.md) 3.4） |
-| copied_files | TEXT (JSON 配列) | コピー許可リストで置いたファイルの相対パスと SHA-256（[`06-worktree.md`](./06-worktree.md) 3.5） |
-| created_at / cleaned_at | TEXT | |
-
-#### test_runs
-
-| 列 | 型 | 説明 |
-|---|---|---|
-| id | TEXT PK | |
-| execution_id | TEXT FK | |
-| kind | TEXT | `setup` / `baseline` / `verify` |
-| target_sha | TEXT | 実行対象の commit |
-| command | TEXT | 実行したコマンド（Project Registry から読んだもの） |
-| exit_code | INTEGER NULL | |
-| total / passed / failed / skipped | INTEGER NULL | レポートから得た件数 |
-| test_ids_artifact_id | TEXT NULL FK→artifacts | 実行したテスト ID の一覧 |
-| timed_out | INTEGER | 0 / 1 |
-| started_at / finished_at | TEXT | |
-
-#### gate_results（追加）
-
-17章に無い。Gate 2・3 の判定を構造化して残すために追加する。
-
-| 列 | 型 | 説明 |
-|---|---|---|
-| id | TEXT PK | |
-| execution_id | TEXT FK | |
-| gate | INTEGER | 2 / 3（Gate 1 は Q36 で廃止） |
-| result | TEXT | `pass` / `blocked` / `failed` |
-| base_sha / target_sha | TEXT | 比較した commit |
-| findings | TEXT (JSON 配列) | 5.5 の Finding |
+| id | TEXT PK | ULID |
+| kind | TEXT | 5.6 の判断の種類（`route` / `approval` / `blocked` / `question`） |
+| task_id | TEXT FK→tasks | |
+| execution_id | TEXT NULL FK→executions | kind=`route` では NULL |
+| subject_id | TEXT NULL | kind=`route` は route_proposals.id、kind=`approval` は approvals.id。ほかは NULL |
+| cause | TEXT NULL | kind=`blocked` のとき 5.6 の原因。ほかは NULL |
+| basis | TEXT NULL | 本人が判断の対象として見た値。kind=`approval` と cause=`check_blocked` では content_id、kind=`route` では提案の ID。回答で同じ値を送らせる |
+| detail | TEXT (JSON) | 画面に出す内容（質問の本文と選択肢、finding の要約、出す段の message など）。機密情報除外済み |
+| status | TEXT | `open` / `answered` / `withdrawn` |
+| withdrawn_reason | TEXT NULL | `cancelled`（タスクの中止、または同じ Execution の別の承認の却下で Execution が終わった、[`17-approval.md`](./17-approval.md) 3.6）/ `superseded`（新しい判断待ちに置き換え、Linear で本人がラベルを付けた）/ `expired` |
+| answer | TEXT (JSON) NULL | 5.6 の回答の形 |
+| answered_at | TEXT NULL | |
 | created_at | TEXT | |
 
-#### execution_blocks（追加）
+- 同じ task_id で status が `open` の行は1件までとする（部分一意インデックス）。ただし kind=`approval` は、同じ Execution で操作ごとに1件ずつ並んでよい（`UNIQUE(execution_id, subject_id) WHERE status='open'`）。
+- 判断の受け付け、取り下げは audit_logs に残す（actor は回答が `owner`、取り下げが `system`）。
+- 行を作ったら、Linear 起因のタスクには「管理画面で判断待ち」のコメントを linear_outbox に書く（kind=`decision_open`、3.7）。回答の後の Linear への書き戻し（振り分けのラベルの追加、状態の変更）も linear_outbox に書く。
 
-17章に無い。Blocked の原因と、本人の続行・中止の判断を残すために追加する。
+#### route_proposals（振り分けの提案）
+
+ラベルで振り分け先が決まらないタスク（5.6 の `route` の契機）について、AI が鍵の無い隔離の中で振り分け先を1つ提案した記録である（vision.md 3章）。
 
 | 列 | 型 | 説明 |
 |---|---|---|
-| id | TEXT PK | |
-| execution_id | TEXT FK | |
-| cause | TEXT | 5.6 の Block 原因 |
-| gate_result_id | TEXT NULL FK | Gate による Block のとき |
-| head_sha | TEXT | Block した時点の HEAD |
-| detail | TEXT (JSON) | |
-| decision | TEXT NULL | `continue` / `abort`。未判断は NULL |
+| id | TEXT PK | ULID |
+| task_id | TEXT FK→tasks | |
+| trigger | TEXT | `no_label`（振り分けのラベルが無い）/ `unknown_label`（routes に無い）/ `multiple_labels`（2つ以上） |
+| seen_labels | TEXT (JSON 配列) | 判定したときに Issue に付いていた振り分けのラベル |
+| candidates | TEXT (JSON 配列) | 提案を作るときに AI に見せた振り分け先の一覧（routes の label、振り分け先の種類と ID、Profile の description） |
+| status | TEXT | `queued`（Runner の取得待ち）/ `running` / `proposed` / `failed` / `decided` / `superseded` / `cancelled`（タスクの中止で止めた、Q133） |
+| runner_id | TEXT NULL FK→runners | |
+| proposed_label | TEXT NULL | AI が選んだラベル。candidates の中のものでなければ捨てて `failed` にする |
+| reason | TEXT NULL | AI が書いた理由（2000 文字以内、機密情報除外済み） |
+| error_class | TEXT NULL | `sandbox_error` / `timeout` / `contract_error`（提案が一覧に無い、形が合わない）/ `interrupted`（Runner の再起動で中断、Q133）。`routing.proposer` の model が null で提案を作らなかったときは NULL |
+| decision_id | TEXT NULL FK→owner_decisions | |
+| created_at / finished_at | TEXT | |
+
+- 全体設定 `routing.proposer` の model が null のときは、行を作って Runner に渡さずに `failed`（error_class は NULL）にする（[`15-linear-intake.md`](./15-linear-intake.md) 3.6.4）。
+- 提案が `proposed` になっても `failed` になっても、owner_decisions（kind=`route`）を作る。`failed` のときは提案なしで、本人が一覧から選ぶ。
+- 提案の途中でタスクを中止したら、`queued` の行はそのまま `cancelled` にする。`running` の行は、heartbeat の応答の `cancelRouteProposalIds`（[`01-architecture.md`](./01-architecture.md) 5.2）で Runner に止めさせ、`cancelled` にする（Q133）。
+- 提案の途中で Runner が再起動したら、`running` の行を `failed`（`interrupted`）にする。タスクが `routing` のままなら、提案なしの owner_decisions（kind=`route`）を作る（Q133）。
+- 承認されるまで、タスクは `routing` のままで実行しない。
+- 提案を待つ間に本人が Linear で振り分けのラベルを1つだけ付けて決まったら、普通の振り分けとして扱い（本人決定 3）、提案を `superseded`、判断待ちを `withdrawn`（`superseded`）にする。
+
+#### approvals（操作の承認）
+
+前の版の承認の表を、スペシャルハーネスが宣言する操作に一般化したもの（契約 7章）。使い方は [`17-approval.md`](./17-approval.md) 3.3〜3.8 で定める。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | TEXT PK | ULID |
+| task_id | TEXT FK→tasks | |
+| execution_id | TEXT FK→executions | |
+| decision_id | TEXT FK→owner_decisions | |
+| requested_stage | TEXT | 承認を求めた段（`check` / `publish`） |
+| operation | TEXT | Profile の `approvals[].operation` |
+| target | TEXT (JSON) | 結果 JSON の `target`（表示用、不透明） |
+| summary | TEXT NULL | 結果 JSON の `summary` |
+| content_id | TEXT | 承認を求めたときの中身の識別子 |
+| params_hash | TEXT | operation・target・content_id を正規化した JSON の SHA-256 |
+| status | TEXT | `pending` / `approved` / `rejected` / `consumed` / `invalidated` / `expired` |
+| invalidated_reason | TEXT NULL | `content_changed` / `superseded` / `cancelled` |
 | decided_at | TEXT NULL | |
+| expires_at | TEXT NULL | 承認した時刻 + 有効時間（既定は 17 の Q55） |
+| max_uses | INTEGER | 1 |
+| use_count | INTEGER | 0 から始める |
+| consumed_at | TEXT NULL | |
 | created_at | TEXT | |
+
+- 同じ execution_id と operation で、status が `pending` / `approved` の行は1件までとする。新しく求めたら前の行を `invalidated`（`superseded`）にする（契約 7.2）。
+- 消費は、出す段の問い合わせ（契約 7.4）を受けた Runner が `POST /api/executions/{id}/authorize`（[`01-architecture.md`](./01-architecture.md) 5.2）を呼び、Control Plane が期待する現在値を条件にした1つの UPDATE で行う。content_id が違えば `invalidated`（`content_changed`）にする。
+- 承認を省いた操作（projects.approval_waivers）は行を作らず、execution_events に `approval_waived` を残す。出す段の問い合わせの時点で Project の approval_waivers を読み直し、省く設定が外れていれば許可しない（[`17-approval.md`](./17-approval.md) Q61 と同じ考え方）。
+
+### 3.5 記録の表
 
 #### artifacts
 
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | |
-| execution_id | TEXT FK | |
-| kind | TEXT | `harness_log` / `test_log` / `setup_log` / `diff` / `test_report` / `test_ids` / `harness_output` |
-| storage_path | TEXT | Evaloom のデータディレクトリ内のパス（Git には入れない、requirements 3.1） |
+| execution_id | TEXT NULL FK→executions | |
+| route_proposal_id | TEXT NULL FK→route_proposals | 振り分けの提案のログ。execution_id とどちらか一方 |
+| stage | TEXT | 4.1 の段の名前、または `runner` / `proposal` |
+| kind | TEXT | `log` / `out_file`（段の `out` のファイル）/ `request_json` / `result_json` / `work_summary`（`out/summary.md`）/ `question`（`out/question.json`）/ `proposal_result`（振り分けの提案の AI が `out` に書いた結果のファイル、[`08-harness-adapter.md`](./08-harness-adapter.md) 3.10、[`15-linear-intake.md`](./15-linear-intake.md) 3.6.4） |
+| name | TEXT | `out` からの相対パスなど、表示用の名前 |
+| storage_path | TEXT | Evaloom のデータディレクトリ内のパス（Git には入れない） |
 | sha256 | TEXT | |
 | size_bytes | INTEGER | |
 | redacted | INTEGER | 機密情報の除外処理を通したか（0 / 1） |
 | created_at | TEXT | |
 
-kind=`harness_output` は、Runner が工程9で登録する HarnessResult（5.8）の JSON とする。Blocked から続行した Execution の PR 本文に作業概要を載せるため、Control Plane が claim の `execution.resumeHarnessSummary` を読む元に使う（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.3.2。案 Q74、2026-11-06 追記）。
+#### harness_records（スペシャルハーネスの記録）
+
+契約 9章の記録である（[`19-routing-and-stages.md`](./19-routing-and-stages.md) 3.8 の案A を引き継ぐ）。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| id | TEXT PK | |
+| harness_id | TEXT FK→harnesses | 記録はスペシャルハーネス単位で持ち、Profile の版をまたぐ |
+| artifact_id | TEXT FK→artifacts | 記録のファイル（kind=`out_file`） |
+| execution_id | TEXT FK→executions | |
+| task_id | TEXT FK→tasks | |
+| source_identifier | TEXT NULL | タスクの出所の識別子（例 `ENG-123`） |
+| file_name | TEXT | 次の仕事の `records/` に置くときの名前 |
+| created_at | TEXT | |
+| deleted_at | TEXT NULL | 本人が消した時刻。消した記録は次の仕事に渡さない |
 
 #### audit_logs
 
@@ -296,7 +393,7 @@ kind=`harness_output` は、Runner が工程9で登録する HarnessResult（5.8
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | |
 | actor | TEXT | `owner` / `runner:<id>` / `system` |
-| action | TEXT | 例 `project.update`、`profile.register`、`task.cancel`、`auth.reject` |
+| action | TEXT | 例 `project.update`、`route.update`、`profile.register`、`task.cancel`、`decision.answer`、`approval.consume`、`settings.update`、`auth.reject` |
 | target_type / target_id | TEXT | |
 | detail | TEXT (JSON) | 変更前後の値など。秘密情報は含めない |
 | created_at | TEXT | |
@@ -306,284 +403,316 @@ kind=`harness_output` は、Runner が工程9で登録する HarnessResult（5.8
 | 列 | 型 | 説明 |
 |---|---|---|
 | id | TEXT PK | |
-| execution_id | TEXT FK | |
-| input_tokens / output_tokens | INTEGER NULL | ハーネスから取れる場合だけ |
+| execution_id | TEXT FK→executions | |
+| stage | TEXT | 4.1 の段の名前 |
+| input_tokens / output_tokens | INTEGER NULL | わかる場合だけ |
 | wall_time_ms | INTEGER | 実行時間 |
 | cost_amount | REAL NULL | API 利用時だけ（requirements 12.5） |
 | created_at | TEXT | |
 
-### 3.3 Phase 1 で作らないテーブル
+### 3.6 本人のログインの表
 
-| テーブル | 作る Phase | 理由 |
-|---|---|---|
-| users | 複数ユーザー対応時 | requirements 17章 |
-| task_steps | 未定 | Phase 1 では使わない（requirements 8.2） |
-| project_integrations, linear_issue_links, event_inbox | 2 | Linear 連携 |
-| approvals | 2 | 承認 |
-| evaluation_rubrics, evaluation_runs, evaluation_scores, contracts, dependency_edges, human_feedback | 3〜4 | 評価・中央テスト |
-| improvement_proposals, experiments, experiment_assignments | 4 | 自己改善 |
-| collaboration_sessions, collaboration_messages | 5 | AI 協議 |
+[`18-remote-access.md`](./18-remote-access.md) 3.8 の owner_credentials と owner_sessions を使う。列の定義は 18 に置く。
 
-Phase 2 で追加するテーブル・列の下書き（status: draft）は、次の仕様に書いている。Phase 2 の実装に入るときに、この節へ反映する。
+### 3.7 Linear の表
 
-- event_inbox、linear_issue_links、projects の Linear 列、tasks の source・intake_block_cause: [`15-linear-intake.md`](./15-linear-intake.md) 3.8（project_integrations は作らない案、Q50）
-- linear_outbox（追加）: [`16-linear-feedback.md`](./16-linear-feedback.md) 3.7
-- settings（追加、全体設定の保存先）: 本書 3.4（Q76）
-- approvals、executions.status の `waiting_approval` / `merging`: [`17-approval.md`](./17-approval.md) 3.9
-| models | 未定（Q19） | Phase 1 ロードマップに Model Registry が無い。Profile が Model ID を文字列で持つ |
+[`15-linear-intake.md`](./15-linear-intake.md) と [`16-linear-feedback.md`](./16-linear-feedback.md) の表を、本人決定 2・3 に合わせてここで定める。
 
-### 3.4 全体設定（settings、Phase 2 で追加）
+#### linear_poll_teams
 
-`GET/PATCH /api/settings`（[`01-architecture.md`](./01-architecture.md) 5.1）で扱う全体設定の保存先。Phase 1 には全体設定の表が無く、Phase 2 の Linear の全体設定（[`15-linear-intake.md`](./15-linear-intake.md) 3.4、5章）が最初の利用者になる。Control Plane を再起動しても値を保つ（2026-11-08 決定、Q76）。
-
-#### settings（追加）
+照会先（全体設定 `linear.teamId`、本人決定 2）の照会の状況を持つ。照会先は1つだが、照会先を変えたときに最初の照会からやり直すため、Team ID ごとに行を持つ。
 
 | 列 | 型 | 説明 |
 |---|---|---|
-| key | TEXT PK | 設定のキー（例 `linear.triggerLabel`）。API の JSON の階層を `.` でつないだ名前 |
-| value | TEXT (JSON) | 値 |
-| updated_at | TEXT | 最後に変えた時刻 |
+| team_id | TEXT PK | Linear Team ID |
+| baseline_done_at | TEXT NULL | 最初の照会を終えた時刻。NULL のうちは起動しない（15 の Q64） |
+| last_success_at | TEXT NULL | |
+| last_error | TEXT NULL | `auth` / `rate_limited` / `network` / `other` |
+| consecutive_failures | INTEGER | |
 
-- 1キー1行で持つ。行が無いキーは、そのキーを定めた仕様の既定値を使う。マイグレーションでは既定値の行を入れない。
-- 書いてよいキーは、仕様で定めたキーだけとする。現時点では `linear.triggerLabel`（既定 `ai-ready`）と `linear.routingLabelPrefix`（既定 `repo:`）の2つ（[`15-linear-intake.md`](./15-linear-intake.md) 3.4）。13 の Settings 画面にある既定のタイムアウトや通知先は、キーと値の形を各仕様で決めるまでこの表に足さない。
-- 未知のキーは API で 400 にし、この表に書かない。読み込むときに未知のキーの行があっても使わない。
-- 値が空・空白だけ、または型が合わない行は使わず、そのキーは既定値として扱い、Control Plane のログに出す（[`15-linear-intake.md`](./15-linear-intake.md) 6章）。
-- 値の変更は audit_logs に残す（action `settings.update`、target_type `settings`、target_id はキー、detail は変更前後の値）。settings と audit_logs の書き込みは1つのトランザクションで行う。秘密情報（API キーなど）はこの表に入れない（Linear の API キーはファイルに置く、[`15-linear-intake.md`](./15-linear-intake.md) 3.1）。
+#### linear_issue_states
+
+[`15-linear-intake.md`](./15-linear-intake.md) 3.8 の列のまま使う（linear_issue_id、issue_identifier、team_id、ai_ready、attach_seq、issue_updated_at、last_decision、last_decision_at、first_seen_at、last_seen_at、removed_at、recheck_requested_at）。last_decision に `routing` を足す（振り分けの提案に回した）。
+
+#### linear_issue_links
+
+[`15-linear-intake.md`](./15-linear-intake.md) 3.8 の列のまま使う。`UNIQUE(task_id)`、`UNIQUE(linear_issue_id, attach_seq)`。
+
+#### linear_outbox
+
+[`16-linear-feedback.md`](./16-linear-feedback.md) 3.7 の列に、ラベルの追加を足す。
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| action | TEXT | `comment` / `set_state` / `add_label` |
+| kind | TEXT | 5.8 の値 |
+| label_name | TEXT NULL | action=`add_label` のとき、付けるラベル。振り分けのラベル（routes.label）だけを許す。`ai-ready`（`linear.triggerLabel`）は書けない（本人決定 3） |
+
+ほかの列（id、task_id、linear_issue_id、state_name、dedupe_key、body、status、attempts、next_attempt_at、linear_comment_id、created_at、sent_at、execution_id、outcome_unknown、failure_reason、failed_at）は 16 の 3.7 のまま使う。action=`add_label` の dedupe_key は `<task_id>:label:<decision_id>` とし、outcome_unknown は常に 0 にする（同じラベルを2回付けても結果は変わらないため）。action=`set_state` の dedupe_key は `<task_id>:state_<kind>:<対象の ID>` とする。kind=`started` の対象の ID は、Execution の最初の開始では Execution の ID、本人の判断の後の再開では回答した判断待ちの ID とする（16 の 3.6.3、Q100）。同じ Execution が判断の後に何度再開しても、そのたびに In Progress へ戻せるようにするためである。
+
+### 3.8 全体設定（settings）
+
+| 列 | 型 | 説明 |
+|---|---|---|
+| key | TEXT PK | 設定のキー |
+| value | TEXT (JSON) | 値 |
+| updated_at | TEXT | |
+
+書いてよいキーは次だけとする。行が無いキーは既定値を使う。未知のキーは API で 400 にする。値の変更は audit_logs（`settings.update`）に残し、settings と同じトランザクションで書く。秘密情報はこの表に入れない。
+
+| キー | 既定値 | 内容 | 出典 |
+|---|---|---|---|
+| `linear.teamId` | なし（未設定なら照会しない） | Evaloom が照会する Linear Team。1つだけ | 本人決定 2 |
+| `linear.triggerLabel` | `ai-ready` | 起動の合図のラベル | 15、Q48 |
+| `linear.routingLabelPrefix` | `route:` | 振り分けのラベルの接頭辞。この接頭辞で始まるラベルだけを振り分けのラベルとして数える | Q120 |
+| `routing.proposer` | `{ "microHarness": "claude_code", "model": null }` | 振り分けを提案する AI。model が null なら提案を作らず、本人が一覧から選ぶ | Q111 |
+| `routing.defaultRunnerId` | なし | スペシャルハーネスへ直接振り分けたタスクと、振り分けの提案を動かす Runner | Q111、Q113 |
+| `limits.stageTimeoutMaxSec` | `{ "prepare": 1800, "work": 14400, "check": 3600, "publish": 1800 }` | Profile の `timeoutSec` の上限（契約 10.2） | 案 |
+| `approval.ttlSec` | 17 の Q55 の値 | 承認の有効時間 | 17 |
 
 ## 4. 設定値・確定値
 
 | 項目 | 値 | 出典 |
 |---|---|---|
-| Profile の版 | SemVer が正本、commit SHA を記録 | requirements 5.4 |
-| 公開済みタグの付け替え | 禁止（同じ版の再登録を拒否） | requirements 5.4 |
-| Phase 1 の Profile 状態 | すべて `provisional` | requirements 11.1 |
+| Project が持つもの | 名前、振り分けのラベル、頼むスペシャルハーネス、渡す値、承認を省く設定、Runner の指定の6つだけ | vision.md 4章、本人決定 6 |
+| 振り分けのキー | ラベルだけ。Linear Team は使わない | 本人決定 2 |
+| 振り分けのラベル | 振り分けの表の中で一意。振り分け先は Project かスペシャルハーネスの一方 | 本人決定 2 |
+| 段 | `prepare`（任意）→ `work` → `check` → `publish` | 本人決定 7 |
+| 本人の判断の場所 | 管理画面だけ（owner_decisions） | 本人決定 3 |
+| 確かめたもの＝出すもの | スペシャルハーネスが見張る。Evaloom は照合しない | 本人決定 5 |
+| 承認と中身の結び付け | Evaloom が approvals.content_id と出す直前の識別子を比べる | 本人決定 5 |
+| Profile の版 | SemVer が正本、commit SHA を記録。公開済みタグの付け替え禁止 | requirements 5.4、契約 4.2 |
+| 同時実行の上限 | 全体2本、振り分け先（Project またはスペシャルハーネス）ごとに1本 | requirements 8.7、vision-alignment.md 5章 |
+| 自動リトライ | 0回 | requirements 8.3 |
+| collaboration_mode | `solo` だけ | requirements 8.2 |
 | `users` テーブル | 作らない | requirements 17章 |
-| `task_steps` | 使わない | requirements 8.2 |
-| task_type | `development` のみ | requirements 8.1 |
-| collaboration_mode | `solo` のみ | requirements 8.2 |
 
-### 4.1 Adapter の列挙値
+### 4.1 段の名前
+
+| 段 | Execution 状態 | 動かすもの | 鍵 | 外への接続 |
+|---|---|---|---|---|
+| `prepare` | `preparing` | スペシャルハーネスの固定版のプログラム（AI なし）。Profile に宣言が無ければ行わない | 読み取り用だけ | 宣言した宛先だけ |
+| `work` | `working` | ミクロハーネス | 無し | モデルの API だけ |
+| `check` | `checking` | スペシャルハーネスの固定版のプログラム（AI なし） | 無し | 無し |
+| `publish` | `publishing` | スペシャルハーネスの固定版のプログラム（AI なし） | 宣言したもの | 宣言した宛先だけ |
+
+振り分けの提案（route_proposals）は段ではない。Execution を持たず、`proposal` の隔離（[`01-architecture.md`](./01-architecture.md) 3.1）で動く。
+
+### 4.2 ミクロハーネスの列挙値
 
 | 値 | 対象 |
 |---|---|
-| `codex` | Codex CLI |
 | `claude_code` | Claude Code CLI |
+| `codex` | Codex CLI |
 
-### 4.2 共通契約の版
+### 4.3 契約の版
 
-Phase 1 の共通契約は `contractVersion: "1"` とする。厳密な定義は 5.7 / 5.8 を Phase 1 案とし、確定は実装時に行う（Q6）。
+Evaloom が対応する契約の版は `"1"` だけとする（契約 3章）。
 
-### 4.3 Harness Profile 定義ファイル（Q5、提案）
+## 5. インターフェース（列挙値）
 
-requirements 5.4 の構成を定義ファイルにしたもの。置き場所と読み込み方式は 21章で詳細設計事項とされているため、次は提案である。
-
-- 置き場所: ハーネスリポジトリの `evaloom/profile.yaml`
-- 版: ハーネスリポジトリの Git タグ `profile/v<SemVer>`（例 `profile/v1.2.0`）
-- 読み込み: 登録時にタグを commit SHA に解決し、その commit の `evaloom/profile.yaml` を読んで harness_profiles.definition に保存する。実行時はこの保存内容と commit SHA を使い、タグを読み直さない。
-
-```yaml
-profileVersion: "1.2.0"          # タグと一致しなければ登録を拒否
-harnessVersion: "1.2.0"
-modelId: "<正式な Model ID>"
-promptVersion: "2025-xx"         # ハーネスリポジトリ内のプロンプトの版
-skillVersions:
-  - { name: "<skill>", version: "<版>" }
-toolConfiguration:
-  allowedTools: ["..."]
-contextPolicyVersion: "1"
-executionConfiguration:
-  adapter: "claude_code"         # harnesses.adapter と一致しなければ登録を拒否
-  args: []                       # Adapter に渡す追加引数（Adapter が許可した項目だけ）
-collaborationPolicy: "solo"
-evaluationPolicyVersion: null    # Phase 3 まで null（暫定運用）
-```
-
-## 5. インターフェース（列挙値・スキーマ）
+要求 JSON、結果 JSON、finding、Profile 定義のスキーマは契約（6.1、6.5、14章、5章）を参照する。この章は Evaloom の内部の列挙値を定める。
 
 ### 5.1 タスク状態（tasks.status）
 
-requirements 8.3 の11状態。値は snake_case にする。
-
-| 値 | 表示名 | Phase 1 で使うか |
+| 値 | 表示名 | 意味 |
 |---|---|---|
-| `received` | Received | 使う（作成直後、検証前） |
-| `planning` | Planning | 使わない（タスク分類を行わないため） |
-| `queued` | Queued | 使う |
-| `running` | Running | 使う |
-| `verifying` | Verifying | 使う |
-| `waiting_approval` | Waiting Approval | 使わない（承認は Phase 2） |
-| `completed` | Completed | 使う |
-| `failed` | Failed | 使う |
-| `cancelled` | Cancelled | 使う |
-| `timed_out` | Timed Out | 使う |
-| `blocked` | Blocked | 使う |
+| `received` | Received | 作成直後。振り分け前 |
+| `routing` | Routing | 振り分け先が決まらず、提案と本人の承認を待つ（route_proposals） |
+| `queued` | Queued | Execution が claim を待つ |
+| `running` | Running | Execution が段のどれかを動かしている（`claimed` / `preparing` / `working` / `checking` / `publishing`） |
+| `waiting_approval` | Waiting Approval | 操作の承認を待つ |
+| `blocked` | Blocked | 本人の判断（続行・回答）を待つ。または取り込みの保留（intake_block_cause、Execution なし） |
+| `completed` | Completed | 出す段まで成功した |
+| `failed` | Failed | 失敗 |
+| `cancelled` | Cancelled | 中止 |
+| `timed_out` | Timed Out | タイムアウト |
 
-遷移は [`04-task-lifecycle.md`](./04-task-lifecycle.md) で定める。
+requirements 8.3 の `planning` と `verifying` は使わない。段の細かい状態は Execution 状態で表す（Q119）。
 
 ### 5.2 Execution 状態（executions.status）
 
-| 値 | 意味 | 対応するタスク状態 |
-|---|---|---|
-| `pending` | claim 待ち | `queued` |
-| `claimed` | Runner が取得し、版を固定した | `running` |
-| `preparing` | worktree 準備・setup 中 | `running` |
-| `running` | ハーネス実行中 | `running` |
-| `verifying` | Gate 2・3 | `verifying` |
-| `publishing` | push・PR 作成中 | `verifying` |
-| `succeeded` | PR 作成まで完了 | `completed` |
-| `blocked` | 本人の確認待ち | `blocked` |
-| `failed` | 失敗 | `failed` |
-| `interrupted` | 再起動で中断（失敗の一種） | `failed` |
-| `cancelled` | 中止 | `cancelled` |
-| `timed_out` | タイムアウト | `timed_out` |
+| 値 | 意味 | タスク状態 | 同時実行の枠 |
+|---|---|---|---|
+| `pending` | claim 待ち | `queued` | 数えない |
+| `claimed` | Runner が取得し、版を固定した | `running` | 数える |
+| `preparing` | 準備の段 | `running` | 数える |
+| `working` | 作業の段 | `running` | 数える |
+| `checking` | 確かめる段 | `running` | 数える |
+| `publishing` | 出す段 | `running` | 数える |
+| `waiting_approval` | 承認待ち（段のプロセスは終了） | `waiting_approval` | 数えない |
+| `blocked` | 本人の判断待ち（続行・回答） | `blocked` | 数えない |
+| `succeeded` | 出す段まで成功 | `completed` | 終端 |
+| `failed` | 失敗 | `failed` | 終端 |
+| `interrupted` | 再起動で中断（失敗の一種） | `failed` | 終端 |
+| `cancelled` | 中止 | `cancelled` | 終端 |
+| `timed_out` | タイムアウト | `timed_out` | 終端 |
 
-終端状態: `succeeded` / `failed` / `interrupted` / `cancelled` / `timed_out`。`blocked` は本人の判断で `pending`（resume_point 付きで再 claim を待つ）に戻るか `cancelled` になる（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.8）。
+主な遷移は次のとおりとする（詳細は [`04-task-lifecycle.md`](./04-task-lifecycle.md)）。
+
+| 現在 | 契機 | 次 |
+|---|---|---|
+| `pending` | Runner が claim | `claimed` |
+| `claimed` | 段を始める | Profile に prepare があれば `preparing`、無ければ `working`。resume_stage があればその段 |
+| `preparing` | prepare が `succeeded` | `working` |
+| `working` | 作業が終わり `out/question.json` が無い | `checking` |
+| `working` | `out/question.json` がある | `blocked`（cause=`question`） |
+| `checking` | check が `succeeded` で承認の要る操作が無い、または `needs_approval` で承認の要る操作をすべて省いた | `publishing` |
+| `checking` / `publishing` | `needs_approval`（省かない操作がある） | `waiting_approval` |
+| `publishing` | `needs_approval` で、承認の要る操作をすべて省いた | `pending`（resume_stage=`publish`。publish の段を新しく始める、[`17-approval.md`](./17-approval.md) 3.3 の8） |
+| `checking` | check が `blocked` | `blocked`（cause=`check_blocked`） |
+| `publishing` | publish が `unknown` | `blocked`（cause=`publish_unknown`） |
+| `publishing` | publish が `succeeded` | `succeeded` |
+| `waiting_approval` | 本人がすべて承認 | `pending`（resume_stage=`publish`） |
+| `waiting_approval` | 本人が1つでも却下 | `failed`（`approval_rejected`） |
+| `blocked` | 本人が続行（`check_blocked`）し、check の結果に省かない承認要求がある | `waiting_approval`（[`17-approval.md`](./17-approval.md) 3.3） |
+| `blocked` | 本人が続行（`check_blocked` で承認要求が無い、または `publish_unknown`）または回答（`question`） | `pending`（resume_stage は 5.6 の表） |
+| `blocked` / `waiting_approval` | 本人が中止（abort） | `cancelled`。ただし cause=`publish_unknown` の abort は `failed`（`publish_unknown`） |
+| 動いている状態 | 失敗・タイムアウト・中止・再起動 | `failed` / `timed_out` / `cancelled` / `interrupted` |
+
+本人の判断の後に Execution を `pending` に戻したときは、同じトランザクションでタスクを `queued` に戻す（5.2 の表の「タスク状態」の列のとおり）。Runner は次の claim で resume_stage の段から再開する（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.6）。
 
 ### 5.3 実行イベント種別（execution_events.type）
 
 | 値 | 発生元 | payload の主な項目 |
 |---|---|---|
 | `status_changed` | Control Plane | `from`, `to`, `reason` |
-| `log` | Runner | `sourceId`（Runner が付ける再送照合用の ID。Execution 内で一意。[`05-runner.md`](./05-runner.md) 3.4）, `stream`（`harness` / `setup` / `test` / `runner`）, `text`（機密情報除外済み） |
-| `worktree_ready` | Runner | `path`, `branch`, `baseSha` |
-| `context_pinned` | Runner | `revisions`（layer, path, hash の配列） |
-| `harness_started` / `harness_finished` | Runner | `sessionId`, `headSha`, `errorClass` |
-| `gate_result` | Runner | `gate`, `result`, `findingCount` |
-| `blocked` | Control Plane | `cause`, `blockId` |
-| `pushed` | Runner | `sha`, `branch` |
-| `pr_created` | Runner | `prNumber`, `prUrl` |
-| `notification_sent` | Control Plane | `kind`, `channel` |
-| `notification_failed` | Control Plane | `kind`, `channel`, `reason`（channel=`macos` では `permission_denied` / `launch_failed` / `timeout` / `other`。[`12-notification.md`](./12-notification.md) 3.4。channel=`linear` では `auth` / `issue_removed` / `retries_exhausted` / `state_not_found` / `other`。2026-11-08 決定、Q85。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.2） |
+| `log` | Runner | `sourceId`（Execution 内で一意）, `stream`（`prepare` / `work` / `check` / `publish` / `runner`）, `text`（機密情報除外済み） |
+| `stage_started` | Runner | `stage`, `attempt` |
+| `stage_finished` | Runner | `stage`, `attempt`, `status`, `errorClass`, `exitCode` |
+| `context_pinned` | Control Plane | `revisions`（layer, path, hash の配列） |
+| `check_result` | Control Plane | `checkResultId`, `result`, `findingCount`, `contentId` |
+| `approval_requested` | Control Plane | `approvalId`, `operation`, `contentId` |
+| `approval_waived` | Control Plane | `operation`, `contentId` |
+| `approval_consumed` | Control Plane | `approvalId`, `operation`, `allowed`, `reason` |
+| `decision_opened` | Control Plane | `decisionId`, `kind`, `cause` |
+| `decision_answered` | Control Plane | `decisionId`, `kind`, `action` |
+| `published` | Control Plane | `outputs`（`kind`, `label`, `url` の配列） |
+| `notification_sent` | Control Plane | `kind`（判断待ちの通知では `decision`、[`12-notification.md`](./12-notification.md) 3.4）, `channel` |
+| `notification_failed` | Control Plane | `kind`, `channel`, `reason`（channel=`macos` では `permission_denied` / `launch_failed` / `timeout` / `other`。channel=`linear` では `auth` / `issue_removed` / `retries_exhausted` / `state_not_found` / `label_not_found`（付けるラベルが Linear の Team に無い、16 の Q164）/ `other`） |
 
-発生元が Runner のイベントのうち、`log` 以外（`worktree_ready`、`pushed`、`pr_created`）は、Runner が result の工程内報告で送った値を Control Plane が同じトランザクションで記録する（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1、2026-11-06 追記）。既存の `POST /api/executions/{id}/events` が受け付けるのは `log` だけである。`context_pinned` は context の API（[`07-context.md`](./07-context.md)）の側で記録する。`harness_started` / `harness_finished` の送り方は工程表の接続には要らないため、この追記では決めない。
+worktree_ready、gate_result、pushed、pr_created、harness_started、harness_finished、blocked は使わない。
 
-### 5.4 エラー分類（executions.error_class）
+### 5.4 振り分けの提案の状態（route_proposals.status）
 
-requirements 9.5 の5分類に、Phase 1 の Runner 側で必要な分類を足す。
+3.4 の表のとおり（`queued` / `running` / `proposed` / `failed` / `decided` / `superseded` / `cancelled`）。
 
-| 値 | 意味 | 出典 |
+### 5.5 エラー分類（executions.error_class）
+
+契約 13章と同じ値を使う。
+
+| 値 | 意味 |
+|---|---|
+| `config_error` | 設定の不備（Profile の読み込み失敗、渡す値が形に合わない、要る鍵が無い、タグの付け替えを検出） |
+| `prepare_failed` | 準備の段の失敗 |
+| `work_failed` | 作業の段の失敗 |
+| `check_failed` | 確かめた結果が基準を満たさない |
+| `publish_failed` | 出す段の失敗 |
+| `publish_unknown` | 出す操作の結果がわからない（本人が中止を選んだとき、この値で終える） |
+| `approval_rejected` | 本人が承認を却下した |
+| `contract_error` | 結果 JSON が契約に合わない |
+| `sandbox_error` | 隔離の作成・実行の失敗 |
+| `timeout` | 段の上限時間を超えた |
+| `cancelled` | 中止 |
+| `interrupted` | 再起動による中断 |
+
+`execution_failed`、`test_failed` は使わない（それぞれ `work_failed`、`check_failed` に置き換える）。
+
+### 5.6 本人の判断の種類・原因・回答
+
+| kind | 契機 | cause | 回答（answer） | 回答の後 |
+|---|---|---|---|---|
+| `route` | 振り分けのラベルが無い・知らない・2つ以上 | - | `{ "action": "approve", "label": "<routes.label>", "basis": "<提案の ID>" }` / `{ "action": "reject" }` | approve: タスクに振り分け先を書いて `queued`、Linear に振り分けのラベルを付ける（linear_outbox action=`add_label`）。reject: タスクを `cancelled`（Q117） |
+| `approval` | 段の結果が `needs_approval` | - | `{ "action": "approve" \| "reject", "contentId": "<basis>", "ttlSec": <整数> }`。`ttlSec` は approve のときだけ書ける任意の項目で、その承認の有効時間（省略したら `approval.ttlSec`。Q200） | 3.4 approvals と 5.2 |
+| `blocked` | check が `blocked` | `check_blocked` | `{ "action": "continue" \| "abort", "contentId": "<basis>" }` | continue: 結果に承認要求があれば `waiting_approval`、無ければ `pending`（resume_stage=`publish`） |
+| `blocked` | publish が `unknown` | `publish_unknown` | `{ "action": "continue" \| "abort" }` | continue: `pending`（resume_stage=`publish`）。abort: `failed`（`publish_unknown`） |
+| `blocked` | 固定した文脈に解決できない矛盾 | `context_conflict` | `{ "action": "abort" }` だけ | `cancelled`。本人は直してから再実行する |
+| `blocked` | 再開のときに作業領域が無い（削除済み）、または再開に要る前の段の `out` が Runner に無い（Q136） | `workspace_missing` | `{ "action": "abort" }` だけ | `cancelled`。本人は fresh で再実行する |
+| `question` | 作業の段の `out/question.json` | `question` | `{ "action": "answer", "text": "...", "option": "<選択肢>" \| null }` / `{ "action": "abort" }` | answer: `pending`（resume_stage=`work`、契約 8章） |
+
+- `basis` のある判断では、回答に画面で見ていた値を送らせ、行の basis と違えば 422 にする（[`04-task-lifecycle.md`](./04-task-lifecycle.md) の Blocked からの続行と同じ考え方）。
+- kind=`route` の label は、判断の時点の routes にあるラベルでなければならない。提案と別のラベルを選べるかは Q112。
+- cause=`workspace_missing` は、Runner が段の終了の報告で返す `runnerError: "workspace_missing"`（[`04-task-lifecycle.md`](./04-task-lifecycle.md) 3.4.1）から作る。`runnerError` の `workspace_missing` は判断待ちの原因であり、5.5 のエラー分類ではない。最初から始める Execution で作業領域が無いときは、判断待ちにせず `failed`（`config_error`）にする。
+
+### 5.7 取り込みの保留の理由（tasks.intake_block_cause）
+
+振り分けが決まらない場合は保留ではなく、振り分けの提案（`routing`）に回す。保留にするのは次の2つだけとする。
+
+| 値 | 意味 | 解除 |
 |---|---|---|
-| `config_error` | 設定不備（テストコマンド未設定、パス不正、Profile 読み込み失敗など） | 9.5 |
-| `execution_failed` | ハーネスの実行失敗 | 9.5 |
-| `test_failed` | テスト失敗 | 9.5 |
-| `timeout` | タイムアウト | 9.5 |
-| `cancelled` | 中止 | 9.5 |
-| `interrupted` | 再起動による中断 | 8.3（追加） |
-| `publish_failed` | push・PR 作成の失敗 | 追加 |
-| `sandbox_error` | Sandbox の作成・実行の失敗 | 追加 |
+| `missing_acceptance_criteria` | 振り分け先の Profile が `required` なのに受け入れ条件が無い | Issue の更新で再判定（15 の 3.6.3） |
+| `config_missing_profile` | スペシャルハーネスへ直接振り分けたが default_profile_id が無い | 本人が既定の版を設定したときに再判定 |
 
-### 5.5 Finding（gate_results.findings の要素）
+`routing_multiple_labels`、`routing_unknown_label`、`routing_team_mismatch`、`routing_no_label`、`config_missing_assignment` は使わない。
 
-```json
-{
-  "rule": "existing_test_not_run",
-  "path": "src/foo.test.ts",
-  "line": 0,
-  "message": "既存のテスト FooTest.testBar が実行されていない"
-}
-```
+### 5.8 linear_outbox の kind
 
-`rule` の値は [`10-verification-gates.md`](./10-verification-gates.md) で定める。
-
-### 5.6 Block 原因（execution_blocks.cause）
-
-| 値 | 意味 | 出典 |
+| action | kind | 契機 |
 |---|---|---|
-| `gate2_missing_tests` | Gate 2 で既存テストの欠けを検出 | 8.5 |
-| `gate2_unverifiable` | テストの件数・ID が取れず検証できない | 8.5 |
-| `gate3_mismatch` | 検証 SHA と HEAD の不一致、未コミットの変更 | 8.5 |
-| `context_conflict` | 解決できない Context の矛盾 | 7.3 |
-| `git_state` | 再実行前の Git 状態が想定と違う、PR がクローズ済み等 | 8.5 |
-
-### 5.7 共通契約：HarnessRequest（Adapter への入力、Q6 案）
-
-requirements 9.5 の入力「Issue 本文、受け入れ条件、対象プロジェクト、使用する Harness Profile」に対応する。
-
-```json
-{
-  "contractVersion": "1",
-  "executionId": "01J...",
-  "task": {
-    "id": "task-001",
-    "title": "...",
-    "body": "...",
-    "acceptanceCriteria": "..."
-  },
-  "project": {
-    "id": "project-a",
-    "workdir": "<Sandbox 内から見た worktree のパス>",
-    "branch": "evaloom/task-001-add-login",
-    "baseSha": "<40桁>"
-  },
-  "profile": {
-    "harnessId": "claude-developer",
-    "version": "1.2.0",
-    "commitSha": "<40桁>",
-    "modelId": "<正式な Model ID>",
-    "definition": { "...": "4.3 の内容" }
-  },
-  "context": {
-    "instructions": "<Context Builder が整形した指示文>",
-    "revisionIds": ["..."]
-  },
-  "limits": { "timeoutSec": 0 }
-}
-```
-
-### 5.8 共通契約：HarnessResult（Adapter からの出力、Q6 案）
-
-requirements 9.5 の出力「ステータス、変更差分、PR URL、ログ、成果物」に対応する。PR URL は Phase 1 ではハーネスではなく Git Publisher が作るため、Runner が後から埋める。
-
-```json
-{
-  "contractVersion": "1",
-  "status": "succeeded",
-  "errorClass": null,
-  "sessionId": "...",
-  "headSha": "<40桁>",
-  "commits": ["<40桁>"],
-  "diffArtifactId": "...",
-  "summary": "作業概要",
-  "logArtifactIds": ["..."],
-  "artifactIds": ["..."],
-  "usage": { "inputTokens": null, "outputTokens": null, "wallTimeMs": 0 },
-  "prUrl": null
-}
-```
-
-`status` は `succeeded` / `failed`。`errorClass` は 5.4 の値。
+| `comment` | `missing_acceptance_criteria` | 5.7 の保留。`config_missing_profile` の保留ではコメントを出さない（Evaloom 側の設定の不備で、Linear で直せることが無いため。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2） |
+| `comment` | `decision_open` | owner_decisions の行を作った（「管理画面で判断待ち」とリンク） |
+| `comment` | `succeeded` / `failed` / `cancelled` | Execution の終了（結果の返却、requirements 6.4） |
+| `set_state` | `started` / `waiting_decision` / `completed` / `cancelled` | 状態の変更（状態の名前は [`16-linear-feedback.md`](./16-linear-feedback.md) 3.6） |
+| `add_label` | `route_approved` | 本人が振り分けを承認した |
 
 ## 6. エラー処理
 
-- JSON 列はアプリ側で検証し、スキーマに合わない値を書き込まない。
+- JSON 列はアプリ側で検証し、スキーマに合わない値を書き込まない。不透明な値（params、content_id、outputs、target）は、契約の形（型と長さ）だけを確かめる。
 - harness_profiles の同じ (harness_id, version) への別 SHA の登録は 409 で拒否する。
+- routes で project_id と harness_id の両方、または両方 NULL の行は書けない。同じラベル、同じ Project への2つ目のラベルは 409。
 - 状態列の更新は、期待する現在値を条件にした UPDATE（`WHERE status = ?`）で行い、競合したら 409 とする。
+- approvals の消費が0件の更新になったら、許可しない（Fail Closed）。
 
 ## 7. スコープ外
 
 - PostgreSQL への移行（requirements 2.2 の将来候補）
-- バックアップ・障害復旧、ログ保存期間（21章、Q24）
-- 3.3 のテーブル
+- バックアップ・障害復旧、ログ保存期間（requirements 21章、Q24）
+- 評価・改善・協議の表（users、task_steps、evaluation_rubrics、evaluation_runs、evaluation_scores、contracts、dependency_edges、human_feedback、improvement_proposals、experiments、experiment_assignments、collaboration_sessions、collaboration_messages）。requirements 10〜13 章の将来の Phase で作る
+- 開発の表（worktrees、test_runs）と開発の列。software-engineer へ移した（本人決定 1）
+- project_harnesses（役割ごとの割り当て）、project_integrations、event_inbox、execution_blocks、gate_results。それぞれ projects.harness_id と profile_id、settings、linear_issue_states、owner_decisions、check_results に置き換えた
 
 ## 8. 関連仕様
 
+- [`../contract/harness-contract-v1.md`](../contract/harness-contract-v1.md) ハーネス契約（要求 JSON、結果 JSON、Profile 定義、finding）
 - [`00-overview.md`](./00-overview.md) 全体仕様
 - [`01-architecture.md`](./01-architecture.md) API と認証（もう一つのアンカー）
-- [`03-registry.md`](./03-registry.md) projects / harnesses / harness_profiles / project_harnesses の登録
-- [`04-task-lifecycle.md`](./04-task-lifecycle.md) 状態遷移
+- [`03-registry.md`](./03-registry.md) projects / harnesses / harness_profiles / routes の登録
+- [`04-task-lifecycle.md`](./04-task-lifecycle.md) 状態遷移、claim、本人の判断の後の再開
 - [`07-context.md`](./07-context.md) context_revisions
-- [`08-harness-adapter.md`](./08-harness-adapter.md) 共通契約
-- [`10-verification-gates.md`](./10-verification-gates.md) gate_results / execution_blocks
+- [`15-linear-intake.md`](./15-linear-intake.md) 振り分けと振り分けの提案
+- [`16-linear-feedback.md`](./16-linear-feedback.md) linear_outbox
+- [`17-approval.md`](./17-approval.md) approvals
+- [`18-remote-access.md`](./18-remote-access.md) owner_credentials / owner_sessions
+- [`19-routing-and-stages.md`](./19-routing-and-stages.md) 振り分け先・段・安全な場所
 
 ## 9. 実装単位
 
 - [ ] [Backend] SQLite 接続（WAL モード）とマイグレーション基盤
   - 受け入れ基準: 起動時に未適用のマイグレーションが順に適用される; `PRAGMA journal_mode` が `wal` を返す
-- [ ] [Backend] Registry 系テーブル（runners, projects, harnesses, harness_profiles, project_harnesses）
-  - 受け入れ基準: harness_profiles に UNIQUE(harness_id, version) があり重複登録が失敗する; 外部キー制約が有効
-- [ ] [Backend] Task 系テーブル（tasks, executions, execution_events, worktrees, context_revisions）
-  - 受け入れ基準: UNIQUE(task_id, seq) と tasks.idempotency_key の一意制約がある; 5.1 と 5.2 以外の状態値を書き込めない
-- [ ] [Backend] 検証・記録系テーブル（test_runs, gate_results, execution_blocks, artifacts, audit_logs, usage_records）
-  - 受け入れ基準: 各テーブルにテスト用の行を書き込み・読み出しできる; artifacts の実ファイルが Git 管理外のデータディレクトリに置かれる
-- [ ] [Backend] 列挙値と共通契約（HarnessRequest / HarnessResult）の Go 型と JSON 検証
-  - 受け入れ基準: 5.7 と 5.8 の例が検証を通る; 未知の errorClass や必須項目の欠けた JSON が検証で拒否される
+- [ ] [Backend] 登録の表（runners, harnesses, harness_profiles, projects, routes）
+  - 受け入れ基準: harness_profiles に UNIQUE(harness_id, version) があり重複登録が失敗する; routes に project_id と harness_id の両方、または両方 NULL の行を書けない; 同じ Project に2つ目のラベルを書けない; projects に6項目以外の列が無い
+- [ ] [Backend] タスクと実行の表（tasks, executions, task_workspaces, stage_runs, check_results, execution_events, context_revisions）
+  - 受け入れ基準: tasks に project_id と harness_id の両方が入った行を書けない; UNIQUE(task_id, seq) と tasks.idempotency_key の一意制約がある; 5.1 と 5.2 以外の状態値を書き込めない
+- [ ] [Backend] 本人の判断の表（owner_decisions, route_proposals, approvals）
+  - 受け入れ基準: 同じタスクで open の判断待ち（approval 以外）を2つ作れない; 同じ Execution・同じ operation で pending / approved の承認を2つ作れない; 5.6 以外の kind・cause を書き込めない
+- [ ] [Backend] 記録の表（artifacts, harness_records, audit_logs, usage_records）
+  - 受け入れ基準: artifacts の実ファイルが Git 管理外のデータディレクトリに置かれる; harness_records の deleted_at が入った行が次の仕事への受け渡しの対象にならない
+- [ ] [Backend] Linear の表と settings（linear_poll_teams, linear_issue_states, linear_issue_links, linear_outbox, settings）
+  - 受け入れ基準: linear_outbox の action=add_label に routes に無いラベルと `linear.triggerLabel` のラベルを書けない; settings に 3.8 の表に無いキーを書けない
+- [ ] [Backend] 列挙値と、契約の要求 JSON・結果 JSON・finding・Profile 定義の Go 型と JSON 検証
+  - 受け入れ基準: 契約 5.1・6.1・6.5・14章の例が検証を通る; 未知の項目、未知の errorClass、スペシャルハーネスが書けない errorClass が拒否される
+
+## 10. 要確認
+
+| # | 内容 | 案 |
+|---|---|---|
+| Q111 | 振り分けを提案する AI をどこで、どのミクロハーネスで動かし、同時実行にどう数えるか | 全体設定 `routing.defaultRunnerId` の Runner が、鍵なし・モデルの API だけの `proposal` の隔離で動かす。使うミクロハーネスとモデルは全体設定 `routing.proposer`。全体2本の枠に数え、振り分け先ごとの枠には数えない |
+| Q112 | 本人が、AI の提案と別の振り分け先を選べるか | 選べる。管理画面で、判断の時点の振り分けの表から1つ選ぶ。表に無い振り分け先は選べない（先に振り分けの表へ足す） |
+| Q113 | スペシャルハーネスへ直接振り分けたタスクの承認を省く設定と Runner | 承認は省けない。Runner は `routing.defaultRunnerId` |
+| Q115 | 渡す値の検証 | Profile の `params.schema` で、Project の登録・更新と claim のときに形だけ確かめる |
+| Q117 | 本人が振り分けの提案を却下したときのタスク | `cancelled` にする。もう一度実行したいときは、Linear で振り分けのラベルを付けるか、`ai-ready` を外して付け直す |
+| Q118 | Tool Permissions の置き場所（いまは harnesses.tool_permissions で本人だけが変える） | Profile 定義の `stages.work.toolPermissions` に移す。本人は、Project に固定する版を選ぶことで許可を選ぶ（requirements 15.3 の「本人だけが変更できる」を、版の選択で満たす） |
+| Q119 | タスク状態から `planning` と `verifying` を外し、`routing` を足すか（requirements 8.3 は書き換え済み） | 外して足す。段の状態は Execution 状態で見せる |
+| Q120 | 振り分けのラベルの接頭辞の既定 | 決定（2026-11-10 本人）: `route:`。Project にもスペシャルハーネスにも使えるため、`repo:` から変える |
+| Q121 | 作業領域の保持期間と削除 | 終端になってから 14 日保持し、Runner が削除して cleaned にする。判断待ちと承認待ちの作業領域は削除しない。本人は管理画面から先に消せる |
+| Q200 | 承認の有効時間を、本人が承認するときに変えられるか（17 の Q55 は「既定 24 時間、承認時に本人が変えられる」と決めたが、回答の形に入れる項目が無かった） | 決定（2026-11-10 本人）: 変えられるようにする。5.6 の kind=`approval` の回答に任意の `ttlSec`（60 秒以上。上限は設けない）を足す。省略したら `approval.ttlSec` を使う。expires_at は承認した時刻 + `ttlSec` |
