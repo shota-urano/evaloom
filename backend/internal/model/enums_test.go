@@ -33,10 +33,6 @@ func TestSpecEnumValues(t *testing.T) {
 			"config_error", "execution_failed", "test_failed", "timeout", "cancelled",
 			"interrupted", "publish_failed", "sandbox_error",
 		}},
-		{"block", decode[model.BlockCause], []string{
-			"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict",
-			"git_state",
-		}},
 		{"result", decode[model.ResultStatus], []string{"succeeded", "failed"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,7 +58,7 @@ func TestEnumsRejectInvalidGoValues(t *testing.T) {
 	for _, value := range []interface{ Validate() error }{
 		model.AdapterName("unknown"), model.TaskStatus("unknown"),
 		model.ExecutionStatus("unknown"), model.ExecutionEventType("unknown"),
-		model.ErrorClass("unknown"), model.BlockCause("unknown"), model.ResultStatus("unknown"),
+		model.ErrorClass("unknown"), model.ResultStatus("unknown"),
 	} {
 		if err := value.Validate(); err == nil {
 			t.Errorf("invalid Go enum accepted: %v", value)

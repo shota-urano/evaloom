@@ -63,10 +63,6 @@ func getTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			}
 			view.Executions = append(view.Executions, execution)
 			view.LatestExecution = &execution.executionSummaryView
-			// Match the owner task list: the highest seq with a recorded PR URL.
-			if e.PRURL != nil {
-				view.PRURL = e.PRURL
-			}
 		}
 		writeJSON(w, http.StatusOK, view)
 	}

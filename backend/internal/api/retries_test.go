@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
 func requestRetry(t *testing.T, f *authFixture, id, body string, alter func(*http.Request)) (int, []byte) {
@@ -28,15 +30,14 @@ func retryFixture(t *testing.T, to string) (*authFixture, string, string) {
 		from = "publishing"
 	}
 	f, token, id, _ := resultFixture(t, from)
+	if to == "blocked" {
+		// The Runner no longer reports blocked (spec 19 3.11).
+		blockExecution(t, f, id, model.ExecutionStatus(from))
+		return f, token, id
+	}
 	status, body := postResult(t, f, token, id, resultBody(from, to))
 	if status != 204 {
 		t.Fatalf("prepare retry: %d %s", status, body)
-	}
-	if _, err := f.db.Exec(`UPDATE executions SET
-		base_sha=(SELECT base_sha FROM worktrees WHERE id=executions.worktree_id),
-		branch_name=(SELECT branch_name FROM worktrees WHERE id=executions.worktree_id)
-		WHERE id=?`, id); err != nil {
-		t.Fatal(err)
 	}
 	return f, token, id
 }
@@ -75,23 +76,12 @@ func requireRetryPending(t *testing.T, f *authFixture, taskID, mode string, want
 		(SELECT count(*) FROM executions WHERE task_id = t.id),
 		e.runner_id IS NULL AND e.role IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
 		AND e.profile_version IS NULL AND e.profile_commit_sha IS NULL AND e.claimed_at IS NULL
-		AND e.resume_point IS NULL AND e.pr_number IS NULL
-		AND e.pr_url IS NULL AND e.cancel_requested_at IS NULL AND e.finished_at IS NULL
+		AND e.cancel_requested_at IS NULL AND e.finished_at IS NULL
 		FROM tasks t JOIN executions e ON e.task_id = t.id
 		WHERE t.id = ? ORDER BY e.seq DESC LIMIT 1`, taskID).
 		Scan(&id, &seq, &savedMode, &status, &created, &taskStatus, &count, &unpinned)
 	if err != nil || seq != wantSeq || count != wantSeq || status != "pending" || taskStatus != "queued" || savedMode != mode || unpinned != 1 {
 		t.Fatalf("retry id=%s seq=%d count=%d mode=%s status=%s task=%s unpinned=%d err=%v", id, seq, count, savedMode, status, taskStatus, unpinned, err)
-	}
-	var checkpoint bool
-	if err := f.db.QueryRow(`SELECT CASE WHEN e.mode='continue' THEN
-        e.worktree_id IS p.worktree_id AND e.base_sha IS p.base_sha AND e.branch_name IS p.branch_name
-        AND e.harness_head_sha IS (CASE WHEN p.worktree_id IS NOT NULL THEN
-            coalesce(nullif(p.pushed_sha,''),nullif(p.harness_head_sha,''),p.base_sha) END)
-        ELSE e.worktree_id IS NULL AND e.base_sha IS NULL AND e.branch_name IS NULL AND e.harness_head_sha IS NULL END
-        AND e.verified_sha IS NULL AND e.pushed_sha IS NULL
-        FROM executions e JOIN executions p ON p.task_id=e.task_id AND p.seq=e.seq-1 WHERE e.id=?`, id).Scan(&checkpoint); err != nil || !checkpoint {
-		t.Fatalf("retry checkpoint differs from predecessor: %v %v", checkpoint, err)
 	}
 	if err := ValidateID("id", id, ULID); err != nil {
 		t.Fatal(err)
@@ -153,28 +143,11 @@ func TestRetryAcceptsAllRetriableStatesAndPreservesEvidence(t *testing.T) {
 			}
 			taskID := executionTaskID(t, f, id)
 			before := retryExecutionSnapshot(t, f.db, id)
-			var worktree, block string
-			if err := f.db.QueryRow(`SELECT w.status, coalesce((SELECT json_object('id', id, 'cause', cause,
-				'headSha', head_sha, 'detail', detail, 'decision', decision, 'decidedAt', decided_at)
-				FROM execution_blocks WHERE execution_id = e.id), '')
-				FROM executions e JOIN worktrees w ON w.id = e.worktree_id WHERE e.id = ?`, id).Scan(&worktree, &block); err != nil {
-				t.Fatal(err)
-			}
 			status, body := requestRetry(t, f, taskID, `{"mode":"continue"}`, nil)
 			requireRetrySuccess(t, status, body)
 			requireRetryPending(t, f, taskID, "continue", 2)
 			if !reflect.DeepEqual(retryExecutionSnapshot(t, f.db, id), before) {
 				t.Fatal("previous Execution was changed")
-			}
-			var afterWorktree, afterBlock string
-			if err := f.db.QueryRow(`SELECT w.status, coalesce((SELECT json_object('id', id, 'cause', cause,
-				'headSha', head_sha, 'detail', detail, 'decision', decision, 'decidedAt', decided_at)
-				FROM execution_blocks WHERE execution_id = e.id), '')
-				FROM executions e JOIN worktrees w ON w.id = e.worktree_id WHERE e.id = ?`, id).Scan(&afterWorktree, &afterBlock); err != nil {
-				t.Fatal(err)
-			}
-			if afterWorktree != worktree || afterBlock != block {
-				t.Fatal("retry changed worktree or block evidence")
 			}
 		})
 	}
@@ -329,41 +302,6 @@ func TestRetryRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
 			if projectCount(t, f, "executions") != 1 {
 				t.Fatal("unauthorized retry created an Execution")
 			}
-		})
-	}
-}
-
-func TestContinueRetryStopBeforePreparationRetainsCheckpoint(t *testing.T) {
-	for _, stop := range []string{"blocked", "cancelled", "failed"} {
-		t.Run(stop, func(t *testing.T) {
-			f, token, oldID := retryFixture(t, "failed")
-			taskID := executionTaskID(t, f, oldID)
-			head := strings.Repeat("b", 40)
-			if _, err := f.db.Exec(`UPDATE executions SET harness_head_sha=? WHERE id=?`, head, oldID); err != nil {
-				t.Fatal(err)
-			}
-			status, body := requestRetry(t, f, taskID, `{"mode":"continue"}`, nil)
-			requireRetrySuccess(t, status, body)
-			id := requireRetryPending(t, f, taskID, "continue", 2)
-			status, body = requestClaim(t, f, token)
-			claim := requireClaim(t, status, body)
-			if claim.Execution.ID != id {
-				t.Fatalf("wrong claim: %+v", claim.Execution)
-			}
-			// A stage-1 failure/cancellation has no in-memory worktree metadata.
-			status, body = postResult(t, f, token, id, resultBody("claimed", stop))
-			if status != 204 {
-				t.Fatalf("early stop: %d %s", status, body)
-			}
-			var kept bool
-			if err := f.db.QueryRow(`SELECT e.worktree_id=p.worktree_id AND e.base_sha=p.base_sha
-				AND e.branch_name=p.branch_name AND e.harness_head_sha=? AND e.verified_sha IS NULL AND e.pushed_sha IS NULL
-				FROM executions e JOIN executions p ON p.task_id=e.task_id AND p.seq=e.seq-1 WHERE e.id=?`, head, id).Scan(&kept); err != nil || !kept {
-				t.Fatalf("early stop lost checkpoint: %v %v", kept, err)
-			}
-			status, body = requestRetry(t, f, taskID, `{"mode":"continue"}`, nil)
-			requireRetrySuccess(t, status, body)
-			requireRetryPending(t, f, taskID, "continue", 3)
 		})
 	}
 }

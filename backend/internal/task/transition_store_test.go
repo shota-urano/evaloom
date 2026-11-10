@@ -32,13 +32,8 @@ func TestPersistedExecutionTransitions(t *testing.T) {
 		{"running", "verifying", "running", "verifying", ""},
 		{"verifying", "publishing", "verifying", "verifying", ""},
 		{"publishing", "succeeded", "verifying", "completed", ""},
-		{"blocked", "pending", "blocked", "queued", "gate2"},
+		{"blocked", "pending", "blocked", "queued", ""},
 		{"blocked", "cancelled", "blocked", "cancelled", ""},
-		{"claimed", "verifying", "running", "verifying", "gate2"},
-		{"claimed", "verifying", "running", "verifying", "gate3"},
-		{"claimed", "publishing", "running", "verifying", "publish"},
-		{"preparing", "verifying", "running", "verifying", "gate2"},
-		{"preparing", "publishing", "running", "verifying", "publish"},
 		// Spec 17 3.3, 3.5, 3.6: approval waits, merges and their exits.
 		{"publishing", "waiting_approval", "verifying", "waiting_approval", ""},
 		{"waiting_approval", "merging", "waiting_approval", "waiting_approval", ""},
@@ -100,7 +95,7 @@ func TestTransitionRejectsInvalidOrStaleRequestsWithoutChanges(t *testing.T) {
 		{"terminal reopen", "failed", "failed", task.Transition{FromTask: "failed", FromExecution: "failed", ToExecution: "pending"}},
 		{"skip gates", "running", "running", task.Transition{FromTask: "running", FromExecution: "running", ToExecution: "succeeded"}},
 		{"skip claim", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "running"}},
-		{"unapproved resume", "running", "claimed", task.Transition{FromTask: "running", FromExecution: "claimed", ToExecution: "verifying"}},
+		{"skip preparing", "running", "claimed", task.Transition{FromTask: "running", FromExecution: "claimed", ToExecution: "verifying"}},
 		{"duplicate report", "running", "running", task.Transition{FromTask: "running", FromExecution: "running", ToExecution: "running"}},
 		{"stale execution", "running", "claimed", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "cancelled"}},
 		{"stale task", "blocked", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "claimed"}},
@@ -399,10 +394,8 @@ func lifecycleDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-		default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-		VALUES ('project', 'Project', '/repos/project', 'https://example.test/repo.git', 'runner', 'main',
-		'developer', '.', '[]', '[]', '{}', '{}', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
+		VALUES ('project', 'Project', 'runner', 'developer', '[]', '{}', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
 		task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
 		VALUES ('task-1', 'project', 'Title', 'Body', 'tests pass', 'test', 'development', 'solo', 'queued', 'key-1', ?, ?)`, testTime, testTime)
@@ -411,10 +404,10 @@ func lifecycleDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func setStates(t *testing.T, db *sql.DB, taskStatus model.TaskStatus, execution model.ExecutionStatus, resume string) {
+func setStates(t *testing.T, db *sql.DB, taskStatus model.TaskStatus, execution model.ExecutionStatus, _ string) {
 	t.Helper()
 	mustExec(t, db, "UPDATE tasks SET status = ?, updated_at = ? WHERE id = 'task-1'", taskStatus, testTime)
-	mustExec(t, db, "UPDATE executions SET status = ?, resume_point = nullif(?, '') WHERE id = 'execution-1'", execution, resume)
+	mustExec(t, db, "UPDATE executions SET status = ? WHERE id = 'execution-1'", execution)
 }
 
 type rowQuerier interface{ QueryRow(string, ...any) *sql.Row }

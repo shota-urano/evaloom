@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// Symlinks and case aliases must not bypass Registry path uniqueness.
+// Symlinks and case aliases must not bypass Harness repository path uniqueness.
 func sameRepository(name string, others []string) (bool, error) {
 	info, err := os.Stat(name)
 	if err != nil {

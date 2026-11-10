@@ -187,11 +187,8 @@ func TestRunServesAfterMigrationAndClosesListenerOnShutdown(t *testing.T) {
 	_, seedErr := writer.Exec(`
 		INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 		VALUES ('runner', 'Runner', 'unused', '/worktrees', 'offline', '', '2026-10-26T00:00:00Z');
-		INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-		default_role, context_location, copy_allowlist, allowed_operations,
-		approval_policy, timeouts, created_at, updated_at)
-		VALUES ('project', 'Project', '/repo', '', 'runner', 'main', 'developer', 'AGENTS.md',
-		'[]', '{}', '{}', '{}', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z');
+		INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
+		VALUES ('project', 'Project', 'runner', 'developer', '{}', '{}', '2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z');
 		INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
 		VALUES ('task-001', 'project', 'Title', '', 'events resume', 'sse', 'development', 'solo',

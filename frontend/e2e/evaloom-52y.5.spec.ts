@@ -145,10 +145,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
         }
         await owner(server, 'POST', '/api/harness-profiles', { harnessId: HARNESS, version: '1.0.0' })
         for (const project of PROJECTS) {
-          const repo = createRepo(temp, project.id)
-          await owner(server, 'POST', '/api/projects', {
-            id: project.id, name: project.name, localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-          })
+          await owner(server, 'POST', '/api/projects', { id: project.id, name: project.name, runnerId: 'local', defaultRole: 'developer' })
           await owner(server, 'POST', `/api/projects/${project.id}/harnesses`, { role: 'developer', harnessId: HARNESS, version: '1.0.0' })
         }
         await provide(server)

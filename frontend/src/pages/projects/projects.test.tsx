@@ -13,22 +13,11 @@ const RUNNERS = { items: [{ id: 'local', name: 'local', status: 'online', lastHe
 const PROJECT: Project = {
   id: 'alpha',
   name: 'Alpha',
-  localRepoPath: '/repos/alpha',
-  gitRemoteUrl: 'git@example.com:alpha.git',
   runnerId: 'local',
-  baseBranch: 'main',
   defaultRole: 'developer',
   reviewRole: null,
-  contextLocation: 'AGENTS.md',
-  testCommand: 'make test',
-  testReportFormat: null,
-  testReportPath: null,
-  setupCommand: null,
-  setupAllowedHosts: [],
-  copyAllowlist: ['config/test.json'],
   allowedOperations: {},
-  approvalPolicy: { version: 1, mergePullRequest: 'require_approval' },
-  timeouts: { testSec: 600 },
+  timeouts: { harnessSec: 600 },
   createdAt: '2026-10-27T00:00:00Z',
   updatedAt: '2026-10-27T00:00:00Z',
   harnesses: [],
@@ -75,46 +64,36 @@ describe('プロジェクトの登録', () => {
   it('必須項目が空なら送信せず、項目ごとにエラーを出す', async () => {
     const fake = renderAt('/projects/_new', (request) => (request.url.startsWith('/api/runners') ? json(200, RUNNERS) : json(500, {})))
     await userEvent.click(await screen.findByRole('button', { name: '登録' }))
-    for (const label of ['Project ID', '名称', 'ローカルリポジトリのパス', 'Git リポジトリ URL', 'Runner']) {
+    for (const label of ['Project ID', '名称', 'Runner']) {
       expect(within(fieldOf(label)).getByText('入力してください')).toBeVisible()
+    }
+    // 開発の部品（リポジトリ・テスト・setup・コピー許可リスト・承認ポリシー）の入力欄は無い。
+    for (const label of ['ローカルリポジトリのパス', 'Git リポジトリ URL', 'Base Branch', 'テストコマンド', 'setup の許可宛先', 'コピー許可リスト', '承認ポリシー']) {
+      expect(screen.queryByLabelText(label)).toBeNull()
     }
     expect(fake.calls.some((c) => c.method === 'POST')).toBe(false)
   })
 
-  it('送信内容は API の項目名で、空欄の任意項目は null、許可リストは行ごとの配列になる', async () => {
+  it('送信内容は API の項目名で、空欄の任意項目は null になり、削除した開発の部品の項目は送らない', async () => {
     const fake = renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'POST') return json(201, { ...PROJECT, warnings: [] })
+      if (request.method === 'POST') return json(201, { ...PROJECT })
       return json(200, PROJECT)
     })
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.type(screen.getByLabelText('コピー許可リスト'), 'config/test.json{enter}{enter}.env.test')
-    await userEvent.type(screen.getByLabelText('テストのタイムアウト（秒）'), '600')
+    await userEvent.type(screen.getByLabelText('ハーネス実行のタイムアウト（秒）'), '600')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
     expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
     const post = fake.calls.find((c) => c.method === 'POST')
     expect(JSON.parse(post?.body ?? '')).toEqual({
       id: 'alpha',
       name: 'Alpha',
-      localRepoPath: '/repos/alpha',
-      gitRemoteUrl: 'git@example.com:alpha.git',
       runnerId: 'local',
-      baseBranch: 'main',
       defaultRole: 'developer',
-      testCommand: null,
-      testReportFormat: null,
-      testReportPath: null,
-      setupCommand: null,
-      // 何も入力しなければ空配列（13 3.2、03-registry 3.3.1）。
-      setupAllowedHosts: [],
-      copyAllowlist: ['config/test.json', '.env.test'],
       allowedOperations: {},
-      approvalPolicy: { version: 1, mergePullRequest: 'require_approval' },
-      timeouts: { testSec: 600 },
+      timeouts: { harnessSec: 600 },
       linearTeamId: null,
       linearRoutingLabel: null,
     })
@@ -124,13 +103,11 @@ describe('プロジェクトの登録', () => {
     const saved = { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' }
     const fake = renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'POST') return json(201, { ...saved, warnings: [] })
+      if (request.method === 'POST') return json(201, { ...saved })
       return json(200, saved)
     })
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
     await userEvent.type(screen.getByLabelText('Linear Team ID'), ' team-eng ')
     await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
@@ -151,8 +128,6 @@ describe('プロジェクトの登録', () => {
     })
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
     await userEvent.type(screen.getByLabelText('Linear Team ID'), 'team-eng')
     await userEvent.type(screen.getByLabelText('実行先ラベル'), 'repo:alpha')
@@ -167,114 +142,25 @@ describe('プロジェクトの登録', () => {
     expect(screen.queryByRole('button', { name: '最新を読み直す' })).toBeNull()
   })
 
-  it('保存の応答に warnings があれば詳細画面に表示する', async () => {
-    renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'POST') return json(201, { ...PROJECT, warnings: ['.env.test may contain secrets; use test-only dummy values'] })
-      return json(200, PROJECT)
-    })
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
-    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    const alert = await screen.findByText('コピー許可リストに秘密情報を含むおそれのあるファイルがあります')
-    expect(alert.parentElement).toHaveTextContent('.env.test may contain secrets')
-  })
-
-  it('400 の details は同じ名前の項目に、422 のパス検証の理由は対応する項目と一覧に出す', async () => {
+  it('400 の details は同じ名前の項目に、422 の Runner の理由は Runner の項目と一覧に出す', async () => {
     let status = 400
     renderAt('/projects/_new', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       return status === 400
-        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'timeouts.testSec', reason: 'out_of_range' }])
-        : apiError(422, 'precondition_failed', 'repository validation failed: baseBranch (not_found)', [
-            { field: 'baseBranch', reason: 'not_found' },
-          ])
+        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'timeouts.harnessSec', reason: 'out_of_range' }])
+        : apiError(422, 'precondition_failed', 'runner not found', [{ field: 'runnerId', reason: 'not_found' }])
     })
     await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
     await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('テストのタイムアウト（秒）')).findByText('範囲外の値です')).toBeVisible()
+    expect(await within(fieldOf('ハーネス実行のタイムアウト（秒）')).findByText('範囲外の値です')).toBeVisible()
 
     status = 422
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('Base Branch')).findByText('見つかりません')).toBeVisible()
-    expect(screen.getByRole('alert')).toHaveTextContent('Base Branch: 見つかりません')
-    expect(within(fieldOf('テストのタイムアウト（秒）')).queryByText('範囲外の値です')).toBeNull()
-  })
-})
-
-describe('setup の許可宛先（03-registry 3.3.1、Q87）', () => {
-  async function fillRequired() {
-    await userEvent.type(await screen.findByLabelText('Project ID'), 'alpha')
-    await userEvent.type(screen.getByLabelText('名称'), 'Alpha')
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/alpha')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:alpha.git')
-    await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
-  }
-
-  it('登録では host:port を1行に1つ入力でき、空行と前後の空白を除いた配列で送り、詳細画面に表示する', async () => {
-    const hosts = ['registry.npmjs.org:443', 'proxy.golang.org:443']
-    const fake = renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
-      if (request.method === 'POST') return json(201, { ...PROJECT, setupAllowedHosts: hosts, warnings: [] })
-      return json(200, { ...PROJECT, setupAllowedHosts: hosts })
-    })
-    await fillRequired()
-    await userEvent.type(screen.getByLabelText('setup の許可宛先'), '  registry.npmjs.org:443 {enter}{enter}proxy.golang.org:443{enter}')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await screen.findByRole('heading', { name: 'Alpha' })).toBeVisible()
-    const body = JSON.parse(fake.calls.find((c) => c.method === 'POST')?.body ?? '')
-    expect(body.setupAllowedHosts).toEqual(hosts)
-    expect(screen.getByText('registry.npmjs.org:443')).toBeVisible()
-    expect(screen.getByText('proxy.golang.org:443')).toBeVisible()
-  })
-
-  it('編集では登録済みの値を1行に1つ入力欄に出し、変更した値を送る。全部消すと空配列を送る', async () => {
-    const fake = renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
-      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
-      return json(200, { ...PROJECT, setupAllowedHosts: ['registry.npmjs.org:443', 'github.com:443'] })
-    })
-    const input = await screen.findByLabelText('setup の許可宛先')
-    expect(input).toHaveValue('registry.npmjs.org:443\ngithub.com:443')
-    await userEvent.type(input, '{enter}proxy.golang.org:443')
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    const patches = () => fake.calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body ?? ''))
-    expect(patches()[0].setupAllowedHosts).toEqual(['registry.npmjs.org:443', 'github.com:443', 'proxy.golang.org:443'])
-
-    await userEvent.click(screen.getByRole('link', { name: '編集' }))
-    await userEvent.clear(await screen.findByLabelText('setup の許可宛先'))
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    expect(patches()[1].setupAllowedHosts).toEqual([])
-  })
-
-  it.each([
-    ['invalid_format', 'host:port の形式で入力してください（ワイルドカード・IP アドレス・localhost などのローカルの名前・ポートの無い値は使えません）'],
-    ['duplicate', '同じ宛先（host:port）が2回以上入力されています'],
-  ])('400 の details（field が setupAllowedHosts、reason が %s）は入力欄に出す', async (reason, message) => {
-    const fake = renderAt('/projects/_new', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      return apiError(400, 'validation_failed', 'invalid', [{ field: 'setupAllowedHosts', reason }])
-    })
-    await fillRequired()
-    await userEvent.type(screen.getByLabelText('setup の許可宛先'), 'github.com:443{enter}github.com:443')
-    await userEvent.click(screen.getByRole('button', { name: '登録' }))
-    expect(await within(fieldOf('setup の許可宛先')).findByText(message)).toBeVisible()
-    expect(screen.getByLabelText('setup の許可宛先')).toHaveAttribute('aria-invalid', 'true')
-    // 一覧（どの項目にも当たらない details）には出さない。
-    expect(screen.getByRole('alert')).not.toHaveTextContent('setupAllowedHosts')
-    expect(window.location.pathname).toBe('/projects/_new')
-    expect(JSON.parse(fake.calls.find((c) => c.method === 'POST')?.body ?? '').setupAllowedHosts).toEqual(['github.com:443', 'github.com:443'])
+    expect(await within(fieldOf('Runner')).findByText('見つかりません')).toBeVisible()
+    expect(screen.getByRole('alert')).toHaveTextContent('Runner: 見つかりません')
+    expect(within(fieldOf('ハーネス実行のタイムアウト（秒）')).queryByText('範囲外の値です')).toBeNull()
   })
 })
 
@@ -287,7 +173,7 @@ describe('Project ID「new」（slug として正当な値）', () => {
       if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
       if (request.method === 'POST') {
         registered = true
-        return json(201, { ...project, warnings: [] })
+        return json(201, { ...project })
       }
       if (request.url.startsWith('/api/projects?')) return json(200, { items: registered ? [project] : [], nextCursor: '' })
       return json(200, project)
@@ -296,8 +182,6 @@ describe('Project ID「new」（slug として正当な値）', () => {
     expect(window.location.pathname).toBe('/projects/_new')
     await userEvent.type(await screen.findByLabelText('Project ID'), 'new')
     await userEvent.type(screen.getByLabelText('名称'), project.name)
-    await userEvent.type(screen.getByLabelText('ローカルリポジトリのパス'), '/repos/new')
-    await userEvent.type(screen.getByLabelText('Git リポジトリ URL'), 'git@example.com:new.git')
     await userEvent.selectOptions(screen.getByLabelText('Runner'), 'local')
     await userEvent.click(screen.getByRole('button', { name: '登録' }))
     expect(await screen.findByRole('heading', { name: project.name })).toBeVisible()
@@ -313,22 +197,21 @@ describe('Project ID「new」（slug として正当な値）', () => {
 })
 
 describe('プロジェクトの編集', () => {
-  it('PATCH には id・reviewRole・contextLocation を送らず、読み込んだ値を入力欄に出す', async () => {
+  it('PATCH には id・reviewRole を送らず、読み込んだ値を入力欄に出す', async () => {
     let current = PROJECT
     const fake = renderAt('/projects/alpha/edit', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
       if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
       if (request.method === 'PATCH') {
         current = { ...PROJECT, name: 'Alpha 2' }
-        return json(200, { ...current, warnings: [] })
+        return json(200, { ...current })
       }
       return json(200, current)
     })
     const name = await screen.findByLabelText('名称')
     expect(name).toHaveValue('Alpha')
     expect(screen.getByLabelText('Project ID')).toBeDisabled()
-    expect(screen.getByLabelText('コピー許可リスト')).toHaveValue('config/test.json')
-    expect(screen.getByLabelText('テストのタイムアウト（秒）')).toHaveValue('600')
+    expect(screen.getByLabelText('ハーネス実行のタイムアウト（秒）')).toHaveValue('600')
     await userEvent.clear(name)
     await userEvent.type(name, 'Alpha 2')
     await userEvent.click(screen.getByRole('button', { name: '保存' }))
@@ -338,14 +221,13 @@ describe('プロジェクトの編集', () => {
     const body = JSON.parse(patch?.body ?? '')
     expect(body).not.toHaveProperty('id')
     expect(body).not.toHaveProperty('reviewRole')
-    expect(body).not.toHaveProperty('contextLocation')
-    expect(body).toMatchObject({ name: 'Alpha 2', testCommand: 'make test', timeouts: { testSec: 600 } })
+    expect(body).toMatchObject({ name: 'Alpha 2', runnerId: 'local', defaultRole: 'developer', timeouts: { harnessSec: 600 } })
   })
 
   it('編集では登録済みの Linear 項目を入力欄に出して送り直し、空欄にすると null で解除する', async () => {
     const fake = renderAt('/projects/alpha/edit', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
+      if (request.method === 'PATCH') return json(200, { ...PROJECT })
       return json(200, { ...PROJECT, linearTeamId: 'team-eng', linearRoutingLabel: 'repo:alpha' })
     })
     expect(await screen.findByDisplayValue('team-eng')).toBeVisible()
@@ -361,7 +243,7 @@ describe('プロジェクトの編集', () => {
     let reads = 0
     renderAt('/projects/alpha/edit', (request) => {
       if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'PATCH') return apiError(409, 'conflict', 'Project changed during repository validation; retry the request')
+      if (request.method === 'PATCH') return apiError(409, 'conflict', 'Project changed; retry the request')
       reads += 1
       return json(200, reads === 1 ? PROJECT : { ...PROJECT, name: 'Alpha（別の操作で変更）', updatedAt: '2026-10-27T01:00:00Z' })
     })
@@ -401,90 +283,5 @@ describe('Harness Profile の割り当て', () => {
     const post = fake.calls.find((c) => c.method === 'POST')
     expect(post?.url).toBe('/api/projects/alpha/harnesses')
     expect(JSON.parse(post?.body ?? '')).toEqual({ role: 'developer', harnessId: 'h1', version: '1.2.0' })
-  })
-})
-
-describe('承認ポリシー（17 3.2）', () => {
-  const DIRECT_PUSH = 'direct_push：PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push する'
-
-  function renderEdit(policy: string) {
-    return renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.url.startsWith('/api/harnesses')) return json(200, { items: [], nextCursor: '' })
-      if (request.method === 'PATCH') return json(200, { ...PROJECT, warnings: [] })
-      return json(200, { ...PROJECT, approvalPolicy: { version: 1, mergePullRequest: policy } })
-    })
-  }
-  const patches = (fake: { calls: Recorded[] }) => fake.calls.filter((c) => c.method === 'PATCH').map((c) => JSON.parse(c.body ?? ''))
-
-  it('require_approval と direct_push の2つを選べ、登録済みの値が選ばれている', async () => {
-    renderEdit('require_approval')
-    const select = await screen.findByLabelText('承認ポリシー')
-    expect(select).toHaveValue('require_approval')
-    expect(within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value)).toEqual(['require_approval', 'direct_push'])
-  })
-
-  it('direct_push を選ぶとダイアログが出る。やめると値は戻り、保存しても require_approval のまま送る', async () => {
-    const fake = renderEdit('require_approval')
-    const select = await screen.findByLabelText('承認ポリシー')
-    await userEvent.selectOptions(select, 'direct_push')
-    const dialog = screen.getByRole('alertdialog', { name: 'PR マージを承認対象から外しますか' })
-    expect(dialog).toHaveTextContent('PR のレビューに任せていた範囲（既存テストの書き換え、テストの実行設定・CI の定義の変更など）を確認する人がいなくなります')
-    // 開いた時点では、取り返しの付きにくい側ではなく「やめる」にフォーカスがある。
-    expect(within(dialog).getByRole('button', { name: 'やめる' })).toHaveFocus()
-    expect(fake.calls.some((c) => c.method === 'PATCH')).toBe(false)
-
-    await userEvent.click(within(dialog).getByRole('button', { name: 'やめる' }))
-    expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(select).toHaveValue('require_approval')
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'require_approval' })
-  })
-
-  it('Escape でもダイアログを閉じ、値は変わらない', async () => {
-    renderEdit('require_approval')
-    const select = await screen.findByLabelText('承認ポリシー')
-    await userEvent.selectOptions(select, 'direct_push')
-    await userEvent.keyboard('{Escape}')
-    expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(select).toHaveValue('require_approval')
-  })
-
-  it('確認すると direct_push が選ばれ、保存で direct_push を送る', async () => {
-    const fake = renderEdit('require_approval')
-    const select = await screen.findByLabelText('承認ポリシー')
-    await userEvent.selectOptions(select, 'direct_push')
-    await userEvent.click(screen.getByRole('button', { name: 'direct_push にする' }))
-    expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(select).toHaveValue('direct_push')
-    expect(screen.getByRole('option', { name: DIRECT_PUSH })).toBeInTheDocument()
-    // 確認しただけでは保存しない。
-    expect(fake.calls.some((c) => c.method === 'PATCH')).toBe(false)
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'direct_push' })
-  })
-
-  it('direct_push から require_approval へはダイアログ無しで戻せる', async () => {
-    const fake = renderEdit('direct_push')
-    const select = await screen.findByLabelText('承認ポリシー')
-    expect(select).toHaveValue('direct_push')
-    await userEvent.selectOptions(select, 'require_approval')
-    expect(screen.queryByRole('alertdialog')).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    await screen.findByRole('heading', { name: 'Alpha' })
-    expect(patches(fake)[0].approvalPolicy).toEqual({ version: 1, mergePullRequest: 'require_approval' })
-  })
-
-  it('400 の approvalPolicy.mergePullRequest は承認ポリシーの項目に出す', async () => {
-    renderAt('/projects/alpha/edit', (request) => {
-      if (request.url.startsWith('/api/runners')) return json(200, RUNNERS)
-      if (request.method === 'PATCH') return apiError(400, 'validation_failed', 'invalid', [{ field: 'approvalPolicy.mergePullRequest', reason: 'invalid' }])
-      return json(200, PROJECT)
-    })
-    await screen.findByLabelText('承認ポリシー')
-    await userEvent.click(screen.getByRole('button', { name: '保存' }))
-    expect(await within(fieldOf('承認ポリシー')).findByText('値が正しくありません')).toBeVisible()
   })
 })

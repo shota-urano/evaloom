@@ -67,12 +67,11 @@ func InsertInitialExecution(ctx context.Context, tx *sql.Tx, id, taskID, created
 }
 
 // TaskSummary is one row of the owner task list: the task, its latest
-// Execution (highest seq) and the newest PR URL reported by any Execution.
+// Execution (highest seq).
 type TaskSummary struct {
 	model.Task
 	TaskOrigin
 	LatestExecution *ExecutionSummary
-	PRURL           *string
 }
 
 // TaskOrigin is where a task came from (spec 15 3.8 and 5章): source, the
@@ -110,8 +109,7 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
-		e.id, e.seq, e.mode, e.status, e.error_class,
-		(SELECT pr_url FROM executions WHERE task_id = t.id AND pr_url IS NOT NULL ORDER BY seq DESC LIMIT 1)
+		e.id, e.seq, e.mode, e.status, e.error_class
 		FROM tasks t
 		LEFT JOIN executions e ON e.task_id = t.id AND e.seq = (SELECT max(seq) FROM executions WHERE task_id = t.id)
 		WHERE (? = '' OR t.status = ?) AND (? = '' OR t.project_id = ?)
@@ -127,11 +125,11 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 		var s TaskSummary
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
-		var errorClass, prURL sql.NullString
+		var errorClass sql.NullString
 		if err := rows.Scan(&s.ID, &s.ProjectID, &s.Title, &s.Body, &s.AcceptanceCriteria,
 			&s.ShortName, &s.TaskType, &s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
 			&s.Source, &s.IntakeBlockCause, &s.LinearIdentifier, &s.LinearURL,
-			&executionID, &seq, &mode, &status, &errorClass, &prURL); err != nil {
+			&executionID, &seq, &mode, &status, &errorClass); err != nil {
 			return nil, err
 		}
 		if executionID.Valid {
@@ -139,9 +137,6 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 			if errorClass.Valid {
 				s.LatestExecution.ErrorClass = &errorClass.String
 			}
-		}
-		if prURL.Valid {
-			s.PRURL = &prURL.String
 		}
 		tasks = append(tasks, s)
 	}

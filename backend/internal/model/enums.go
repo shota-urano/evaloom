@@ -150,30 +150,6 @@ func (v *ErrorClass) UnmarshalJSON(data []byte) error {
 	return decodeEnum(data, v)
 }
 
-// BlockCause represents block causes in spec 02, section 5.6.
-type BlockCause string
-
-const (
-	BlockGate2MissingTests BlockCause = "gate2_missing_tests"
-	BlockGate2Unverifiable BlockCause = "gate2_unverifiable"
-	BlockGate3Mismatch     BlockCause = "gate3_mismatch"
-	BlockContextConflict   BlockCause = "context_conflict"
-	BlockGitState          BlockCause = "git_state"
-)
-
-func (v BlockCause) Validate() error {
-	switch v {
-	case BlockGate2MissingTests, BlockGate2Unverifiable, BlockGate3Mismatch, BlockContextConflict, BlockGitState:
-		return nil
-	default:
-		return fmt.Errorf("invalid BlockCause %q", v)
-	}
-}
-
-func (v *BlockCause) UnmarshalJSON(data []byte) error {
-	return decodeEnum(data, v)
-}
-
 // ResultStatus represents harness result states in spec 02, section 5.8.
 type ResultStatus string
 

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 )
 
@@ -43,19 +44,18 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// Spec 17 3.6: read the PRs waiting for approval periodically.
-	process.EnableApprovalCheck(config)
 	fmt.Fprintln(output, "evaloom-runner: started")
-	// Result/log delivery must remain alive after an execution is cancelled.
+	// Result delivery must remain alive after an execution is cancelled.
 	reportCtx := context.WithoutCancel(ctx)
 	return process.Run(ctx, func(ctx context.Context, claim runner.Claim) {
-		if claim.Operation != nil {
-			if err := process.ExecuteOperation(ctx, reportCtx, config, claim); err != nil {
-				fmt.Fprintln(output, err)
-			}
-			return
-		}
-		if err := process.ExecuteClaim(ctx, reportCtx, config, claim, process.PipelineDependenciesForClaim(config, claim)); err != nil {
+		// The development stages (worktree, Gate 2/3, Git Publisher) moved to
+		// the special harness software-engineer (docs/specs/19-routing-and-stages.md
+		// 3.11). No stage can run a claimed Execution until the stage framework
+		// exists, so report it failed instead of leaving it claimed.
+		if err := process.ReportResult(reportCtx, claim.Execution.ID, runner.ExecutionResult{
+			FromStatus: model.ExecutionClaimed, Status: model.ExecutionFailed, ErrorClass: model.ErrorConfig,
+			ErrorMessage: "段を動かす仕組みがまだ無いため実行できない",
+		}); err != nil {
 			fmt.Fprintln(output, err)
 		}
 	}, func(err error) {

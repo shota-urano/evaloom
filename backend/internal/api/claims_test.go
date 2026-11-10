@@ -10,11 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
-	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
 func claimFixture(t *testing.T) (*authFixture, string, []model.HarnessProfile) {
@@ -185,7 +183,7 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 	// from the store; compare the Project through its JSON form.
 	claimedProject, _ := json.Marshal(claim.Project.Project)
 	storedProject, _ := json.Marshal(project)
-	if claim.Execution.TaskID != created.ID || claim.Execution.Seq != 1 || claim.Execution.Mode != "continue" || claim.Execution.ResumePoint != nil || claim.Previous != nil ||
+	if claim.Execution.TaskID != created.ID || claim.Execution.Seq != 1 || claim.Execution.Mode != "continue" ||
 		claim.Task != (store.ClaimTask{Title: created.Title, Body: created.Body, AcceptanceCriteria: created.AcceptanceCriteria, ShortName: created.ShortName}) || string(claimedProject) != string(storedProject) ||
 		claim.Profile.HarnessID != pin.Harness || claim.Profile.Adapter != "codex" || claim.Profile.Version != pin.Version || claim.Profile.CommitSHA != pin.SHA ||
 		!reflect.DeepEqual(claim.Profile.Definition, profiles[1].Definition) {
@@ -215,126 +213,6 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 	status, body = requestClaim(t, f, token)
 	if status != 204 || len(body) != 0 || readExecutionPin(t, f, claim.Execution.ID) != pin {
 		t.Fatalf("repeated claim status=%d body=%s", status, body)
-	}
-}
-
-func TestClaimResumePreservesPinnedProfile(t *testing.T) {
-	for _, tc := range []struct{ name, resumePoint, role string }{
-		{"gate3_role_unchanged", "gate3", "unchanged"},
-		{"gate3_role_changed", "gate3", "assigned"},
-		{"publish_role_missing", "publish", "missing"},
-	} {
-		resumePoint := tc.resumePoint
-		t.Run(tc.name, func(t *testing.T) {
-			f, token, profiles := claimFixture(t)
-			created := createClaimTask(t, f, "project-a", "resume-pin")
-			status, body := requestClaim(t, f, token)
-			first := requireClaim(t, status, body)
-			pin := readExecutionPin(t, f, first.Execution.ID)
-			if pin.Profile != profiles[0].ID || pin.Version != profiles[0].Version || pin.SHA != profiles[0].CommitSHA {
-				t.Fatalf("initial pin=%+v", pin)
-			}
-			ctx := context.Background()
-			// Use the lifecycle functions to reach a real Blocked Execution, then
-			// queue that same Execution as the resume handler will do (spec 04, 3.8).
-			from := model.ExecutionClaimed
-			for _, to := range []model.ExecutionStatus{model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionVerifying, model.ExecutionBlocked} {
-				fromTask, err := task.TaskStatusForExecution(from)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := task.TransitionExecution(ctx, f.db, task.Transition{
-					TaskID: created.ID, ExecutionID: first.Execution.ID,
-					FromTask: fromTask, FromExecution: from, ToExecution: to,
-				}); err != nil {
-					t.Fatal(err)
-				}
-				from = to
-			}
-			// Retain an existing Harness Context to check its correspondence with
-			// the Profile returned by the second HTTP claim, as well as its DB pin.
-			revision := store.ContextRevision{
-				ID: ulid.Make().String(), ExecutionID: first.Execution.ID,
-				Layer: "harness", Kind: "harness_prompt", SourcePath: "prompt.md",
-				SourceCommitSHA: pin.SHA, Content: "Pinned instructions", ContentHash: contextHash("Pinned instructions"),
-				CreatedAt: pin.ClaimedAt,
-			}
-			tx, err := f.db.BeginTx(ctx, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if err := store.InsertContextRevision(ctx, tx, revision); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			status, body = postAssignment(t, f, "project-a", "developer", "harness-a", profiles[1].Version)
-			requireAssignment(t, status, body, 200)
-			if storedAssignment(t, f, "project-a", "developer").ProfileID != profiles[1].ID {
-				t.Fatal("assignment did not change to version B")
-			}
-			if tc.role != "unchanged" {
-				// A changed or missing current Default Role must not replace the
-				// Execution's original role or prevent its continuation.
-				if tc.role == "assigned" {
-					status, body = postAssignment(t, f, "project-a", "reviewer", "harness-a", profiles[1].Version)
-					requireAssignment(t, status, body, 201)
-				}
-				status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", map[string]any{"defaultRole": "reviewer"})
-				requireProject(t, status, body, 200)
-			}
-			tx, err = f.db.BeginTx(ctx, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			if _, err := tx.ExecContext(ctx, `UPDATE executions SET resume_point = ? WHERE id = ?`, resumePoint, first.Execution.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
-				TaskID: created.ID, ExecutionID: first.Execution.ID,
-				FromTask: model.TaskBlocked, FromExecution: model.ExecutionBlocked, ToExecution: model.ExecutionPending,
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			status, body = requestClaim(t, f, token)
-			resumed := requireClaim(t, status, body)
-			if resumed.Execution.ID != first.Execution.ID || resumed.Execution.TaskID != created.ID || resumed.Execution.Seq != first.Execution.Seq ||
-				resumed.Execution.ResumePoint == nil || *resumed.Execution.ResumePoint != resumePoint || !reflect.DeepEqual(resumed.Profile, first.Profile) {
-				t.Fatalf("resumed claim=%+v; original profile=%+v", resumed, first.Profile)
-			}
-			after := readExecutionPin(t, f, first.Execution.ID)
-			want := pin
-			want.ClaimedAt = after.ClaimedAt // The new claim may update its acquisition time.
-			if after != want || after.ClaimedAt == "" {
-				t.Fatalf("resume changed pin: got=%+v want=%+v", after, want)
-			}
-			var executionStatus, taskStatus, savedResume string
-			var count int
-			err = f.db.QueryRow(`SELECT e.status, t.status, e.resume_point,
-				(SELECT count(*) FROM executions WHERE task_id = t.id)
-				FROM executions e JOIN tasks t ON t.id = e.task_id WHERE e.id = ?`, first.Execution.ID).
-				Scan(&executionStatus, &taskStatus, &savedResume, &count)
-			if err != nil || executionStatus != "claimed" || taskStatus != "running" || savedResume != resumePoint || count != 1 {
-				t.Fatalf("execution=%s task=%s resume=%s count=%d err=%v", executionStatus, taskStatus, savedResume, count, err)
-			}
-			revisions, err := store.ListContextRevisions(ctx, f.db, first.Execution.ID)
-			if err != nil || !reflect.DeepEqual(revisions, []store.ContextRevision{revision}) || revisions[0].SourceCommitSHA != resumed.Profile.CommitSHA {
-				t.Fatalf("resumed Profile no longer matches retained Context: revisions=%+v err=%v", revisions, err)
-			}
-			var auditProfile, auditSHA string
-			err = f.db.QueryRow(`SELECT json_extract(detail, '$.profileId'), json_extract(detail, '$.profileCommitSha')
-				FROM audit_logs WHERE action = 'execution.claim' AND target_id = ? ORDER BY id DESC LIMIT 1`, first.Execution.ID).
-				Scan(&auditProfile, &auditSHA)
-			if err != nil || auditProfile != pin.Profile || auditSHA != pin.SHA {
-				t.Fatalf("resume audit profile=%s sha=%s err=%v", auditProfile, auditSHA, err)
-			}
-		})
 	}
 }
 
@@ -545,67 +423,6 @@ func TestClaimMissingAssignmentAndStateConflictLeaveNoPins(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUnclaimed(t, f, created.ID)
-}
-
-func TestClaimPreviousExecutionAndResumePoint(t *testing.T) {
-	for _, mode := range []string{"continue", "fresh"} {
-		t.Run(mode, func(t *testing.T) {
-			f, token, profiles := claimFixture(t)
-			created := createClaimTask(t, f, "project-a", "previous")
-			status, body := requestClaim(t, f, token)
-			previous := requireClaim(t, status, body)
-			worktreeID, nextID := ulid.Make().String(), ulid.Make().String()
-			path, branch, sha := "/worktrees/previous", "evaloom/previous", strings.Repeat("a", 40)
-			_, err := f.db.Exec(`INSERT INTO worktrees
-				(id, project_id, task_id, runner_id, path, branch_name, base_sha, status, setup_status, copied_files, created_at)
-				VALUES (?, 'project-a', ?, 'claim-runner', ?, ?, ?, 'retained', 'succeeded', '[]', '2026-10-27T00:00:00Z')`, worktreeID, created.ID, path, branch, sha)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = f.db.Exec(`UPDATE executions SET status = 'failed', worktree_id = ?, branch_name = ?,
-				pr_number = 12 WHERE id = ?`, worktreeID, branch, previous.Execution.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, resume_point, created_at)
-				VALUES (?, ?, 2, ?, 'pending', 'gate3', '2026-10-27T00:00:00Z')`, nextID, created.ID, mode)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.db.Exec(`UPDATE tasks SET status = 'queued' WHERE id = ?`, created.ID); err != nil {
-				t.Fatal(err)
-			}
-			// A new Execution still selects the current assignment, even when
-			// its predecessor has a different pin and resume_point is populated.
-			status, body = postAssignment(t, f, "project-a", "developer", "harness-a", profiles[1].Version)
-			requireAssignment(t, status, body, 200)
-			status, body = requestClaim(t, f, token)
-			claim := requireClaim(t, status, body)
-			if claim.Execution.ID != nextID || claim.Execution.Seq != 2 || claim.Execution.Mode != mode || claim.Execution.ResumePoint == nil || *claim.Execution.ResumePoint != "gate3" {
-				t.Fatalf("retry claim=%+v", claim)
-			}
-			pin := readExecutionPin(t, f, nextID)
-			if pin.Profile != profiles[1].ID || pin.Version != profiles[1].Version || pin.SHA != profiles[1].CommitSHA ||
-				claim.Profile.Version != pin.Version || claim.Profile.CommitSHA != pin.SHA || !reflect.DeepEqual(claim.Profile.Definition, profiles[1].Definition) {
-				t.Fatalf("new Execution did not pin current assignment: saved=%+v response=%+v", pin, claim.Profile)
-			}
-			if mode == "fresh" {
-				if claim.Previous != nil {
-					t.Fatalf("fresh previous=%+v", claim.Previous)
-				}
-			} else if claim.Previous == nil || claim.Previous.WorktreePath == nil || *claim.Previous.WorktreePath != path ||
-				claim.Previous.BranchName == nil || *claim.Previous.BranchName != branch || claim.Previous.PRNumber == nil || *claim.Previous.PRNumber != 12 {
-				t.Fatalf("previous=%+v", claim.Previous)
-			}
-			if mode == "continue" && (claim.Worktree == nil || claim.Worktree.SetupStatus != "succeeded") {
-				t.Fatalf("missing setup status snapshot: %+v", claim.Worktree)
-			}
-			var savedStatus, resume string
-			if err := f.db.QueryRow(`SELECT status, resume_point FROM executions WHERE id = ?`, nextID).Scan(&savedStatus, &resume); err != nil || savedStatus != "claimed" || resume != "gate3" {
-				t.Fatalf("saved status=%s resume=%s err=%v", savedStatus, resume, err)
-			}
-		})
-	}
 }
 
 func TestClaimAuthenticationRejectionsLeavePendingTaskUnchanged(t *testing.T) {

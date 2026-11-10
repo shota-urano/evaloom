@@ -217,7 +217,7 @@ func assertConfigFailure(t *testing.T, files []harnesscontext.File, err error) {
 	if failure.Status() != model.ExecutionFailed || failure.ErrorClass() != model.ErrorConfig {
 		t.Fatalf("failure = %s(%s), want failed(config_error)", failure.Status(), failure.ErrorClass())
 	}
-	if err := task.ValidateExecutionTransition(model.ExecutionPreparing, failure.Status(), ""); err != nil {
+	if err := task.ValidateExecutionTransition(model.ExecutionPreparing, failure.Status()); err != nil {
 		t.Fatal(err)
 	}
 	taskStatus, err := task.TaskStatusForExecution(failure.Status())

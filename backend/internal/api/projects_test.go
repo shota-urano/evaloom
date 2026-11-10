@@ -43,17 +43,23 @@ func projectGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func projectInput(t *testing.T, id string) map[string]any {
+// gitRepository creates a local repository with an origin remote, as used by
+// Harness registration.
+func gitRepository(t *testing.T) (repo, remote string) {
 	t.Helper()
 	dir := t.TempDir()
-	repo, remote := filepath.Join(dir, "repo"), filepath.Join(dir, "remote.git")
+	repo, remote = filepath.Join(dir, "repo"), filepath.Join(dir, "remote.git")
 	projectGit(t, dir, "init", "--quiet", "--initial-branch=main", repo)
 	projectGit(t, dir, "init", "--quiet", "--bare", "--initial-branch=main", remote)
 	projectGit(t, repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
 	projectGit(t, repo, "remote", "add", "origin", remote)
 	projectGit(t, repo, "push", "--quiet", "origin", "main")
-	return map[string]any{"id": id, "name": "Project " + id, "localRepoPath": repo,
-		"gitRemoteUrl": remote, "runnerId": "mac-mini", "baseBranch": "main", "defaultRole": "developer"}
+	return repo, remote
+}
+
+func projectInput(t *testing.T, id string) map[string]any {
+	t.Helper()
+	return map[string]any{"id": id, "name": "Project " + id, "runnerId": "mac-mini", "defaultRole": "developer"}
 }
 
 func projectRequest(t *testing.T, f *authFixture, method, endpoint string, value any) (int, []byte) {
@@ -111,29 +117,31 @@ func projectCount(t *testing.T, f *authFixture, table string) int {
 	return count
 }
 
-func TestProjectsRegisterAndRetrieveTwoRepositories(t *testing.T) {
+func TestProjectsRegisterAndRetrieveTwoProjects(t *testing.T) {
 	f := projectFixture(t)
 	inputs := []map[string]any{projectInput(t, "project-b"), projectInput(t, "project-a")}
 	registered := map[string]model.Project{}
 	for _, input := range inputs {
 		status, body := projectRequest(t, f, "POST", "/api/projects", input)
 		p := requireProject(t, status, body, 201)
-		real, err := filepath.EvalSymlinks(input["localRepoPath"].(string))
-		if err != nil || p.LocalRepoPath != real || p.Name != input["name"] || p.GitRemoteURL != input["gitRemoteUrl"] {
-			t.Fatalf("registered=%+v input=%v err=%v", p, input, err)
+		if p.Name != input["name"] || p.RunnerID != "mac-mini" || p.DefaultRole != "developer" {
+			t.Fatalf("registered=%+v input=%v", p, input)
 		}
-		if p.ContextLocation != "AGENTS.md" || p.TestCommand != nil || p.ReviewRole != nil ||
-			p.CopyAllowlist == nil || p.AllowedOperations == nil || p.ApprovalPolicy == nil || p.Timeouts == nil {
+		if p.ReviewRole != nil || p.AllowedOperations == nil || p.Timeouts == nil {
 			t.Fatalf("defaults=%+v", p)
+		}
+		// The development settings moved to software-engineer (spec 19 3.11).
+		for _, removed := range []string{"localRepoPath", "gitRemoteUrl", "baseBranch", "contextLocation", "testCommand",
+			"setupCommand", "setupAllowedHosts", "copyAllowlist", "approvalPolicy"} {
+			if strings.Contains(string(body), `"`+removed+`"`) {
+				t.Fatalf("response has removed field %s: %s", removed, body)
+			}
 		}
 		registered[p.ID] = p
 		status, body = projectRequest(t, f, "GET", "/api/projects/"+p.ID, nil)
 		if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, p) {
 			t.Fatalf("GET=%+v; registered=%+v", got, p)
 		}
-	}
-	if registered["project-a"].LocalRepoPath == registered["project-b"].LocalRepoPath {
-		t.Fatal("test must use distinct repository directories")
 	}
 	status, body := projectRequest(t, f, "GET", "/api/projects?limit=1", nil)
 	var page Page[model.Project]
@@ -149,60 +157,20 @@ func TestProjectsRegisterAndRetrieveTwoRepositories(t *testing.T) {
 	}
 }
 
-func TestProjectsDuplicateRealPathReturns409(t *testing.T) {
-	f := projectFixture(t)
-	input := projectInput(t, "project-a")
-	link := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(input["localRepoPath"].(string), link); err != nil {
-		t.Fatal(err)
-	}
-	original := input["localRepoPath"]
-	input["localRepoPath"] = link
-	status, body := projectRequest(t, f, "POST", "/api/projects", input)
-	created := requireProject(t, status, body, 201)
-	real, err := filepath.EvalSymlinks(original.(string))
-	if err != nil || created.LocalRepoPath != real {
-		t.Fatalf("symlink was not normalized: %q err=%v", created.LocalRepoPath, err)
-	}
-	for _, alias := range []any{original, link} {
-		input["id"], input["localRepoPath"] = "project-b", alias
-		status, body = projectRequest(t, f, "POST", "/api/projects", input)
-		requireProjectError(t, status, body, 409, Conflict, "", "")
-	}
-	// On case-insensitive volumes a differently cased name is another alias.
-	caseAlias := filepath.Join(filepath.Dir(original.(string)), "REPO")
-	if _, err := os.Stat(caseAlias); err == nil {
-		input["id"], input["localRepoPath"] = "project-b", caseAlias
-		status, body = projectRequest(t, f, "POST", "/api/projects", input)
-		requireProjectError(t, status, body, 409, Conflict, "", "")
-	}
-	input["id"] = "project-a"
-	input["localRepoPath"] = original
-	status, body = projectRequest(t, f, "POST", "/api/projects", input)
-	requireProjectError(t, status, body, 409, Conflict, "", "")
-	if projectCount(t, f, "projects") != 1 || projectCount(t, f, "audit_logs") != 1 {
-		t.Fatal("rejected duplicates changed projects or audit history")
-	}
-}
-
 func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
-	input["testCommand"], input["setupCommand"] = "go test ./...", "go mod download"
-	input["copyAllowlist"] = []string{"fixtures/data.json"}
-	input["allowedOperations"], input["approvalPolicy"] = map[string]any{"read": true}, map[string]any{"version": 1, "mergePullRequest": "require_approval"}
-	input["timeouts"] = map[string]int{"setupSec": 60, "harnessSec": 600, "testSec": 120}
+	input["allowedOperations"] = map[string]any{"read": true}
+	input["timeouts"] = map[string]int{"harnessSec": 600}
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
-	patch := map[string]any{"testCommand": "go test -race ./...", "setupCommand": nil,
-		"copyAllowlist": []string{"fixtures/next.json"}, "allowedOperations": map[string]any{"write": true},
-		"approvalPolicy": map[string]any{"version": 1, "mergePullRequest": "direct_push"}, "timeouts": map[string]int{"testSec": 180}}
+	patch := map[string]any{"name": "Renamed", "allowedOperations": map[string]any{"write": true},
+		"timeouts": map[string]int{"harnessSec": 180}}
 	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", patch)
 	after := requireProject(t, status, body, 200)
-	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.LocalRepoPath != before.LocalRepoPath || after.Name != before.Name ||
-		after.UpdatedAt == before.UpdatedAt || after.SetupCommand != nil || after.TestCommand == nil || *after.TestCommand != "go test -race ./..." ||
-		!reflect.DeepEqual(after.Timeouts, map[string]int{"testSec": 180}) || !reflect.DeepEqual(after.AllowedOperations, map[string]any{"write": true}) ||
-		after.ContextLocation != before.ContextLocation {
+	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.Name != "Renamed" || after.RunnerID != before.RunnerID ||
+		after.UpdatedAt == before.UpdatedAt || after.DefaultRole != before.DefaultRole ||
+		!reflect.DeepEqual(after.Timeouts, map[string]int{"harnessSec": 180}) || !reflect.DeepEqual(after.AllowedOperations, map[string]any{"write": true}) {
 		t.Fatalf("before=%+v after=%+v", before, after)
 	}
 	var actor, targetType, targetID, detail string
@@ -240,35 +208,16 @@ func TestProjectsPolicyNumbersSurviveReadsAndUnrelatedUpdates(t *testing.T) {
 	}
 }
 
-func TestProjectsAuditOmitsRemoteCredentials(t *testing.T) {
-	settings := model.ProjectSettings{GitRemoteURL: "https://user:secret@example.invalid/repo.git?token=secret#secret"}
-	got := auditProjectSettings(settings)
-	if got.GitRemoteURL != "https://example.invalid/repo.git" || settings.GitRemoteURL == got.GitRemoteURL {
-		t.Fatalf("audit remote=%q; original=%q", got.GitRemoteURL, settings.GitRemoteURL)
-	}
-}
-
-func TestProjectsRepositoryPreconditionsFailClosed(t *testing.T) {
+func TestProjectsRunnerPreconditionFailsClosed(t *testing.T) {
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
-	root, err := store.RunnerWorktreeRoot(context.Background(), f.db, "mac-mini")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
 		name, key     string
 		value         any
 		field, reason string
 	}{
-		{"missing path", "localRepoPath", filepath.Join(t.TempDir(), "missing"), "path", "not_found"},
-		{"relative path", "localRepoPath", "relative", "path", "not_absolute"},
-		{"not Git", "localRepoPath", t.TempDir(), "path", "not_git_repository"},
-		{"worktree root", "localRepoPath", root, "path", "within_worktree_root"},
-		{"remote mismatch", "gitRemoteUrl", "https://user:secret@example.invalid/other.git", "url", "remote_mismatch"},
-		{"branch missing", "baseBranch", "missing", "baseBranch", "not_found"},
-		{"invalid branch", "baseBranch", "bad..branch", "baseBranch", "invalid_branch"},
 		{"missing runner", "runnerId", "missing", "runnerId", "not_found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,9 +233,6 @@ func TestProjectsRepositoryPreconditionsFailClosed(t *testing.T) {
 				}
 				status, body := projectRequest(t, f, method, endpoint, request)
 				requireProjectError(t, status, body, 422, PreconditionFailed, tc.field, tc.reason)
-				if strings.Contains(string(body), "secret") {
-					t.Fatal("error leaked URL credentials")
-				}
 			}
 		})
 	}
@@ -306,15 +252,18 @@ func TestProjectsInvalidInputReturns400Details(t *testing.T) {
 	}{
 		{"id", "Invalid_ID", "id", "invalid_format"},
 		{"name", "", "name", "required"}, {"name", nil, "name", "required"},
-		{"baseBranch", "", "baseBranch", "required"}, {"defaultRole", "", "defaultRole", "required"},
+		{"runnerId", "", "runnerId", "required"}, {"defaultRole", "", "defaultRole", "required"},
 		{"unknown", true, "body", "invalid_json"}, {"createdAt", "2026-10-26T00:00:00Z", "body", "invalid_json"},
-		{"allowedOperations", []string{}, "body", "invalid_json"}, {"approvalPolicy", nil, "approvalPolicy", "required"},
-		{"copyAllowlist", []string{"../secret"}, "copyAllowlist", "invalid_format"},
-		{"copyAllowlist", []string{"/absolute"}, "copyAllowlist", "invalid_format"},
-		{"copyAllowlist", []string{"fixtures/*"}, "copyAllowlist", "invalid_format"},
-		{"timeouts", map[string]int{"testSec": -1}, "timeouts.testSec", "out_of_range"},
+		{"allowedOperations", []string{}, "body", "invalid_json"},
+		{"timeouts", map[string]int{"harnessSec": -1}, "timeouts.harnessSec", "out_of_range"},
 		{"timeouts", map[string]int{"unknown": 1}, "timeouts", "invalid"},
-		{"contextLocation", "other.md", "contextLocation", "invalid_format"},
+		// The development settings moved to software-engineer (spec 19 3.11).
+		{"timeouts", map[string]int{"testSec": 1}, "timeouts", "invalid"},
+		{"timeouts", map[string]int{"setupSec": 1}, "timeouts", "invalid"},
+		{"localRepoPath", "/repos/project", "body", "invalid_json"},
+		{"testCommand", "go test ./...", "body", "invalid_json"},
+		{"copyAllowlist", []string{"fixtures/data.json"}, "body", "invalid_json"},
+		{"approvalPolicy", map[string]any{}, "body", "invalid_json"},
 	} {
 		t.Run(tc.key+"/"+tc.reason, func(t *testing.T) {
 			request := map[string]any{}
@@ -337,126 +286,6 @@ func TestProjectsInvalidInputReturns400Details(t *testing.T) {
 	}
 }
 
-func TestProjectsCopyAllowlistInvalidPathsFailClosed(t *testing.T) {
-	f := projectFixture(t)
-	input := projectInput(t, "project-a")
-	input["copyAllowlist"] = []string{"fixtures/original.json"}
-	status, body := projectRequest(t, f, "POST", "/api/projects", input)
-	before := requireProject(t, status, body, 201)
-	for _, tc := range []struct{ name, path string }{
-		{"parent only", ".."},
-		{"parent prefix", "../secret"},
-		{"parent suffix", "fixtures/.."},
-		{"parent middle", "fixtures/../secret"},
-		{"current then parent", "./../secret"},
-		{"repeated slash then parent", "fixtures//../secret"},
-		// Spec 03 section 3.3 rejects any path containing "..", including names.
-		{"dots inside filename", "a..b"},
-		{"dots at filename start", "..secret"},
-		{"dots at filename end", "secret.."},
-		{"dots inside nested filename", "fixtures/a..b.json"},
-		{"three dots", "..."},
-		{"absolute file", "/secret"},
-		{"absolute root", "/"},
-		{"absolute repeated slash", "//server/secret"},
-		{"star wildcard", "fixtures/*"},
-		{"question wildcard", "fixtures/data?.json"},
-		{"character class", "fixtures/[ab].json"},
-		{"closing bracket", "fixtures/data].json"},
-		{"backslash", `fixtures\secret`},
-		{"NUL", "fixtures/\x00secret"},
-		{"empty path", ""},
-		{"current only", "."},
-		{"current prefix", "./fixtures/data.json"},
-		{"current middle", "fixtures/./data.json"},
-		{"empty segment", "fixtures//data.json"},
-		{"trailing slash", "fixtures/"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, method := range []string{"POST", "PATCH"} {
-				t.Run(method, func(t *testing.T) {
-					// A valid entry before the invalid one must not be partially saved.
-					request := map[string]any{"copyAllowlist": []string{"fixtures/new.json", tc.path}, "name": "Changed"}
-					endpoint := "/api/projects/project-a"
-					if method == "POST" {
-						for key, value := range input {
-							if key != "copyAllowlist" {
-								request[key] = value
-							}
-						}
-						request["id"] = "project-b"
-						endpoint = "/api/projects"
-					}
-					status, body := projectRequest(t, f, method, endpoint, request)
-					requireProjectError(t, status, body, 400, ValidationFailed, "copyAllowlist", "invalid_format")
-					status, body = projectRequest(t, f, "GET", "/api/projects/project-a", nil)
-					if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, before) ||
-						projectCount(t, f, "projects") != 1 || projectCount(t, f, "audit_logs") != 1 {
-						t.Fatalf("invalid allowlist changed project or audit history: %+v", got)
-					}
-				})
-			}
-		})
-	}
-}
-
-func TestProjectsCopyAllowlistWarningsDoNotReject(t *testing.T) {
-	f := projectFixture(t)
-	input := projectInput(t, "project-a")
-	for _, tc := range []struct {
-		method, endpoint string
-		status           int
-		paths, warnings  []string
-	}{
-		{"POST", "/api/projects", 201,
-			[]string{".env", ".env.test", "test.pem", "test.key", "id_test", "fixtures/plain.json"},
-			[]string{
-				".env may contain secrets; use test-only dummy values",
-				".env.test may contain secrets; use test-only dummy values",
-				"test.pem may contain secrets; use test-only dummy values",
-				"test.key may contain secrets; use test-only dummy values",
-				"id_test may contain secrets; use test-only dummy values",
-			}},
-		{"PATCH", "/api/projects/project-a", 200,
-			[]string{"fixtures/.env", "fixtures/.env.test", "certs/test.pem", "certs/test.key", "ssh/id_test", "fixtures/plain.json"},
-			[]string{
-				"fixtures/.env may contain secrets; use test-only dummy values",
-				"fixtures/.env.test may contain secrets; use test-only dummy values",
-				"certs/test.pem may contain secrets; use test-only dummy values",
-				"certs/test.key may contain secrets; use test-only dummy values",
-				"ssh/id_test may contain secrets; use test-only dummy values",
-			}},
-		{"PATCH", "/api/projects/project-a", 200,
-			[]string{"a.b", ".config/settings.json", "dir.with.dots/data.json", ".envrc", "plain.env", "test.pem.txt", "test.key.txt", "identity.json", ".env/data.json", "id_dir/data.json"},
-			[]string{}},
-		{"PATCH", "/api/projects/project-a", 200, []string{}, []string{}},
-	} {
-		t.Run(tc.method+"/"+strings.Join(tc.paths, ","), func(t *testing.T) {
-			request := map[string]any{"copyAllowlist": tc.paths}
-			if tc.method == "POST" {
-				for key, value := range input {
-					request[key] = value
-				}
-			}
-			status, body := projectRequest(t, f, tc.method, tc.endpoint, request)
-			p := requireProject(t, status, body, tc.status)
-			var result struct {
-				Warnings []string `json:"warnings"`
-			}
-			if err := json.Unmarshal(body, &result); err != nil || !reflect.DeepEqual(result.Warnings, tc.warnings) || !reflect.DeepEqual(p.CopyAllowlist, tc.paths) {
-				t.Fatalf("warnings=%v want=%v project=%+v err=%v", result.Warnings, tc.warnings, p, err)
-			}
-			status, body = projectRequest(t, f, "GET", "/api/projects/project-a", nil)
-			if got := requireProject(t, status, body, 200); !reflect.DeepEqual(got, p) {
-				t.Fatalf("persisted=%+v; want=%+v", got, p)
-			}
-		})
-	}
-	if projectCount(t, f, "projects") != 1 || projectCount(t, f, "audit_logs") != 4 {
-		t.Fatal("accepted allowlists must persist project and audit history")
-	}
-}
-
 func TestProjectsPatchConflictAndImmutableFields(t *testing.T) {
 	f := projectFixture(t)
 	a, b := projectInput(t, "project-a"), projectInput(t, "project-b")
@@ -464,16 +293,14 @@ func TestProjectsPatchConflictAndImmutableFields(t *testing.T) {
 		status, body := projectRequest(t, f, "POST", "/api/projects", input)
 		requireProject(t, status, body, 201)
 	}
-	status, body := projectRequest(t, f, "PATCH", "/api/projects/project-b", map[string]any{
-		"localRepoPath": a["localRepoPath"], "gitRemoteUrl": a["gitRemoteUrl"],
-	})
+	status, body := projectRequest(t, f, "POST", "/api/projects", a)
 	requireProjectError(t, status, body, 409, Conflict, "", "")
 	for _, patch := range []map[string]any{{"id": "renamed"}, {"updatedAt": "2026-10-26T00:00:00Z"}, {"name": nil}} {
 		status, body = projectRequest(t, f, "PATCH", "/api/projects/project-b", patch)
 		assertAuthError(t, status, body, 400, ValidationFailed)
 	}
 	status, body = projectRequest(t, f, "GET", "/api/projects/project-b", nil)
-	if p := requireProject(t, status, body, 200); p.GitRemoteURL != b["gitRemoteUrl"] || projectCount(t, f, "audit_logs") != 2 {
+	if p := requireProject(t, status, body, 200); p.Name != b["name"] || projectCount(t, f, "audit_logs") != 2 {
 		t.Fatalf("rejected PATCH changed project: %+v", p)
 	}
 }
@@ -537,13 +364,13 @@ func TestProjectsConcurrentRegistrationHasOneWinner(t *testing.T) {
 	input := projectInput(t, "project-a")
 	var wg sync.WaitGroup
 	results := make(chan int, 2)
-	for _, id := range []string{"project-a", "project-b"} {
+	for _, name := range []string{"Project one", "Project two"} {
 		wg.Go(func() {
 			request := map[string]any{}
 			for k, v := range input {
 				request[k] = v
 			}
-			request["id"] = id
+			request["name"] = name
 			status, _ := projectRequest(t, f, "POST", "/api/projects", request)
 			results <- status
 		})

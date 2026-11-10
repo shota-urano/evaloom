@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 import { expect, test as base, type Locator } from '@playwright/test'
 
 import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
-import { createRepo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.12: Dashboard の通知失敗の一覧に、Execution の無い契機の Linear コメントの送信の失敗
 // （linear_outbox の行。eventId と executionId が null、outboxId あり、13 3.2、16 3.4.2、12 5、Q82・Q85）を出す。
@@ -106,10 +105,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
         const server: Server = { origin: evaloomd.origin, cookie: await login(evaloomd.origin) }
-        const repo = createRepo(temp, PROJECT)
-        await owner(server, 'POST', '/api/projects', {
-          id: PROJECT, name: 'Outbox アプリ', localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-        })
+        await owner(server, 'POST', '/api/projects', { id: PROJECT, name: 'Outbox アプリ', runnerId: 'local', defaultRole: 'developer' })
         seed(db)
         await provide(server)
       } finally {

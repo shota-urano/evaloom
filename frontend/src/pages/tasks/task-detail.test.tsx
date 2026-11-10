@@ -41,7 +41,6 @@ function taskWith(status: TaskDetail['status'], executions: ExecutionHistoryItem
     createdAt: '2026-10-28T00:00:00Z',
     updatedAt: '2026-10-28T00:00:00Z',
     latestExecution: latest ? { id: latest.id, seq: latest.seq, mode: latest.mode, status: latest.status, errorClass: latest.errorClass } : null,
-    prUrl: null,
     executions,
   }
 }
@@ -54,9 +53,7 @@ function detailOf(item: ExecutionHistoryItem, extra: Partial<ExecutionDetail> = 
     role: 'developer',
     harnessId: 'claude-developer',
     profileId: 'p1',
-    prUrl: null,
     contextRevisions: [],
-    gateResults: [],
     ...extra,
   }
 }
@@ -101,24 +98,13 @@ const logLines = () => within(screen.getByRole('log')).queryAllByText(/./, { sel
 const historyRows = () => within(screen.getByRole('table', { name: 'Execution 履歴' })).getAllByRole('row').slice(1)
 
 describe('タスク詳細', () => {
-  it('概要・Execution 履歴・固定した Context・検証結果を表示する', async () => {
+  it('概要・Execution 履歴・固定した Context を表示し、PR・検証結果・Block の続行は出さない', async () => {
     const item = history(E1, 1, 'blocked')
     TASK = taskWith('blocked', [item])
     EXECUTIONS = {
       [E1]: detailOf(item, {
         contextRevisions: [
           { id: 'c1', layer: 'project', kind: 'agents_md', sourcePath: 'AGENTS.md', sourceCommitSha: 'a'.repeat(40), contentHash: 'f'.repeat(64) },
-        ],
-        gateResults: [
-          {
-            id: 'g1',
-            gate: 2,
-            result: 'blocked',
-            baseSha: '1'.repeat(40),
-            targetSha: '2'.repeat(40),
-            findings: [{ rule: 'missing_test', path: 'src/foo.test.ts', line: 42, message: '受け入れ条件に対応するテストがない' }],
-            createdAt: '2026-10-28T02:00:00Z',
-          },
         ],
       }),
     }
@@ -133,10 +119,9 @@ describe('タスク詳細', () => {
     expect(context).toHaveTextContent('project')
     expect(context).toHaveTextContent('AGENTS.md')
     expect(context).toHaveTextContent('f'.repeat(64))
-    const gate = screen.getByRole('listitem', { name: 'Gate 2' })
-    expect(gate).toHaveTextContent('blocked')
-    expect(gate).toHaveTextContent('src/foo.test.ts:42')
-    expect(gate).toHaveTextContent('受け入れ条件に対応するテストがない')
+    expect(screen.queryByText('PR')).toBeNull()
+    expect(screen.queryByRole('heading', { name: /^検証結果/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /続行/ })).toBeNull()
     // Blocked は中止と再実行ができる（04 3.2）。
     expect(screen.getByRole('button', { name: '停止（中止）' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '再実行（継続）' })).toBeInTheDocument()

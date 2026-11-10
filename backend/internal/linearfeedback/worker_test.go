@@ -172,10 +172,8 @@ func setup(t *testing.T, fake http.Handler) (*sql.DB, *linearfeedback.Worker, *c
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
 		VALUES ('runner', 'Runner', 'hash', '/worktrees', 'online', ?, ?)`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-		default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-		VALUES ('project', 'Project', '/repos/project', 'https://example.test/repo.git', 'runner', 'main',
-		'developer', '.', '[]', '[]', '{}', '{}', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
+		VALUES ('project', 'Project', 'runner', 'developer', '[]', '{}', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
 		task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
 		VALUES ('linear-1', 'project', 'Title', 'Body', 'tests pass', 'test', 'development', 'solo', 'verifying',

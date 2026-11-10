@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -16,7 +14,7 @@ import (
 )
 
 type recoverySnapshot struct {
-	Execution, Task, Worktree                         string
+	Execution, Task                                   string
 	ErrorClass, Message, Finished, ExecutionHeartbeat sql.NullString
 	Executions, Events, Audits, Notifications         int
 }
@@ -24,14 +22,14 @@ type recoverySnapshot struct {
 func recoveryState(t *testing.T, f *authFixture, id string) recoverySnapshot {
 	t.Helper()
 	var s recoverySnapshot
-	err := f.db.QueryRow(`SELECT e.status, t.status, coalesce(w.status, ''), e.error_class, e.error_message,
+	err := f.db.QueryRow(`SELECT e.status, t.status, e.error_class, e.error_message,
 		e.finished_at, e.last_heartbeat_at,
 		(SELECT count(*) FROM executions),
 		(SELECT count(*) FROM execution_events WHERE execution_id = e.id),
 		(SELECT count(*) FROM audit_logs WHERE action = 'execution.interrupt' AND target_id = e.id),
 		(SELECT count(*) FROM notification_requests WHERE execution_id = e.id)
-		FROM executions e JOIN tasks t ON t.id = e.task_id LEFT JOIN worktrees w ON w.id = e.worktree_id
-		WHERE e.id = ?`, id).Scan(&s.Execution, &s.Task, &s.Worktree, &s.ErrorClass, &s.Message,
+		FROM executions e JOIN tasks t ON t.id = e.task_id
+		WHERE e.id = ?`, id).Scan(&s.Execution, &s.Task, &s.ErrorClass, &s.Message,
 		&s.Finished, &s.ExecutionHeartbeat, &s.Executions, &s.Events, &s.Audits, &s.Notifications)
 	if err != nil {
 		t.Fatal(err)
@@ -44,9 +42,6 @@ func requireInterrupted(t *testing.T, f *authFixture, id string, before recovery
 	after := recoveryState(t, f, id)
 	want := before
 	want.Execution, want.Task = "interrupted", "failed"
-	if before.Worktree != "" {
-		want.Worktree = "retained"
-	}
 	want.ErrorClass = sql.NullString{String: "interrupted", Valid: true}
 	want.Message = sql.NullString{String: reason, Valid: true}
 	want.Finished = after.Finished
@@ -158,20 +153,13 @@ func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 	for _, path := range []string{"boot", "startup"} {
 		for _, from := range []string{"claimed", "preparing", "running", "verifying", "publishing"} {
 			t.Run(path+"/"+from, func(t *testing.T) {
-				f, token, id, wt := resultFixture(t, from)
+				f, token, id, _ := resultFixture(t, from)
 				// Initial heartbeat establishes the baseline without interrupting.
 				before := recoveryState(t, f, id)
 				status, body := postHeartbeat(t, f, token, "claim-runner", heartbeatInput())
 				requireHeartbeat(t, status, body)
 				if got := recoveryState(t, f, id); got != before {
 					t.Fatalf("initial boot interrupted: %+v", got)
-				}
-				file := filepath.Join(t.TempDir(), "uncommitted.txt")
-				if err := os.WriteFile(file, []byte("unfinished changes"), 0600); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := f.db.Exec(`UPDATE worktrees SET path = ? WHERE id = ?`, filepath.Dir(file), wt); err != nil {
-					t.Fatal(err)
 				}
 				reason := "runner_boot_changed"
 				if path == "boot" {
@@ -187,9 +175,6 @@ func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 					}
 				}
 				requireInterrupted(t, f, id, before, reason)
-				if content, err := os.ReadFile(file); err != nil || string(content) != "unfinished changes" {
-					t.Fatalf("worktree contents=%q err=%v", content, err)
-				}
 				after := recoveryState(t, f, id)
 				// Repeated recovery and late heartbeats/results cannot reopen it.
 				started := time.Now().UTC().Add(time.Hour)
@@ -302,7 +287,7 @@ func TestRecoveryFailuresRollBackBootLivenessAndAllEffects(t *testing.T) {
 	for _, path := range []string{"boot", "startup"} {
 		for _, trigger := range []string{
 			`BEFORE UPDATE OF error_class ON executions`, `BEFORE UPDATE OF status ON tasks`,
-			`BEFORE UPDATE OF status ON worktrees`, `BEFORE UPDATE OF finished_at ON executions`,
+			`BEFORE UPDATE OF finished_at ON executions`,
 			`BEFORE INSERT ON execution_events`, `BEFORE INSERT ON audit_logs`, `BEFORE INSERT ON notification_requests`,
 		} {
 			t.Run(path+"/"+trigger, func(t *testing.T) {

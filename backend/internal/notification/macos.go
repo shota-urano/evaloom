@@ -141,7 +141,7 @@ func (m *MacOS) launch(ctx context.Context, title, body, openURL string) error {
 	}
 }
 
-// Construct visible content from an allowlist. Free-form reasons, PR URLs,
+// Construct visible content from an allowlist. Free-form reasons,
 // execution IDs and stage descriptions must never reach desktop notifications.
 func macOSContent(n Notification) (string, string, error) {
 	var title string
@@ -158,9 +158,7 @@ func macOSContent(n Notification) (string, string, error) {
 		return "", "", errors.New("notification: unsupported macOS notification status")
 	}
 	classification := string(n.Status)
-	if n.Status == model.ExecutionBlocked && n.BlockCause != "" && n.BlockCause.Validate() == nil {
-		classification = string(n.BlockCause)
-	} else if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
+	if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
 		classification = string(n.ErrorClass)
 	}
 	return title, n.Title + "\n" + n.TaskID + "\n" + classification, nil

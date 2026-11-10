@@ -9,16 +9,13 @@ import (
 	"time"
 )
 
-// waitingApprovalFixture publishes a PR in a require_approval Project, so the
-// Execution waits for approval with one pending approval bound to sha.
+// waitingApprovalFixture puts the Execution in waiting_approval with one
+// pending approval bound to sha.
 func waitingApprovalFixture(t *testing.T) (f *authFixture, token, executionID, taskID string, approval approvalRow) {
 	t.Helper()
 	f, token, executionID, _ = resultFixture(t, "publishing")
-	stageExec(t, f, `UPDATE executions SET branch_name='evaloom/result' WHERE id=?`, executionID)
 	taskID = executionTaskID(t, f, executionID)
-	if status, body := publishPR(t, f, token, executionID, strings.Repeat("b", 40), true); status != 204 {
-		t.Fatalf("publish = %d %s", status, body)
-	}
+	openApproval(t, f, executionID, strings.Repeat("b", 40))
 	requireWaitingApproval(t, f, executionID)
 	rows := approvalsOf(t, f, taskID)
 	if len(rows) != 1 {
@@ -195,7 +192,7 @@ func TestDecisionOnInvalidatedOrExpiredApprovalIs409(t *testing.T) {
 }
 
 // Acceptance (Q57): rejection fails the task with reason approval_rejected,
-// keeps the PR, audits the decision, and the owner can continue the task.
+// audits the decision, and the owner can continue the task.
 func TestRejectFailsTaskWithApprovalRejected(t *testing.T) {
 	f, _, id, taskID, approval := waitingApprovalFixture(t)
 	status, body := decide(t, f, approval.ID, map[string]any{"decision": "reject", "contentVersion": approval.ContentVersion})
@@ -207,11 +204,9 @@ func TestRejectFailsTaskWithApprovalRejected(t *testing.T) {
 	if execution != "failed" || taskStatus != "failed" || message != "approval_rejected" {
 		t.Fatalf("state = %s/%s/%q; want failed with approval_rejected", execution, taskStatus, message)
 	}
-	var prURL string
 	var finished bool
-	if err := f.db.QueryRow(`SELECT pr_url, finished_at IS NOT NULL FROM executions WHERE id=?`, id).Scan(&prURL, &finished); err != nil ||
-		prURL != pendingPRURL || !finished {
-		t.Fatalf("pr_url=%q finished=%v err=%v; want PR kept and finished", prURL, finished, err)
+	if err := f.db.QueryRow(`SELECT finished_at IS NOT NULL FROM executions WHERE id=?`, id).Scan(&finished); err != nil || !finished {
+		t.Fatalf("finished=%v err=%v; want finished", finished, err)
 	}
 	if n := stageCount(t, f, `SELECT count(*) FROM execution_events WHERE execution_id=? AND type='status_changed'
 		AND json_extract(payload,'$.to')='failed' AND json_extract(payload,'$.reason')='approval_rejected'`, id); n != 1 {
@@ -350,12 +345,10 @@ func TestRenewNonExpiredApprovalIs409(t *testing.T) {
 	}
 }
 
-// List filters by status and pages; detail shows the target, content
-// version, PR URL, Gate results and diff artifact references.
+// List filters by status and pages; detail shows the target and the content
+// version.
 func TestListAndGetApprovals(t *testing.T) {
 	f, _, id, _, approval := waitingApprovalFixture(t)
-	stageExec(t, f, `INSERT INTO artifacts (id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
-		VALUES ('01HZZZZZZZZZZZZZZZZZZZZZZZ', ?, 'diff', 'x/diff.patch', ?, 42, 1, '2026-11-08T00:00:00Z')`, id, strings.Repeat("d", 64))
 	stageExec(t, f, `INSERT INTO approvals (id, task_id, execution_id, operation, target, content_version, params_hash,
 		status, decided_by, decided_at, created_at) SELECT '00000000000000000000000001', task_id, execution_id, operation, target,
 		content_version, params_hash, 'rejected', 'owner', '2026-11-07T00:00:00Z', '2026-11-07T00:00:00Z' FROM approvals WHERE id=?`, approval.ID)
@@ -381,12 +374,10 @@ func TestListAndGetApprovals(t *testing.T) {
 	status, body = approvalRequest(t, f, "GET", "/api/approvals/"+approval.ID, "")
 	view := decodeApproval(t, status, body, 200)
 	var target map[string]any
-	if err := json.Unmarshal(view.Target, &target); err != nil || target["repository"] != "example/repo" || target["prNumber"] != float64(12) {
+	if err := json.Unmarshal(view.Target, &target); err != nil || target["name"] != "example" {
 		t.Fatalf("target = %s err=%v", view.Target, err)
 	}
-	if view.ContentVersion != approval.ContentVersion || view.PRURL == nil || *view.PRURL != pendingPRURL ||
-		view.GateResults == nil || len(view.DiffArtifacts) != 1 || view.DiffArtifacts[0].ID != "01HZZZZZZZZZZZZZZZZZZZZZZZ" ||
-		view.DiffArtifacts[0].SizeBytes != 42 || view.ExecutionID != id {
+	if view.ContentVersion != approval.ContentVersion || view.ExecutionID != id {
 		t.Fatalf("detail = %s", body)
 	}
 	status, body = approvalRequest(t, f, "GET", "/api/approvals/01ARZ3NDEKTSV4RRFFQ69G5FAV", "")

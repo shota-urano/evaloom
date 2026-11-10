@@ -28,7 +28,6 @@
 - HarnessにはRunner IDがないため、登録済みの全RunnerのWorktree Rootに対して
   既存の`registry.ValidateRepository`を適用する。Runner未登録時は検証できないため
   422 `precondition_failed`、`worktreeRoot / not_found`で拒否する。
-  Base Branch列はないため、既存検証のHarness用の省略動作を使う。
   path・urlに関するfield・reason、実パス正規化、検証期限は既存実装を使う。
 - 同じHarness Registry内の同一実パスは409とする。Project Registryとの共有は禁止しない。
   保存トランザクション内でパス文字列とディレクトリの同一性を確認する。

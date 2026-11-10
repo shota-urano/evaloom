@@ -37,5 +37,5 @@
 - 並びはタスクIDの数値部分の降順（新しい順）。`task-1000` は `task-999` より前に来る。
   ページングは共通の `limit` / `cursor`。カーソルは直前ページ最後のタスクIDを持つ。
 - 各要素はタスクの列に加えて `latestExecution`（seqが最大のExecutionの
-  `id`・`seq`・`mode`・`status`・`errorClass`。無ければnull）と、
-  `prUrl`（`pr_url` を持つExecutionのうちseqが最大のもの。無ければnull）を返す。
+  `id`・`seq`・`mode`・`status`・`errorClass`。無ければnull）を返す。
+  PR URL は software-engineer へ移したため返さない（`docs/specs/19-routing-and-stages.md` 3.11）。

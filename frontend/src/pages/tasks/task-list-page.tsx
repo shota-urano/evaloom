@@ -76,7 +76,7 @@ function HeldReason({ task }: { task: TaskSummary }) {
   )
 }
 
-/** Tasks 一覧（13 3.2）。タスク、状態、プロジェクト、最新 Execution、PR へのリンク。状態とプロジェクトで絞り込む。 */
+/** Tasks 一覧（13 3.2）。タスク、状態、プロジェクト、最新 Execution。状態とプロジェクトで絞り込む。 */
 export function TaskListPage({ state }: { state?: NavigationState }) {
   const { api } = useSession()
   const [filter, setFilter] = useState(readFilter)
@@ -179,9 +179,6 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   最新 Execution
                 </th>
-                <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  PR
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -216,15 +213,6 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                   </td>
                   <td className="px-4 py-3">
                     <LatestExecution task={task} />
-                  </td>
-                  <td className="px-4 py-3">
-                    {task.prUrl ? (
-                      <a href={task.prUrl} target="_blank" rel="noreferrer" className="underline underline-offset-4">
-                        PR を開く
-                      </a>
-                    ) : (
-                      <span className="text-muted-foreground">なし</span>
-                    )}
                   </td>
                 </tr>
               ))}

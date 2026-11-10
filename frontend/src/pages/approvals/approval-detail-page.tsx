@@ -1,9 +1,7 @@
 import { useState } from 'react'
 
-import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
-import { approvals, isExpired, type ApprovalArtifact, type ApprovalDecision, type ApprovalDetail } from '@/api/approvals'
-import { tasks, type GateResult } from '@/api/tasks'
+import { approvals, isExpired, type ApprovalDecision } from '@/api/approvals'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Loading, PageTitle } from '@/components/page'
@@ -16,59 +14,6 @@ import { navigate } from '@/lib/router'
 import { taskDetailPath } from '@/pages/tasks/labels'
 import { ApprovalStatusBadge } from './approval-list-page'
 import { APPROVALS_PATH, approvalDetailPath, approvalTargetLabel, formatTime } from './labels'
-
-function GateResults({ gates }: { gates: GateResult[] }) {
-  if (gates.length === 0) return <p className="text-muted-foreground text-sm">Gate の結果はありません。</p>
-  return (
-    <ul className="grid gap-3" aria-label="Gate の結果">
-      {gates.map((gate) => (
-        <li key={gate.id} className="grid gap-1 text-sm" data-gate={gate.gate}>
-          <div>
-            <span className="font-medium">Gate {gate.gate}</span> <span className="font-mono text-xs">{gate.result}</span>
-            <span className="text-muted-foreground font-mono text-xs"> · 対象 {gate.targetSha}</span>
-          </div>
-          {gate.findings.length === 0 ? (
-            <p className="text-muted-foreground text-xs">Finding はありません。</p>
-          ) : (
-            <ul className="grid gap-1 pl-4 text-xs">
-              {gate.findings.map((finding, index) => (
-                <li key={index}>
-                  <span className="font-mono">
-                    {finding.path || '(ファイルなし)'}
-                    {finding.line > 0 ? `:${finding.line}` : ''}
-                  </span>{' '}
-                  <span className="text-muted-foreground font-mono">[{finding.rule}]</span> {finding.message}
-                </li>
-              ))}
-            </ul>
-          )}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function DiffText({ api, executionId, artifact }: { api: ApiClient; executionId: string; artifact: ApprovalArtifact }) {
-  const text = useResource((signal) => tasks.getArtifactText(api, executionId, artifact.id, signal), `diff:${executionId}:${artifact.id}`)
-  if (text.error) return <ApiErrorAlert error={text.error} />
-  if (text.data === undefined) return <p className="text-muted-foreground text-sm">差分を読み込んでいます…</p>
-  return (
-    <pre aria-label="差分" className="bg-muted max-h-96 overflow-auto rounded-md p-3 font-mono text-xs whitespace-pre">
-      {text.data}
-    </pre>
-  )
-}
-
-function Diffs({ api, approval }: { api: ApiClient; approval: ApprovalDetail }) {
-  if (approval.diffArtifacts.length === 0) return <p className="text-muted-foreground text-sm">差分はありません。</p>
-  return (
-    <div className="grid gap-2">
-      {approval.diffArtifacts.map((artifact) => (
-        <DiffText key={artifact.id} api={api} executionId={approval.executionId} artifact={artifact} />
-      ))}
-    </div>
-  )
-}
 
 const DECIDED_NOTICE: Record<ApprovalDecision, string> = {
   approve: '承認を受け付けました。',
@@ -176,13 +121,7 @@ export function ApprovalDetailPage({ id }: { id: string }) {
                 <dd className="font-mono text-xs">{approval.operation}</dd>
                 <dt className="text-muted-foreground">PR</dt>
                 <dd data-testid="approval-pr-url">
-                  {approval.prUrl ? (
-                    <a href={approval.prUrl} target="_blank" rel="noreferrer" className="break-all underline underline-offset-4">
-                      {approval.prUrl}
-                    </a>
-                  ) : (
-                    <span className="text-muted-foreground">{approvalTargetLabel(approval)}</span>
-                  )}
+                  <span className="text-muted-foreground">{approvalTargetLabel(approval)}</span>
                 </dd>
                 <dt className="text-muted-foreground">ブランチ</dt>
                 <dd className="font-mono text-xs">
@@ -215,35 +154,13 @@ export function ApprovalDetailPage({ id }: { id: string }) {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                <h2>Gate の結果</h2>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <GateResults gates={approval.gateResults} />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                <h2>差分</h2>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Diffs api={api} approval={approval} />
-            </CardContent>
-          </Card>
-
           {approval.status === 'pending' ? (
             <Card className="border-sky-300">
               <CardHeader>
                 <CardTitle>
                   <h2>承認・却下</h2>
                 </CardTitle>
-                <CardDescription>上の head SHA の内容に対して判断します。承認すると Evaloom がこの PR をマージします。</CardDescription>
+                <CardDescription>上の head SHA の内容に対して判断します。</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-wrap gap-2">
                 <Button type="button" disabled={busy || stale} onClick={() => decide('approve')}>

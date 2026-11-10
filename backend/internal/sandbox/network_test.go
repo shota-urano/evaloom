@@ -23,13 +23,6 @@ func networkFixture(t *testing.T, mode string, kind SandboxKind) *fixture {
 		f.spec.Network = NetworkHarness
 		f.spec.AllowedDestinations = []string{"model.example:443"}
 	}
-	if kind == TestSetup {
-		f.spec.Network = NetworkSetup
-		f.spec.AllowedDestinations = []string{"registry.example:443"}
-	}
-	if kind == TestRun {
-		f.spec.Network = NetworkNone
-	}
 	f.config.ProxyImage = "proxy-image:explicit"
 	f.config.ProxyBinary = filepath.Join(f.root, "runtime", "proxy")
 	if err := os.WriteFile(f.config.ProxyBinary, []byte("trusted fixture binary"), 0700); err != nil {
@@ -47,7 +40,7 @@ func flag(args []string, key string) string {
 }
 
 func TestNetworkPoliciesWithFakeRuntime(t *testing.T) {
-	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+	for _, kind := range []SandboxKind{Harness} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := networkFixture(t, "normal", kind)
 			f.config.AllowEnv = append(f.config.AllowEnv, "HTTPS_PROXY", "NO_PROXY")
@@ -72,7 +65,7 @@ func TestNetworkPoliciesWithFakeRuntime(t *testing.T) {
 					creates[flag(args, "--name")] = args
 					if slices.Contains(args, "/network-probe") {
 						workload = args
-						if kind != TestRun && !checked {
+						if kind != SandboxKind("test_run") && !checked {
 							t.Fatal("workload created before proxy confirmation")
 						}
 					}
@@ -91,7 +84,7 @@ func TestNetworkPoliciesWithFakeRuntime(t *testing.T) {
 				t.Fatal("no workload")
 			}
 			network := flag(workload, "--network")
-			if kind == TestRun {
+			if kind == SandboxKind("test_run") {
 				if network != "none" || len(creates) != 1 || checked {
 					t.Fatal("test_run gained a network or proxy")
 				}
@@ -165,8 +158,8 @@ func TestNetworkFailureNeverStartsWorkload(t *testing.T) {
 
 func TestNetworkRejectsInvalidPolicyBeforeRuntime(t *testing.T) {
 	for _, edit := range []func(*fixture){
-		func(f *fixture) { f.spec.Kind = TestRun; f.spec.ConfigDir = "" },
-		func(f *fixture) { f.spec.Network = NetworkSetup },
+		func(f *fixture) { f.spec.Kind = "test_run"; f.spec.ConfigDir = "" },
+		func(f *fixture) { f.spec.Network = "setup" },
 		func(f *fixture) { f.spec.AllowedDestinations = nil },
 		func(f *fixture) { f.spec.AllowedDestinations = []string{"github.com:443"} },
 		func(f *fixture) { f.spec.AllowedDestinations = []string{"api.github.com:443"} },

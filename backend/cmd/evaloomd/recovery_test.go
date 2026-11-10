@@ -27,9 +27,8 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 				t.Fatal(err)
 			}
 		}
-		if _, err := db.Exec(`INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-			default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-			VALUES (?, ?, ?, '', ?, 'main', 'developer', 'AGENTS.md', '[]', '{}', '{}', '{}', '', '')`, runner, runner, "/repo/"+runner, runner); err != nil {
+		if _, err := db.Exec(`INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
+			VALUES (?, ?, ?, 'developer', '{}', '{}', '', '')`, runner, runner, runner); err != nil {
 			t.Fatal(err)
 		}
 		taskID := fmt.Sprintf("task-%03d", i+1)
@@ -38,12 +37,8 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 			VALUES (?, ?, 'Recovery', '', 'recover abandoned work', 'recovery', 'development', 'solo', 'running', ?, '', '')`, taskID, runner, runner); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO worktrees (id, project_id, task_id, runner_id, path, branch_name, base_sha, status, setup_status, copied_files, created_at)
-			VALUES (?, ?, ?, ?, ?, 'branch', '', 'active', 'pending', '[]', '')`, runner, runner, taskID, runner, "/worktrees/"+runner); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, runner_id, worktree_id, created_at)
-			VALUES (?, ?, 1, 'continue', 'running', ?, ?, '')`, runner, taskID, runner, runner); err != nil {
+		if _, err := db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, runner_id, created_at)
+			VALUES (?, ?, 1, 'continue', 'running', ?, '')`, runner, taskID, runner); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -62,27 +57,27 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 			t.Fatal(err)
 		}
 		for _, runner := range []string{"silent", "resumed", "never-heartbeat"} {
-			var execution, task, worktree, runnerStatus string
+			var execution, task, runnerStatus string
 			var requests, events, audits, executions int
 			var classified, finished bool
-			if err := db.QueryRow(`SELECT e.status, t.status, w.status, r.status,
+			if err := db.QueryRow(`SELECT e.status, t.status, r.status,
 				coalesce(e.error_class = 'interrupted', 0), e.finished_at IS NOT NULL,
 				(SELECT count(*) FROM notification_requests WHERE execution_id = e.id AND status = 'interrupted'),
 				(SELECT count(*) FROM execution_events WHERE execution_id = e.id AND type = 'status_changed' AND json_extract(payload, '$.reason') = 'runner_heartbeat_lost'),
 				(SELECT count(*) FROM audit_logs WHERE target_id = e.id AND actor = 'system' AND action = 'execution.interrupt'),
 				(SELECT count(*) FROM executions WHERE task_id = t.id)
-				FROM executions e JOIN tasks t ON t.id = e.task_id JOIN worktrees w ON w.id = e.worktree_id JOIN runners r ON r.id = e.runner_id
-				WHERE e.id = ?`, runner).Scan(&execution, &task, &worktree, &runnerStatus, &classified, &finished, &requests, &events, &audits, &executions); err != nil {
+				FROM executions e JOIN tasks t ON t.id = e.task_id JOIN runners r ON r.id = e.runner_id
+				WHERE e.id = ?`, runner).Scan(&execution, &task, &runnerStatus, &classified, &finished, &requests, &events, &audits, &executions); err != nil {
 				t.Fatal(err)
 			}
 			if runner == "resumed" {
-				if execution != "running" || task != "running" || worktree != "active" || runnerStatus != "online" || classified || finished || requests != 0 || events != 0 || audits != 0 || executions != 1 {
-					t.Fatalf("survivor changed: %s %s %s %s counts=%d/%d/%d/%d", execution, task, worktree, runnerStatus, requests, events, audits, executions)
+				if execution != "running" || task != "running" || runnerStatus != "online" || classified || finished || requests != 0 || events != 0 || audits != 0 || executions != 1 {
+					t.Fatalf("survivor changed: %s %s %s counts=%d/%d/%d/%d", execution, task, runnerStatus, requests, events, audits, executions)
 				}
 				continue
 			}
-			if execution != "interrupted" || task != "failed" || worktree != "retained" || runnerStatus != "offline" || !classified || !finished || requests != 1 || events != 1 || audits != 1 || executions != 1 {
-				t.Fatalf("recovery %s: %s %s %s %s classified=%v finished=%v counts=%d/%d/%d/%d", runner, execution, task, worktree, runnerStatus, classified, finished, requests, events, audits, executions)
+			if execution != "interrupted" || task != "failed" || runnerStatus != "offline" || !classified || !finished || requests != 1 || events != 1 || audits != 1 || executions != 1 {
+				t.Fatalf("recovery %s: %s %s %s classified=%v finished=%v counts=%d/%d/%d/%d", runner, execution, task, runnerStatus, classified, finished, requests, events, audits, executions)
 			}
 		}
 	}

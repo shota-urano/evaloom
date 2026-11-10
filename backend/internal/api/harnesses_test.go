@@ -34,9 +34,9 @@ func harnessFixture(t *testing.T) *authFixture {
 
 func harnessInput(t *testing.T, id string) map[string]any {
 	t.Helper()
-	p := projectInput(t, id)
+	repo, remote := gitRepository(t)
 	return map[string]any{"id": id, "name": "Harness " + id, "adapter": "codex",
-		"repoPath": p["localRepoPath"], "repoUrl": p["gitRemoteUrl"]}
+		"repoPath": repo, "repoUrl": remote}
 }
 
 func requireHarness(t *testing.T, status int, body []byte, want int) model.Harness {

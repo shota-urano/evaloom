@@ -32,7 +32,6 @@ type Runner struct {
 	claimPending                bool
 	loopRunning                 bool
 	pollInterval                time.Duration
-	approvals                   approvalCheck
 }
 
 func New(config Config) (*Runner, error) {
@@ -134,8 +133,7 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 		return fmt.Errorf("runner: heartbeat returned HTTP %d", response.StatusCode)
 	}
 	var reply struct {
-		CancelExecutionIDs []string          `json:"cancelExecutionIds"`
-		WaitingApprovals   []WaitingApproval `json:"waitingApprovals"`
+		CancelExecutionIDs []string `json:"cancelExecutionIds"`
 	}
 	const maxResponseBytes = 1 << 20
 	content, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
@@ -145,8 +143,6 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 	if err := json.Unmarshal(content, &reply); err != nil || reply.CancelExecutionIDs == nil {
 		return fmt.Errorf("runner: invalid heartbeat response")
 	}
-	// Spec 17 3.6: the PRs waiting for approval to read at the next check.
-	runner.setWaitingApprovals(reply.WaitingApprovals)
 	for _, id := range reply.CancelExecutionIDs {
 		runner.mu.Lock()
 		cancel := runner.executions[id]

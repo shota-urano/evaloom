@@ -26,10 +26,6 @@ func (c *Container) validateNetwork(spec SandboxSpec) error {
 		if spec.Kind != Harness {
 			return deny()
 		}
-	case NetworkSetup:
-		if spec.Kind != TestSetup {
-			return deny()
-		}
 	default:
 		return deny()
 	}

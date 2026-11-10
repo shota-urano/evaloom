@@ -19,8 +19,8 @@ const (
 )
 
 // claimedLinearExecution gives linear-1-e1 the state a claimed Execution has:
-// harness h at Profile 1.0.0, Runner "runner" (worktree root /worktrees) and
-// its worktree. The harness_output artifact holds summary (none when empty),
+// harness h at Profile 1.0.0 and Runner "runner" (worktree root /worktrees).
+// The harness_output artifact holds summary (none when empty),
 // read through the Control Plane's ArtifactStore as evaloomd does.
 func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	t.Helper()
@@ -30,11 +30,8 @@ func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition,
 		definition_hash, model_id, operation_status, registered_at)
 		VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?)`, sha40, testTime)
-	mustExec(t, db, `INSERT INTO worktrees (id, project_id, task_id, runner_id, path, branch_name, base_sha, status,
-		setup_status, copied_files, created_at) VALUES ('wt-1', 'project', 'linear-1', 'runner', ?, 'b', ?, 'active',
-		'succeeded', '[]', ?)`, worktreePath, sha40, testTime)
 	mustExec(t, db, `UPDATE executions SET runner_id = 'runner', harness_id = 'h', profile_id = 'p',
-		profile_version = '1.0.0', profile_commit_sha = ?, worktree_id = 'wt-1' WHERE id = 'linear-1-e1'`, sha40)
+		profile_version = '1.0.0', profile_commit_sha = ? WHERE id = 'linear-1-e1'`, sha40)
 	files, err := store.NewArtifactStore(db, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -46,19 +43,6 @@ func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 		if _, err := files.Save(context.Background(), "out-1", "linear-1-e1", "harness_output", true, strings.NewReader(string(data))); err != nil {
 			t.Fatal(err)
 		}
-	}
-}
-
-func gateResults(t *testing.T, db *sql.DB, gate2, gate3 string, total, skipped int, findings string) {
-	t.Helper()
-	mustExec(t, db, `INSERT INTO test_runs (id, execution_id, kind, target_sha, command, exit_code, total, passed,
-		failed, skipped, timed_out, started_at, finished_at) VALUES ('run-1', 'linear-1-e1', 'verify', ?, 'make test',
-		0, ?, ?, 0, ?, 0, ?, ?)`, sha40, total, total-skipped, skipped, testTime, testTime)
-	mustExec(t, db, `INSERT INTO gate_results (id, execution_id, gate, result, base_sha, target_sha, findings, created_at)
-		VALUES ('g2', 'linear-1-e1', 2, ?, ?, ?, ?, ?)`, gate2, sha40, sha40, findings, testTime)
-	if gate3 != "" {
-		mustExec(t, db, `INSERT INTO gate_results (id, execution_id, gate, result, base_sha, target_sha, findings, created_at)
-			VALUES ('g3', 'linear-1-e1', 3, ?, ?, ?, '[]', ?)`, gate3, sha40, sha40, testTime)
 	}
 }
 
@@ -93,11 +77,9 @@ func checkBody(t *testing.T, body string, want, absent []string) {
 // items that apply to it; the others are left out.
 func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 	ctx := context.Background()
-	t.Run("succeeded with a PR", func(t *testing.T) {
+	t.Run("succeeded", func(t *testing.T) {
 		db := outboxDB(t)
 		claimedLinearExecution(t, db, "テストを1件足した")
-		gateResults(t, db, "pass", "pass", 5, 1, `[]`)
-		mustExec(t, db, `UPDATE executions SET pr_url = 'https://github.com/o/r/pull/3', pushed_sha = ? WHERE id = 'linear-1-e1'`, sha40)
 		setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing)
 		transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing, model.ExecutionSucceeded)
 		checkBody(t, onlyBody(t, db), []string{
@@ -105,26 +87,11 @@ func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 			"- 実行ステータス: Completed\n",
 			"- 実行担当ハーネス: h（Profile 1.0.0）\n",
 			"\n作業概要:\nテストを1件足した\n",
-			"\n検証結果:\n- Gate 2: pass（実行数: 4、skip 数: 1、確認方法: ID による照合）\n- Gate 3: pass\n",
-			"- PR URL: https://github.com/o/r/pull/3\n",
-		}, []string{"エラー情報", "承認", "push した commit"})
-	})
-	t.Run("succeeded by a direct push", func(t *testing.T) {
-		db := outboxDB(t)
-		claimedLinearExecution(t, db, "直接 push した")
-		gateResults(t, db, "pass", "pass", 2, 0, `[{"rule":"count_only_check","path":"","line":0,"message":"件数"}]`)
-		mustExec(t, db, `UPDATE executions SET pushed_sha = ? WHERE id = 'linear-1-e1'`, sha40)
-		setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing)
-		transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing, model.ExecutionSucceeded)
-		checkBody(t, onlyBody(t, db), []string{
-			"- PR URL: なし（ベースブランチへ push した commit: " + sha40 + "）\n",
-			"確認方法: 件数による確認",
-		}, []string{"エラー情報"})
+		}, []string{"エラー情報", "承認", "PR URL", "検証結果", "Gate"})
 	})
 	t.Run("failed", func(t *testing.T) {
 		db := outboxDB(t)
 		claimedLinearExecution(t, db, "途中まで")
-		gateResults(t, db, "failed", "", 3, 0, `[{"rule":"test_failed","path":"a_test.go","line":0,"message":"FAIL TestA"}]`)
 		mustExec(t, db, `UPDATE executions SET error_class = 'test_failed', error_message = 'テストが失敗した' WHERE id = 'linear-1-e1'`)
 		setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionVerifying)
 		transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionVerifying, model.ExecutionFailed)
@@ -132,9 +99,8 @@ func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 			"- 実行ステータス: Failed\n",
 			"- 実行担当ハーネス: h（Profile 1.0.0）\n",
 			"- エラー情報: test_failed（テストが失敗した）\n",
-			"- Gate 2: failed（実行数: 3、skip 数: 0、確認方法: ID による照合）\n",
 			"\n作業概要:\n途中まで\n",
-		}, []string{"PR URL", "Gate 3", "FAIL TestA", "a_test.go"})
+		}, []string{"PR URL", "検証結果", "Gate"})
 	})
 	t.Run("interrupted by a restart, through store recovery", func(t *testing.T) {
 		db := outboxDB(t)
@@ -152,18 +118,13 @@ func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 	t.Run("blocked", func(t *testing.T) {
 		db := outboxDB(t)
 		claimedLinearExecution(t, db, "テストを消した")
-		gateResults(t, db, "blocked", "", 1, 0, `[{"rule":"existing_test_not_run","path":"","line":0,"message":"x"}]`)
-		mustExec(t, db, `INSERT INTO execution_blocks (id, execution_id, cause, gate_result_id, head_sha, detail, created_at)
-			VALUES ('b1', 'linear-1-e1', 'gate2_missing_tests', 'g2', ?, '{}', ?)`, sha40, testTime)
 		setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionVerifying)
 		transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionVerifying, model.ExecutionBlocked)
 		checkBody(t, onlyBody(t, db), []string{
 			"- 実行ステータス: Blocked\n",
-			"- エラー情報: Block 原因 gate2_missing_tests\n",
 			"- 続行・中止は管理画面で本人が選ぶ\n",
-			"- Gate 2: blocked（実行数: 1、skip 数: 0",
 			"\n作業概要:\nテストを消した\n",
-		}, []string{"PR URL"})
+		}, []string{"PR URL", "検証結果", "Block 原因"})
 	})
 	t.Run("cancelled", func(t *testing.T) {
 		db := outboxDB(t)
@@ -209,8 +170,8 @@ func TestCommentBodyHasNoLogTextOrRunnerPath(t *testing.T) {
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed)
 	checkBody(t, onlyBody(t, db), []string{
-		"変更は [REDACTED]/main.go と [REDACTED]/other にある",
-		"- エラー情報: execution_failed（cannot open [REDACTED]/.git）\n",
+		"変更は [REDACTED]/linear-1-r1/main.go と [REDACTED]/other にある",
+		"- エラー情報: execution_failed（cannot open [REDACTED]/linear-1-r1/.git）\n",
 	}, []string{"LOG-BODY-CANARY", "LOG-PATH-CANARY", "/worktrees", "artifacts/"})
 }
 

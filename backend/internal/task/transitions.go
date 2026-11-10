@@ -97,16 +97,9 @@ var executionTransitions = map[model.ExecutionStatus][]model.ExecutionStatus{
 	model.ExecutionBlocked:         {model.ExecutionPending, model.ExecutionCancelled},
 }
 
-// ValidateExecutionTransition also accepts starting directly at an approved
-// resume point after claim (spec 04, 3.8; spec 05, 3.3). The resume API must check
-// the block decision and SHA before setting resume_point; this is not authorization.
-func ValidateExecutionTransition(from, to model.ExecutionStatus, resumePoint string) error {
-	if from == model.ExecutionClaimed || from == model.ExecutionPreparing {
-		if (resumePoint == "gate2" || resumePoint == "gate3") && to == model.ExecutionVerifying ||
-			resumePoint == "publish" && to == model.ExecutionPublishing {
-			return nil
-		}
-	}
+// ValidateExecutionTransition checks one Execution state change against the
+// table above.
+func ValidateExecutionTransition(from, to model.ExecutionStatus) error {
 	for _, allowed := range executionTransitions[from] {
 		if to == allowed {
 			return nil

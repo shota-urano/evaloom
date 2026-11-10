@@ -22,21 +22,9 @@ type Approval struct {
 	CreatedAt                               string
 }
 
-// ApprovalArtifact references a diff artifact of the approval's Execution
-// (spec 17 5章: GET /api/approvals/{id}). The body is fetched through the
-// existing artifact API, never inlined here.
-type ApprovalArtifact struct {
-	ID, SHA256, CreatedAt string
-	SizeBytes             int64
-}
-
-// ApprovalDetail adds what the owner reviews before deciding (spec 17 3.4):
-// the PR URL, the Gate results and the diff artifacts of the Execution.
+// ApprovalDetail is what the owner reviews before deciding (spec 17 3.4).
 type ApprovalDetail struct {
 	Approval
-	PRURL         *string
-	GateResults   []ExecutionGateResult
-	DiffArtifacts []ApprovalArtifact
 }
 
 const approvalColumns = `id, task_id, execution_id, operation, target, content_version, params_hash, status,
@@ -89,8 +77,7 @@ func ListApprovals(ctx context.Context, db *sql.DB, status, before string, limit
 	return out, rows.Err()
 }
 
-// GetApprovalDetail reads the approval, its PR URL, Gate results and diff
-// artifact references in one snapshot. sql.ErrNoRows means no approval.
+// GetApprovalDetail reads the approval in one snapshot. sql.ErrNoRows means no approval.
 func GetApprovalDetail(ctx context.Context, db *sql.DB, id string) (ApprovalDetail, error) {
 	var detail ApprovalDetail
 	tx, err := db.BeginTx(ctx, nil)
@@ -100,29 +87,6 @@ func GetApprovalDetail(ctx context.Context, db *sql.DB, id string) (ApprovalDeta
 	defer tx.Rollback()
 	detail.Approval, err = GetApprovalTx(ctx, tx, id)
 	if err != nil {
-		return detail, err
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT pr_url FROM executions WHERE id = ?`, detail.ExecutionID).Scan(&detail.PRURL); err != nil {
-		return detail, err
-	}
-	if detail.GateResults, err = listExecutionGateResults(ctx, tx, detail.ExecutionID); err != nil {
-		return detail, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, sha256, size_bytes, created_at FROM artifacts
-		WHERE execution_id = ? AND kind = 'diff' ORDER BY created_at, id`, detail.ExecutionID)
-	if err != nil {
-		return detail, err
-	}
-	defer rows.Close()
-	detail.DiffArtifacts = []ApprovalArtifact{}
-	for rows.Next() {
-		var artifact ApprovalArtifact
-		if err := rows.Scan(&artifact.ID, &artifact.SHA256, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
-			return detail, err
-		}
-		detail.DiffArtifacts = append(detail.DiffArtifacts, artifact)
-	}
-	if err := rows.Err(); err != nil {
 		return detail, err
 	}
 	return detail, tx.Commit()

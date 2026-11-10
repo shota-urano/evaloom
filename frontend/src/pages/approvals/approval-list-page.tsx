@@ -141,7 +141,7 @@ export function ApprovalListPage() {
           <CardTitle>
             <h2>承認待ち</h2>
           </CardTitle>
-          <CardDescription>対象の PR、head SHA、Gate の結果、差分を詳細で確認し、承認か却下を選んでください。</CardDescription>
+          <CardDescription>対象の PR と head SHA を詳細で確認し、承認か却下を選んでください。</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3" aria-busy={pending.loading || undefined}>
           <ApiErrorAlert error={pending.error} onReload={pending.reload} />

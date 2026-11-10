@@ -326,7 +326,7 @@ func requireClass(t *testing.T, err error, status model.ExecutionStatus, class m
 func TestContainerMountEnvironmentAndLimitArguments(t *testing.T) {
 	t.Setenv("HOST_SECRET", "host-secret-value")
 	t.Setenv("RUNNER_TOKEN", "host-runner-token")
-	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+	for _, kind := range []SandboxKind{Harness} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := newFixture(t, "normal")
 			f.spec.Kind = kind
@@ -449,9 +449,9 @@ func TestContainerRejectsUnsafeSpecsBeforeInvokingRuntime(t *testing.T) {
 		{"data-as-git", func(f *fixture) { f.spec.GitDir = f.config.DataDir }},
 		{"data-as-config", func(f *fixture) { f.spec.ConfigDir = f.config.DataDir }},
 		{"token-in-mount", func(f *fixture) { f.config.RunnerTokenFile = filepath.Join(f.spec.Worktree, "token") }},
-		{"test-cannot-see-config", func(f *fixture) { f.spec.Kind = TestRun }},
-		{"test-run-cannot-write-config", func(f *fixture) { f.spec.Kind = TestRun; f.spec.ConfigDir = ""; f.spec.ConfigWritable = true }},
-		{"test-setup-cannot-write-config", func(f *fixture) { f.spec.Kind = TestSetup; f.spec.ConfigDir = ""; f.spec.ConfigWritable = true }},
+		// The setup and test Sandboxes moved to software-engineer (spec 19 3.11).
+		{"no-test-run-kind", func(f *fixture) { f.spec.Kind = "test_run"; f.spec.ConfigDir = "" }},
+		{"no-test-setup-kind", func(f *fixture) { f.spec.Kind = "test_setup"; f.spec.ConfigDir = "" }},
 		{"harness-needs-config", func(f *fixture) { f.spec.ConfigDir = "" }},
 		{"harness-needs-git", func(f *fixture) { f.spec.GitDir = "" }},
 		{"overlap-mounts", func(f *fixture) { f.spec.ConfigDir = f.spec.Worktree }},
@@ -688,7 +688,7 @@ func TestContainerCaseInsensitiveProtectedMounts(t *testing.T) {
 }
 
 func TestContainerRejectsOverlappingMountSources(t *testing.T) {
-	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+	for _, kind := range []SandboxKind{Harness} {
 		for _, pair := range [][2]int{{0, 1}, {0, 2}, {1, 2}} {
 			if kind != Harness && pair[1] == 2 {
 				continue // Test sandboxes cannot mount ConfigDir at all.
@@ -765,7 +765,7 @@ func TestContainerRejectsOverlappingMountSources(t *testing.T) {
 }
 
 func TestContainerAllowsCaseInsensitiveMountRootAliases(t *testing.T) {
-	for _, kind := range []SandboxKind{Harness, TestSetup, TestRun} {
+	for _, kind := range []SandboxKind{Harness} {
 		for _, field := range []string{"worktree", "git", "config"} {
 			if kind != Harness && field == "config" {
 				continue

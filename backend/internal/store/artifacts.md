@@ -21,7 +21,8 @@ Runnerの登録APIは所有権を確認したトランザクションを`Registe
 別のExecutionや異なるSHA-256へのIDの再利用は`ErrArtifactConflict`を返す。
 呼び出し側はcommitが失敗した場合、返されたcleanupを呼んで新規ファイルを除去する。
 
-JSON列への書き込みには`RecordGateResult`、`RecordExecutionBlock`、
-`RecordAuditLog`を使う。Findingは型付き配列、detailはJSONオブジェクトとして
+監査記録のJSON列への書き込みには`RecordAuditLog`を使う。detailはJSONオブジェクトとして
 エンコードし、不正なJSONやエンコードできない値はDBへの書き込み前に拒否する。
-ExecutionやTaskの状態遷移、Gate判定、本人の続行判断は各サービス側で扱う。
+ExecutionやTaskの状態遷移は各サービス側で扱う。
+Gate結果とBlockの記録（`gate_results`・`execution_blocks`）は software-engineer への切り替えで消した
+（`docs/specs/19-routing-and-stages.md` 3.11、マイグレーション0025）。

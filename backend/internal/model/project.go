@@ -3,24 +3,11 @@ package model
 // ProjectSettings is the owner-editable Registry configuration (spec 02, 3.2).
 // Unspecified timeout keys inherit the global defaults when executing work.
 type ProjectSettings struct {
-	Name             string  `json:"name"`
-	LocalRepoPath    string  `json:"localRepoPath"`
-	GitRemoteURL     string  `json:"gitRemoteUrl"`
-	RunnerID         string  `json:"runnerId"`
-	BaseBranch       string  `json:"baseBranch"`
-	DefaultRole      string  `json:"defaultRole"`
-	ReviewRole       *string `json:"reviewRole"`
-	ContextLocation  string  `json:"contextLocation"`
-	TestCommand      *string `json:"testCommand"`
-	TestReportFormat *string `json:"testReportFormat"`
-	TestReportPath   *string `json:"testReportPath"`
-	SetupCommand     *string `json:"setupCommand"`
-	// SetupAllowedHosts lists the `host:port` destinations the setup Test
-	// Sandbox may reach (spec 03 3.3.1). Empty keeps setup fully offline.
-	SetupAllowedHosts []string       `json:"setupAllowedHosts"`
-	CopyAllowlist     []string       `json:"copyAllowlist"`
+	Name              string         `json:"name"`
+	RunnerID          string         `json:"runnerId"`
+	DefaultRole       string         `json:"defaultRole"`
+	ReviewRole        *string        `json:"reviewRole"`
 	AllowedOperations map[string]any `json:"allowedOperations"`
-	ApprovalPolicy    map[string]any `json:"approvalPolicy"`
 	Timeouts          map[string]int `json:"timeouts"`
 	// LinearTeamID and LinearRoutingLabel route Linear Issues to this Project
 	// (spec 15 3.6, 3.8). A Project with either one null is never run from

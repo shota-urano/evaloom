@@ -90,20 +90,12 @@ func TestExecutionTransitionTable(t *testing.T) {
 		// consume is refused (expired, head or target changed).
 		"merging": {"succeeded", "failed", "cancelled", "waiting_approval"},
 	}
-	for _, resume := range []string{"", "gate2", "gate3", "publish"} {
+	for _, resume := range []string{""} {
 		for _, from := range executionStates {
 			for _, to := range executionStates {
 				t.Run(resume+"/"+string(from)+"->"+string(to), func(t *testing.T) {
 					want := contains(allowed[from], to)
-					if from == "claimed" || from == "preparing" {
-						if resume == "gate2" || resume == "gate3" {
-							want = want || to == "verifying"
-						}
-						if resume == "publish" {
-							want = want || to == "publishing"
-						}
-					}
-					err := task.ValidateExecutionTransition(from, to, resume)
+					err := task.ValidateExecutionTransition(from, to)
 					if want {
 						if err != nil {
 							t.Fatal(err)

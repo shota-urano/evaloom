@@ -11,7 +11,7 @@ import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-52y.7: Dashboard と Settings（13 3.2・4節）。
 //
-// 52y.6 と同じく、global-setup がビルドしたバイナリを空きポートで別に起動する。
+// global-setup がビルドしたバイナリを空きポートで別に起動する。
 // Runner の役は、テストが Runner 用 API（heartbeat・claim・結果の報告）を直接呼んで務め、
 // 実行中・待機中・Blocked のタスクと、online / offline の Runner を作る。
 
@@ -125,10 +125,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
         const server: Server = { db, origin: evaloomd.origin, cookie: await login(evaloomd.origin), runnerToken }
         await owner(server, 'POST', '/api/harness-profiles', { harnessId: HARNESS, version: '1.0.0' })
         for (const project of PROJECTS) {
-          const repo = createRepo(temp, project.id)
-          await owner(server, 'POST', '/api/projects', {
-            id: project.id, name: project.name, localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-          })
+          await owner(server, 'POST', '/api/projects', { id: project.id, name: project.name, runnerId: 'local', defaultRole: 'developer' })
           await owner(server, 'POST', `/api/projects/${project.id}/harnesses`, { role: 'developer', harnessId: HARNESS, version: '1.0.0' })
         }
         await provide(server)
@@ -153,8 +150,6 @@ async function heartbeat(server: Server) {
   })
   expect(response.status, `heartbeat: ${await response.text()}`).toBe(200)
 }
-
-const HEAD_SHA = '1234567890abcdef1234567890abcdef12345678'
 
 /** claim した Execution を Runner として running まで進める。 */
 async function start(server: Server, taskId: string): Promise<string> {
@@ -187,8 +182,15 @@ test('Dashboard に Runner の online / offline と、実行中・待機中・Bl
   // Beta のタスクを Blocked にする。Blocked は同時実行の枠を占有しない（04 3.3、Q23）。
   const blocked = await createTask(server, PROJECTS[1].id, 'Beta の Blocked タスク')
   const blockedExecution = await start(server, blocked.id)
-  await reportResult(server, blockedExecution, { fromStatus: 'running', status: 'verifying', baseSha: 'a'.repeat(40), harnessHeadSha: HEAD_SHA })
-  await reportResult(server, blockedExecution, { fromStatus: 'verifying', status: 'blocked', gateResults: [], block: { cause: 'context_conflict', headSha: HEAD_SHA } })
+  // Runner は blocked を報告できない（原因の Gate・Context・Git は software-engineer へ移した、19 3.11）ので、状態だけを DB へ直接入れる。
+  await reportResult(server, blockedExecution, { fromStatus: 'running', status: 'verifying' })
+  run('sqlite3', [
+    server.db,
+    `BEGIN;
+     UPDATE executions SET status = 'blocked' WHERE id = '${blockedExecution}';
+     UPDATE tasks SET status = 'blocked', updated_at = '${new Date().toISOString()}' WHERE id = '${blocked.id}';
+     COMMIT;`,
+  ])
 
   // Beta のタスクを失敗させ、その通知に失敗したことを記録する。
   const failed = await createTask(server, PROJECTS[1].id, 'Beta の失敗タスク')

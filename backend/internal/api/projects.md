@@ -1,60 +1,32 @@
 # Project APIの実装判断
 
-正本は`docs/specs/03-registry.md`の3.1〜3.3・3.7・5〜6節、
-`02-data-model.md`のprojects、`01-architecture.md`の5.3節。
+正本は`docs/specs/03-registry.md`、`02-data-model.md`のprojects、`01-architecture.md`。
 以下は仕様で未確定の部分の実装判断。
 
+開発の列（ローカルリポジトリ、リモートURL、Base Branch、Context の場所、テストコマンド、
+setup とその許可宛先、コピー許可リスト、承認の方針）は software-engineer へ移したため持たない
+（`docs/specs/19-routing-and-stages.md` 3.11、マイグレーション0025）。送ると未知の項目として400になる。
+
 - POSTは201、GET・PATCHは200でProjectの全列をcamelCaseで返す。
-  POST・PATCHの応答には`warnings`の文字列配列も付ける。警告がなければ空配列。
   一覧は既存の`items`・`nextCursor`形式とID昇順のページネーションを使う。
-- 登録には`id`、`name`、`localRepoPath`、`gitRemoteUrl`、`runnerId`、
-  `baseBranch`、`defaultRole`が必要。IDは既存のslug検証を使う。
-  `contextLocation`の省略値は`AGENTS.md`で、Phase 1ではこの値だけを受け付ける。
+- 登録には`id`、`name`、`runnerId`、`defaultRole`が必要。IDは既存のslug検証を使う。
   `reviewRole`はPhase 5まで使わないためnullだけを受け付ける。
-- nullable列の省略値はnull、配列は`[]`、`allowedOperations`は`{}`。
+- nullable列の省略値はnull、`allowedOperations`と`timeouts`は`{}`。
   `allowedOperations`はオブジェクトとして保存・表示し、内部キーの実行効果は追加しない。
-- `approvalPolicy`は仕様17の3.2（Q60）の形
-  `{"version": 1, "mergePullRequest": "require_approval" | "direct_push"}`だけを受け付ける。
-  ほかのキー・キーの欠け・未知の値は400（fieldは`approvalPolicy`、`approvalPolicy.version`、
-  `approvalPolicy.mergePullRequest`、reasonは`invalid`。reasonは仕様が決めていないので`timeouts`に合わせた）。
-  登録で省略すると`require_approval`になる。既存の値はマイグレーション0020でこの形でなければ
-  `require_approval`にする。変更は`project.update`の監査記録のbefore/afterに残る。
-  Runnerトークンはこの本人用APIに届かない（403、`auth.reject`）。
-- `timeouts`は`setupSec`・`harnessSec`・`testSec`だけを受け付ける。
-  指定値は正の整数とし、キーを省略した工程は仕様05の3.6に従って全体設定を継承する。
+- `timeouts`は`harnessSec`だけを受け付ける。指定値は正の整数とする。
   今回は全体設定やタイムアウト実行処理を追加しない。
 - PATCHは省略した項目を保持し、指定した項目を丸ごと置き換える。
-  配列とオブジェクトの内部キーはマージしない。nullable列はnullで解除できる。
+  オブジェクトの内部キーはマージしない。nullable列はnullで解除できる。
   ID・作成日時・更新日時は要求から変更できない。空のPATCHも再検証・監査記録を行う。
-- 未登録Runnerは422で`runnerId / not_found`を返す。
-  リポジトリ検証のfield・reasonは既存の`registry.ValidateRepository`をそのまま使う。
+- 未登録Runnerは422で`runnerId / not_found`を返す。Runnerの存在は保存のトランザクション内で確かめる。
   必須値や型の不備は既存の400とdetails形式で返す。
-- コピー許可リストには相対ファイルパスだけを受け付ける。
-  空文字、空の要素、`.`要素、`..`を含むパス、絶対パス、ワイルドカード、
-  バックスラッシュ、NULを拒否する。
-  仕様03の3.3の「`..`を含む」に従い、`a..b`など名前の一部でも拒否する。
-  入力エラーは既存の400と`copyAllowlist / invalid_format`を使う。
-  仕様03の3.3にある秘密情報らしいファイル名は拒否せず警告する。
-  判定対象は末尾のファイル名だけとし、POST・PATCHの両方で検証する。
-  警告文は既存の`<path> may contain secrets; use test-only dummy values`を使い、
-  許可リストの順で返す。安全な項目や空配列への更新後は空の警告配列を返す。
-  ファイルの内容は読まず、コピーも実行しない。
+- 同じIDの登録は409を返す。
+- 更新では保存のトランザクション内でProjectの全値を再確認し、読み取り後に変更されていたら409を返す。
 - 登録・更新とaudit_logsへの書き込みを同じトランザクションで行う。
   登録のactionは`project.register`、更新は仕様の`project.update`。
   actorは`owner`、target_typeは`project`、target_idはProject ID。
   detailの`before`・`after`に設定を記録する。登録時のbeforeはnull。
-  リモートURLに含まれる認証情報・クエリ・フラグメントは監査記録から除外する。
-  トークンやファイル内容を監査記録に渡さない。監査書き込みの失敗時はProjectもロールバックする。
-- パスは既存検証で実パスへ正規化する。同一ディレクトリかもトランザクション内で比較し、
-  大文字小文字を区別しないファイルシステムでの別表記による重複も409にする。
-  DBのUNIQUE制約でもProject IDと正規化したパスの重複を拒否する。
-- Git検証はトランザクションの外で行う。保存時にProjectの全値とRunnerのWorktree Rootを
-  再確認し、検証中に変更されていたら409を返す。呼び出し側は現在値を取得して再試行する。
-  拒否した要求はProjectと監査履歴を変更しない。
-- Git検証全体の期限は10秒とする。仕様03の4節と仕様01には確定値がないため、
-  `registry.repositoryValidationTimeout`に定数として置く。
-  リモート検証が期限を超えたら既存の422と`baseBranch / remote_unavailable`を返す。
-  要求のキャンセル時や期限到達時にはGitの通信子プロセスも終了する。
+  監査書き込みの失敗時はProjectもロールバックする。
 
 ## Linear 項目（仕様15の3.8・5章）
 
@@ -64,20 +36,3 @@
   details に`linearRoutingLabel / duplicate`を返す。DB の UNIQUE 制約も残る。
 - 保存のトランザクションで、どの Project も登録しなくなった Team の linear_poll_teams の行を消す
   （仕様15の3.8、Q64）。次の照会を待たずに消すので、すぐ登録し直しても最初の照会からやり直す。
-
-## setup の許可宛先（仕様03の3.3.1、Q73）
-
-- `setupAllowedHosts`は`host:port`の文字列配列で、省略値は`[]`。nullは400と
-  `setupAllowedHosts / required`で拒否する（空にするときは`[]`を送る）。
-  値は検証に通ったものを並び順のまま保存し、claim の`project.setupAllowedHosts`にそのまま入れる。
-- 各要素は小文字の DNS ホスト名、`:`、先頭0の無い10進のポート（1〜65535）とする。
-  外れた要素が1つでもあれば400と`setupAllowedHosts / invalid_format`で拒否する。
-- 仕様の「ワイルドカード、IP リテラル、`localhost` などのローカル名」は次のとおり判定する。
-  - ワイルドカード: 英小文字・数字・`-`・`.`以外の文字（`*`など）を含む値。
-  - IP リテラル: 最後のラベルが数字だけの値（`127.1`などの省略形を含む）と、`[`や`:`を含む IPv6 表記。
-  - ローカル名: ラベルが1つだけの名前（ローカルの検索ドメインで解決されるため）と、
-    最後のラベルが`localhost`（RFC 6761）、`local`（mDNS、RFC 6762）、
-    `internal`（`host.docker.internal`など）の名前。仕様が列挙していないので、ここで安全側に決めた。
-- 同じ`host:port`を2回以上含む値は400と`setupAllowedHosts / duplicate`で拒否する（Q87）。
-  除去はしない。reason の値は仕様が決めていないので、`linearRoutingLabel / duplicate`に合わせた。
-- 変更は既存の`project.update`の監査記録の`before`・`after`に入る。

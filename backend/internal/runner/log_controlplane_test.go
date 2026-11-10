@@ -81,8 +81,8 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`INSERT INTO projects (id,name,local_repo_path,git_remote_url,runner_id,base_branch,default_role,context_location,copy_allowlist,allowed_operations,approval_policy,timeouts,created_at,updated_at)
-		VALUES ('project','Project','/repo','','mac-mini','main','developer','AGENTS.md','[]','{}','{}','{}','now','now')`,
+		`INSERT INTO projects (id, name, runner_id, default_role, allowed_operations, timeouts, created_at, updated_at)
+		VALUES ('project', 'Project', 'mac-mini', 'developer', '{}', '{}', 'now', 'now')`,
 		`INSERT INTO tasks (id,project_id,title,body,acceptance_criteria,short_name,task_type,collaboration_mode,status,idempotency_key,created_at,updated_at)
 		VALUES ('task-001','project','Title','','logs','logs','development','solo','running','logs','now','now')`,
 		`INSERT INTO executions (id,task_id,seq,mode,status,runner_id,created_at)
@@ -121,7 +121,7 @@ func (f *logControlPlane) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ContextConfig{}, api.ArtifactConfig{Store: f.files, MaxBytes: 1 << 20})
+	handler := api.NewHandlerWithArtifacts(f.db, logger, auth, nil, api.ArtifactConfig{Store: f.files, MaxBytes: 1 << 20})
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lose := r.Method == "POST" && (strings.HasSuffix(r.URL.Path, "/events") && f.loseEventAck.Swap(false) || strings.HasSuffix(r.URL.Path, "/artifacts") && f.loseArtifactAck.Swap(false))
 		if !lose {

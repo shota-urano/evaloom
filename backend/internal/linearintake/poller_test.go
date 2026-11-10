@@ -121,8 +121,6 @@ func addProject(t *testing.T, db *sql.DB, id string, teamID any, label any) {
 		switch column {
 		case "id":
 			values = append(values, id)
-		case "local_repo_path":
-			values = append(values, "/repos/"+id)
 		case "runner_id":
 			values = append(values, "r1")
 		default:
