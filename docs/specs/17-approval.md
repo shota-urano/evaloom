@@ -1,5 +1,6 @@
 ---
-status: draft
+status: confirmed
+confirmed_rev: 9c588f1
 written: 2026-11-10
 範囲: 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（Project と、直接振り分けたときのスペシャルハーネスの approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止
 ---
