@@ -85,13 +85,11 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 	default:
 		r.Cause = CauseRoutingMultipleLabels
 	}
-	if !written {
-		// tasks.acceptance_criteria may be empty only with this cause (3.8),
-		// so it also replaces a routing cause when both apply.
-		r.Cause = CauseMissingAcceptanceCriteria
+	if r.Cause != "" {
 		return r, nil
 	}
-	if r.Cause != "" {
+	if !written {
+		r.Cause = CauseMissingAcceptanceCriteria
 		return r, nil
 	}
 	project, err := store.GetProject(ctx, tx, r.ProjectID)
@@ -185,6 +183,9 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 // commented once per task (3.5 rule 3). The comment carries the reason and
 // the fix, with the routing label prefix the decision used.
 func enqueueHold(ctx context.Context, tx *sql.Tx, taskID string, cause BlockCause, prefix string) error {
+	if strings.HasPrefix(string(cause), "routing_") {
+		return nil
+	}
 	kind := linearoutbox.KindIntakeBlocked
 	if cause == CauseMissingAcceptanceCriteria {
 		kind = linearoutbox.KindMissingAcceptanceCriteria

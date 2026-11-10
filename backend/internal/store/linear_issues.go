@@ -201,10 +201,11 @@ type HeldLinearTask struct {
 // ListHeldLinearTasks returns the held tasks linked to the Issue through
 // linear_issue_links, oldest attach first.
 func ListHeldLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]HeldLinearTask, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.intake_block_cause FROM linear_issue_links l
+	rows, err := tx.QueryContext(ctx, `SELECT t.id, coalesce(t.intake_block_cause, 'routing') FROM linear_issue_links l
 		JOIN tasks t ON t.id = l.task_id
-		WHERE l.linear_issue_id = ? AND t.source = 'linear' AND t.status = 'blocked'
-		AND t.intake_block_cause IS NOT NULL ORDER BY l.attach_seq`, issueID)
+		WHERE l.linear_issue_id = ? AND t.source = 'linear'
+		AND (t.status = 'routing' OR (t.status = 'blocked' AND t.intake_block_cause IS NOT NULL))
+		ORDER BY l.attach_seq`, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list held linear tasks: %w", err)
 	}
@@ -246,9 +247,9 @@ func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at
 		SET recheck_requested_at = coalesce(recheck_requested_at, ?)
 		WHERE linear_issue_id IN (SELECT l.linear_issue_id FROM linear_issue_links l
 			JOIN tasks t ON t.id = l.task_id
-			WHERE t.source = 'linear' AND t.status = 'blocked' AND (
-				(t.intake_block_cause = 'config_missing_assignment' AND t.project_id = ?)
-				OR (? AND t.intake_block_cause IN ('routing_unknown_label', 'routing_team_mismatch'))))`,
+			WHERE t.source = 'linear' AND (
+				(t.status = 'blocked' AND t.intake_block_cause = 'config_missing_profile' AND t.project_id = ?)
+				OR (? AND t.status = 'routing')))`,
 		at, change.ProjectID, change.Routing)
 	if err != nil {
 		return fmt.Errorf("store: mark linear recheck: %w", err)
@@ -259,13 +260,19 @@ func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at
 // UpdateHeldLinearTask writes the redone 3.6 decision to a held task (spec 15
 // 3.6.3): projectID (empty: NULL), acceptance criteria and cause (empty:
 // NULL, which releases the hold). Only a held task without an Execution is
-// changed; anything else is an error. The status is not changed here.
+// changed; anything else is an error. A routing reason changes status to routing;
+// clearing the cause preserves status until the initial Execution is queued.
 func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, criteria, cause, updatedAt string) error {
+	status := ""
+	if cause != "" {
+		status, cause = intakeTaskState("blocked", cause)
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE tasks SET project_id = nullif(?, ''), acceptance_criteria = ?,
-		intake_block_cause = nullif(?, ''), updated_at = ?
-		WHERE id = ? AND source = 'linear' AND status = 'blocked' AND intake_block_cause IS NOT NULL
+		intake_block_cause = nullif(?, ''), updated_at = ?, status=CASE WHEN ?='' THEN status ELSE ? END
+		WHERE id = ? AND source = 'linear'
+		AND (status='routing' OR (status='blocked' AND intake_block_cause IS NOT NULL))
 		AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.task_id = tasks.id)`,
-		projectID, criteria, cause, updatedAt, taskID)
+		projectID, criteria, cause, updatedAt, status, status, taskID)
 	if err != nil {
 		return fmt.Errorf("store: update held linear task: %w", err)
 	}
@@ -286,7 +293,7 @@ func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, cr
 func ListCancellableLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT t.id FROM linear_issue_links l
 		JOIN tasks t ON t.id = l.task_id
-		WHERE l.linear_issue_id = ? AND t.status IN ('queued', 'running', 'verifying', 'blocked')
+		WHERE l.linear_issue_id = ? AND t.status IN ('routing', 'queued', 'running', 'blocked')
 		ORDER BY l.attach_seq`, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list cancellable linear tasks: %w", err)

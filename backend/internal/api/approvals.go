@@ -260,7 +260,7 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 	}
 	now := time.Now().UTC()
 	stamp := now.Format(time.RFC3339Nano)
-	status, to, reason := "approved", model.ExecutionMerging, "approval_approved"
+	status, to, reason := "approved", model.ExecutionPending, "approval_approved"
 	var expiresAt *string
 	if input.Decision == "approve" {
 		ttl := defaultApprovalTTL
@@ -280,6 +280,11 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 		FromExecution: model.ExecutionWaitingApproval, ToExecution: to,
 	}); err != nil {
 		return err
+	}
+	if to == model.ExecutionPending {
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET resume_stage='publish' WHERE id=? AND status='pending'`, execution.ID); err != nil {
+			return err
+		}
 	}
 	if to == model.ExecutionFailed {
 		// Q57: the PR stays open; the owner fixes it with a continue retry.
@@ -344,8 +349,8 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 		return "", &Error{Code: Conflict, Message: "Only an expired approval can be renewed"}
 	}
 	from := execution.Status
-	if !execution.Latest || execution.TaskStatus != model.TaskWaitingApproval ||
-		(from != model.ExecutionWaitingApproval && from != model.ExecutionMerging) {
+	if !execution.Latest || (execution.TaskStatus != model.TaskWaitingApproval && execution.TaskStatus != model.TaskQueued) ||
+		(from != model.ExecutionWaitingApproval && from != model.ExecutionPending) {
 		return "", &Error{Code: Conflict, Message: "Renewal requires the latest Execution waiting for approval"}
 	}
 	var open int
@@ -361,14 +366,14 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if from == model.ExecutionMerging {
+	if from == model.ExecutionPending {
 		if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
-			TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskWaitingApproval,
-			FromExecution: model.ExecutionMerging, ToExecution: model.ExecutionWaitingApproval,
+			TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskQueued,
+			FromExecution: model.ExecutionPending, ToExecution: model.ExecutionWaitingApproval,
 		}); err != nil {
 			return "", err
 		}
-		payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionMerging),
+		payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionPending),
 			"to": string(model.ExecutionWaitingApproval), "reason": "approval_expired"})
 		if _, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
 			return "", err

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -33,7 +34,11 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if err != nil {
 		return "", err
 	}
-	if string(r.Cause) == h.Cause {
+	comparisonCause := string(r.Cause)
+	if strings.HasPrefix(comparisonCause, "routing_") {
+		comparisonCause = "routing"
+	}
+	if comparisonCause == h.Cause {
 		return "", nil
 	}
 	now := s.now().UTC()

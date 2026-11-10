@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,7 +125,11 @@ func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause linearinta
 	t.Helper()
 	f.poll(t, issue)
 	held := f.task(t, issue.ID)
-	if held.status != "blocked" || held.cause.String != string(cause) || held.executions != 0 || held.mark.Valid {
+	wantStatus, wantCause := "blocked", string(cause)
+	if strings.HasPrefix(wantCause, "routing_") {
+		wantStatus, wantCause = "routing", ""
+	}
+	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 || held.mark.Valid {
 		t.Fatalf("held task = %+v; want blocked by %s", held, cause)
 	}
 	return held
@@ -175,7 +180,11 @@ func TestLinearRecheckIssueOnlyCausesAreNotMarked(t *testing.T) {
 		"1": linearintake.CauseRoutingMultipleLabels, "2": linearintake.CauseRoutingNoLabel,
 		"3": linearintake.CauseMissingAcceptanceCriteria, "4": linearintake.CauseRoutingUnknownLabel,
 	} {
-		if got := f.task(t, id); got.cause.String != string(cause) {
+		wantCause := string(cause)
+		if strings.HasPrefix(wantCause, "routing_") {
+			wantCause = ""
+		}
+		if got := f.task(t, id); got.cause.String != wantCause {
 			t.Fatalf("issue %s held by %+v; want %s", id, got.cause, cause)
 		}
 	}
@@ -210,7 +219,7 @@ func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 
 	got := f.task(t, "1")
 	requireMarked(t, got, false)
-	if got.id != held.id || got.status != "blocked" || got.cause != held.cause || got.executions != 0 ||
+	if got.id != held.id || got.status != "routing" || got.cause != held.cause || got.executions != 0 ||
 		got.comments != held.comments || got.decision != held.decision || got.tasks != 1 {
 		t.Fatalf("task after same-cause recheck = %+v; want unchanged %+v", got, held)
 	}

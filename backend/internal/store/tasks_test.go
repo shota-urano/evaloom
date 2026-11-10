@@ -112,10 +112,10 @@ func TestTaskIdempotencyKeyIsGloballyUnique(t *testing.T) {
 	insertRegistryProject(t, db, "project-b", "/repos/project-b")
 	// The same key must also be refused for a different project.
 	_, err = db.Exec(`INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
+		(id, project_id, title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES ('task-003', 'project-b', 'Title', 'Body', 'tests pass', 'change',
-		'development', 'solo', 'received', 'key-1', ?, ?)`, registryTime, registryTime)
+		VALUES ('task-003', 'project-b', 'Title', 'Body', 'tests pass',
+		'solo', 'received', 'key-1', ?, ?)`, registryTime, registryTime)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 	if _, err := insertTask(db, "task-002", "key-2", "received"); err != nil {
 		t.Fatal(err)
@@ -166,18 +166,18 @@ func TestTaskAndExecutionStatusConstraints(t *testing.T) {
 	}{
 		{
 			table: "tasks", id: "task-001",
-			allowed: []string{"received", "planning", "queued", "running", "verifying",
+			allowed: []string{"received", "routing", "queued", "running",
 				"waiting_approval", "completed", "failed", "cancelled", "timed_out", "blocked"},
-			invalid: []string{"unknown", "", "Running", "succeeded", "pending", "completed "},
+			invalid: []string{"planning", "verifying", "unknown", "", "Running", "succeeded", "pending", "completed "},
 			insert: func(db *sql.DB, id string, status any) (sql.Result, error) {
 				return insertTask(db, id, id, status)
 			},
 		},
 		{
 			table: "executions", id: "execution-1",
-			allowed: []string{"pending", "claimed", "preparing", "running", "verifying", "publishing",
-				"waiting_approval", "merging", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out"},
-			invalid: []string{"unknown", "", "Running", "completed", "queued", "succeeded "},
+			allowed: []string{"pending", "claimed", "preparing", "working", "checking", "publishing",
+				"waiting_approval", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out"},
+			invalid: []string{"running", "verifying", "merging", "unknown", "", "Running", "completed", "queued", "succeeded "},
 			insert: func(db *sql.DB, id string, status any) (sql.Result, error) {
 				// Each accepted row gets a separate task so sequence uniqueness
 				// cannot hide a missing status constraint.
@@ -222,13 +222,13 @@ func TestTaskTablesRejectInvalidReferences(t *testing.T) {
 	mustTaskExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
 		VALUES ('execution-1', 'log', '{}', ?)`, registryTime)
 	mustTaskExec(t, db, `INSERT INTO context_revisions
-		(id, execution_id, layer, kind, source_path, source_commit_sha, content_hash, content, created_at)
-		VALUES ('revision-1', 'execution-1', 'project', 'agents_md', 'AGENTS.md', ?, ?, 'instructions', ?)`,
+		(id, execution_id, layer, kind, source_path, source_revision, content_hash, content, created_at)
+		VALUES ('revision-1', 'execution-1', 'global', 'instructions', 'AGENTS.md', ?, ?, 'instructions', ?)`,
 		strings.Repeat("a", 40), strings.Repeat("b", 64), registryTime)
 	for _, test := range []struct{ table, column string }{
 		{"tasks", "project_id"},
 		{"executions", "task_id"}, {"executions", "runner_id"},
-		{"executions", "harness_id"}, {"executions", "profile_id"},
+
 		{"execution_events", "execution_id"}, {"context_revisions", "execution_id"},
 	} {
 		t.Run(test.table+"/"+test.column, func(t *testing.T) {
@@ -247,21 +247,20 @@ func TestTaskTablesConstrainOtherEnumeratedColumns(t *testing.T) {
 	mustTaskExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
 		VALUES ('execution-1', 'log', '{}', ?)`, registryTime)
 	mustTaskExec(t, db, `INSERT INTO context_revisions
-		(id, execution_id, layer, kind, source_path, source_commit_sha, content_hash, content, created_at)
+		(id, execution_id, layer, kind, source_path, source_revision, content_hash, content, created_at)
 		VALUES ('revision-1', 'execution-1', 'task', 'task_input', '', '', ?, 'task input', ?)`,
 		strings.Repeat("b", 64), registryTime)
 	for _, test := range []struct {
 		table, column string
 		allowed       []string
 	}{
-		{"tasks", "task_type", []string{"development"}},
 		{"tasks", "collaboration_mode", []string{"solo"}},
 		{"executions", "mode", []string{"continue", "fresh"}},
-		{"executions", "error_class", []string{"config_error", "execution_failed", "test_failed", "timeout",
+		{"executions", "error_class", []string{"config_error", "prepare_failed", "work_failed", "check_failed", "publish_unknown", "approval_rejected", "contract_error", "timeout",
 			"cancelled", "interrupted", "publish_failed", "sandbox_error"}},
-		{"execution_events", "type", []string{"status_changed", "log", "worktree_ready", "context_pinned",
-			"harness_started", "harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent", "notification_failed"}},
-		{"context_revisions", "layer", []string{"global", "harness", "project", "task"}},
+		{"execution_events", "type", []string{"status_changed", "log", "stage_started", "stage_finished", "context_pinned",
+			"check_result", "approval_requested", "approval_waived", "approval_consumed", "decision_opened", "decision_answered", "published", "notification_sent", "notification_failed"}},
+		{"context_revisions", "layer", []string{"global", "harness", "task", "reported"}},
 	} {
 		t.Run(test.table+"/"+test.column, func(t *testing.T) {
 			statement := "UPDATE " + test.table + " SET " + test.column + " = ?"
@@ -272,10 +271,9 @@ func TestTaskTablesConstrainOtherEnumeratedColumns(t *testing.T) {
 			assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
 		})
 	}
-	_, err := db.Exec("UPDATE tasks SET acceptance_criteria = ''")
+	mustTaskExec(t, db, "UPDATE tasks SET acceptance_criteria = ''")
+	_, err := db.Exec("UPDATE context_revisions SET kind = 'custom_context'")
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
-	// kind is an open set in the specification, unlike layer.
-	mustTaskExec(t, db, "UPDATE context_revisions SET kind = 'custom_context'")
 }
 
 func TestExecutionEventIDsIncreaseAcrossExecutionsAndDeletion(t *testing.T) {
@@ -333,11 +331,16 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 }
 
 func insertTask(db *sql.DB, id string, key, status any) (sql.Result, error) {
-	return db.Exec(`INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
-		collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES (?, 'project-a', 'Title', 'Body', 'tests pass', 'change',
-		'development', 'solo', ?, ?, ?, ?)`, id, status, key, registryTime, registryTime)
+	var legacy bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pragma_table_info('tasks') WHERE name='short_name')`).Scan(&legacy); err != nil {
+		return nil, err
+	}
+	if legacy {
+		return db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
+ VALUES (?, 'project-a', 'Title', 'Body', 'tests pass', 'change', 'development', 'solo', ?, ?, ?, ?)`, id, status, key, registryTime, registryTime)
+	}
+	return db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+ VALUES (?, 'project-a', 'Title', 'Body', 'tests pass', 'solo', ?, ?, ?, ?)`, id, status, key, registryTime, registryTime)
 }
 
 func insertExecution(db *sql.DB, id, task string, seq int, status any) (sql.Result, error) {

@@ -72,7 +72,7 @@ func restartNotificationFixture(t *testing.T, f *authFixture) {
 func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 	for _, target := range []string{"succeeded", "failed", "timed_out", "blocked", "cancelled", "interrupted-boot", "interrupted-startup"} {
 		t.Run(target, func(t *testing.T) {
-			from := "running"
+			from := "working"
 			if target == "succeeded" {
 				from = "publishing"
 			}
@@ -173,7 +173,7 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 }
 
 func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	fake := &recordingNotifier{}
 	d := notificationDispatcher(f, fake)
 	block := func() {
@@ -188,7 +188,7 @@ func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
 	d.DB = f.db
 	resume := func() {
 		t.Helper()
-		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "preparing"}, {"preparing", "running"}} {
+		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "preparing"}, {"preparing", "working"}} {
 			fromTask, _ := task.TaskStatusForExecution(edge[0])
 			if err := task.TransitionExecution(context.Background(), f.db, task.Transition{TaskID: executionTaskID(t, f, id),
 				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1]}); err != nil {
@@ -199,7 +199,7 @@ func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
 	resume()
 	block() // A second blocked episode of the same Execution must not resend.
 	resume()
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("failure status=%d body=%s", status, body)
 	}
@@ -223,8 +223,8 @@ func TestNotificationFailureDoesNotRollbackOrRetryAndStillFansOut(t *testing.T) 
 		{"other", errors.New("permission_denied launch_failed timeout")},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
-			f, token, id, _ := resultFixture(t, "running")
-			status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+			f, token, id, _ := resultFixture(t, "working")
+			status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 			if status != 204 {
 				t.Fatalf("result status=%d body=%s", status, body)
 			}
@@ -293,8 +293,8 @@ func (f notificationFunc) Notify(ctx context.Context, n notification.Notificatio
 }
 
 func TestNotificationWorkerRecordsAndLogsFailureDuringShutdown(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	f, token, id, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result status=%d body=%s", status, body)
 	}
@@ -330,8 +330,8 @@ func TestNotificationWorkerRecordsAndLogsFailureDuringShutdown(t *testing.T) {
 }
 
 func TestNotificationFailureEventWriteErrorStillFansOutWithoutRetry(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	f, token, id, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result status=%d body=%s", status, body)
 	}
@@ -392,7 +392,7 @@ func TestNotificationWorkerLogsTransportFailureWithoutChangingState(t *testing.T
 }
 
 func TestUncommittedAndRolledBackTransitionsNeverNotify(t *testing.T) {
-	f, _, id, _ := resultFixture(t, "running")
+	f, _, id, _ := resultFixture(t, "working")
 	var seq int
 	var name, path string
 	if err := f.db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
@@ -410,7 +410,7 @@ func TestUncommittedAndRolledBackTransitionsNeverNotify(t *testing.T) {
 	}
 	defer tx.Rollback()
 	if err := task.TransitionExecutionTx(context.Background(), tx, task.Transition{TaskID: taskID, ExecutionID: id,
-		FromTask: "running", FromExecution: "running", ToExecution: "failed"}); err != nil {
+		FromTask: "running", FromExecution: "working", ToExecution: "failed"}); err != nil {
 		t.Fatal(err)
 	}
 	var pending int
@@ -428,8 +428,8 @@ func TestUncommittedAndRolledBackTransitionsNeverNotify(t *testing.T) {
 }
 
 func TestNotificationWorkerDeliversPendingRequestAfterRestart(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	f, token, id, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result status=%d body=%s", status, body)
 	}
@@ -460,8 +460,8 @@ func TestNotificationWorkerDeliversPendingRequestAfterRestart(t *testing.T) {
 }
 
 func TestConcurrentDispatchersNeverDeliverSameRequestTwice(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	f, token, id, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result status=%d body=%s", status, body)
 	}
@@ -482,8 +482,8 @@ func TestConcurrentDispatchersNeverDeliverSameRequestTwice(t *testing.T) {
 }
 
 func TestReceiptWriteFailureNeverCausesResendAfterRestart(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+	f, token, id, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result status=%d body=%s", status, body)
 	}

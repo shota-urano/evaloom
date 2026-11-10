@@ -290,18 +290,22 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 			h.send(t) // Deliver the initial hold comment.
 			h.poll(t) // Consume that comment's updatedAt before changing state.
 			var status, cause string
-			if err := h.db.QueryRow(`SELECT status, intake_block_cause FROM tasks WHERE id = ?`, id).Scan(&status, &cause); err != nil {
+			if err := h.db.QueryRow(`SELECT status, coalesce(intake_block_cause, '') FROM tasks WHERE id = ?`, id).Scan(&status, &cause); err != nil {
 				t.Fatal(err)
 			}
-			if status != "blocked" || cause != hold.cause {
+			wantStatus, wantCause, wantComments := "blocked", hold.cause, 1
+			if hold.cause == "routing_unknown_label" {
+				wantStatus, wantCause, wantComments = "routing", "", 0
+			}
+			if status != wantStatus || cause != wantCause {
 				t.Fatalf("held task = %s / %s, want blocked / %s", status, cause, hold.cause)
 			}
 			comments, _ := h.fake.snapshot()
-			if len(comments) != 1 {
+			if len(comments) != wantComments {
 				t.Fatalf("initial hold comments = %d, want 1", len(comments))
 			}
 			counts := h.counts(t)
-			if counts.tasks != 1 || counts.executions != 0 || counts.outbox != 1 {
+			if counts.tasks != 1 || counts.executions != 0 || counts.outbox != wantComments {
 				t.Fatalf("initial hold counts = %+v, want 1 task, 0 executions and 1 comment row", counts)
 			}
 			effects := h.effects(t)

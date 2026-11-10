@@ -117,7 +117,9 @@ func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
 }
 
 func TestLinearMigrationTaskProjectNullability(t *testing.T) {
-	db := openTaskTables(t)
+	db := openBefore(t, filepath.Join(t.TempDir(), "evaloom.db"), 27)
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
 	_, err := db.Exec(`UPDATE tasks SET project_id = NULL WHERE id = 'task-001'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
 	for _, test := range []struct {
@@ -341,7 +343,7 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 }
 
@@ -349,7 +351,9 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 // empty acceptance_criteria is allowed only for source=linear held as
 // missing_acceptance_criteria (spec 15 3.8, decided 2026-11-08).
 func TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria(t *testing.T) {
-	db := openTaskTables(t)
+	db := openBefore(t, filepath.Join(t.TempDir(), "evaloom.db"), 27)
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
 	insert := func(id string, project, source, cause any, criteria string) error {
 		_, err := db.Exec(`INSERT INTO tasks (`+legacyTaskColumns+`, source, intake_block_cause)
 			VALUES (?, ?, 'Title', 'Body', ?, 'change', 'development', 'solo', 'blocked', ?, ?, ?, ?, ?)`,
@@ -435,7 +439,7 @@ func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
 	}
@@ -488,7 +492,7 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
@@ -539,7 +543,7 @@ func TestLinearIssueRecheckRequestedAtMigrationLeavesExistingRowsNull(t *testing
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
@@ -595,7 +599,7 @@ func TestLinearOutboxOutcomeUnknownMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
@@ -670,7 +674,7 @@ func TestLinearOutboxFailureRecordMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)

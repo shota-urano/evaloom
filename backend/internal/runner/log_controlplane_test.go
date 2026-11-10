@@ -83,10 +83,10 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 	}
 	for _, statement := range []string{
 		`INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'mac-mini', 'now', 'now', 'fixture-harness', 'fixture-profile')`,
-		`INSERT INTO tasks (id,project_id,title,body,acceptance_criteria,short_name,task_type,collaboration_mode,status,idempotency_key,created_at,updated_at)
-		VALUES ('task-001','project','Title','','logs','logs','development','solo','running','logs','now','now')`,
+		`INSERT INTO tasks (id,project_id,title,body,acceptance_criteria,collaboration_mode,status,idempotency_key,created_at,updated_at)
+		VALUES ('task-001','project','Title','','logs','solo','running','logs','now','now')`,
 		`INSERT INTO executions (id,task_id,seq,mode,status,runner_id,created_at)
-		VALUES ('` + logExecution + `','task-001',1,'fresh','running','mac-mini','now')`,
+		VALUES ('` + logExecution + `','task-001',1,'fresh','working','mac-mini','now')`,
 	} {
 		if _, err := f.db.Exec(statement); err != nil {
 			t.Fatal(err)

@@ -73,7 +73,7 @@ func TestNotificationFailuresStateNotFoundAndSkipped(t *testing.T) {
 			insertLinearTask(t, f, "task-state", "状態変更", "")
 			if executionID != "" {
 				if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
-					VALUES (?, 'task-state', 1, 'fresh', 'running', '2026-10-26T00:00:00Z')`, executionID); err != nil {
+					VALUES (?, 'task-state', 1, 'fresh', 'working', '2026-10-26T00:00:00Z')`, executionID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -137,9 +137,8 @@ func insertLinearTask(t *testing.T, f *authFixture, id, title, heldCause string)
 		query string
 		args  []any
 	}{
-		{`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-			collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
-			VALUES (?, 'project-a', ?, '', 'criteria', 'linear', 'development', 'solo', ?, ?,
+		{`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+			VALUES (?, 'project-a', ?, '', 'criteria', 'solo', ?, ?,
 			'2026-10-26T00:00:00Z', '2026-10-26T00:00:00Z', 'linear', ?)`, []any{id, title, status, "key-" + id, cause}},
 		{`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url, team_id, task_id,
 			attach_seq, created_at) VALUES (?, ?, 'ENG-1', 'https://linear.app/x/ENG-1', 'team-a', ?, 1,
@@ -176,15 +175,15 @@ func enqueueTrigger(t *testing.T, f *authFixture, trigger linearoutbox.Trigger) 
 func TestNotificationFailuresListLinearFailuresWithoutExecution(t *testing.T) {
 	f := newAuthFixture(t)
 	seedStreamExecutions(t, f)
-	insertLinearTask(t, f, "task-101", "保留した Issue", "routing_no_label")
+	insertLinearTask(t, f, "task-101", "保留した Issue", "missing_acceptance_criteria")
 	insertLinearTask(t, f, "task-102", "受け入れ条件の無い Issue", "missing_acceptance_criteria")
-	insertLinearTask(t, f, "task-103", "中止した Issue", "routing_unknown_label")
+	insertLinearTask(t, f, "task-103", "中止した Issue", "missing_acceptance_criteria")
 	insertLinearTask(t, f, "task-104", "実行した Issue", "")
 	if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB4', 'task-104', 1, 'fresh', 'blocked', '2026-10-26T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-101", Kind: linearoutbox.KindIntakeBlocked, TargetID: "routing_no_label"})
+	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-101", Kind: linearoutbox.KindIntakeBlocked, TargetID: "missing_acceptance_criteria"})
 	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-102", Kind: linearoutbox.KindMissingAcceptanceCriteria,
 		TargetID: "missing_acceptance_criteria"})
 	// The cancellation of a held task takes the production path.
@@ -300,7 +299,7 @@ func countLinearRows(t *testing.T, f *authFixture, query string) int {
 func TestNotificationFailuresMixedSourcesOrderAndCursor(t *testing.T) {
 	f := newAuthFixture(t)
 	seedStreamExecutions(t, f)
-	insertLinearTask(t, f, "task-101", "Linear", "routing_no_label")
+	insertLinearTask(t, f, "task-101", "Linear", "missing_acceptance_criteria")
 	event := func(at string) int64 {
 		id := appendNotificationFailure(t, f, streamExecution, "failed", "macos", "permission_denied")
 		if _, err := f.db.Exec(`UPDATE execution_events SET created_at = ? WHERE id = ?`, at, id); err != nil {

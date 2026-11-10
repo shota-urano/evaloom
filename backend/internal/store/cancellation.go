@@ -59,7 +59,7 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 		return err
 	}
 	if !executionID.Valid {
-		if status != model.TaskBlocked || !heldCause.Valid {
+		if status != model.TaskRouting && (status != model.TaskBlocked || !heldCause.Valid) {
 			return &task.ConflictError{Code: "conflict", Message: "Task has no latest Execution"}
 		}
 		// Held at intake: there is no Execution or worktree to stop.
@@ -98,7 +98,7 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 	}
 	// A merging Execution may already hold a consumed approval, so the Runner
 	// decides at consume time (spec 17 3.5.2: cancel request -> invalidated).
-	if status == model.TaskRunning || status == model.TaskVerifying || execution.Status == model.ExecutionMerging {
+	if status == model.TaskRunning {
 		// Preserve the first request on retries. State and latest-seq guards
 		// prevent a delayed cancellation from modifying another attempt.
 		result, err := tx.ExecContext(ctx, `UPDATE executions SET cancel_requested_at = ?

@@ -85,7 +85,7 @@ func requireInterrupted(t *testing.T, f *authFixture, id string, before recovery
 func TestRecoveryAllOwnedExecutionsAndRecordsAreAtomic(t *testing.T) {
 	for _, path := range []string{"boot", "startup"} {
 		t.Run(path, func(t *testing.T) {
-			f, token, first, _ := resultFixture(t, "running")
+			f, token, first, _ := resultFixture(t, "working")
 			createClaimTask(t, f, "project-b", "second-recovery")
 			status, body := requestClaim(t, f, token)
 			second := requireClaim(t, status, body).Execution.ID // No worktree yet.
@@ -151,7 +151,7 @@ func TestRecoveryAllOwnedExecutionsAndRecordsAreAtomic(t *testing.T) {
 
 func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 	for _, path := range []string{"boot", "startup"} {
-		for _, from := range []string{"claimed", "preparing", "running", "verifying", "publishing"} {
+		for _, from := range []string{"claimed", "preparing", "working", "checking", "publishing"} {
 			t.Run(path+"/"+from, func(t *testing.T) {
 				f, token, id, _ := resultFixture(t, from)
 				// Initial heartbeat establishes the baseline without interrupting.
@@ -198,7 +198,7 @@ func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 }
 
 func TestSameBootAndResumedHeartbeatKeepExecution(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	status, body := postHeartbeat(t, f, token, "claim-runner", heartbeatInput(id))
 	requireHeartbeat(t, status, body)
 	started := time.Now().UTC()
@@ -227,14 +227,14 @@ func TestSameBootAndResumedHeartbeatKeepExecution(t *testing.T) {
 	if got := recoveryState(t, f, id); got != resumed {
 		t.Fatalf("resumed runner interrupted: %+v", got)
 	}
-	status, body = postResult(t, f, token, id, resultBody("running", "verifying"))
+	status, body = postResult(t, f, token, id, resultBody("working", "checking"))
 	if status != 204 {
 		t.Fatalf("could not continue: %d %s", status, body)
 	}
 }
 
 func TestRecoveryOnlyTouchesActiveOwnedExecutions(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	other, err := runnerauth.Register(context.Background(), f.db, "other-runner", "Other", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -291,7 +291,7 @@ func TestRecoveryFailuresRollBackBootLivenessAndAllEffects(t *testing.T) {
 			`BEFORE INSERT ON execution_events`, `BEFORE INSERT ON audit_logs`, `BEFORE INSERT ON notification_requests`,
 		} {
 			t.Run(path+"/"+trigger, func(t *testing.T) {
-				f, token, id, _ := resultFixture(t, "running")
+				f, token, id, _ := resultFixture(t, "working")
 				status, body := postHeartbeat(t, f, token, "claim-runner", heartbeatInput())
 				requireHeartbeat(t, status, body)
 				before := recoveryState(t, f, id)

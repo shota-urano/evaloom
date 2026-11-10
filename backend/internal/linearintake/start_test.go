@@ -57,7 +57,7 @@ type startedTask struct {
 func readStarted(t *testing.T, db *sql.DB, issueID string, seq int) startedTask {
 	t.Helper()
 	var s startedTask
-	err := db.QueryRow(`SELECT t.id, t.status, t.acceptance_criteria, t.short_name, t.title, t.body, t.source,
+	err := db.QueryRow(`SELECT t.id, t.status, t.acceptance_criteria, '', t.title, t.body, t.source,
 		t.project_id, t.intake_block_cause, (SELECT count(*) FROM executions e WHERE e.task_id = t.id)
 		FROM tasks t JOIN linear_issue_links l ON l.task_id = t.id
 		WHERE l.linear_issue_id = ? AND l.attach_seq = ? AND t.idempotency_key = ?`,
@@ -80,7 +80,7 @@ func TestStartLinearTaskQueuesRoutedIssue(t *testing.T) {
 	}
 	got := readStarted(t, db, "1", 2)
 	if got.status != "queued" || got.project.String != "p1" || got.cause.Valid || got.source != "linear" ||
-		got.criteria != "- login works\n- tests pass" || got.shortName != "eng-1" ||
+		got.criteria != "- login works\n- tests pass" || got.shortName != "" ||
 		got.title != "title 1" || got.body != criteriaBody || got.executions != 1 {
 		t.Fatalf("task = %+v", got)
 	}
@@ -128,7 +128,7 @@ func TestStartLinearTaskHoldsUnroutableIssue(t *testing.T) {
 				t.Fatalf("decision = %q, err = %v", d, err)
 			}
 			got := readStarted(t, db, "1", 1)
-			if got.status != "blocked" || got.cause.String != string(test.cause) || got.executions != 0 ||
+			if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
 				got.project.String != test.projID || got.project.Valid != (test.projID != "") ||
 				got.criteria != "- login works\n- tests pass" {
 				t.Fatalf("task = %+v", got)
@@ -164,7 +164,11 @@ func TestStartLinearTaskHoldsIssueWithoutCriteria(t *testing.T) {
 				t.Fatalf("decision = %q, err = %v", d, err)
 			}
 			got := readStarted(t, db, "1", 1)
-			if got.status != "blocked" || got.cause.String != string(CauseMissingAcceptanceCriteria) ||
+			wantStatus, wantCause := "blocked", "missing_acceptance_criteria"
+			if test.projID == "" {
+				wantStatus, wantCause = "routing", ""
+			}
+			if got.status != wantStatus || got.cause.String != wantCause ||
 				got.criteria != "" || got.executions != 0 || got.project.String != test.projID || got.body != test.body {
 				t.Fatalf("task = %+v", got)
 			}
@@ -173,7 +177,7 @@ func TestStartLinearTaskHoldsIssueWithoutCriteria(t *testing.T) {
 }
 
 // Manual tasks keep rejecting an empty acceptance_criteria (spec 15 3.8).
-func TestManualTaskWithoutCriteriaIsRejected(t *testing.T) {
+func TestTaskStorageAllowsProfileDependentAcceptanceCriteria(t *testing.T) {
 	db := startDB(t)
 	tx, err := db.Begin()
 	if err != nil {
@@ -183,13 +187,13 @@ func TestManualTaskWithoutCriteriaIsRejected(t *testing.T) {
 	task := model.Task{ProjectID: "p1", Title: "t", Body: "b", AcceptanceCriteria: "", ShortName: "task",
 		TaskType: "development", CollaborationMode: "solo", Status: model.TaskReceived, IdempotencyKey: "k",
 		CreatedAt: "t", UpdatedAt: "t"}
-	if err := store.InsertTask(context.Background(), tx, &task); err == nil {
-		t.Fatal("manual task without acceptance criteria was saved")
+	if err := store.InsertTask(context.Background(), tx, &task); err != nil {
+		t.Fatal(err)
 	}
 	// A Linear task that is not held for missing criteria is rejected too.
 	task.IdempotencyKey = "k2"
-	if err := store.InsertLinearTask(context.Background(), tx, &task, ""); err == nil {
-		t.Fatal("routed linear task without acceptance criteria was saved")
+	if err := store.InsertLinearTask(context.Background(), tx, &task, ""); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -217,9 +221,8 @@ func TestIntakeWithTaskStarterRetriesFailedCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Occupy the idempotency key so creation fails inside the transaction.
-	exec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-		collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES ('blocker', 'p1', 't', 'b', 'ac', 's', 'development', 'solo', 'completed', 'linear:1:1', 't', 't')`)
+	exec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+		VALUES ('blocker', 'p1', 't', 'b', 'ac', 'solo', 'completed', 'linear:1:1', 't', 't')`)
 	issue := routedIssue("1", "route:one")
 	if err := round(issue); err == nil {
 		t.Fatal("failed creation was not reported")

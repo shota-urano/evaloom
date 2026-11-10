@@ -12,9 +12,9 @@ import (
 )
 
 // Keep the active set identical for the global and per-Project limits (spec 04,
-// 3.3). Blocked, waiting_approval, merging (spec 17 3.9, Q59) and terminal
+// 3.3). Blocked, waiting_approval, pending and terminal
 // Executions do not occupy a slot.
-const activeExecutionStatuses = `('claimed', 'preparing', 'running', 'verifying', 'publishing')`
+const activeExecutionStatuses = `('claimed', 'preparing', 'working', 'checking', 'publishing')`
 
 var ErrClaimAssignmentMissing = errors.New("Project has no Default Harness assignment")
 
@@ -71,10 +71,10 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	}
 	var c Claim
 	var projectID string
-	var role, harnessID, profileID, version, commitSHA sql.NullString
+	var harnessID, profileID, version, commitSHA, params sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT e.id, e.task_id, e.seq, e.mode,
-		t.project_id, t.title, t.body, t.acceptance_criteria, t.short_name,
-		e.role, e.harness_id, e.profile_id, e.profile_version, e.profile_commit_sha
+		t.project_id, t.title, t.body, t.acceptance_criteria,
+		e.harness_id, e.profile_id, e.profile_version, e.profile_commit_sha, e.params
 		FROM executions e JOIN tasks t ON t.id = e.task_id
 		JOIN projects p ON p.id = t.project_id
 		WHERE e.status = 'pending' AND p.runner_id = ?
@@ -83,8 +83,8 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 		ORDER BY e.created_at, e.id LIMIT 1`, runnerID).
 		Scan(&c.Execution.ID, &c.Execution.TaskID, &c.Execution.Seq, &c.Execution.Mode,
 			&projectID, &c.Task.Title, &c.Task.Body,
-			&c.Task.AcceptanceCriteria, &c.Task.ShortName,
-			&role, &harnessID, &profileID, &version, &commitSHA)
+			&c.Task.AcceptanceCriteria,
+			&harnessID, &profileID, &version, &commitSHA, &params)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -100,8 +100,13 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 		// Blocked continuation keeps the same Execution and Profile (spec 04,
 		// 3.8 and 4). Its input must not depend on today's Default Role or pin.
 		c.Assignment = model.ProjectHarness{
-			ProjectID: projectID, Role: role.String, HarnessID: harnessID.String, ProfileID: profileID.String,
+			ProjectID: projectID, HarnessID: harnessID.String, ProfileID: profileID.String,
 		}
+		c.Project.HarnessID, c.Project.ProfileID = harnessID.String, profileID.String
+		if !params.Valid {
+			return nil, fmt.Errorf("store: Execution %s has no pinned params", c.Execution.ID)
+		}
+		c.Project.Params = json.RawMessage(params.String)
 	} else {
 		c.Assignment, err = GetProjectHarness(ctx, tx, projectID, "")
 		if errors.Is(err, sql.ErrNoRows) {
@@ -156,7 +161,7 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 
 // PinClaim saves Registry values only on first claim, after the guarded pending
 // -> claimed transition in the same transaction. Reclaim only renews acquisition
-// metadata, preserving the Execution's fixed role, Harness and Profile.
+// metadata, preserving the Execution's fixed route, params, Harness and Profile.
 func PinClaim(ctx context.Context, tx *sql.Tx, c *Claim, runnerID, claimedAt string) error {
 	var result sql.Result
 	var err error
@@ -164,9 +169,10 @@ func PinClaim(ctx context.Context, tx *sql.Tx, c *Claim, runnerID, claimedAt str
 		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, claimed_at = ?
 			WHERE id = ? AND status = 'claimed'`, runnerID, claimedAt, c.Execution.ID)
 	} else {
-		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, role = ?,
-			harness_id = ?, profile_id = ?, profile_version = ?, profile_commit_sha = ?, claimed_at = ?
-			WHERE id = ? AND status = 'claimed' AND profile_id IS NULL`, runnerID, c.Assignment.Role,
+		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, route_kind = 'project', project_id = ?,
+			contract_version = (SELECT contract_version FROM harness_profiles WHERE id = ?),
+			params = (SELECT params FROM projects WHERE id = ?), harness_id = ?, profile_id = ?, profile_version = ?, profile_commit_sha = ?, claimed_at = ?
+			WHERE id = ? AND status = 'claimed' AND profile_id IS NULL`, runnerID, c.Project.ID, c.Assignment.ProfileID, c.Project.ID,
 			c.Assignment.HarnessID, c.Assignment.ProfileID, c.Profile.Version, c.Profile.CommitSHA,
 			claimedAt, c.Execution.ID)
 	}
