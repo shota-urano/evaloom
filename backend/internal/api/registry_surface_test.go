@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/url"
 	"reflect"
@@ -85,6 +86,47 @@ func TestRoutesCRUDPaginationAndUniqueness(t *testing.T) {
 	assertAuthError(t, status, body, 404, NotFound)
 	if n := stageCount(t, f, `SELECT count(*) FROM audit_logs WHERE action IN ('route.create','route.update','route.delete')`); n != 4 {
 		t.Fatalf("route audits=%d", n)
+	}
+}
+
+func TestRoutesPaginationRoundTripsLabels(t *testing.T) {
+	for _, label := range []string{"route:a\nb", "route:a\rb", "route:a\x00b", "route:a%+/?", "route:a日本語"} {
+		t.Run(label, func(t *testing.T) {
+			f := projectFixture(t)
+			status, body := projectRequest(t, f, "POST", "/api/projects", projectInput(t, "project-a"))
+			requireProject(t, status, body, 201)
+			for _, input := range []map[string]any{
+				{"label": label, "projectId": "project-a"},
+				{"label": "route:z", "harnessId": "fixture-harness"},
+			} {
+				status, body := projectRequest(t, f, "POST", "/api/routes", input)
+				var route store.Route
+				if status != 201 || json.Unmarshal(body, &route) != nil || route.Label != input["label"] {
+					t.Fatalf("create=%d %s", status, body)
+				}
+			}
+			endpoint := "/api/routes?limit=1"
+			for i, want := range []string{label, "route:z"} {
+				status, body := projectRequest(t, f, "GET", endpoint, nil)
+				var page Page[store.Route]
+				if status != 200 || json.Unmarshal(body, &page) != nil || len(page.Items) != 1 || page.Items[0].Label != want {
+					t.Fatalf("page %d=%d %s; want label %q", i+1, status, body, want)
+				}
+				if (page.NextCursor != "") != (i == 0) {
+					t.Fatalf("page %d nextCursor=%q", i+1, page.NextCursor)
+				}
+				endpoint = "/api/routes?limit=1&cursor=" + url.QueryEscape(page.NextCursor)
+			}
+		})
+	}
+}
+
+func TestRoutesRejectMalformedLabelCursor(t *testing.T) {
+	f := projectFixture(t)
+	for _, boundary := range []string{"%bad", "YQ==", base64.RawURLEncoding.EncodeToString([]byte{0xff})} {
+		page := NewPage([]string{boundary, "unused"}, 1, "routes", func(id string) string { return id })
+		status, body := projectRequest(t, f, "GET", "/api/routes?cursor="+url.QueryEscape(page.NextCursor), nil)
+		assertAuthError(t, status, body, 400, ValidationFailed)
 	}
 }
 

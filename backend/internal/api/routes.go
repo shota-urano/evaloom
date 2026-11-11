@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -36,12 +37,24 @@ func listRoutes(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, err)
 			return
 		}
+		// Labels may contain control characters rejected by the shared cursor
+		// parser. Encode the boundary separately and restore it before querying.
+		if page.After != "" {
+			label, err := base64.RawURLEncoding.Strict().DecodeString(page.After)
+			if err != nil || len(label) == 0 || !utf8.Valid(label) {
+				WriteError(w, logger, invalid("cursor", "invalid"))
+				return
+			}
+			page.After = string(label)
+		}
 		routes, err := store.ListRoutes(r.Context(), db, page.After, page.Limit+1)
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, NewPage(routes, page.Limit, "routes", func(route store.Route) string { return route.Label }))
+		writeJSON(w, http.StatusOK, NewPage(routes, page.Limit, "routes", func(route store.Route) string {
+			return base64.RawURLEncoding.EncodeToString([]byte(route.Label))
+		}))
 	}
 }
 
