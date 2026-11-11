@@ -23,11 +23,11 @@ func insertApprovalRow(db *sql.DB, id, execution, operation, status string) (sql
 // Spec 17 3.9: one Execution and operation can hold at most one pending /
 // approved approval. Decided rows do not count, and other operations or
 // Executions are independent.
-func TestApprovalsAllowOneUnusedRowPerExecutionAndOperation(t *testing.T) {
+func TestLegacyApprovalsAllowOneUnusedRowPerExecutionAndOperation(t *testing.T) {
 	for _, first := range []string{"pending", "approved"} {
 		for _, second := range []string{"pending", "approved"} {
 			t.Run(first+"+"+second, func(t *testing.T) {
-				db := openTaskTables(t)
+				db := openLegacyApprovalTables(t)
 				if _, err := insertApprovalRow(db, "approval-1", "execution-1", "merge_pull_request", first); err != nil {
 					t.Fatal(err)
 				}
@@ -47,7 +47,7 @@ func TestApprovalsAllowOneUnusedRowPerExecutionAndOperation(t *testing.T) {
 		}
 	}
 	t.Run("decided rows and other keys", func(t *testing.T) {
-		db := openTaskTables(t)
+		db := openLegacyApprovalTables(t)
 		mustTaskExec(t, db, `INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 			VALUES ('execution-2', 'task-001', 2, 'continue', 'pending', ?)`, registryTime)
 		for i, status := range []string{"rejected", "consumed", "invalidated", "expired"} {
@@ -72,8 +72,8 @@ func TestApprovalsAllowOneUnusedRowPerExecutionAndOperation(t *testing.T) {
 	})
 }
 
-func TestApprovalsConstrainEnumeratedColumns(t *testing.T) {
-	db := openTaskTables(t)
+func TestLegacyApprovalsConstrainEnumeratedColumns(t *testing.T) {
+	db := openLegacyApprovalTables(t)
 	for _, operation := range []string{"merge_pull_request", "deploy_production", "send_external_email",
 		"delete_important_file", "change_auth", "change_contract", "change_evaluation_criteria", "change_security_policy"} {
 		if _, err := insertApprovalRow(db, "op-"+operation, "execution-1", operation, "rejected"); err != nil {
@@ -102,6 +102,16 @@ func TestApprovalsConstrainEnumeratedColumns(t *testing.T) {
 	}
 	mustTaskExec(t, db, `UPDATE approvals SET status = 'consumed', use_count = 1, consumed_at = ?,
 		decided_by = 'owner', result = '{"mergeCommitSha":"abc"}' WHERE id = 'op-merge_pull_request'`, registryTime)
+}
+
+// Keep the 0019 contract tests on the schema they describe. The generic
+// approval schema and its constraints are tested in owner_decision_migration_test.go.
+func openLegacyApprovalTables(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openBefore(t, filepath.Join(t.TempDir(), "legacy-approvals.db"), 28)
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
+	return db
 }
 
 // 0019 rebuilds executions to widen its status CHECK. Existing rows and the

@@ -305,8 +305,10 @@ func mustExec(t *testing.T, db execer, statement string, args ...any) {
 func TestWaitingApprovalCommentNamesRequiredApprovalOnce(t *testing.T) {
 	db := outboxDB(t)
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
-	mustExec(t, db, `INSERT INTO approvals (id, task_id, execution_id, operation, target, content_version, params_hash, status, created_at)
-		VALUES ('approval-1', 'linear-1', 'linear-1-e1', 'merge_pull_request',
+	mustExec(t, db, `INSERT INTO owner_decisions (id,kind,task_id,execution_id,subject_id,detail,status,created_at)
+		VALUES ('decision-1','approval','linear-1','linear-1-e1','approval-1','{}','open',?)`, testTime)
+	mustExec(t, db, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target, content_id, params_hash, status, created_at)
+		VALUES ('approval-1', 'linear-1', 'linear-1-e1', 'decision-1', 'publish', 'merge_pull_request',
 		'{"repository":"owner/repo","prNumber":12,"baseBranch":"main","headBranch":"evaloom/linear-1-test"}', ?, ?, 'pending', ?)`,
 		strings.Repeat("a", 40), strings.Repeat("d", 64), testTime)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)

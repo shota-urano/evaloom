@@ -44,10 +44,15 @@ func openApproval(t *testing.T, f *authFixture, executionID, contentVersion stri
 	if err := tx.QueryRowContext(ctx, `SELECT task_id FROM executions WHERE id = ?`, executionID).Scan(&taskID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO approvals (id, task_id, execution_id, operation, target,
-		content_version, params_hash, status, created_at)
-		VALUES (?, ?, ?, 'merge_pull_request', ?, ?, ?, 'pending', '2026-11-08T00:00:00Z')`,
-		ulid.Make().String(), taskID, executionID, approvalTarget, contentVersion, "hash-"+contentVersion); err != nil {
+	id, decisionID := ulid.Make().String(), ulid.Make().String()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO owner_decisions (id,kind,task_id,execution_id,subject_id,basis,detail,status,created_at)
+		VALUES (?,'approval',?,?,?,?,'{}','open','2026-11-08T00:00:00Z')`, decisionID, taskID, executionID, id, contentVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target,
+		content_id, params_hash, status, created_at)
+		VALUES (?, ?, ?, ?, 'publish', 'merge_pull_request', ?, ?, ?, 'pending', '2026-11-08T00:00:00Z')`,
+		id, taskID, executionID, decisionID, approvalTarget, contentVersion, "hash-"+contentVersion); err != nil {
 		t.Fatal(err)
 	}
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
@@ -73,9 +78,9 @@ type approvalRow struct {
 
 func approvalsOf(t *testing.T, f *authFixture, taskID string) []approvalRow {
 	t.Helper()
-	rows, err := f.db.Query(`SELECT id, task_id, execution_id, operation, target, content_version, params_hash, status,
+	rows, err := f.db.Query(`SELECT id, task_id, execution_id, operation, target, content_id, params_hash, status,
 		coalesce(invalidated_reason, ''), max_uses, use_count,
-		decided_by IS NULL AND decided_at IS NULL AND expires_at IS NULL AND consumed_at IS NULL AND result IS NULL
+		decided_at IS NULL AND expires_at IS NULL AND consumed_at IS NULL
 		FROM approvals WHERE task_id = ? ORDER BY created_at, id`, taskID)
 	if err != nil {
 		t.Fatal(err)
