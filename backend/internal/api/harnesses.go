@@ -92,6 +92,9 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			}
 		}
 		settings, err := decodeSettings(before.HarnessSettings, patch, create, "defaultProfileId")
+		if shapeErr := waiverListShape(patch); err != nil && shapeErr != nil {
+			err = shapeErr
+		}
 		if err == nil {
 			err = validateHarnessSettings(settings, adapters)
 		}
@@ -184,10 +187,7 @@ func validateHarnessSettings(h model.HarnessSettings, _ *adapter.Registry) error
 			return invalid(field.name, "required")
 		}
 	}
-	if h.ApprovalWaivers == nil {
-		return invalid("approvalWaivers", "invalid_format")
-	}
-	return nil
+	return validateWaiverList(h.ApprovalWaivers)
 }
 
 func auditHarnessSettings(h model.HarnessSettings) model.HarnessSettings {

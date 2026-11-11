@@ -141,6 +141,9 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			}
 		}
 		settings, err := decodeSettings(before.ProjectSettings, patch, create)
+		if shapeErr := waiverListShape(patch); err != nil && shapeErr != nil {
+			err = shapeErr
+		}
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -235,8 +238,8 @@ func validateProjectSettings(p model.ProjectSettings) error {
 	if utf8.RuneCountInString(p.Name) > maxProjectNameLength {
 		return invalid("name", "too_long")
 	}
-	if p.ApprovalWaivers == nil {
-		return invalid("approvalWaivers", "invalid_format")
+	if err := validateWaiverList(p.ApprovalWaivers); err != nil {
+		return err
 	}
 	var params map[string]json.RawMessage
 	if json.Unmarshal(p.Params, &params) != nil || params == nil {
@@ -324,12 +327,44 @@ func validateProfileWaivers(definition json.RawMessage, waivers []string) error 
 	for _, a := range def.Approvals {
 		allowed[a.Operation] = a.Waivable
 	}
+	for _, w := range waivers {
+		waivable, declared := allowed[w]
+		if !declared {
+			return &Error{Code: PreconditionFailed, Message: "Operation is not declared in this Profile's approvals", Details: []Detail{{Field: "approvalWaivers", Reason: "unknown_operation"}}}
+		}
+		if !waivable {
+			return &Error{Code: PreconditionFailed, Message: "Operation is not waivable in this Profile", Details: []Detail{{Field: "approvalWaivers", Reason: "not_waivable"}}}
+		}
+	}
+	return nil
+}
+
+// validateWaiverList checks the shape of approvalWaivers before any Profile
+// lookup (spec 03 3.5): an array of strings without duplicates, else 400.
+func validateWaiverList(waivers []string) error {
+	if waivers == nil {
+		return invalid("approvalWaivers", "invalid_format")
+	}
 	seen := map[string]bool{}
 	for _, w := range waivers {
-		if !allowed[w] || seen[w] {
-			return &Error{Code: PreconditionFailed, Message: "Operation is not waivable in this Profile", Details: []Detail{{Field: "approvalWaivers", Reason: "invalid"}}}
+		if seen[w] {
+			return invalid("approvalWaivers", "duplicate")
 		}
 		seen[w] = true
+	}
+	return nil
+}
+
+// waiverListShape reports a non-string-array approvalWaivers as a field error
+// instead of a generic body error (spec 03 3.5).
+func waiverListShape(patch map[string]json.RawMessage) error {
+	raw, ok := patch["approvalWaivers"]
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	var waivers []string
+	if json.Unmarshal(raw, &waivers) != nil || waivers == nil {
+		return invalid("approvalWaivers", "invalid_format")
 	}
 	return nil
 }
