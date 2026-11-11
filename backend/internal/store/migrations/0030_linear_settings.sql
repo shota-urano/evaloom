@@ -64,6 +64,8 @@ ALTER TABLE settings_new RENAME TO settings;
 -- Validate a label when it is enqueued or replaced. Do not make historical
 -- deliveries a foreign-key owner of routes: routes may subsequently change.
 -- Missing/malformed settings use the same trigger-label fallback as the app.
+-- SQLite's default trim only removes ASCII spaces. Use Go strings.TrimSpace's
+-- Unicode White_Space set for the blank check; keep nonblank labels verbatim.
 CREATE TRIGGER linear_outbox_label_insert
 BEFORE INSERT ON linear_outbox WHEN NEW.action = 'add_label' AND NEW.label_name IS NOT NULL
 BEGIN
@@ -71,7 +73,10 @@ BEGIN
     WHERE NOT EXISTS (SELECT 1 FROM routes WHERE label = NEW.label_name)
        OR NEW.label_name = coalesce((
            SELECT CASE WHEN json_valid(value) THEN
-               CASE WHEN json_type(value) = 'text' AND trim(json_extract(value, '$')) <> ''
+               CASE WHEN json_type(value) = 'text' AND trim(json_extract(value, '$'),
+                   char(9, 10, 11, 12, 13, 32, 133, 160, 5760,
+                        8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+                        8232, 8233, 8239, 8287, 12288)) <> ''
                    THEN json_extract(value, '$') END
                END FROM settings WHERE key = 'linear.triggerLabel'
        ), 'ai-ready');
@@ -84,7 +89,10 @@ BEGIN
     WHERE NOT EXISTS (SELECT 1 FROM routes WHERE label = NEW.label_name)
        OR NEW.label_name = coalesce((
            SELECT CASE WHEN json_valid(value) THEN
-               CASE WHEN json_type(value) = 'text' AND trim(json_extract(value, '$')) <> ''
+               CASE WHEN json_type(value) = 'text' AND trim(json_extract(value, '$'),
+                   char(9, 10, 11, 12, 13, 32, 133, 160, 5760,
+                        8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202,
+                        8232, 8233, 8239, 8287, 12288)) <> ''
                    THEN json_extract(value, '$') END
                END FROM settings WHERE key = 'linear.triggerLabel'
        ), 'ai-ready');

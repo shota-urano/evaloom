@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -100,6 +102,42 @@ func TestLinearOutboxLabelMustBeRouteAndNotTrigger(t *testing.T) {
 	// Route edits must not prevent recording delivery failures for earlier rows.
 	mustTaskExec(t, db, `DELETE FROM routes WHERE label='route:allowed'`)
 	mustTaskExec(t, db, `UPDATE linear_outbox SET status='failed',failure_reason='label_not_found',failed_at='t' WHERE id='allowed'`)
+}
+
+func TestLinearOutboxBlankTriggerLabelUsesDefault(t *testing.T) {
+	// All Unicode White_Space characters recognized by Go's strings.TrimSpace,
+	// plus empty and mixed strings. Apply all migrations via openTaskTables.
+	values := []string{"", " \t\r\n\u3000"}
+	for _, r := range []rune{
+		'\t', '\n', '\v', '\f', '\r', ' ', '\u0085', '\u00a0', '\u1680',
+		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006',
+		'\u2007', '\u2008', '\u2009', '\u200a', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000',
+	} {
+		values = append(values, string(r))
+	}
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Run(strconv.QuoteToASCII(value), func(t *testing.T) {
+			db := openTaskTables(t)
+			mustTaskExec(t, db, `INSERT INTO routes VALUES ('ai-ready',NULL,'codex-developer','t','t')`)
+			mustTaskExec(t, db, `INSERT INTO routes VALUES ('route:allowed','project-a',NULL,'t','t')`)
+			if err := insertLabelFeedback(db, "allowed", "route:allowed"); err != nil {
+				t.Fatal(err)
+			}
+			mustTaskExec(t, db, `INSERT INTO settings VALUES ('linear.triggerLabel',?,'t')
+				ON CONFLICT(key) DO UPDATE SET value=excluded.value`, string(raw))
+			t.Run("insert", func(t *testing.T) {
+				assertRegistryConstraint(t, insertLabelFeedback(db, "bad", "ai-ready"), sqlite3.SQLITE_CONSTRAINT_TRIGGER)
+			})
+			t.Run("update", func(t *testing.T) {
+				_, err := db.Exec(`UPDATE linear_outbox SET label_name='ai-ready' WHERE id='allowed'`)
+				assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_TRIGGER)
+			})
+		})
+	}
 }
 
 func TestLinearOutboxLabelPayloadConstraints(t *testing.T) {
