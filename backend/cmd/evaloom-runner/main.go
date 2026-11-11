@@ -24,6 +24,10 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer) error {
+	return runWithInput(ctx, args, os.Stdin, output)
+}
+
+func runWithInput(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("evaloom-runner", flag.ContinueOnError)
 	flags.SetOutput(output)
 	configPath := flags.String("config", "", "Runner JSON configuration file path (required)")
@@ -33,12 +37,18 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		}
 		return err
 	}
-	if *configPath == "" || flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloom-runner -config <configuration file path>")
+	if *configPath == "" {
+		return fmt.Errorf("usage: evaloom-runner -config <configuration file path> [secret set -access <read|write> <harness-id>/<slot>]")
 	}
 	config, err := runner.LoadConfig(*configPath)
 	if err != nil {
 		return err
+	}
+	if flags.NArg() > 0 {
+		if flags.Arg(0) == "secret" {
+			return setSecret(config.DataDir, flags.Args()[1:], input, output)
+		}
+		return fmt.Errorf("runner: unexpected arguments")
 	}
 	process, err := runner.New(config)
 	if err != nil {
