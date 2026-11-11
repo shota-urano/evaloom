@@ -213,12 +213,13 @@ func TestDecisionListDetailAndUnconnectedLifecycle(t *testing.T) {
 		t.Fatal("conflicting answer changed decision")
 	}
 	stageExec(t, f, `UPDATE owner_decisions SET status='withdrawn',withdrawn_reason='superseded' WHERE id=?`, questionID)
-	// The route decision belongs to spec 04 3.7 and is not connected yet.
+	// A route decision whose proposal row is missing is inconsistent data:
+	// the answer is refused before any write.
 	routeID := seedDecision(t, f, executionID, "route", "")
 	status, body = approvalRequest(t, f, "POST", "/api/decisions/"+routeID+"/answer", `{"action":"reject"}`)
 	assertAuthError(t, status, body, 500, Internal)
 	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id=? AND status='open' AND answer IS NULL`, routeID); n != 1 {
-		t.Fatal("unconnected lifecycle accepted answer")
+		t.Fatal("route answer without its proposal was accepted")
 	}
 	// Test a domain failure before any answer/audit write.
 	var fields map[string]json.RawMessage
