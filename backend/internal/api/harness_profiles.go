@@ -49,6 +49,25 @@ func listHarnessProfiles(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	}
 }
 
+func getHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := ValidateID("id", id, ULID); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		profile, err := store.GetHarnessProfileByID(r.Context(), db, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: NotFound, Message: "Profile not found"}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, profile)
+	}
+}
+
 func registerHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
