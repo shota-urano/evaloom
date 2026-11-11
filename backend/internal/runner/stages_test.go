@@ -82,7 +82,12 @@ func stageFixture(t *testing.T, prepare bool) (*Runner, Claim, *stageReportStub,
 	c.Route = json.RawMessage(`{"kind":"project","projectId":"project-1","projectName":"Project"}`)
 	c.Params = json.RawMessage(`{"opaque":{"command":"do not execute","path":"../not-a-path"}}`)
 	c.Profile.HarnessID = "test-harness"
-	c.Workspace.Path = t.TempDir()
+	r.workspaceRoot = t.TempDir()
+	c.Workspace.ID = ulid.Make().String()
+	c.Workspace.Path = filepath.Join(r.workspaceRoot, c.Workspace.ID)
+	if err := os.Mkdir(c.Workspace.Path, 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(c.Workspace.Path, "keep"), []byte("workspace survives"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +243,7 @@ func TestExecuteStagesResumePublishAfterRunnerRestart(t *testing.T) {
 	}
 	approved := contract.RequestApproval{ID: stagePtr("approval-id"), Operation: "send", ContentID: stagePtr("checked"), Status: "approved"}
 	setStageResume(t, &claim, stageResume{Stage: model.StagePublish, CheckedContentID: stagePtr("checked"), Approvals: []contract.RequestApproval{approved}, CompletedStages: executionStageOrder[:3]})
-	restarted := &Runner{dataDir: r.dataDir}
+	restarted := &Runner{dataDir: r.dataDir, workspaceRoot: r.workspaceRoot}
 	resumedReports := &stageReportStub{requests: map[model.Stage][]byte{}}
 	services.Reporter = resumedReports
 	var called []model.Stage

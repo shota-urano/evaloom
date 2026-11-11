@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
@@ -95,9 +96,9 @@ func stageIndex(stage model.Stage) int {
 	return -1
 }
 
-// ExecuteStages runs the frame of spec 05 3.3. Workspace creation/validation,
-// secret preflight and Sandbox/Adapter implementation remain caller boundaries;
-// this method never creates, removes or otherwise changes the workspace.
+// ExecuteStages runs the frame of spec 05 3.3 and prepares and checks the
+// workspace (3.5). Secret preflight and Sandbox/Adapter implementation remain
+// caller boundaries. Workspace contents are retained on failure or stop.
 // Profile preflight errors are returned before any stage starts, as WithProfile
 // requires. Job wiring owns reporting those preflight failures.
 func (runner *Runner) ExecuteStages(ctx context.Context, claim Claim, services StageServices) error {
@@ -141,6 +142,7 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 		}
 		seen[done] = true
 	}
+	workspacePrepared := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -157,10 +159,18 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			return fmt.Errorf("runner: invalid stage attempt")
 		}
 		directory, err := runner.prepareStageFiles(claim.Execution.ID, stage, attempt, request, completed)
+		if err == nil {
+			if !workspacePrepared {
+				err = runner.prepareWorkspace(claim)
+				workspacePrepared = err == nil
+			} else {
+				err = runner.checkWorkspace(claim)
+			}
+		}
 		var outcome StageOutcome
 		if err != nil {
 			code := "config_error"
-			if err == errStageOutMissing {
+			if errors.Is(err, errStageOutMissing) || errors.Is(err, errWorkspaceMissing) {
 				code = "workspace_missing"
 			}
 			outcome.RunnerError = &code
