@@ -301,14 +301,16 @@ func saveDecisionAnswer(ctx context.Context, db *sql.DB, id string, fields map[s
 	return decision, tx.Commit()
 }
 
-// lifecycleAnswers applies spec 04 3.6 for approval, blocked and question.
-// The route decision belongs to 3.7 and is not connected here.
+// lifecycleAnswers applies spec 04 3.6 for approval, blocked and question,
+// and 3.7 for route.
 type lifecycleAnswers struct{}
 
 func (lifecycleAnswers) ApplyAnswer(ctx context.Context, tx *sql.Tx, decision store.OwnerDecision, answer decisionAnswer, now time.Time) error {
 	switch decision.Kind {
 	case "blocked", "question":
 		return store.ApplyBlockedOrQuestionAnswerTx(ctx, tx, decision, answer.Action)
+	case "route":
+		return store.ApplyRouteAnswerTx(ctx, tx, decision, answer.Action, answer.Label)
 	case "approval":
 	default:
 		return fmt.Errorf("decision lifecycle handler is not connected for kind %q", decision.Kind)
