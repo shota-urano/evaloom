@@ -274,10 +274,8 @@ func (a *OwnerAuth) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	if a.now().Before(a.loginBlockedUntil) {
-		// 01 5.3 has no separate rate-limit code; retain the existing auth
-		// error envelope with the HTTP status required by 18 6章.
-		a.loginFailureStatus(w, r, "login_cooldown", &Error{Code: Unauthenticated,
-			Message: "login is temporarily unavailable after repeated failures"}, http.StatusTooManyRequests)
+		a.loginFailure(w, r, "login_cooldown", &Error{Code: TooManyRequests,
+			Message: "login is temporarily unavailable after repeated failures"})
 		return
 	}
 	if !a.loginBlockedUntil.IsZero() {
@@ -367,19 +365,15 @@ func (a *OwnerAuth) startSession(w http.ResponseWriter, r *http.Request) (string
 // loginFailure records a failed login attempt without the submitted ID or
 // password, then returns public. A failed audit write fails closed with 500.
 func (a *OwnerAuth) loginFailure(w http.ResponseWriter, r *http.Request, reason string, public *Error) {
-	a.loginFailureStatus(w, r, reason, public, public.StatusCode())
-}
-
-func (a *OwnerAuth) loginFailureStatus(w http.ResponseWriter, r *http.Request, reason string, public *Error, status int) {
 	_, err := store.RecordAuditLog(r.Context(), a.db, store.AuditLog{
 		Actor: "system", Action: "auth.login_failure", TargetType: "request", TargetID: r.URL.Path,
-		Detail: map[string]any{"method": r.Method, "reason": reason, "via": a.via(r), "code": public.Code, "status": status},
+		Detail: map[string]any{"method": r.Method, "reason": reason, "via": a.via(r), "code": public.Code, "status": public.StatusCode()},
 	})
 	if err != nil {
 		WriteError(w, a.logger, fmt.Errorf("api: record login failure: %w", err))
 		return
 	}
-	writeErrorResponse(w, status, public)
+	WriteError(w, a.logger, public)
 }
 
 // logout is reached only through Protect, including its per-session CSRF check.
