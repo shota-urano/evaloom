@@ -120,7 +120,7 @@ func (runner *Runner) loadProfile(ctx context.Context, claim Claim) (LoadedProfi
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fail()
 	}
-	archive, err := safegit.Output(ctx, p.RepoPath, "archive", "--format=tar", p.CommitSHA)
+	archive, err := archiveProfile(ctx, p.RepoPath, p.CommitSHA, filepath.Join(runner.dataDir, "profiles"))
 	if err != nil {
 		return fail()
 	}
@@ -163,6 +163,33 @@ func (runner *Runner) loadProfile(ctx context.Context, claim Claim) (LoadedProfi
 		return fail()
 	}
 	return loaded, nil
+}
+
+// Archive through a private bare repository that borrows only the source object
+// database. In particular, the source's info/attributes and configuration must
+// not affect the fixed commit. No refs, index or working tree are copied.
+func archiveProfile(ctx context.Context, repo, commit, profiles string) ([]byte, error) {
+	objects, err := safegit.Output(ctx, repo, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return nil, err
+	}
+	view, err := os.MkdirTemp(profiles, ".archive-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(view)
+	if _, err := safegit.Output(ctx, view, "init", "--bare", "--object-format=sha1"); err != nil {
+		return nil, err
+	}
+	if err := os.Symlink(strings.TrimSuffix(string(objects), "\n"), filepath.Join(view, "source-objects")); err != nil {
+		return nil, err
+	}
+	// A relative alternate through our symlink handles source paths containing
+	// newlines or quotes without encoding them in Git's alternates file format.
+	if err := os.WriteFile(filepath.Join(view, "objects", "info", "alternates"), []byte("../source-objects\n"), 0600); err != nil {
+		return nil, err
+	}
+	return safegit.Output(ctx, view, "archive", "--format=tar", commit)
 }
 
 // Delay symlinks until all writes finish, so no archive entry can redirect a

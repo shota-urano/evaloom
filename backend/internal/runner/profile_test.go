@@ -228,6 +228,57 @@ func TestProfileRetargetedTagPreventsStartEvenWithCache(t *testing.T) {
 	}
 }
 
+func TestProfileIgnoresCoreAttributesFile(t *testing.T) {
+	testProfileIgnoresExternalAttributes(t, func(f *profileFixture) {
+		f.write("untracked.attributes", "work/instructions.md export-subst\nother.txt export-ignore\n", 0600)
+		f.git("config", "core.attributesFile", filepath.Join(f.repo, "untracked.attributes"))
+	})
+}
+
+func TestProfileIgnoresInfoAttributes(t *testing.T) {
+	testProfileIgnoresExternalAttributes(t, func(f *profileFixture) {
+		name := f.git("rev-parse", "--path-format=absolute", "--git-path", "info/attributes")
+		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			f.t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte("work/instructions.md export-subst\nother.txt export-ignore\n"), 0600); err != nil {
+			f.t.Fatal(err)
+		}
+	})
+}
+
+func testProfileIgnoresExternalAttributes(t *testing.T, configure func(*profileFixture)) {
+	t.Helper()
+	for _, kind := range []string{"regular", "linked", "bare"} {
+		t.Run(kind, func(t *testing.T) {
+			f, runner := newProfileFixture(t), newProfileRunner(t)
+			const instructions = "$Format:%H$\n"
+			f.write("work/instructions.md", instructions, 0600)
+			f.commit()
+			f.git("tag", "-f", f.claim.Profile.TagName)
+			if kind != "regular" {
+				repo := filepath.Join(t.TempDir(), kind)
+				if kind == "linked" {
+					f.git("worktree", "add", "--detach", repo, f.claim.Profile.CommitSHA)
+				} else {
+					f.git("clone", "--bare", f.repo, repo)
+				}
+				f.repo, f.claim.Profile.RepoPath = repo, repo
+			}
+			configure(f)
+			loaded := loadTestProfile(t, runner, f.claim)
+			for name, want := range map[string]string{
+				"work/instructions.md": instructions, "other.txt": "committed data\n",
+			} {
+				got, err := os.ReadFile(filepath.Join(loaded.Path, name))
+				if err != nil || string(got) != want {
+					t.Errorf("%s = %q, %v; want commit content %q", name, got, err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestProfileDeletedTagContinuesButInvalidTagOrMissingCommitStops(t *testing.T) {
 	f, runner := newProfileFixture(t), newProfileRunner(t)
 	f.git("tag", "-d", f.claim.Profile.TagName)
