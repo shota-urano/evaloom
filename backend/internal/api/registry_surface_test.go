@@ -187,3 +187,152 @@ func TestRegistryDetailRoutesAndRemovedEndpoints(t *testing.T) {
 	status, body = projectRequest(t, pf, "GET", "/api/harness-profiles/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil)
 	assertAuthError(t, status, body, 404, NotFound)
 }
+
+func TestRoutesRejectTriggerLabelWithDefaultSettings(t *testing.T) {
+	f := projectFixture(t)
+	status, body := projectRequest(t, f, "POST", "/api/projects", projectInput(t, "project-a"))
+	requireProject(t, status, body, 201)
+	for _, input := range []map[string]any{
+		{"label": "ai-ready", "projectId": "project-a"},
+		{"label": "ai-ready", "harnessId": "fixture-harness"},
+		{"label": "route:a", "projectId": "project-a", "harnessId": "fixture-harness"},
+		{"label": "route:a"},
+	} {
+		status, body := projectRequest(t, f, "POST", "/api/routes", input)
+		assertAuthError(t, status, body, 400, ValidationFailed)
+	}
+	// The trigger label is rejected even when it carries the routing prefix.
+	stageExec(t, f, `INSERT INTO settings VALUES ('linear.triggerLabel','"route:ai-ready"','t')`)
+	status, body = projectRequest(t, f, "POST", "/api/routes", map[string]any{"label": "route:ai-ready", "projectId": "project-a"})
+	assertAuthError(t, status, body, 400, ValidationFailed)
+	if n := stageCount(t, f, `SELECT count(*) FROM routes`); n != 0 {
+		t.Fatalf("routes=%d", n)
+	}
+}
+
+func TestRoutesPatchToLabeledDestinationConflicts(t *testing.T) {
+	f := projectFixture(t)
+	for _, id := range []string{"project-a", "project-b"} {
+		status, body := projectRequest(t, f, "POST", "/api/projects", projectInput(t, id))
+		requireProject(t, status, body, 201)
+	}
+	for _, input := range []map[string]any{
+		{"label": "route:a", "projectId": "project-a"},
+		{"label": "route:b", "projectId": "project-b"},
+	} {
+		if status, body := projectRequest(t, f, "POST", "/api/routes", input); status != 201 {
+			t.Fatalf("create=%d %s", status, body)
+		}
+	}
+	status, body := projectRequest(t, f, "PATCH", "/api/routes/route%3Aa", map[string]any{"projectId": "project-b"})
+	assertAuthError(t, status, body, 409, Conflict)
+	status, body = projectRequest(t, f, "PATCH", "/api/routes/route%3Aa", map[string]any{"label": "route:c", "projectId": "project-a"})
+	assertAuthError(t, status, body, 400, ValidationFailed)
+	if n := stageCount(t, f, `SELECT count(*) FROM routes WHERE label='route:a' AND project_id='project-a'`); n != 1 {
+		t.Fatal("rejected PATCH changed the route")
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM audit_logs WHERE action='route.update'`); n != 0 {
+		t.Fatalf("rejected PATCH audited %d times", n)
+	}
+}
+
+func TestRoutesAuditBeforeAndAfter(t *testing.T) {
+	f := projectFixture(t)
+	for _, id := range []string{"project-a", "project-b"} {
+		status, body := projectRequest(t, f, "POST", "/api/projects", projectInput(t, id))
+		requireProject(t, status, body, 201)
+	}
+	if status, body := projectRequest(t, f, "POST", "/api/routes", map[string]any{"label": "route:a", "projectId": "project-a"}); status != 201 {
+		t.Fatalf("create=%d %s", status, body)
+	}
+	if status, body := projectRequest(t, f, "PATCH", "/api/routes/route%3Aa", map[string]any{"harnessId": "fixture-harness"}); status != 200 {
+		t.Fatalf("patch=%d %s", status, body)
+	}
+	if status, body := projectRequest(t, f, "DELETE", "/api/routes/route%3Aa", nil); status != 204 {
+		t.Fatalf("delete=%d %s", status, body)
+	}
+	type side struct {
+		ProjectID *string `json:"projectId"`
+		HarnessID *string `json:"harnessId"`
+	}
+	destination := func(s *side) string {
+		switch {
+		case s == nil:
+			return "none"
+		case s.ProjectID != nil && s.HarnessID == nil:
+			return "project:" + *s.ProjectID
+		case s.HarnessID != nil && s.ProjectID == nil:
+			return "harness:" + *s.HarnessID
+		}
+		return "invalid"
+	}
+	want := map[string][2]string{
+		"route.create": {"none", "project:project-a"},
+		"route.update": {"project:project-a", "harness:fixture-harness"},
+		"route.delete": {"harness:fixture-harness", "none"},
+	}
+	rows, err := f.db.Query(`SELECT action, actor, target_type, target_id, detail FROM audit_logs WHERE action LIKE 'route.%' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var action, actor, targetType, targetID, raw string
+		if err := rows.Scan(&action, &actor, &targetType, &targetID, &raw); err != nil {
+			t.Fatal(err)
+		}
+		var detail struct {
+			Before *side `json:"before"`
+			After  *side `json:"after"`
+		}
+		if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+			t.Fatal(err)
+		}
+		got := [2]string{destination(detail.Before), destination(detail.After)}
+		if actor != "owner" || targetType != "route" || targetID != "route:a" || got != want[action] {
+			t.Fatalf("%s audit=%s/%s/%s %v; want %v", action, actor, targetType, targetID, got, want[action])
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil || seen != 3 {
+		t.Fatalf("route audits=%d err=%v", seen, err)
+	}
+}
+
+func TestRouteChangesDoNotMoveQueuedTasks(t *testing.T) {
+	f := projectFixture(t)
+	for _, id := range []string{"project-a", "project-b"} {
+		status, body := projectRequest(t, f, "POST", "/api/projects", projectInput(t, id))
+		requireProject(t, status, body, 201)
+	}
+	for _, input := range []map[string]any{
+		{"label": "route:a", "projectId": "project-a"},
+		{"label": "route:h", "harnessId": "fixture-harness"},
+	} {
+		if status, body := projectRequest(t, f, "POST", "/api/routes", input); status != 201 {
+			t.Fatalf("create=%d %s", status, body)
+		}
+	}
+	const now = "2026-11-11T00:00:00Z"
+	for _, status := range []string{"queued", "running", "completed"} {
+		stageExec(t, f, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+			VALUES (?, 'project-a', 't', 'b', '[]', 'solo', ?, ?, ?, ?)`, "task-p"+status, status, "key-p"+status, now, now)
+		stageExec(t, f, `INSERT INTO tasks (id, harness_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+			VALUES (?, 'fixture-harness', 't', 'b', '[]', 'solo', ?, ?, ?, ?)`, "task-h"+status, status, "key-h"+status, now, now)
+	}
+	if status, body := projectRequest(t, f, "PATCH", "/api/routes/route%3Aa", map[string]any{"projectId": "project-b"}); status != 200 {
+		t.Fatalf("patch=%d %s", status, body)
+	}
+	for _, label := range []string{"route%3Aa", "route%3Ah"} {
+		if status, body := projectRequest(t, f, "DELETE", "/api/routes/"+label, nil); status != 204 {
+			t.Fatalf("delete=%d %s", status, body)
+		}
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id LIKE 'task-p%' AND project_id='project-a' AND harness_id IS NULL`); n != 3 {
+		t.Fatalf("project tasks kept=%d", n)
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id LIKE 'task-h%' AND harness_id='fixture-harness' AND project_id IS NULL`); n != 3 {
+		t.Fatalf("harness tasks kept=%d", n)
+	}
+}
