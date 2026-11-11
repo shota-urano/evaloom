@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -17,6 +18,9 @@ type recoverySnapshot struct {
 	Execution, Task                                   string
 	ErrorClass, Message, Finished, ExecutionHeartbeat sql.NullString
 	Executions, Events, Audits, Notifications         int
+	// Spec 04 3.9 steps 3-4: running stage_runs and the workspace row.
+	Workspace                        sql.NullString
+	RunningStages, InterruptedStages int
 }
 
 func recoveryState(t *testing.T, f *authFixture, id string) recoverySnapshot {
@@ -27,10 +31,15 @@ func recoveryState(t *testing.T, f *authFixture, id string) recoverySnapshot {
 		(SELECT count(*) FROM executions),
 		(SELECT count(*) FROM execution_events WHERE execution_id = e.id),
 		(SELECT count(*) FROM audit_logs WHERE action = 'execution.interrupt' AND target_id = e.id),
-		(SELECT count(*) FROM notification_requests WHERE execution_id = e.id)
+		(SELECT count(*) FROM notification_requests WHERE execution_id = e.id),
+		(SELECT status FROM task_workspaces WHERE id = e.workspace_id),
+		(SELECT count(*) FROM stage_runs WHERE execution_id = e.id AND status = 'running'),
+		(SELECT count(*) FROM stage_runs WHERE execution_id = e.id AND status = 'failed'
+			AND error_class = 'interrupted' AND finished_at IS NOT NULL)
 		FROM executions e JOIN tasks t ON t.id = e.task_id
 		WHERE e.id = ?`, id).Scan(&s.Execution, &s.Task, &s.ErrorClass, &s.Message,
-		&s.Finished, &s.ExecutionHeartbeat, &s.Executions, &s.Events, &s.Audits, &s.Notifications)
+		&s.Finished, &s.ExecutionHeartbeat, &s.Executions, &s.Events, &s.Audits, &s.Notifications,
+		&s.Workspace, &s.RunningStages, &s.InterruptedStages)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +57,11 @@ func requireInterrupted(t *testing.T, f *authFixture, id string, before recovery
 	want.Events++
 	want.Audits++
 	want.Notifications++
+	want.InterruptedStages += want.RunningStages
+	want.RunningStages = 0
+	if want.Workspace.String == "active" {
+		want.Workspace.String = "retained"
+	}
 	if after != want || !after.Finished.Valid {
 		t.Fatalf("recovery got=%+v want=%+v", after, want)
 	}
@@ -176,6 +190,9 @@ func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 				}
 				requireInterrupted(t, f, id, before, reason)
 				after := recoveryState(t, f, id)
+				if after.Workspace.String != "retained" || from != "claimed" && after.InterruptedStages != 1 {
+					t.Fatalf("workspace/stage not recovered: %+v", after)
+				}
 				// Repeated recovery and late heartbeats/results cannot reopen it.
 				started := time.Now().UTC().Add(time.Hour)
 				if err := store.RecoverStaleRunners(context.Background(), f.db, started, started.Add(store.StartupHeartbeatGrace)); err != nil {
@@ -257,13 +274,20 @@ func TestRecoveryOnlyTouchesActiveOwnedExecutions(t *testing.T) {
 	requireHeartbeat(t, status, body)
 	requireInterrupted(t, f, id, before, "runner_boot_changed")
 	for _, state := range []struct{ execution, task string }{
-		{"pending", "queued"}, {"blocked", "blocked"}, {"failed", "failed"}, {"succeeded", "completed"}, {"cancelled", "cancelled"}, {"timed_out", "timed_out"}, {"interrupted", "failed"},
+		{"pending", "queued"}, {"waiting_approval", "waiting_approval"}, {"blocked", "blocked"}, {"failed", "failed"}, {"succeeded", "completed"}, {"cancelled", "cancelled"}, {"timed_out", "timed_out"}, {"interrupted", "failed"},
 	} {
 		t.Run(state.execution, func(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, state.execution, id); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := f.db.Exec(`UPDATE tasks SET status = ? WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, state.task, id); err != nil {
+				t.Fatal(err)
+			}
+			// A live-looking workspace and stage row must still be left alone.
+			if _, err := f.db.Exec(`UPDATE task_workspaces SET status = 'active' WHERE id = (SELECT workspace_id FROM executions WHERE id = ?)`, id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.db.Exec(`UPDATE stage_runs SET status = 'running', error_class = NULL WHERE execution_id = ?`, id); err != nil {
 				t.Fatal(err)
 			}
 			before := recoveryState(t, f, id)
@@ -286,7 +310,7 @@ func TestRecoveryFailuresRollBackBootLivenessAndAllEffects(t *testing.T) {
 		for _, trigger := range []string{
 			`BEFORE UPDATE OF error_class ON executions`, `BEFORE UPDATE OF status ON tasks`,
 			`BEFORE UPDATE OF finished_at ON executions`,
-			`BEFORE INSERT ON execution_events`, `BEFORE INSERT ON audit_logs`, `BEFORE INSERT ON notification_requests`,
+			`BEFORE INSERT ON execution_events`, `BEFORE UPDATE ON stage_runs`, `BEFORE UPDATE ON task_workspaces`, `BEFORE INSERT ON audit_logs`, `BEFORE INSERT ON notification_requests`,
 		} {
 			t.Run(path+"/"+trigger, func(t *testing.T) {
 				f, token, id, _ := resultFixture(t, "working")
@@ -331,5 +355,59 @@ func TestRecoveryFailuresRollBackBootLivenessAndAllEffects(t *testing.T) {
 				requireInterrupted(t, f, id, before, reason)
 			})
 		}
+	}
+}
+
+// Spec 04 3.9 step 1 (Q133): the Runner's running proposal becomes failed
+// (interrupted) and a routing task gets a route decision; a proposal of a
+// task no longer routing gets none, and other Runners' proposals stay.
+func TestRecoveryFailsRunningRouteProposals(t *testing.T) {
+	for _, path := range []string{"boot", "startup"} {
+		t.Run(path, func(t *testing.T) {
+			f, token, proposalID, taskID := routeProposalFixture(t)
+			cancelledID, cancelledTask := ulid.Make().String(), ulid.Make().String()
+			insertRouteProposal(t, f, cancelledID, cancelledTask, "2026-11-01T00:00:01Z")
+			stageExec(t, f, `UPDATE route_proposals SET status='running', runner_id='claim-runner' WHERE id=?`, cancelledID)
+			stageExec(t, f, `UPDATE tasks SET status='cancelled' WHERE id=?`, cancelledTask)
+			if _, err := runnerauth.Register(context.Background(), f.db, "other-runner", "Other", t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			otherID, otherTask := ulid.Make().String(), ulid.Make().String()
+			insertRouteProposal(t, f, otherID, otherTask, "2026-11-01T00:00:02Z")
+			stageExec(t, f, `UPDATE route_proposals SET status='running', runner_id='other-runner' WHERE id=?`, otherID)
+			stageExec(t, f, `UPDATE runners SET last_heartbeat_at = ? WHERE id = 'other-runner'`,
+				time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano))
+			if status, ids := heartbeatProposals(t, f, token, proposalID); status != 200 || len(ids) != 1 || ids[0] != cancelledID {
+				t.Fatalf("baseline heartbeat = %d %v", status, ids)
+			}
+			if path == "boot" {
+				input := heartbeatInput()
+				input["bootId"] = "next-boot"
+				status, body := postHeartbeat(t, f, token, "claim-runner", input)
+				requireHeartbeat(t, status, body)
+			} else {
+				stageExec(t, f, `UPDATE runners SET last_heartbeat_at = '2020-01-01T00:00:00Z' WHERE id = 'claim-runner'`)
+				started := time.Now().UTC().Add(time.Minute)
+				if err := store.RecoverStaleRunners(context.Background(), f.db, started, started.Add(store.StartupHeartbeatGrace)); err != nil {
+					t.Fatal(err)
+				}
+				if n := stageCount(t, f, `SELECT count(*) FROM runners WHERE id = 'claim-runner' AND status = 'offline'`); n != 1 {
+					t.Fatal("silent runner not offline")
+				}
+			}
+			requireProposal(t, f, proposalID, "failed", nil, "interrupted")
+			routeDecisionOf(t, f, proposalID)
+			if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id=? AND status='routing'`, taskID); n != 1 {
+				t.Fatal("routing task changed")
+			}
+			requireProposal(t, f, cancelledID, "failed", nil, "interrupted")
+			if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE task_id=?`, cancelledTask); n != 0 {
+				t.Fatal("cancelled task got a route decision")
+			}
+			requireProposal(t, f, otherID, "running", nil, nil)
+			if n := stageCount(t, f, `SELECT count(*) FROM executions`); n != 0 {
+				t.Fatal("recovery created an Execution")
+			}
+		})
 	}
 }

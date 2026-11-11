@@ -33,6 +33,7 @@ func RecoverStaleRunners(ctx context.Context, db *sql.DB, startedAt, now time.Ti
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `SELECT id, coalesce(last_heartbeat_at, '') FROM runners r
 		WHERE EXISTS (SELECT 1 FROM executions e WHERE e.runner_id = r.id AND e.status IN `+activeExecutionStatuses+`)
+		OR EXISTS (SELECT 1 FROM route_proposals rp WHERE rp.runner_id = r.id AND rp.status = 'running')
 		ORDER BY id`)
 	if err != nil {
 		return err
@@ -74,6 +75,10 @@ func RecoverStaleRunners(ctx context.Context, db *sql.DB, startedAt, now time.Ti
 
 // Both recovery paths use the same lifecycle and recording code. The caller's
 // BEGIN IMMEDIATE serializes heartbeat, result, claim and owner operations.
+// Spec 04 3.9: active Executions become interrupted (task failed), their
+// running stage_runs failed (interrupted) and their workspace retained; the
+// Runner's running route proposals become failed (interrupted) with a route
+// decision while the task is still routing (Q133). Nothing is re-executed.
 func interruptRunnerTx(ctx context.Context, tx *sql.Tx, runnerID, reason string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT e.id, e.task_id, e.status, t.status
 		FROM executions e JOIN tasks t ON t.id = e.task_id
@@ -105,6 +110,16 @@ func interruptRunnerTx(ctx context.Context, tx *sql.Tx, runnerID, reason string)
 		if err := task.TransitionExecutionTx(ctx, tx, change); err != nil {
 			return err
 		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx, `UPDATE stage_runs SET status = 'failed', error_class = 'interrupted', finished_at = ?
+			WHERE execution_id = ? AND status = 'running'`, now, change.ExecutionID); err != nil {
+			return err
+		}
+		// Never delete the workspace (spec 04 3.9 step 4); a cleaned row stays cleaned.
+		if _, err := tx.ExecContext(ctx, `UPDATE task_workspaces SET status = 'retained'
+			WHERE id = (SELECT workspace_id FROM executions WHERE id = ?) AND status = 'active'`, change.ExecutionID); err != nil {
+			return err
+		}
 		payload, _ := json.Marshal(map[string]string{"from": string(change.FromExecution), "to": "interrupted", "reason": reason})
 		if _, err := AppendExecutionEvent(ctx, tx, change.ExecutionID, model.EventStatusChanged, payload); err != nil {
 			return err
@@ -113,6 +128,44 @@ func interruptRunnerTx(ctx context.Context, tx *sql.Tx, runnerID, reason string)
 			Actor: "system", Action: "execution.interrupt", TargetType: "execution", TargetID: change.ExecutionID,
 			Detail: map[string]any{"taskId": change.TaskID, "runnerId": runnerID, "from": string(change.FromExecution), "to": "interrupted", "reason": reason},
 		}); err != nil {
+			return err
+		}
+	}
+	return interruptRouteProposalsTx(ctx, tx, runnerID)
+}
+
+func interruptRouteProposalsTx(ctx context.Context, tx *sql.Tx, runnerID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT rp.id, rp.task_id, t.status FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id
+		WHERE rp.runner_id = ? AND rp.status = 'running' ORDER BY rp.id`, runnerID)
+	if err != nil {
+		return err
+	}
+	type proposal struct{ id, taskID, taskStatus string }
+	var proposals []proposal
+	for rows.Next() {
+		var p proposal
+		if err := rows.Scan(&p.id, &p.taskID, &p.taskStatus); err != nil {
+			rows.Close()
+			return err
+		}
+		proposals = append(proposals, p)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, p := range proposals {
+		result, err := tx.ExecContext(ctx, `UPDATE route_proposals SET status = 'failed', error_class = 'interrupted', finished_at = ?
+			WHERE id = ? AND status = 'running'`, now, p.id)
+		if err := expectOneRow(result, err); err != nil {
+			return err
+		}
+		if model.TaskStatus(p.taskStatus) != model.TaskRouting {
+			continue
+		}
+		if err := OpenRouteDecisionTx(ctx, tx, p.taskID, p.id); err != nil {
 			return err
 		}
 	}
