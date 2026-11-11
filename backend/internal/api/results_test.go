@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
+	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
 // reportFixture claims a task on project-a. The Execution is claimed.
@@ -683,6 +685,29 @@ func TestStageReportValidation(t *testing.T) {
 			v["usage"] = map[string]any{"wallTimeMs": -1}
 			return v
 		}(),
+		"empty_usage":          func() map[string]any { v := valid(); v["usage"] = map[string]any{}; return v }(),
+		"null_wall_time":       func() map[string]any { v := valid(); v["usage"] = map[string]any{"wallTimeMs": nil}; return v }(),
+		"fractional_wall_time": func() map[string]any { v := valid(); v["usage"] = map[string]any{"wallTimeMs": 0.5}; return v }(),
+		"overflow_wall_time": func() map[string]any {
+			v := valid()
+			v["usage"] = map[string]any{"wallTimeMs": uint64(1 << 63)}
+			return v
+		}(),
+		"negative_input_tokens": func() map[string]any {
+			v := valid()
+			v["usage"] = map[string]any{"wallTimeMs": 0, "inputTokens": -1}
+			return v
+		}(),
+		"negative_output_tokens": func() map[string]any {
+			v := valid()
+			v["usage"] = map[string]any{"wallTimeMs": 0, "outputTokens": -1}
+			return v
+		}(),
+		"negative_cost_amount": func() map[string]any {
+			v := valid()
+			v["usage"] = map[string]any{"wallTimeMs": 0, "costAmount": -1}
+			return v
+		}(),
 		"work_result": func() map[string]any {
 			v := valid()
 			v["result"] = programResult("check", "succeeded", nil)
@@ -732,6 +757,86 @@ func TestStageReportRequiresClaimOwnerAndRunnerAuthentication(t *testing.T) {
 	}
 	status, body = postReport(t, f, token, ulid.Make().String(), input)
 	assertAuthError(t, status, body, 404, NotFound)
+	// Project assignment is not a substitute for the Execution claim.
+	execSQL(t, f, `UPDATE executions SET runner_id = NULL WHERE id = ?`, id)
+	before = readReportSnapshot(t, f, id)
+	status, body = postReport(t, f, token, id, input)
+	assertAuthError(t, status, body, 403, Forbidden)
+	if after := readReportSnapshot(t, f, id); after != before {
+		t.Fatalf("unclaimed execution changed: %+v", after)
+	}
+}
+
+// A report whose task status disagrees with the Execution is 409 and writes
+// nothing.
+func TestStageReportRejectsInconsistentTask(t *testing.T) {
+	f, token, id, _ := reportFixture(t)
+	attempt := startStage(t, f, token, id, "work")
+	execSQL(t, f, `UPDATE tasks SET status = 'queued' WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, id)
+	before := readReportSnapshot(t, f, id)
+	status, body := postReport(t, f, token, id, finished("work", attempt, nil))
+	assertAuthError(t, status, body, 409, Conflict)
+	if after := readReportSnapshot(t, f, id); after != before {
+		t.Fatalf("inconsistent task changed: %+v", after)
+	}
+	f, token, id, _ = reportFixture(t)
+	execSQL(t, f, `UPDATE tasks SET status = 'queued' WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, id)
+	before = readReportSnapshot(t, f, id)
+	status, body = postReport(t, f, token, id, started("work", addArtifact(t, f, id, "work", "request_json", "request.json")))
+	assertAuthError(t, status, body, 409, Conflict)
+	if after := readReportSnapshot(t, f, id); after != before {
+		t.Fatalf("inconsistent task changed: %+v", after)
+	}
+}
+
+// An Execution outside claimed and the stage states cannot start a stage.
+func TestStageReportRejectsStartFromUnreportableStates(t *testing.T) {
+	for _, from := range []model.ExecutionStatus{
+		model.ExecutionPending, model.ExecutionBlocked, model.ExecutionWaitingApproval, model.ExecutionSucceeded,
+		model.ExecutionFailed, model.ExecutionCancelled, model.ExecutionTimedOut, model.ExecutionInterrupted,
+	} {
+		t.Run(string(from), func(t *testing.T) {
+			f, token, id, _ := reportFixture(t)
+			mapped, err := task.TaskStatusForExecution(from)
+			if err != nil {
+				t.Fatal(err)
+			}
+			execSQL(t, f, `UPDATE executions SET status = ? WHERE id = ?`, from, id)
+			execSQL(t, f, `UPDATE tasks SET status = ? WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, mapped, id)
+			artifact := addArtifact(t, f, id, "work", "request_json", "request.json")
+			before := readReportSnapshot(t, f, id)
+			status, body := postReport(t, f, token, id, started("work", artifact))
+			assertAuthError(t, status, body, 409, Conflict)
+			if after := readReportSnapshot(t, f, id); after != before {
+				t.Fatalf("start from %s changed: %+v", from, after)
+			}
+		})
+	}
+}
+
+// spec 04 3.4.1 step 2: the stage end writes its usage as reported, with the
+// stage name, keeping null as null.
+func TestStageFinishedPersistsStageUsage(t *testing.T) {
+	f, token, id, _ := reportFixture(t)
+	attempt := runTo(t, f, token, id, "check")
+	input := finished("check", attempt, programResult("check", "blocked", nil))
+	input["usage"] = map[string]any{"wallTimeMs": 1234, "inputTokens": 0, "outputTokens": nil, "costAmount": 0.125}
+	finishStage(t, f, token, id, input)
+	var wall, tokens int64
+	var output sql.NullInt64
+	var cost sql.NullFloat64
+	if err := f.db.QueryRow(`SELECT wall_time_ms, input_tokens, output_tokens, cost_amount FROM usage_records
+		WHERE execution_id = ? AND stage = 'check'`, id).Scan(&wall, &tokens, &output, &cost); err != nil ||
+		wall != 1234 || tokens != 0 || output.Valid || !cost.Valid || cost.Float64 != 0.125 {
+		t.Fatal(wall, tokens, output, cost, err)
+	}
+	// The work stage before it keeps its own row with its own values.
+	var workInput sql.NullInt64
+	if err := f.db.QueryRow(`SELECT wall_time_ms, input_tokens, output_tokens, cost_amount FROM usage_records
+		WHERE execution_id = ? AND stage = 'work'`, id).Scan(&wall, &workInput, &output, &cost); err != nil ||
+		wall != 100 || workInput.Valid || output.Valid || cost.Valid {
+		t.Fatal(wall, workInput, output, cost, err)
+	}
 }
 
 // A report for an Execution that is no longer the latest is 409.

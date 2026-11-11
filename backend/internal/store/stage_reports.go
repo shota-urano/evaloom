@@ -102,6 +102,19 @@ func readReportProfile(ctx context.Context, tx *sql.Tx, e *reportExecution) (rep
 	return profile, nil
 }
 
+// checkTask is a conflict when the Task status disagrees with the Execution
+// (spec 02 5.3); a report never repairs or extends such a pair.
+func (e *reportExecution) checkTask() error {
+	want, err := task.TaskStatusForExecution(e.status)
+	if err != nil {
+		return err
+	}
+	if e.taskStatus != want {
+		return conflictf("task status %s does not match execution %s", e.taskStatus, e.status)
+	}
+	return nil
+}
+
 func conflictf(format string, args ...any) error {
 	return &task.ConflictError{Code: "conflict", Message: fmt.Sprintf(format, args...)}
 }
@@ -173,6 +186,9 @@ func StartStageTx(ctx context.Context, tx *sql.Tx, in StageStart) (int, error) {
 	}
 	if !e.latest {
 		return 0, conflictf("execution is not the latest execution")
+	}
+	if err := e.checkTask(); err != nil {
+		return 0, err
 	}
 	if ok, err := artifactExists(ctx, tx, in.RequestArtifactID, e.id, "request_json", in.Stage); err != nil {
 		return 0, err
@@ -352,6 +368,9 @@ func FinishStageTx(ctx context.Context, tx *sql.Tx, in StageFinish) (StageNext, 
 	}
 	if !e.latest || e.status != stageStatuses[in.Stage] {
 		return StageNext{}, conflictf("execution %s is not running stage %s", e.status, in.Stage)
+	}
+	if err := e.checkTask(); err != nil {
+		return StageNext{}, err
 	}
 	if in.ResultArtifactID != nil {
 		if ok, err := artifactExists(ctx, tx, *in.ResultArtifactID, e.id, "result_json", in.Stage); err != nil {
