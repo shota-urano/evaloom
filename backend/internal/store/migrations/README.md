@@ -26,3 +26,16 @@ DB の保存先には明示したファイルパスを使い、親ディレク�
 複数の旧Teamを単一の全体設定へ移せない場合は、0026全体を取り消して起動を失敗させる。
 架空のHarnessやProfile、振り分け先を補って移行はしない。
 `runners.worktree_root`は削除し、Runnerの設定ファイルに作業領域のディレクトリを持たせる。
+
+0027は仕様02のタスクと実行の7表を作る。旧Executionの`running`は`working`、
+`verifying`は`checking`、旧Taskの`verifying`は`running`へ移す。
+旧エラー分類の`execution_failed`は`work_failed`、`test_failed`は`check_failed`へ移す。
+`harness_session_id`は`work_session_id`、`source_commit_sha`は`source_revision`へ引き継ぐ。
+保存済みのProfileの固定値は引き継ぐが、旧表に無かったclaim時点のparamsと契約版は、
+現在の登録値で補わずNULLのままにする。SSEイベントの採番は削除済みIDも含めて継続する。
+
+移行先を一意に決められない旧値（`planning`、`merging`、旧取り込み保留原因、
+廃止したイベント種別、`project`の文脈など）が残っていれば、0027全体を取り消す。
+元の行を削除したり、振り分けの提案や段の実行結果を推測で作ったりしない。
+JSONの内容、振り分け先未定を許すタスク状態、Profileに応じた受け入れ条件の必須判定は、
+仕様どおりアプリ側の検証で扱う。

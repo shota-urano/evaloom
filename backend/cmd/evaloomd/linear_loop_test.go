@@ -297,11 +297,11 @@ func TestLinearCommentOnAttachedIssueDoesNotRestart(t *testing.T) {
 	if _, err := h.db.Exec(`UPDATE executions SET status = 'publishing' WHERE id = ?`, executionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.db.Exec(`UPDATE tasks SET status = 'verifying' WHERE id = ?`, taskID); err != nil {
+	if _, err := h.db.Exec(`UPDATE tasks SET status = 'running' WHERE id = ?`, taskID); err != nil {
 		t.Fatal(err)
 	}
 	if err := task.TransitionExecution(ctx, h.db, task.Transition{TaskID: taskID, ExecutionID: executionID,
-		FromTask: "verifying", FromExecution: "publishing", ToExecution: "succeeded"}); err != nil {
+		FromTask: "running", FromExecution: "publishing", ToExecution: "succeeded"}); err != nil {
 		t.Fatal(err)
 	}
 	var taskStatus string
@@ -365,22 +365,26 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 			h.fake.set("issue-1", linearIssueJSON("issue-1", tc.body, at, tc.labels...))
 			h.poll(t)
 			var status, cause string
-			if err := h.db.QueryRow(`SELECT status, intake_block_cause FROM tasks
+			if err := h.db.QueryRow(`SELECT status, coalesce(intake_block_cause, '') FROM tasks
 				WHERE idempotency_key = 'linear:issue-1:1'`).Scan(&status, &cause); err != nil {
 				t.Fatal(err)
 			}
-			if status != "blocked" || (tc.cause != "" && cause != tc.cause) {
+			wantStatus, wantComments := "blocked", 1
+			if tc.name == "routing" {
+				wantStatus, wantComments = "routing", 0
+			}
+			if status != wantStatus || (tc.cause != "" && cause != tc.cause) {
 				t.Fatalf("held task = %s/%s", status, cause)
 			}
 			before := h.state(t, "issue-1")
 
 			h.send(t) // the hold comment
 			comments, _ := h.fake.snapshot()
-			if len(comments) != 1 || comments[0]["issueId"] != "issue-1" {
+			if len(comments) != wantComments || (wantComments > 0 && comments[0]["issueId"] != "issue-1") {
 				t.Fatalf("hold comments = %v", comments)
 			}
 			advanced := h.fake.updatedAt("issue-1")
-			if sameInstant(t, advanced, before.updatedAt) {
+			if wantComments > 0 && sameInstant(t, advanced, before.updatedAt) {
 				t.Fatalf("fake Linear did not advance updatedAt (%s)", advanced)
 			}
 			afterComment := h.counts(t)
@@ -403,10 +407,10 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 			if err := h.db.QueryRow(`SELECT count(*) FROM linear_outbox WHERE kind = ?`, tc.kind).Scan(&rows); err != nil {
 				t.Fatal(err)
 			}
-			if rows != 1 {
+			if rows != wantComments {
 				t.Fatalf("%s outbox rows = %d, want 1", tc.kind, rows)
 			}
-			if comments, _ := h.fake.snapshot(); len(comments) != 1 {
+			if comments, _ := h.fake.snapshot(); len(comments) != wantComments {
 				t.Fatalf("comments after polls = %d, want 1", len(comments))
 			}
 		})

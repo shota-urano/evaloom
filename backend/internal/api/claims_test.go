@@ -64,7 +64,7 @@ type executionPin struct {
 func readExecutionPin(t *testing.T, f *authFixture, id string) executionPin {
 	t.Helper()
 	var pin executionPin
-	err := f.db.QueryRow(`SELECT runner_id, role, harness_id, profile_id, profile_version,
+	err := f.db.QueryRow(`SELECT runner_id, coalesce(route_kind, ''), harness_id, profile_id, profile_version,
 		profile_commit_sha, claimed_at FROM executions WHERE id = ?`, id).
 		Scan(&pin.Runner, &pin.Role, &pin.Harness, &pin.Profile, &pin.Version, &pin.SHA, &pin.ClaimedAt)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestClaimPinsCurrentAssignmentAndLaterChangesPreserveExecution(t *testing.T
 	status, body = requestClaim(t, f, token)
 	claim := requireClaim(t, status, body)
 	pin := readExecutionPin(t, f, claim.Execution.ID)
-	want := executionPin{"claim-runner", "", "harness-a", profiles[1].ID, profiles[1].Version, profiles[1].CommitSHA, pin.ClaimedAt}
+	want := executionPin{"claim-runner", "project", "harness-a", profiles[1].ID, profiles[1].Version, profiles[1].CommitSHA, pin.ClaimedAt}
 	if pin != want || pin.ClaimedAt == "" {
 		t.Fatalf("saved pin=%+v want=%+v", pin, want)
 	}
@@ -229,7 +229,7 @@ func TestClaimCountsAllActiveStatesAndReleasesBlockedAndTerminalSlots(t *testing
 	}
 	status, body := requestClaim(t, f, token)
 	first := requireClaim(t, status, body)
-	for _, state := range []string{"claimed", "preparing", "running", "verifying", "publishing"} {
+	for _, state := range []string{"claimed", "preparing", "working", "checking", "publishing"} {
 		t.Run(state, func(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE task_id = ?`, state, a.ID); err != nil {
 				t.Fatal(err)
@@ -255,7 +255,7 @@ func TestClaimCountsAllActiveStatesAndReleasesBlockedAndTerminalSlots(t *testing
 			}
 		})
 	}
-	for _, state := range []string{"blocked", "waiting_approval", "merging", "succeeded", "failed", "interrupted", "cancelled", "timed_out"} {
+	for _, state := range []string{"blocked", "waiting_approval", "succeeded", "failed", "interrupted", "cancelled", "timed_out"} {
 		t.Run(state, func(t *testing.T) {
 			if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, state, first.Execution.ID); err != nil {
 				t.Fatal(err)
@@ -294,7 +294,7 @@ func TestClaimDoesNotCountApprovalStatesTowardEitherLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, want := range []struct{ task, status string }{{waitingA.ID, "waiting_approval"}, {mergingB.ID, "merging"}} {
+	for _, want := range []struct{ task, status string }{{waitingA.ID, "waiting_approval"}, {mergingB.ID, "waiting_approval"}} {
 		claim := claimNext()
 		if claim.Execution.TaskID != want.task {
 			t.Fatalf("claimed %s; want %s", claim.Execution.TaskID, want.task)
@@ -362,7 +362,7 @@ func assertUnclaimed(t *testing.T, f *authFixture, taskID string) {
 	var untouched, events, audits int
 	err := f.db.QueryRow(`SELECT count(*) FROM executions e JOIN tasks t ON t.id = e.task_id
 		WHERE t.id = ? AND t.status = 'queued' AND e.status = 'pending' AND e.runner_id IS NULL
-		AND e.role IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
+		AND e.route_kind IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
 		AND e.profile_version IS NULL AND e.profile_commit_sha IS NULL AND e.claimed_at IS NULL`, taskID).Scan(&untouched)
 	if err != nil || untouched != 1 {
 		t.Fatalf("unclaimed=%d err=%v", untouched, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,11 @@ func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause BlockCause
 	t.Helper()
 	f.mustRound(t, issue)
 	held := readStarted(t, f.db, "1", 1)
-	if held.status != "blocked" || held.cause.String != string(cause) || held.executions != 0 {
+	wantStatus, wantCause := "blocked", string(cause)
+	if strings.HasPrefix(wantCause, "routing_") {
+		wantStatus, wantCause = "routing", ""
+	}
+	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 {
 		t.Fatalf("held task = %+v", held)
 	}
 	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) {
@@ -175,14 +180,14 @@ func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 	f.now = base.Add(time.Minute)
 	f.mustRound(t, fixed)
 	got := readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.executions != 0 ||
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
 		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("rechecked without a newer updatedAt: %+v", got)
 	}
 	// An older updatedAt is not newer either.
 	fixed.UpdatedAt = base.Add(-time.Minute)
 	f.mustRound(t, fixed)
-	if got := readStarted(t, f.db, "1", 1); got.status != "blocked" {
+	if got := readStarted(t, f.db, "1", 1); got.status != "routing" {
 		t.Fatalf("rechecked with an older updatedAt: %+v", got)
 	}
 }
@@ -202,7 +207,7 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	f.mustRound(t, edited)
 	got := readStarted(t, f.db, "1", 1)
 	after := mustState(t, f.db, "1")
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.executions != 0 ||
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
 		got.title != held.title || taskUpdatedAt(t, f.db, held.id) != heldAt || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("same cause changed the task: %+v", got)
 	}
@@ -215,11 +220,11 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	edited.UpdatedAt = base.Add(3 * time.Minute)
 	f.mustRound(t, edited)
 	got = readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingMultipleLabels) || got.executions != 0 ||
-		recheckAudits(t, f.db, held.id) != 1 {
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
+		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("changed cause = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != stamp(f.now) {
+	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != before.decidedAt {
 		t.Fatalf("state = %+v", s)
 	}
 	if n := countTasks(t, f.db, "1"); n != 1 {
@@ -276,7 +281,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 		t.Fatal("failed recheck was not reported")
 	}
 	got := readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.project.Valid ||
+	if got.status != "routing" || got.cause.Valid || got.project.Valid ||
 		got.executions != 0 || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("task after failure = %+v", got)
 	}

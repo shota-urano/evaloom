@@ -117,8 +117,8 @@ func TestCancelQueuedImmediatelyAndNeverClaimed(t *testing.T) {
 }
 
 func TestCancelBlocked(t *testing.T) {
-	f, _, id, _ := resultFixture(t, "verifying")
-	blockExecution(t, f, id, "verifying")
+	f, _, id, _ := resultFixture(t, "checking")
+	blockExecution(t, f, id, "checking")
 	before := cancellationState(t, f, id)
 	status, body := requestCancellation(t, f, executionTaskID(t, f, id))
 	if status != 204 {
@@ -161,7 +161,7 @@ func requireHeartbeat(t *testing.T, status int, body []byte, ids ...string) {
 }
 
 func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
-	for _, from := range []string{"claimed", "preparing", "running", "verifying", "publishing"} {
+	for _, from := range []string{"claimed", "preparing", "working", "checking", "publishing"} {
 		t.Run(from, func(t *testing.T) {
 			f, token, id, _ := resultFixture(t, from)
 			before := cancellationState(t, f, id)
@@ -225,7 +225,7 @@ func TestCancelCompletedAndOtherForbiddenStatesDoNotWrite(t *testing.T) {
 	for _, state := range []struct{ execution, task string }{
 		{"succeeded", "completed"}, {"failed", "failed"}, {"timed_out", "timed_out"},
 		{"interrupted", "failed"}, {"cancelled", "cancelled"}, {"pending", "received"},
-		{"pending", "planning"}, {"pending", "waiting_approval"}, {"running", "queued"},
+		{"pending", "routing"}, {"pending", "waiting_approval"}, {"working", "queued"},
 	} {
 		t.Run(state.task+"_"+state.execution, func(t *testing.T) {
 			f, token, id, _ := resultFixture(t, "publishing")
@@ -253,7 +253,7 @@ func TestCancelCompletedAndOtherForbiddenStatesDoNotWrite(t *testing.T) {
 }
 
 func TestCancelOnlyLatestExecutionAndValidTask(t *testing.T) {
-	f, _, id, _ := resultFixture(t, "running")
+	f, _, id, _ := resultFixture(t, "working")
 	newID := ulid.Make().String()
 	if _, err := f.db.Exec(`UPDATE executions SET status = 'failed' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
@@ -282,7 +282,7 @@ func TestCancelOnlyLatestExecutionAndValidTask(t *testing.T) {
 }
 
 func TestCancellationRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	path := "/api/tasks/" + executionTaskID(t, f, id) + "/cancel"
 	for _, tc := range []struct {
 		name, reason string
@@ -411,7 +411,7 @@ func TestClaimAndCancelSerializeWithoutLosingCancellation(t *testing.T) {
 }
 
 func TestHeartbeatNeverLeaksOrRenewsAnotherRunnersExecutions(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	status, body := requestCancellation(t, f, executionTaskID(t, f, id))
 	if status != 204 {
 		t.Fatalf("cancel=%d %s", status, body)
@@ -448,7 +448,7 @@ func TestHeartbeatNeverLeaksOrRenewsAnotherRunnersExecutions(t *testing.T) {
 }
 
 func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	for _, input := range []any{
 		map[string]any{"runningExecutionIds": []string{}},
 		map[string]any{"bootId": "test"},
@@ -478,10 +478,9 @@ func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
 // Execution that is not held is still a conflict.
 func TestCancelHeldLinearTaskWithoutExecution(t *testing.T) {
 	f, _, _ := claimFixture(t)
-	for _, task := range []struct{ id, cause string }{{"task-900001", "routing_no_label"}, {"task-900002", ""}} {
-		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
-			task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
-			VALUES (?, 'project-a', 't', 'b', 'ac', 'eng-1', 'development', 'solo', 'blocked', ?, 't', 't', 'linear', nullif(?, ''))`,
+	for _, task := range []struct{ id, cause string }{{"task-900001", "missing_acceptance_criteria"}, {"task-900002", ""}} {
+		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+			VALUES (?, 'project-a', 't', 'b', 'ac', 'solo', 'blocked', ?, 't', 't', 'linear', nullif(?, ''))`,
 			task.id, "linear:"+task.id+":1", task.cause); err != nil {
 			t.Fatal(err)
 		}

@@ -25,7 +25,7 @@ func requestRetry(t *testing.T, f *authFixture, id, body string, alter func(*htt
 
 func retryFixture(t *testing.T, to string) (*authFixture, string, string) {
 	t.Helper()
-	from := "running"
+	from := "working"
 	if to == "succeeded" {
 		from = "publishing"
 	}
@@ -74,7 +74,7 @@ func requireRetryPending(t *testing.T, f *authFixture, taskID, mode string, want
 	var seq, count, unpinned int
 	err := f.db.QueryRow(`SELECT e.id, e.seq, e.mode, e.status, e.created_at, t.status,
 		(SELECT count(*) FROM executions WHERE task_id = t.id),
-		e.runner_id IS NULL AND e.role IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
+		e.runner_id IS NULL AND e.route_kind IS NULL AND e.harness_id IS NULL AND e.profile_id IS NULL
 		AND e.profile_version IS NULL AND e.profile_commit_sha IS NULL AND e.claimed_at IS NULL
 		AND e.cancel_requested_at IS NULL AND e.finished_at IS NULL
 		FROM tasks t JOIN executions e ON e.task_id = t.id
@@ -155,13 +155,13 @@ func TestRetryAcceptsAllRetriableStatesAndPreservesEvidence(t *testing.T) {
 
 func TestRetryRunningAndOtherForbiddenStatesReturn409WithoutWrites(t *testing.T) {
 	for _, state := range []struct{ task, execution string }{
-		{"running", "running"}, {"running", "claimed"}, {"running", "preparing"},
-		{"verifying", "verifying"}, {"verifying", "publishing"}, {"queued", "pending"},
-		{"received", "pending"}, {"planning", "pending"}, {"waiting_approval", "pending"},
-		{"failed", "running"}, // Fail closed when the latest Execution disagrees.
+		{"running", "working"}, {"running", "claimed"}, {"running", "preparing"},
+		{"running", "checking"}, {"running", "publishing"}, {"queued", "pending"},
+		{"received", "pending"}, {"routing", "pending"}, {"waiting_approval", "pending"},
+		{"failed", "working"}, // Fail closed when the latest Execution disagrees.
 	} {
 		t.Run(state.task+"_"+state.execution, func(t *testing.T) {
-			f, _, id, _ := resultFixture(t, "running")
+			f, _, id, _ := resultFixture(t, "working")
 			taskID := executionTaskID(t, f, id)
 			if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, state.execution, id); err != nil {
 				t.Fatal(err)

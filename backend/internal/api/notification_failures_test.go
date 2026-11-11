@@ -54,10 +54,8 @@ func TestListNotificationFailuresAcrossTasksAndRetriesNewestFirst(t *testing.T) 
 	const third = "01ARZ3NDEKTSV4RRFFQ69G5FAX"
 	for _, statement := range []string{
 		`UPDATE executions SET status = 'failed', error_message = 'PRIVATE-EXECUTION-ERROR' WHERE id = '` + streamExecution + `'`,
-		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-		 collaboration_mode, status, idempotency_key, created_at, updated_at)
-		 SELECT 'task-002', project_id, '別タスク', body, acceptance_criteria, short_name, task_type,
-		 collaboration_mode, 'completed', 'other-task', created_at, updated_at FROM tasks WHERE id = 'task-001'`,
+		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+		 SELECT 'task-002', project_id, '別タスク', body, acceptance_criteria, collaboration_mode, 'completed', 'other-task', created_at, updated_at FROM tasks WHERE id = 'task-001'`,
 		`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		 VALUES ('` + third + `', 'task-002', 1, 'fresh', 'succeeded', '2026-10-26T00:00:00Z')`,
 	} {
@@ -83,8 +81,7 @@ func TestListNotificationFailuresAcrossTasksAndRetriesNewestFirst(t *testing.T) 
 		appendStreamEvent(t, f, execution, `{"text":"PRIVATE-LOG-ERROR"}`)
 	}
 	// Every other event type must be excluded, including sent notifications.
-	for _, kind := range []model.ExecutionEventType{"status_changed", "worktree_ready", "context_pinned",
-		"harness_started", "harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent"} {
+	for _, kind := range []model.ExecutionEventType{"status_changed", "context_pinned", "stage_started", "stage_finished", "check_result", "approval_requested", "approval_waived", "approval_consumed", "decision_opened", "decision_answered", "published", "notification_sent"} {
 		if _, err := store.AppendExecutionEvent(context.Background(), f.db, third, kind, json.RawMessage(`{}`)); err != nil {
 			t.Fatal(err)
 		}
@@ -236,8 +233,8 @@ func TestListNotificationFailuresRequiresOwnerAuthentication(t *testing.T) {
 }
 
 func TestListNotificationFailuresFromDispatcher(t *testing.T) {
-	f, token, executionID, _ := resultFixture(t, "running")
-	status, body := postResult(t, f, token, executionID, resultBody("running", "failed"))
+	f, token, executionID, _ := resultFixture(t, "working")
+	status, body := postResult(t, f, token, executionID, resultBody("working", "failed"))
 	if status != 204 {
 		t.Fatalf("result: status=%d body=%s", status, body)
 	}

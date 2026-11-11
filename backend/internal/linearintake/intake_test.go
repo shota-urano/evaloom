@@ -50,9 +50,9 @@ func (s *dbStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue linea
 	s.calls = append(s.calls, startCall{issue.ID, seq})
 	taskID := fmt.Sprintf("task-%s-%d", issue.ID, seq)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria,
-		short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
-		VALUES (?, 'p1', ?, ?, 'ac', ?, 'development', 'solo', 'queued', ?, 't', 't', 'linear')`,
-		taskID, issue.Title, issue.Description, strings.ToLower(issue.Identifier),
+		collaboration_mode, status, idempotency_key, created_at, updated_at, source)
+		VALUES (?, 'p1', ?, ?, 'ac', 'solo', 'queued', ?, 't', 't', 'linear')`,
+		taskID, issue.Title, issue.Description,
 		fmt.Sprintf("linear:%s:%d", issue.ID, seq)); err != nil {
 		return "", err
 	}

@@ -42,8 +42,7 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 	f := newRecheckFixture(t)
 	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	got := outboxKeys(t, f.db, held.id)
-	if len(got) != 1 || len(got["intake_blocked"]) != 1 ||
-		got["intake_blocked"][0] != held.id+":intake_blocked:routing_unknown_label" {
+	if len(got) != 0 {
 		t.Fatalf("outbox = %v", got)
 	}
 
@@ -74,7 +73,7 @@ func TestRecheckOutboxRows(t *testing.T) {
 	same := routedIssue("1", "route:other")
 	same.UpdatedAt = base.Add(time.Minute)
 	f.mustRound(t, same)
-	if got := outboxKeys(t, f.db, held.id); len(got["intake_blocked"]) != 1 {
+	if got := outboxKeys(t, f.db, held.id); len(got) != 0 {
 		t.Fatalf("same cause outbox = %v", got)
 	}
 
@@ -82,14 +81,14 @@ func TestRecheckOutboxRows(t *testing.T) {
 	changed.UpdatedAt = base.Add(2 * time.Minute)
 	f.mustRound(t, changed)
 	got := outboxKeys(t, f.db, held.id)
-	if len(got["intake_blocked"]) != 2 || got["intake_blocked"][1] != held.id+":intake_blocked:routing_multiple_labels" {
+	if len(got) != 0 {
 		t.Fatalf("changed cause outbox = %v", got)
 	}
 
 	fixed := routedIssue("1", "route:one")
 	fixed.UpdatedAt = base.Add(3 * time.Minute)
 	f.mustRound(t, fixed)
-	if got := outboxKeys(t, f.db, held.id); len(got) != 1 || len(got["intake_blocked"]) != 2 {
+	if got := outboxKeys(t, f.db, held.id); len(got) != 0 {
 		t.Fatalf("released task outbox = %v", got)
 	}
 }
@@ -140,7 +139,7 @@ func bodyHas(t *testing.T, body string, want ...string) {
 // 受け入れ基準: ルーティングの保留では理由と直し方が載る。Each routing
 // hold (and the assignment hold) of spec 15 3.6 comments its reason and its
 // fix (spec 16 3.2), naming the routing label prefix the decision used.
-func TestRoutingHoldCommentHasReasonAndFix(t *testing.T) {
+func TestRoutingDoesNotWriteAnIntakeHoldComment(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		issue       linear.Issue
@@ -157,22 +156,21 @@ func TestRoutingHoldCommentHasReasonAndFix(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRecheckFixture(t)
 			held := f.hold(t, test.issue, test.cause)
-			body := outboxBody(t, f.db, held.id)
-			bodyHas(t, body, "- 実行ステータス: Blocked", "管理画面のタスク ID: "+held.id,
-				"- 保留の理由: ", test.reason, test.fix)
-			if strings.Contains(body, "受け入れ条件の記入") {
-				t.Errorf("routing hold asks for acceptance criteria:\n%s", body)
+			if got := outboxKeys(t, f.db, held.id); len(got) != 0 {
+				t.Fatalf("routing wrote an intake hold comment: %v", got)
 			}
 		})
 	}
 }
 
 // The prefix in the reason is the round's setting, not a fixed "route:".
-func TestHoldCommentUsesRoundPrefix(t *testing.T) {
+func TestRoutingWithRoundPrefixDoesNotWriteAHoldComment(t *testing.T) {
 	f := newRecheckFixture(t)
 	f.intake.Starter.(*TaskStarter).RoutingLabelPrefix = "run:"
 	held := f.hold(t, routedIssue("1", "bug"), CauseRoutingNoLabel)
-	bodyHas(t, outboxBody(t, f.db, held.id), "実行先ラベル（run: で始まるラベル）が付いていない")
+	if got := outboxKeys(t, f.db, held.id); len(got) != 0 {
+		t.Fatal(got)
+	}
 }
 
 // 受け入れ基準: missing_acceptance_criteria で保留したタスクの Issue に記入
@@ -230,10 +228,10 @@ func outboxExecutionIDs(t *testing.T, db *sql.DB, taskID string) map[string]stri
 func TestOutboxExecutionIDByTrigger(t *testing.T) {
 	f := newRecheckFixture(t)
 	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
-	if got := outboxExecutionIDs(t, f.db, held.id); len(got) != 1 || got["intake_blocked"] != "" {
+	if got := outboxExecutionIDs(t, f.db, held.id); len(got) != 0 {
 		t.Fatalf("intake_blocked execution_id = %v", got)
 	}
-	if n := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE kind = 'intake_blocked' AND execution_id IS NULL`); n != 1 {
+	if n := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE kind = 'intake_blocked' AND execution_id IS NULL`); n != 0 {
 		t.Fatalf("intake_blocked rows with NULL execution_id = %d", n)
 	}
 

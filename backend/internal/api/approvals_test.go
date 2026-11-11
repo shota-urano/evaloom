@@ -123,11 +123,11 @@ func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 	if exp := view.ExpiresAt.Time; exp.Before(before.Add(time.Hour)) || exp.After(after.Add(time.Hour)) {
 		t.Fatalf("expiresAt = %v; want decision time + 3600s", exp)
 	}
-	if execution, taskStatus, _ := executionAndTask(t, f, id); execution != "merging" || taskStatus != "waiting_approval" {
+	if execution, taskStatus, _ := executionAndTask(t, f, id); execution != "pending" || taskStatus != "queued" {
 		t.Fatalf("state = %s/%s; want merging/waiting_approval", execution, taskStatus)
 	}
 	if n := stageCount(t, f, `SELECT count(*) FROM execution_events WHERE execution_id=? AND type='status_changed'
-		AND json_extract(payload,'$.from')='waiting_approval' AND json_extract(payload,'$.to')='merging'
+		AND json_extract(payload,'$.from')='waiting_approval' AND json_extract(payload,'$.to')='pending'
 		AND json_extract(payload,'$.reason')='approval_approved'`, id); n != 1 {
 		t.Fatalf("approval events = %d; want 1", n)
 	}
@@ -148,7 +148,7 @@ func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 	if audits := decisionAudits(t, f, approval.ID); len(audits) != 1 {
 		t.Fatalf("audits = %+v; want only the first decision", audits)
 	}
-	if execution, _, _ := executionAndTask(t, f, id); execution != "merging" {
+	if execution, _, _ := executionAndTask(t, f, id); execution != "pending" {
 		t.Fatalf("execution = %s; want merging", execution)
 	}
 }
@@ -275,11 +275,11 @@ func TestRenewExpiredApprovalCreatesPending(t *testing.T) {
 	}{
 		{"marked expired", `UPDATE approvals SET status='expired', decided_by='owner', decided_at='2026-11-01T00:00:00Z',
 			expires_at='2026-11-02T00:00:00Z' WHERE id=?`, "waiting_approval"},
-		{"approved past expiry", `UPDATE approvals SET expires_at='2026-11-02T00:00:00Z' WHERE id=?`, "merging"},
+		{"approved past expiry", `UPDATE approvals SET expires_at='2026-11-02T00:00:00Z' WHERE id=?`, "pending"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _, id, taskID, approval := waitingApprovalFixture(t)
-			if tc.executionStatus == "merging" {
+			if tc.executionStatus == "pending" {
 				status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
 				decodeApproval(t, status, body, 200)
 			}

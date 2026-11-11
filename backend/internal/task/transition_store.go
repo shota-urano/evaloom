@@ -225,7 +225,14 @@ func QueueExecutionTx(ctx context.Context, tx *sql.Tx, taskID, executionID strin
 // Execution, pending with seq 1, inserted in the same transaction. The caller
 // must roll back the transaction on any error.
 func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string) error {
-	if err := ValidateTaskTransition(model.TaskBlocked, model.TaskQueued); err != nil {
+	var from model.TaskStatus
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id=?`, taskID).Scan(&from); err != nil {
+		return err
+	}
+	if from != model.TaskBlocked && from != model.TaskRouting {
+		return conflict("task is not waiting at intake")
+	}
+	if err := ValidateTaskTransition(from, model.TaskQueued); err != nil {
 		return err
 	}
 	var seq, count int
@@ -244,7 +251,7 @@ func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string
 	if status != model.ExecutionPending {
 		return conflict("new execution must be pending")
 	}
-	return updateTask(ctx, tx, taskID, model.TaskBlocked, model.TaskQueued)
+	return updateTask(ctx, tx, taskID, from, model.TaskQueued)
 }
 
 func updateTask(ctx context.Context, tx *sql.Tx, id string, from, to model.TaskStatus) error {

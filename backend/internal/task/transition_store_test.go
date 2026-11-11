@@ -28,29 +28,28 @@ func TestPersistedExecutionTransitions(t *testing.T) {
 		{"pending", "claimed", "queued", "running", ""},
 		{"pending", "cancelled", "queued", "cancelled", ""},
 		{"claimed", "preparing", "running", "running", ""},
-		{"preparing", "running", "running", "running", ""},
-		{"running", "verifying", "running", "verifying", ""},
-		{"verifying", "publishing", "verifying", "verifying", ""},
-		{"publishing", "succeeded", "verifying", "completed", ""},
+		{"preparing", "working", "running", "running", ""},
+		{"working", "checking", "running", "running", ""},
+		{"checking", "publishing", "running", "running", ""},
+		{"publishing", "succeeded", "running", "completed", ""},
 		{"blocked", "pending", "blocked", "queued", ""},
 		{"blocked", "cancelled", "blocked", "cancelled", ""},
 		// Spec 17 3.3, 3.5, 3.6: approval waits, merges and their exits.
-		{"publishing", "waiting_approval", "verifying", "waiting_approval", ""},
-		{"waiting_approval", "merging", "waiting_approval", "waiting_approval", ""},
+		{"publishing", "waiting_approval", "running", "waiting_approval", ""},
+		{"waiting_approval", "pending", "waiting_approval", "queued", ""},
 		{"waiting_approval", "succeeded", "waiting_approval", "completed", ""},
 		{"waiting_approval", "failed", "waiting_approval", "failed", ""},
 		{"waiting_approval", "cancelled", "waiting_approval", "cancelled", ""},
-		{"merging", "succeeded", "waiting_approval", "completed", ""},
-		{"merging", "failed", "waiting_approval", "failed", ""},
-		{"merging", "cancelled", "waiting_approval", "cancelled", ""},
-		{"merging", "waiting_approval", "waiting_approval", "waiting_approval", ""},
+		{"pending", "claimed", "queued", "running", ""},
+		{"pending", "waiting_approval", "queued", "waiting_approval", ""},
+		{"pending", "cancelled", "queued", "cancelled", ""},
 	}
 	for _, from := range []struct {
 		execution model.ExecutionStatus
 		task      model.TaskStatus
 	}{
-		{"claimed", "running"}, {"preparing", "running"}, {"running", "running"},
-		{"verifying", "verifying"}, {"publishing", "verifying"},
+		{"claimed", "running"}, {"preparing", "running"}, {"working", "running"},
+		{"checking", "running"}, {"publishing", "running"},
 	} {
 		for _, to := range []struct {
 			execution model.ExecutionStatus
@@ -93,28 +92,28 @@ func TestTransitionRejectsInvalidOrStaleRequestsWithoutChanges(t *testing.T) {
 	}{
 		{"completed cancel", "completed", "succeeded", task.Transition{FromTask: "completed", FromExecution: "succeeded", ToExecution: "cancelled"}},
 		{"terminal reopen", "failed", "failed", task.Transition{FromTask: "failed", FromExecution: "failed", ToExecution: "pending"}},
-		{"skip gates", "running", "running", task.Transition{FromTask: "running", FromExecution: "running", ToExecution: "succeeded"}},
-		{"skip claim", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "running"}},
-		{"skip preparing", "running", "claimed", task.Transition{FromTask: "running", FromExecution: "claimed", ToExecution: "verifying"}},
-		{"duplicate report", "running", "running", task.Transition{FromTask: "running", FromExecution: "running", ToExecution: "running"}},
+		{"skip gates", "running", "working", task.Transition{FromTask: "running", FromExecution: "working", ToExecution: "succeeded"}},
+		{"skip claim", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "working"}},
+		{"skip preparing", "running", "claimed", task.Transition{FromTask: "running", FromExecution: "claimed", ToExecution: "checking"}},
+		{"duplicate report", "running", "working", task.Transition{FromTask: "running", FromExecution: "working", ToExecution: "working"}},
 		{"stale execution", "running", "claimed", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "cancelled"}},
 		{"stale task", "blocked", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "claimed"}},
 		{"inconsistent expectations", "queued", "pending", task.Transition{FromTask: "running", FromExecution: "pending", ToExecution: "claimed"}},
 		{"unknown target", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "pending", ToExecution: "unknown"}},
 		{"unknown source", "queued", "pending", task.Transition{FromTask: "queued", FromExecution: "unknown", ToExecution: "claimed"}},
-		{"reserved task", "planning", "pending", task.Transition{FromTask: "planning", FromExecution: "pending", ToExecution: "claimed"}},
+		{"reserved task", "routing", "pending", task.Transition{FromTask: "planning", FromExecution: "pending", ToExecution: "claimed"}},
 		// Spec 17: transitions outside the approval table are 409 conflicts.
-		{"approval before publish", "verifying", "verifying", task.Transition{FromTask: "verifying", FromExecution: "verifying", ToExecution: "waiting_approval"}},
-		{"merge without approval", "verifying", "publishing", task.Transition{FromTask: "verifying", FromExecution: "publishing", ToExecution: "merging"}},
+		{"approval before publish", "running", "checking", task.Transition{FromTask: "running", FromExecution: "checking", ToExecution: "waiting_approval"}},
+		{"merge without approval", "running", "publishing", task.Transition{FromTask: "running", FromExecution: "publishing", ToExecution: "merging"}},
 		{"waiting reclaimed", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "claimed"}},
 		{"waiting blocked", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "blocked"}},
 		{"waiting interrupted", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "interrupted"}},
-		{"waiting requeued", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "pending"}},
-		{"merging back to publish", "waiting_approval", "merging", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "publishing"}},
-		{"merging timed out", "waiting_approval", "merging", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "timed_out"}},
+		{"waiting claims without resume", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "working"}},
+		{"merging back to publish", "queued", "pending", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "publishing"}},
+		{"merging timed out", "queued", "pending", task.Transition{FromTask: "waiting_approval", FromExecution: "merging", ToExecution: "timed_out"}},
 		{"merged reopened", "completed", "succeeded", task.Transition{FromTask: "completed", FromExecution: "succeeded", ToExecution: "merging"}},
 		{"waiting duplicate", "waiting_approval", "waiting_approval", task.Transition{FromTask: "waiting_approval", FromExecution: "waiting_approval", ToExecution: "waiting_approval"}},
-		{"merging with stale task", "verifying", "merging", task.Transition{FromTask: "verifying", FromExecution: "merging", ToExecution: "succeeded"}},
+		{"merging with stale task", "running", "pending", task.Transition{FromTask: "verifying", FromExecution: "merging", ToExecution: "succeeded"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := lifecycleDB(t)
@@ -138,9 +137,9 @@ func TestTransitionRejectsMissingWrongTaskAndHistoricalExecution(t *testing.T) {
 				change.TaskID = "missing"
 			case "wrong task":
 				mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria,
-					short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
+					collaboration_mode, status, idempotency_key, created_at, updated_at)
 					SELECT 'task-2', project_id, title, body, acceptance_criteria,
-					short_name, task_type, collaboration_mode, status, 'key-2', created_at, updated_at FROM tasks`)
+					collaboration_mode, status, 'key-2', created_at, updated_at FROM tasks`)
 				change.TaskID = "task-2"
 			case "historical":
 				mustExec(t, db, `INSERT INTO executions (id, task_id, seq, mode, status, created_at)
@@ -311,7 +310,7 @@ func TestQueueRejectsInvalidStatesAndExecutions(t *testing.T) {
 	}{
 		{"running retry", "running", "", "execution-1"},
 		{"queued retry", "queued", "", "execution-1"},
-		{"reserved phase", "planning", "", "execution-1"},
+		{"reserved phase", "routing", "", "execution-1"},
 		{"missing execution", "received", "", "missing"},
 		{"not pending", "received", "UPDATE executions SET status = 'claimed'", "execution-1"},
 		{"no preceding execution", "failed", "", "execution-1"},
@@ -394,9 +393,8 @@ func lifecycleDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('runner', 'Runner', 'hash', 'online', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'runner', ?, ?, 'fixture-harness', 'fixture-profile')`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
-		task_type, collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES ('task-1', 'project', 'Title', 'Body', 'tests pass', 'test', 'development', 'solo', 'queued', 'key-1', ?, ?)`, testTime, testTime)
+	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+		VALUES ('task-1', 'project', 'Title', 'Body', 'tests pass', 'solo', 'queued', 'key-1', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		VALUES ('execution-1', 'task-1', 1, 'continue', 'pending', ?)`, testTime)
 	return db

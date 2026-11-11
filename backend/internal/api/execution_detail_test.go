@@ -40,7 +40,7 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	id := requireClaim(t, status, body).Execution.ID
 	pin := readExecutionPin(t, f, id)
 	from := "claimed"
-	for _, next := range []string{"preparing", "running", "verifying", "publishing", "succeeded"} {
+	for _, next := range []string{"preparing", "working", "checking", "publishing", "succeeded"} {
 		input := resultBody(from, next)
 		status, body = postResult(t, f, token, id, input)
 		if status != 204 {
@@ -62,16 +62,16 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	var wantContexts []any
 	for _, source := range []struct{ layer, kind, path string }{
 		{"global", "global_policy", "context/policy.md"},
-		{"harness", "harness_prompt", "prompts/developer.md"},
-		{"project", "agents_md", "AGENTS.md"},
-		{"project", "agents_md", "backend/AGENTS.md"},
+		{"harness", "instructions", "prompts/developer.md"},
+		{"reported", "reported", "AGENTS.md"},
+		{"reported", "reported", "backend/AGENTS.md"},
 		{"task", "task_input", "task.json"},
 	} {
 		revisionID := ulid.Make().String()
 		content := "context-body-must-not-be-returned:" + source.path
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 		if _, err := f.db.Exec(`INSERT INTO context_revisions
-			(id, execution_id, layer, kind, source_path, source_commit_sha, content_hash, content, created_at)
+			(id, execution_id, layer, kind, source_path, source_revision, content_hash, content, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, revisionID, id, source.layer, source.kind,
 			source.path, baseSHA, hash, content, recordedAt); err != nil {
 			t.Fatal(err)
@@ -82,8 +82,8 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 		})
 	}
 	if _, err := f.db.Exec(`INSERT INTO context_revisions
-		(id, execution_id, layer, kind, source_path, source_commit_sha, content_hash, content, created_at)
-		VALUES (?, ?, 'project', 'agents_md', 'other.md', ?, 'other-hash', 'other-content', ?)`,
+		(id, execution_id, layer, kind, source_path, source_revision, content_hash, content, created_at)
+		VALUES (?, ?, 'reported', 'reported', 'other.md', ?, 'other-hash', 'other-content', ?)`,
 		ulid.Make().String(), otherID, baseSHA, recordedAt); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	}
 	requireDetailFields(t, detail, map[string]any{
 		"id": id, "taskId": created.ID, "seq": float64(1), "mode": "continue", "status": "succeeded",
-		"runnerId": pin.Runner, "role": pin.Role, "harnessId": pin.Harness, "profileId": pin.Profile,
+		"runnerId": pin.Runner, "role": nil, "harnessId": pin.Harness, "profileId": pin.Profile,
 		"profileVersion": profiles[0].Version, "profileCommitSha": profiles[0].CommitSHA,
 		"errorClass": nil, "startedAt": started, "finishedAt": finished,
 		"contextRevisions": wantContexts,
@@ -124,13 +124,13 @@ func TestGetExecutionPendingReturnsNullPinsAndEmptyCollections(t *testing.T) {
 func TestGetExecutionReturnsStoredError(t *testing.T) {
 	f := taskFixture(t)
 	id := pendingDetailExecution(t, f)
-	if _, err := f.db.Exec(`UPDATE executions SET status = 'failed', error_class = 'test_failed',
+	if _, err := f.db.Exec(`UPDATE executions SET status = 'failed', error_class = 'check_failed',
 		started_at = '2026-10-28T01:00:00.123456+00:00', finished_at = '2026-10-28T01:02:00Z' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
 	detail := requireExecutionDetail(t, f, id)
 	requireDetailFields(t, detail, map[string]any{
-		"status": "failed", "errorClass": "test_failed", "startedAt": "2026-10-28T01:00:00.123456Z",
+		"status": "failed", "errorClass": "check_failed", "startedAt": "2026-10-28T01:00:00.123456Z",
 		"finishedAt": "2026-10-28T01:02:00Z",
 	})
 }

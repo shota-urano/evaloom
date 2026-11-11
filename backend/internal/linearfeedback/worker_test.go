@@ -173,9 +173,8 @@ func setup(t *testing.T, fake http.Handler) (*sql.DB, *linearfeedback.Worker, *c
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('runner', 'Runner', 'hash', 'online', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO projects (id, name, runner_id, created_at, updated_at, harness_id, profile_id) VALUES ('project', 'Project', 'runner', ?, ?, 'fixture-harness', 'fixture-profile')`, testTime, testTime)
-	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
-		task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
-		VALUES ('linear-1', 'project', 'Title', 'Body', 'tests pass', 'test', 'development', 'solo', 'verifying',
+	mustExec(t, db, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
+		VALUES ('linear-1', 'project', 'Title', 'Body', 'tests pass', 'solo', 'running',
 		'key-linear-1', ?, ?, 'linear')`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		VALUES ('linear-1-e1', 'linear-1', 1, 'continue', 'publishing', ?)`, testTime)
@@ -184,7 +183,7 @@ func setup(t *testing.T, fake http.Handler) (*sql.DB, *linearfeedback.Worker, *c
 		'team-a', 'linear-1', 1, ?)`, testTime)
 	// The production path writes the outbox row (spec 16 3.4 step 1).
 	if err := task.TransitionExecution(context.Background(), db, task.Transition{TaskID: "linear-1",
-		ExecutionID: "linear-1-e1", FromTask: model.TaskVerifying, FromExecution: model.ExecutionPublishing,
+		ExecutionID: "linear-1-e1", FromTask: model.TaskRunning, FromExecution: model.ExecutionPublishing,
 		ToExecution: model.ExecutionSucceeded}); err != nil {
 		t.Fatal(err)
 	}

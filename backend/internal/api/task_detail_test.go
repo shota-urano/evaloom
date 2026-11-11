@@ -68,7 +68,7 @@ func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 	finish := func(id, terminal string) {
 		t.Helper()
 		from := "claimed"
-		for _, next := range []string{"preparing", "running", "verifying", "publishing", terminal} {
+		for _, next := range []string{"preparing", "working", "checking", "publishing", terminal} {
 			input := resultBody(from, next)
 			status, body := postResult(t, f, token, id, input)
 			if status != 204 {
@@ -108,7 +108,7 @@ func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 		{"id": first, "seq": float64(1), "mode": "continue", "status": "succeeded",
 			"profileVersion": profiles[0].Version, "profileCommitSha": profiles[0].CommitSHA, "errorClass": nil},
 		{"id": second, "seq": float64(2), "mode": "fresh", "status": "failed",
-			"profileVersion": profiles[1].Version, "profileCommitSha": profiles[1].CommitSHA, "errorClass": "execution_failed"},
+			"profileVersion": profiles[1].Version, "profileCommitSha": profiles[1].CommitSHA, "errorClass": "work_failed"},
 		{"seq": float64(3), "mode": "continue", "status": "pending", "profileVersion": nil,
 			"profileCommitSha": nil, "errorClass": nil, "startedAt": nil, "finishedAt": nil},
 	} {

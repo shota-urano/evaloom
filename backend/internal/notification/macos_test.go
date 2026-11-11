@@ -21,10 +21,10 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 		class  string
 	}{
 		{model.ExecutionSucceeded, "evaloom: 完了", "succeeded"},
-		{model.ExecutionFailed, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionInterrupted, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionTimedOut, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionBlocked, "evaloom: 対応が必要", "test_failed"},
+		{model.ExecutionFailed, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionInterrupted, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionTimedOut, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionBlocked, "evaloom: 対応が必要", "check_failed"},
 		{model.ExecutionWaitingApproval, "evaloom: 承認待ち", "waiting_approval"},
 	} {
 		t.Run(string(tc.status), func(t *testing.T) {

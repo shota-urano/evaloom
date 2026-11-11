@@ -32,13 +32,12 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 			t.Fatal(err)
 		}
 		taskID := fmt.Sprintf("task-%03d", i+1)
-		if _, err := db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-			collaboration_mode, status, idempotency_key, created_at, updated_at)
-			VALUES (?, ?, 'Recovery', '', 'recover abandoned work', 'recovery', 'development', 'solo', 'running', ?, '', '')`, taskID, runner, runner); err != nil {
+		if _, err := db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+			VALUES (?, ?, 'Recovery', '', 'recover abandoned work', 'solo', 'running', ?, '', '')`, taskID, runner, runner); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, runner_id, created_at)
-			VALUES (?, ?, 1, 'continue', 'running', ?, '')`, runner, taskID, runner); err != nil {
+			VALUES (?, ?, 1, 'continue', 'working', ?, '')`, runner, taskID, runner); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,7 +45,7 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 		t.Fatal(err)
 	}
 	var active int
-	if err := db.QueryRow(`SELECT count(*) FROM executions WHERE status = 'running'`).Scan(&active); err != nil || active != 3 {
+	if err := db.QueryRow(`SELECT count(*) FROM executions WHERE status = 'working'`).Scan(&active); err != nil || active != 3 {
 		t.Fatalf("recovered before grace: %d err=%v", active, err)
 	}
 	if _, err := store.Heartbeat(ctx, db, "resumed", "same-boot", []string{"resumed"}); err != nil {
@@ -71,7 +70,7 @@ func TestStartupRecoveryAllowsReconnectionAndRecoversSilentRunner(t *testing.T) 
 				t.Fatal(err)
 			}
 			if runner == "resumed" {
-				if execution != "running" || task != "running" || runnerStatus != "online" || classified || finished || requests != 0 || events != 0 || audits != 0 || executions != 1 {
+				if execution != "working" || task != "running" || runnerStatus != "online" || classified || finished || requests != 0 || events != 0 || audits != 0 || executions != 1 {
 					t.Fatalf("survivor changed: %s %s %s counts=%d/%d/%d/%d", execution, task, runnerStatus, requests, events, audits, executions)
 				}
 				continue

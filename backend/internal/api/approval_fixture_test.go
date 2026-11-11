@@ -51,7 +51,7 @@ func openApproval(t *testing.T, f *authFixture, executionID, contentVersion stri
 		t.Fatal(err)
 	}
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
-		TaskID: taskID, ExecutionID: executionID, FromTask: model.TaskVerifying,
+		TaskID: taskID, ExecutionID: executionID, FromTask: model.TaskRunning,
 		FromExecution: model.ExecutionPublishing, ToExecution: model.ExecutionWaitingApproval,
 	}); err != nil {
 		t.Fatal(err)

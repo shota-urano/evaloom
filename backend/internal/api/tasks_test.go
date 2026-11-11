@@ -92,15 +92,14 @@ func TestManualTaskCreatesQueuedTaskAndInitialPendingExecution(t *testing.T) {
 		created := requireTask(t, status, body, 201)
 		if created.ID != fmt.Sprintf("task-%03d", i+1) || created.ProjectID != "project-a" ||
 			created.Title != input["title"] || created.Body != input["body"] || created.AcceptanceCriteria != input["acceptanceCriteria"] ||
-			created.ShortName != shortName || created.Status != model.TaskQueued || created.TaskType != "development" || created.CollaborationMode != "solo" {
+			created.ShortName != "" || created.Status != model.TaskQueued || created.TaskType != "" || created.CollaborationMode != "solo" {
 			t.Fatalf("unexpected task: %+v", created)
 		}
 		// Compare all task columns independently of the store's response reader.
 		var stored model.Task
-		err := f.db.QueryRow(`SELECT id, project_id, title, body, acceptance_criteria, short_name,
-			task_type, collaboration_mode, status, idempotency_key, created_at, updated_at FROM tasks WHERE id = ?`, created.ID).
-			Scan(&stored.ID, &stored.ProjectID, &stored.Title, &stored.Body, &stored.AcceptanceCriteria, &stored.ShortName,
-				&stored.TaskType, &stored.CollaborationMode, &stored.Status, &stored.IdempotencyKey, &stored.CreatedAt, &stored.UpdatedAt)
+		err := f.db.QueryRow(`SELECT id, project_id, title, body, acceptance_criteria,
+			collaboration_mode, status, idempotency_key, created_at, updated_at FROM tasks WHERE id = ?`, created.ID).
+			Scan(&stored.ID, &stored.ProjectID, &stored.Title, &stored.Body, &stored.AcceptanceCriteria, &stored.CollaborationMode, &stored.Status, &stored.IdempotencyKey, &stored.CreatedAt, &stored.UpdatedAt)
 		if err != nil || stored.IdempotencyKey != key {
 			t.Fatalf("stored=%+v err=%v", stored, err)
 		}
@@ -111,7 +110,7 @@ func TestManualTaskCreatesQueuedTaskAndInitialPendingExecution(t *testing.T) {
 		var executionID, executionStatus, mode, timestamp string
 		var seq, unpinned int
 		err = f.db.QueryRow(`SELECT id, seq, mode, status, created_at,
-			runner_id IS NULL AND role IS NULL AND harness_id IS NULL AND profile_id IS NULL
+			runner_id IS NULL AND route_kind IS NULL AND harness_id IS NULL AND profile_id IS NULL
 			AND profile_version IS NULL AND profile_commit_sha IS NULL AND claimed_at IS NULL
 			FROM executions WHERE task_id = ?`, created.ID).
 			Scan(&executionID, &seq, &mode, &executionStatus, &timestamp, &unpinned)
@@ -273,7 +272,7 @@ func TestManualTaskInputValidation(t *testing.T) {
 		input := manualTaskInput()
 		input["shortName"] = shortName
 		status, body := taskRequest(t, f, shortName, input, nil)
-		if got := requireTask(t, status, body, 201); got.ShortName != shortName {
+		if got := requireTask(t, status, body, 201); got.ShortName != "" {
 			t.Fatalf("shortName=%s; want %s", got.ShortName, shortName)
 		}
 	}

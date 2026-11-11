@@ -188,7 +188,7 @@ func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, i
 	for _, field := range []struct {
 		column string
 		value  *string
-	}{{"harness_session_id", input.HarnessSessionID}, {"error_message", input.ErrorMessage}} {
+	}{{"work_session_id", input.HarnessSessionID}, {"error_message", input.ErrorMessage}} {
 		if field.value != nil {
 			columns = append(columns, field.column+" = ?")
 			values = append(values, *field.value)

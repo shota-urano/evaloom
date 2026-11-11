@@ -27,7 +27,7 @@ func resultFixture(t *testing.T, from string) (*authFixture, string, string, str
 	claim := requireClaim(t, status, body)
 	id := claim.Execution.ID
 	current := "claimed"
-	for _, next := range []string{"preparing", "running", "verifying", "publishing"} {
+	for _, next := range []string{"preparing", "working", "checking", "publishing"} {
 		if current == from {
 			break
 		}
@@ -62,7 +62,7 @@ func resultBody(from, to string) map[string]any {
 		input["usage"] = map[string]any{"wallTimeMs": 0}
 	}
 	if to == "failed" {
-		input["errorClass"] = "execution_failed"
+		input["errorClass"] = "work_failed"
 		input["errorMessage"] = "Harness exited"
 	}
 	return input
@@ -93,15 +93,15 @@ func readResultSnapshot(t *testing.T, f *authFixture, id string) resultSnapshot 
 
 func TestResultRejectsEveryUnlistedTransitionWithoutWrites(t *testing.T) {
 	f, token, id, _ := resultFixture(t, "claimed")
-	states := []string{"pending", "claimed", "preparing", "running", "verifying", "publishing", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out", "unknown"}
+	states := []string{"pending", "claimed", "preparing", "working", "checking", "publishing", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out", "unknown"}
 	// Explicit expected Runner edges, independent of the implementation table.
 	// blocked had only development causes (Gate, Context, Git), which moved to
 	// software-engineer (spec 19 3.11); the Runner can no longer report it.
 	allowed := map[string][]string{
 		"claimed":    {"preparing", "failed", "timed_out", "cancelled"},
-		"preparing":  {"running", "failed", "timed_out", "cancelled"},
-		"running":    {"verifying", "failed", "timed_out", "cancelled"},
-		"verifying":  {"publishing", "failed", "timed_out", "cancelled"},
+		"preparing":  {"working", "failed", "timed_out", "cancelled"},
+		"working":    {"checking", "failed", "timed_out", "cancelled"},
+		"checking":   {"publishing", "failed", "timed_out", "cancelled"},
 		"publishing": {"succeeded", "failed", "timed_out", "cancelled"},
 	}
 	for _, from := range states[:len(states)-1] {
@@ -135,7 +135,7 @@ func TestResultRejectsEveryUnlistedTransitionWithoutWrites(t *testing.T) {
 func TestResultConcurrentAndReplayedStopsRequestNotificationOnce(t *testing.T) {
 	for _, target := range []string{"succeeded", "failed", "timed_out", "cancelled"} {
 		t.Run(target, func(t *testing.T) {
-			from := "running"
+			from := "working"
 			if target == "succeeded" {
 				from = "publishing"
 			}
@@ -192,7 +192,7 @@ func TestResultConcurrentAndReplayedStopsRequestNotificationOnce(t *testing.T) {
 				}
 			}
 			var session string
-			if err := f.db.QueryRow(`SELECT harness_session_id FROM executions WHERE id = ?`, id).Scan(&session); err != nil || session != "session-1" {
+			if err := f.db.QueryRow(`SELECT work_session_id FROM executions WHERE id = ?`, id).Scan(&session); err != nil || session != "session-1" {
 				t.Fatalf("saved session: %s err=%v", session, err)
 			}
 			// Reopen the actual SQLite file and rebuild routing/authentication, as
@@ -234,10 +234,10 @@ func TestResultConcurrentAndReplayedStopsRequestNotificationOnce(t *testing.T) {
 }
 
 func TestResultRollsBackAllWritesOnStorageFailure(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	before := readResultSnapshot(t, f, id)
 	for i, trigger := range []string{
-		`BEFORE UPDATE OF harness_session_id ON executions`,
+		`BEFORE UPDATE OF work_session_id ON executions`,
 		`BEFORE UPDATE OF status ON tasks`,
 		`BEFORE INSERT ON notification_requests`,
 		`BEFORE INSERT ON execution_events WHEN json_extract(NEW.payload, '$.reason') = 'runner_result'`,
@@ -247,7 +247,7 @@ func TestResultRollsBackAllWritesOnStorageFailure(t *testing.T) {
 			if _, err := f.db.Exec(`CREATE TRIGGER reject_result ` + trigger + ` BEGIN SELECT RAISE(ABORT, 'result storage unavailable'); END`); err != nil {
 				t.Fatal(err)
 			}
-			input := resultBody("running", "failed")
+			input := resultBody("working", "failed")
 			input["harnessSessionId"] = "session-1"
 			status, body := postResult(t, f, token, id, input)
 			assertAuthError(t, status, body, 500, Internal)
@@ -255,7 +255,7 @@ func TestResultRollsBackAllWritesOnStorageFailure(t *testing.T) {
 				t.Fatalf("partial result survived failure: before=%+v after=%+v", before, after)
 			}
 			var session sql.NullString
-			if err := f.db.QueryRow(`SELECT harness_session_id FROM executions WHERE id = ?`, id).Scan(&session); err != nil || session.Valid {
+			if err := f.db.QueryRow(`SELECT work_session_id FROM executions WHERE id = ?`, id).Scan(&session); err != nil || session.Valid {
 				t.Fatalf("metadata survived failure: %+v err=%v", session, err)
 			}
 			if _, err := f.db.Exec(`DROP TRIGGER reject_result`); err != nil {
@@ -297,7 +297,7 @@ func TestResultRequiresClaimOwnerAndRunnerAuthentication(t *testing.T) {
 func TestResultProgressAndStaleReports(t *testing.T) {
 	f, token, id, _ := resultFixture(t, "claimed")
 	from := "claimed"
-	for _, to := range []string{"preparing", "running", "verifying", "publishing"} {
+	for _, to := range []string{"preparing", "working", "checking", "publishing"} {
 		input := resultBody(from, to)
 		status, body := postResult(t, f, token, id, input)
 		if status != 204 || len(body) != 0 {
@@ -325,7 +325,7 @@ func TestResultProgressAndStaleReports(t *testing.T) {
 }
 
 func TestResultValidationLeavesStateAndNotificationRequestsUntouched(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	before := readResultSnapshot(t, f, id)
 	for _, tc := range []struct {
 		name   string
@@ -335,16 +335,16 @@ func TestResultValidationLeavesStateAndNotificationRequestsUntouched(t *testing.
 		{"missing class", map[string]any{"status": "failed"}, 400},
 		{"unknown class", map[string]any{"status": "failed", "errorClass": "unknown"}, 400},
 		{"wrong timeout class", map[string]any{"status": "timed_out", "errorClass": "cancelled"}, 400},
-		{"unknown field", map[string]any{"status": "verifying", "runnerId": "claim-runner"}, 400},
+		{"unknown field", map[string]any{"status": "checking", "runnerId": "claim-runner"}, 400},
 		// The development result fields moved to software-engineer (spec 19 3.11).
-		{"removed block", map[string]any{"status": "verifying", "block": map[string]any{"cause": "git_state", "headSha": strings.Repeat("a", 40)}}, 400},
-		{"removed SHA", map[string]any{"status": "verifying", "verifiedSha": strings.Repeat("a", 40)}, 400},
-		{"removed PR", map[string]any{"status": "verifying", "prNumber": 1}, 400},
-		{"removed worktree", map[string]any{"status": "verifying", "worktreeId": ulid.Make().String()}, 400},
-		{"removed gate results", map[string]any{"status": "verifying", "gateResults": []any{}}, 400},
+		{"removed block", map[string]any{"status": "checking", "block": map[string]any{"cause": "git_state", "headSha": strings.Repeat("a", 40)}}, 400},
+		{"removed SHA", map[string]any{"status": "checking", "verifiedSha": strings.Repeat("a", 40)}, 400},
+		{"removed PR", map[string]any{"status": "checking", "prNumber": 1}, 400},
+		{"removed worktree", map[string]any{"status": "checking", "worktreeId": ulid.Make().String()}, 400},
+		{"removed gate results", map[string]any{"status": "checking", "gateResults": []any{}}, 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.input["fromStatus"] = "running"
+			tc.input["fromStatus"] = "working"
 			status, body := postResult(t, f, token, id, tc.input)
 			code := ValidationFailed
 			if tc.status == 422 {
@@ -361,7 +361,7 @@ func TestResultValidationLeavesStateAndNotificationRequestsUntouched(t *testing.
 func TestResultRejectsHistoricalExecutionAndInconsistentTask(t *testing.T) {
 	for _, historical := range []bool{false, true} {
 		t.Run(fmt.Sprint(historical), func(t *testing.T) {
-			f, token, id, _ := resultFixture(t, "running")
+			f, token, id, _ := resultFixture(t, "working")
 			if historical {
 				if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 					SELECT ?, task_id, seq+1, 'continue', 'pending', created_at FROM executions WHERE id = ?`, ulid.Make().String(), id); err != nil {
@@ -373,7 +373,7 @@ func TestResultRejectsHistoricalExecutionAndInconsistentTask(t *testing.T) {
 				}
 			}
 			before := readResultSnapshot(t, f, id)
-			status, body := postResult(t, f, token, id, resultBody("running", "failed"))
+			status, body := postResult(t, f, token, id, resultBody("working", "failed"))
 			assertAuthError(t, status, body, 409, Conflict)
 			if after := readResultSnapshot(t, f, id); after != before {
 				t.Fatalf("stale execution/task changed: %+v", after)
