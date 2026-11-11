@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -51,21 +52,18 @@ func (c commentClient) SetIssueState(context.Context, string, string) error { re
 // which sends a pending linear_outbox row and records it as sent.
 func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
-	db, err := store.Open(context.Background(), path)
+	db, err := testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const now = "2026-11-08T00:00:00Z"
 	for _, q := range []string{
-		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-			default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-			VALUES ('p1', 'P', '/repos/p', 'https://example.test/p.git', 'r1', 'main',
-			'developer', '.', '[]', '[]', '{}', '{}', '` + now + `', '` + now + `')`,
-		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
-			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'completed', 'k1', '` + now + `', '` + now + `', 'linear')`,
+		`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at)
+			VALUES ('r1', 'r1', 'h', 'online', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, harness_id, profile_id, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'fixture-harness', 'fixture-profile', '` + now + `', '` + now + `')`,
+		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
+			VALUES ('t1', 'p1', 'T', 'B', 'ok', 'solo', 'completed', 'k1', '` + now + `', '` + now + `', 'linear')`,
 		`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 			VALUES ('e1', 't1', 1, 'continue', 'succeeded', '` + now + `')`,
 		`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
@@ -115,7 +113,7 @@ func TestRunStartsLinearFeedbackWorker(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	db, err = store.Open(context.Background(), path)
+	db, err = testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,26 +141,23 @@ func TestDefaultLinearFeedbackUsesProductionConfiguration(t *testing.T) {
 
 // evaloomd with -data-dir installs the artifact reader for 作業概要 (spec 16
 // 3.3): a transition to succeeded while it runs writes a comment body with
-// the summary of the Execution's harness_output artifact.
+// the summary of the Execution's work_summary artifact.
 func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	dir := t.TempDir()
 	path, dataDir := filepath.Join(dir, "evaloom.db"), filepath.Join(dir, "data")
-	db, err := store.Open(context.Background(), path)
+	db, err := testregistry.Open(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	const now = "2026-11-08T00:00:00Z"
 	for _, q := range []string{
-		`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-			VALUES ('r1', 'r1', 'h', '/w', 'online', '` + now + `', '` + now + `')`,
-		`INSERT INTO projects (id, name, local_repo_path, git_remote_url, runner_id, base_branch,
-			default_role, context_location, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at)
-			VALUES ('p1', 'P', '/repos/p', 'https://example.test/p.git', 'r1', 'main',
-			'developer', '.', '[]', '[]', '{}', '{}', '` + now + `', '` + now + `')`,
-		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name, task_type,
-			collaboration_mode, status, idempotency_key, created_at, updated_at, source)
-			VALUES ('t1', 'p1', 'T', 'B', 'ok', 't', 'development', 'solo', 'verifying', 'k1', '` + now + `', '` + now + `', 'linear')`,
+		`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at)
+			VALUES ('r1', 'r1', 'h', 'online', '` + now + `', '` + now + `')`,
+		`INSERT INTO projects (id, name, runner_id, harness_id, profile_id, created_at, updated_at)
+			VALUES ('p1', 'P', 'r1', 'fixture-harness', 'fixture-profile', '` + now + `', '` + now + `')`,
+		`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
+			VALUES ('t1', 'p1', 'T', 'B', 'ok', 'solo', 'running', 'k1', '` + now + `', '` + now + `', 'linear')`,
 		`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 			VALUES ('e1', 't1', 1, 'continue', 'publishing', '` + now + `')`,
 		`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
@@ -176,7 +171,7 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = files.Save(context.Background(), "out-1", "e1", "harness_output", true, strings.NewReader(`{"summary":"SUMMARY-FROM-ARTIFACT"}`))
+	_, err = files.Save(context.Background(), store.Artifact{ID: "out-1", ExecutionID: "e1", Stage: "work", Kind: "work_summary", Name: "summary.md", Redacted: true}, strings.NewReader("SUMMARY-FROM-ARTIFACT"))
 	files.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +203,7 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	// Workers); retry while SQLite reports it busy.
 	for {
 		err := task.TransitionExecution(ctx, db, task.Transition{TaskID: "t1", ExecutionID: "e1",
-			FromTask: "verifying", FromExecution: "publishing", ToExecution: "succeeded"})
+			FromTask: "running", FromExecution: "publishing", ToExecution: "succeeded"})
 		if err == nil {
 			break
 		}

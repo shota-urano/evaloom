@@ -58,7 +58,7 @@ stdout・stderrは行単位で`Logs`へ渡す。分割された書き込み、�
 
 呼び出し側は次を明示する。HTTP API・DB・共通契約の項目は追加していない。
 
-- `harnessenv.Create`または`Runner.PrepareHarnessEnvironment`へ
+- `harnessenv.Create`へ
   `ConfigVariable="CLAUDE_CONFIG_DIR"`と固定済みファイルを渡す。
   `ConfigDir()`と`Env()`を`adapter.SandboxEnv`へ渡す。
 - `ContainerLaunch`へ既存の`ContainerConfig`と、Executionごとの信頼された
@@ -75,9 +75,8 @@ stdout・stderrは行単位で`Logs`へ渡す。分割された書き込み、�
 - `Config.CancelGrace`へRunnerの中止猶予時間を渡す。既定値は追加していない。
 - `registry.Register("claude_code", claudecode.New(config))`で登録する。
   RunnerとControl Planeは既存の登録表から名前で解決する。
-- 停止後の結果を`Execution.HarnessResult`へ渡し、既存の`Runner.HarnessResultHandler`
-  でHEAD・commit一覧・diff artifactを取得する。CLIの自己申告は使わない。
-  Sandbox停止後に専用設定環境を`Close`する。
+- 停止後の結果を受け取り、Sandbox停止後に専用設定環境を`Close`する。
+  Runner の旧工程（HEAD・commit一覧・diff の取得）は software-engineer へ移した（`docs/specs/19-routing-and-stages.md` 3.11）。
 
 `ContainerLaunch`は既存の`Container.RunControlled`を使う。準備中の中止は即座に処理し、
 起動後はAdapterがTERM、`CancelGrace`の待機、Sandbox全体の強制終了の順に処理する。
@@ -99,8 +98,6 @@ CLIの終了コードが128以上でも、Sandbox障害が確認されなけれ�
   実行終了128・130・137・255、preflightの130、OOM、runtime障害を区別する。
 - 同ファイルの`TestContainerLaunchCancellationSequence`が準備中・preflight中・実行中の中止、
   contextによる中止と期限切れ、TERMへの応答、猶予前の強制削除が無いことを検証する。
-- [`../../runner/claude_adapter_test.go`](../../runner/claude_adapter_test.go)の
-  `TestClaudeCodeAdapterCommitReachesRunnerHarnessResult`が既存RunnerによるGit情報とdiff保存を検証する。
 
 ## 仕様の穴
 

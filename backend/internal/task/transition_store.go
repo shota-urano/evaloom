@@ -53,18 +53,18 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 			return err
 		}
 	}
-	var resume sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT resume_point FROM executions
+	var found int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM executions
 		WHERE id = ? AND task_id = ? AND status = ?
 		AND seq = (SELECT max(seq) FROM executions WHERE task_id = ?)`,
-		change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID).Scan(&resume)
+		change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return conflict("execution is missing, stale, or not the latest execution")
 	}
 	if err != nil {
 		return err
 	}
-	if err := ValidateExecutionTransition(change.FromExecution, change.ToExecution, resume.String); err != nil {
+	if err := ValidateExecutionTransition(change.FromExecution, change.ToExecution); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE executions SET status = ?
@@ -145,18 +145,11 @@ func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID str
 		ExecutionID: executionID})
 }
 
-// Shared by Runner results, Context Builder failures and owner/system paths.
-// Spec 06 retains worktrees on unsuccessful stops; success keeps its worktree.
+// Shared by Runner results and owner/system paths.
 func recordTransitionEffects(ctx context.Context, tx *sql.Tx, id string, status model.ExecutionStatus) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	switch status {
-	case model.ExecutionRunning:
+	if status == model.ExecutionRunning {
 		if _, err := tx.ExecContext(ctx, `UPDATE executions SET started_at = COALESCE(started_at, ?) WHERE id = ?`, now, id); err != nil {
-			return err
-		}
-	case model.ExecutionBlocked, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionCancelled, model.ExecutionTimedOut:
-		if _, err := tx.ExecContext(ctx, `UPDATE worktrees SET status = 'retained'
-			WHERE id = (SELECT worktree_id FROM executions WHERE id = ?) AND status = 'active'`, id); err != nil {
 			return err
 		}
 	}
@@ -232,7 +225,14 @@ func QueueExecutionTx(ctx context.Context, tx *sql.Tx, taskID, executionID strin
 // Execution, pending with seq 1, inserted in the same transaction. The caller
 // must roll back the transaction on any error.
 func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string) error {
-	if err := ValidateTaskTransition(model.TaskBlocked, model.TaskQueued); err != nil {
+	var from model.TaskStatus
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id=?`, taskID).Scan(&from); err != nil {
+		return err
+	}
+	if from != model.TaskBlocked && from != model.TaskRouting {
+		return conflict("task is not waiting at intake")
+	}
+	if err := ValidateTaskTransition(from, model.TaskQueued); err != nil {
 		return err
 	}
 	var seq, count int
@@ -251,7 +251,7 @@ func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string
 	if status != model.ExecutionPending {
 		return conflict("new execution must be pending")
 	}
-	return updateTask(ctx, tx, taskID, model.TaskBlocked, model.TaskQueued)
+	return updateTask(ctx, tx, taskID, from, model.TaskQueued)
 }
 
 func updateTask(ctx context.Context, tx *sql.Tx, id string, from, to model.TaskStatus) error {

@@ -12,17 +12,19 @@ func setApprovalState(t *testing.T, f *authFixture, id, state string) {
 	if _, err := f.db.Exec(`UPDATE executions SET status = ? WHERE id = ?`, state, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Exec(`UPDATE tasks SET status = 'waiting_approval' WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, id); err != nil {
+	if _, err := f.db.Exec(`UPDATE tasks SET status = CASE WHEN ?='publishing' THEN 'running' ELSE 'waiting_approval' END WHERE id = (SELECT task_id FROM executions WHERE id = ?)`, state, id); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func insertApproval(t *testing.T, f *authFixture, id, executionID, status string) {
 	t.Helper()
-	if _, err := f.db.Exec(`INSERT INTO approvals (id, task_id, execution_id, operation, target,
-		content_version, params_hash, status, created_at)
-		SELECT ?, task_id, id, 'merge_pull_request', '{"prNumber":12}', ?, ?, ?, created_at
-		FROM executions WHERE id = ?`, id, strings.Repeat("c", 40), strings.Repeat("d", 64), status, executionID); err != nil {
+	stageExec(t, f, `INSERT INTO owner_decisions (id,kind,task_id,execution_id,subject_id,detail,status,created_at)
+		SELECT ?,'approval',task_id,id,?,'{}','open',created_at FROM executions WHERE id=?`, "decision-"+id, id, executionID)
+	if _, err := f.db.Exec(`INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target,
+		content_id, params_hash, status, created_at)
+		SELECT ?, task_id, id, ?, 'publish', 'merge_pull_request', '{"prNumber":12}', ?, ?, ?, created_at
+		FROM executions WHERE id = ?`, id, "decision-"+id, strings.Repeat("c", 40), strings.Repeat("d", 64), status, executionID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -52,6 +54,10 @@ func TestCancelWaitingApprovalInvalidatesUnusedApproval(t *testing.T) {
 	if status, reason := approvalStatus(t, f, "approval-open"); status != "invalidated" || reason != "cancelled" {
 		t.Fatalf("open approval = %s/%s; want invalidated/cancelled", status, reason)
 	}
+	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id='decision-approval-open'
+		AND status='withdrawn' AND withdrawn_reason='cancelled'`); n != 1 {
+		t.Fatalf("withdrawn decisions = %d; want 1", n)
+	}
 	if status, reason := approvalStatus(t, f, "approval-old"); status != "rejected" || reason != "" {
 		t.Fatalf("decided approval changed to %s/%s", status, reason)
 	}
@@ -64,16 +70,16 @@ func TestCancelWaitingApprovalInvalidatesUnusedApproval(t *testing.T) {
 
 // Spec 17 3.5.2: a merging Execution may hold a consumed approval, so the
 // cancellation is only requested; the Runner decides at consume time.
-func TestCancelMergingRecordsRequestWithoutTransition(t *testing.T) {
+func TestCancelPublishingRecordsRequestWithoutTransition(t *testing.T) {
 	f, _, id, _ := resultFixture(t, "publishing")
-	setApprovalState(t, f, id, "merging")
+	setApprovalState(t, f, id, "publishing")
 	insertApproval(t, f, "approval-approved", id, "approved")
 	status, body := requestCancellation(t, f, executionTaskID(t, f, id))
 	if status != 204 || len(body) != 0 {
 		t.Fatalf("cancel=%d %s", status, body)
 	}
 	after := cancellationState(t, f, id)
-	if after.Execution != "merging" || after.Task != "waiting_approval" || !after.Requested.Valid || after.Finished.Valid {
+	if after.Execution != "publishing" || after.Task != "running" || !after.Requested.Valid || after.Finished.Valid {
 		t.Fatalf("merging cancellation = %+v; want request only", after)
 	}
 	if status, _ := approvalStatus(t, f, "approval-approved"); status != "approved" {
@@ -92,7 +98,7 @@ func TestCancelMergingRecordsRequestWithoutTransition(t *testing.T) {
 // Transitions outside the table are 409 conflicts over HTTP as well: the
 // Runner result API cannot move an approval-state Execution.
 func TestApprovalStatesRejectTransitionsOutsideTableWith409(t *testing.T) {
-	for _, state := range []string{"waiting_approval", "merging"} {
+	for _, state := range []string{"waiting_approval", "pending"} {
 		for _, to := range []string{"succeeded", "failed", "publishing"} {
 			t.Run(state+"->"+to, func(t *testing.T) {
 				f, token, id, _ := resultFixture(t, "publishing")

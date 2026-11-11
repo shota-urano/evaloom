@@ -133,7 +133,7 @@ test('Profile の版を登録すると commit SHA と「暫定運用」が表示
 
   // 登録した版をプロジェクトに割り当てると、使用中プロジェクトに出る（割り当て自体は evaloom-52y.2 の画面の範囲）。
   await ownerPost(page, server.origin, '/api/projects', {
-    id: 'alpha-app', name: 'Alpha アプリ', localRepoPath: server.project.path, gitRemoteUrl: server.project.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
+    id: 'alpha-app', name: 'Alpha アプリ', runnerId: 'local', defaultRole: 'developer',
   })
   await ownerPost(page, server.origin, '/api/projects/alpha-app/harnesses', { role: 'developer', harnessId: HARNESS, version: '1.0.0' })
 

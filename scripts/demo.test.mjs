@@ -121,24 +121,18 @@ test('make demo: 新しいデータ、CLI パスワード認証、API、指定�
       assert.deepEqual(profiles.map((p) => p.version).sort(), ['1.0.0', '1.1.0'])
       assert.equal((await api('/api/runners')).items.length, 1)
       const pin = projects[0].harnesses[0]
-      assert.equal(pin.role, 'developer')
+      assert.equal(projects[0].profileId, pin.profileId)
       assert.equal(pin.harnessId, harnesses[0].id)
       assert.equal(pin.profileId, profiles.find((p) => p.version === '1.0.0').id)
       for (const profile of profiles) {
         assert.equal(profile.operationStatus, 'provisional')
         assert.equal(profile.commitSha, run('git', ['rev-parse', `refs/tags/profile/v${profile.version}^{commit}`], { cwd: harnesses[0].repoPath }).trim())
       }
-      for (const name of ['alpha', 'beta']) {
-        const path = join(temp, 'repos', name)
-        assert.ok(demo.output().includes(path))
-        assert.equal(run('git', ['remote', 'get-url', 'origin'], { cwd: path }).trim(), join(temp, 'remotes', `${name}.git`))
-        assert.ok(run('git', ['ls-remote', 'origin', 'refs/heads/main'], { cwd: path }).includes('refs/heads/main'))
-      }
-      // 表示された未登録リポジトリも実 API のパス検証を通る。
+      // 2つ目の Project も実 API で登録できる。
       const session = await api('/api/session')
       const registered = await fetch(origin + '/api/projects', {
         method: 'POST', headers: { Cookie: cookie, Origin: origin, 'X-CSRF-Token': session.csrfToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: 'second', name: 'Second', localRepoPath: join(temp, 'repos', 'beta'), gitRemoteUrl: join(temp, 'remotes', 'beta.git'), runnerId: 'local', baseBranch: 'main', defaultRole: 'developer' }),
+        body: JSON.stringify({ id: 'second', name: 'Second', runnerId: 'local', harnessId: harnesses[0].id, profileId: pin.profileId }),
         signal: AbortSignal.timeout(15_000),
       })
       assert.equal(registered.status, 201, await registered.text())

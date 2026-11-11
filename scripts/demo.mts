@@ -48,13 +48,11 @@ function seedHarness(db: string, repo: Repo) {
   const sql = (value: string) => `'${value.replaceAll("'", "''")}'`
   const now = sql(new Date().toISOString())
   run('sqlite3', [db, `INSERT INTO harnesses
-    (id, name, specialty, supported_tasks, adapter, repo_path, repo_url, supported_models,
-     available_tools, tool_permissions, contract_version, created_at, updated_at)
-    VALUES ('claude-developer', 'Demo Harness', 'developer', '["development"]', 'claude_code',
-      ${sql(repo.path)}, ${sql(repo.url)}, '["claude-e2e-model"]', '["read","write"]', '{}', '1', ${now}, ${now});`])
+    (id, name, repo_path, repo_url, created_at, updated_at)
+    VALUES ('claude-developer', 'Demo Harness', ${sql(repo.path)}, ${sql(repo.url)}, ${now}, ${now});`])
 }
 
-async function seedAPI(server: Evaloomd, project: Repo) {
+async function seedAPI(server: Evaloomd) {
   const request = (url: string, init: RequestInit = {}) => fetch(url, {
     ...init, signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
   })
@@ -69,16 +67,14 @@ async function seedAPI(server: Evaloomd, project: Repo) {
       body: JSON.stringify(body),
     })
     if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`)
-    await response.arrayBuffer()
+    return await response.json() as { id: string }
   }
+  let profileId = ''
   for (const version of ['1.0.0', '1.1.0']) {
-    await post('/api/harness-profiles', { harnessId: 'claude-developer', version })
+    const profile = await post('/api/harness-profiles', { harnessId: 'claude-developer', version })
+    if (version === '1.0.0') profileId = profile.id
   }
-  await post('/api/projects', {
-    id: 'demo-app', name: 'Demo Project', localRepoPath: project.path, gitRemoteUrl: project.url,
-    runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-  })
-  await post('/api/projects/demo-app/harnesses', { role: 'developer', harnessId: 'claude-developer', version: '1.0.0' })
+  await post('/api/projects', { id: 'demo-app', name: 'Demo Project', runnerId: 'local', harnessId: 'claude-developer', profileId })
 }
 
 async function main() {
@@ -94,8 +90,6 @@ async function main() {
     await build('go', ['build', '-o', binary, './cmd/evaloomd'], backend)
     signal.throwIfAborted()
     const db = join(temp, 'evaloom.db')
-    const alpha = createRepo(temp, 'alpha')
-    const beta = createRepo(temp, 'beta')
     const harness = createRepo(temp, 'harness')
     for (const version of ['1.0.0', '1.1.0']) tagProfile(harness.path, version, `demo-${version}`)
     git(harness.path, 'push', '--quiet', 'origin', 'main', '--tags')
@@ -104,11 +98,9 @@ async function main() {
     setupOwner(binary, db)
     server = await startEvaloomd(binary, db, port, signal)
     console.log(`demo: データ投入用 evaloomd PID ${server.pid}`)
-    await seedAPI(server, alpha)
+    await seedAPI(server)
     console.log(`demo: evaloomd PID ${server.pid}`)
-    console.log(`確認用リポジトリ（登録済み） ${alpha.path}\nGit リポジトリ URL ${alpha.url}`)
-    console.log(`確認用リポジトリ（登録を試す用） ${beta.path}\nGit リポジトリ URL ${beta.url}`)
-    console.log('Runner は local、Base Branch は main。終了は Ctrl-C。')
+    console.log('Runner は local。終了は Ctrl-C。')
     console.log(`この URL を開く: ${server.origin}/`)
     console.log(`テスト用 ID: ${testOwner.id}`)
     console.log(`テスト用パスワード: ${testOwner.password}`)

@@ -21,18 +21,18 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 		class  string
 	}{
 		{model.ExecutionSucceeded, "evaloom: 完了", "succeeded"},
-		{model.ExecutionFailed, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionInterrupted, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionTimedOut, "evaloom: 失敗", "test_failed"},
-		{model.ExecutionBlocked, "evaloom: 対応が必要", "gate2_missing_tests"},
+		{model.ExecutionFailed, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionInterrupted, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionTimedOut, "evaloom: 失敗", "check_failed"},
+		{model.ExecutionBlocked, "evaloom: 対応が必要", "check_failed"},
 		{model.ExecutionWaitingApproval, "evaloom: 承認待ち", "waiting_approval"},
 	} {
 		t.Run(string(tc.status), func(t *testing.T) {
 			n := Notification{
 				TaskID: "task-001", Title: "件名 $(touch /tmp/should-not-exist)\n引用 \"", Status: tc.status,
-				ErrorClass: model.ErrorTestFailed, BlockCause: model.BlockGate2MissingTests,
-				ExecutionID: "PRIVATE-EXECUTION", PRURL: "https://private.example/pr/1",
-				Reason: "PRIVATE-REASON secret-token log context task-body", Stage: "PRIVATE-STAGE",
+				ErrorClass:  model.ErrorTestFailed,
+				ExecutionID: "PRIVATE-EXECUTION",
+				Reason:      "PRIVATE-REASON secret-token log context task-body", Stage: "PRIVATE-STAGE",
 			}
 			title, body, err := macOSContent(n)
 			if err != nil || title != tc.title || body != n.Title+"\n"+n.TaskID+"\n"+tc.class {
@@ -40,7 +40,6 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 			}
 			// Even malformed typed classifications must not expose free-form text.
 			n.ErrorClass = "SECRET-ERROR"
-			n.BlockCause = "SECRET-BLOCK"
 			_, body, err = macOSContent(n)
 			if err != nil || body != n.Title+"\n"+n.TaskID+"\n"+string(n.Status) {
 				t.Fatalf("unsafe classification fallback = %q, %v", body, err)
@@ -50,14 +49,14 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 }
 
 func TestMacOSOpenArgumentsAndResult(t *testing.T) {
-	n := Notification{TaskID: "task /?#日本語", Title: "件名 ' \" $HOME;\n", Status: model.ExecutionBlocked, BlockCause: model.BlockContextConflict}
+	n := Notification{TaskID: "task /?#日本語", Title: "件名 ' \" $HOME;\n", Status: model.ExecutionBlocked}
 	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
 	var resultPath string
 	// Prove each launch replaces an inherited stale result path.
 	t.Setenv(resultEnvironment, "/unused/stale-result")
 	m.run = func(cmd *exec.Cmd) error {
 		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: 対応が必要",
-			n.Title + "\n" + n.TaskID + "\ncontext_conflict",
+			n.Title + "\n" + n.TaskID + "\nblocked",
 			"http://127.0.0.1:49123/tasks/task%20%2F%3F%23%E6%97%A5%E6%9C%AC%E8%AA%9E"}
 		if cmd.Path != "/usr/bin/open" || !reflect.DeepEqual(cmd.Args, want) {
 			t.Fatalf("command = %q %q; want %q", cmd.Path, cmd.Args, want)

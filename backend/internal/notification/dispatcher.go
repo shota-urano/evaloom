@@ -93,12 +93,11 @@ func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
 	}
 	defer tx.Rollback()
 	var n Notification
-	// Read metadata after the producer commits, including Context Builder and
-	// recovery paths which write classification/block rows after transitioning.
-	// Use the request's status: a blocked Execution may already have resumed.
+	// Read metadata after the producer commits, including recovery paths
+	// which write classification rows after transitioning. Use the request's
+	// status: the Execution may already have moved on.
 	err = tx.QueryRowContext(ctx, `SELECT r.execution_id, r.status, t.id, t.title,
-		coalesce(e.pr_url, ''), coalesce(e.error_class, ''), coalesce(e.error_message, ''),
-		coalesce((SELECT cause FROM execution_blocks WHERE execution_id = e.id ORDER BY created_at, id LIMIT 1), ''),
+		coalesce(e.error_class, ''), coalesce(e.error_message, ''),
 		coalesce((SELECT json_extract(payload, '$.from') FROM execution_events
 			WHERE execution_id = e.id AND type = 'status_changed' AND json_extract(payload, '$.to') = r.status
 			ORDER BY id LIMIT 1), '')
@@ -107,7 +106,7 @@ func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
 			SELECT 1 FROM execution_events s WHERE s.execution_id = r.execution_id AND s.type = 'notification_sent'
 			AND json_extract(s.payload, '$.status') = r.status)
 		ORDER BY r.created_at, r.execution_id, r.status LIMIT 1`).Scan(
-		&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.PRURL, &n.ErrorClass, &n.Reason, &n.BlockCause, &n.Stage)
+		&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.ErrorClass, &n.Reason, &n.Stage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

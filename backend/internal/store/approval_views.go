@@ -22,25 +22,16 @@ type Approval struct {
 	CreatedAt                               string
 }
 
-// ApprovalArtifact references a diff artifact of the approval's Execution
-// (spec 17 5章: GET /api/approvals/{id}). The body is fetched through the
-// existing artifact API, never inlined here.
-type ApprovalArtifact struct {
-	ID, SHA256, CreatedAt string
-	SizeBytes             int64
-}
-
-// ApprovalDetail adds what the owner reviews before deciding (spec 17 3.4):
-// the PR URL, the Gate results and the diff artifacts of the Execution.
+// ApprovalDetail is what the owner reviews before deciding (spec 17 3.4).
 type ApprovalDetail struct {
 	Approval
-	PRURL         *string
-	GateResults   []ExecutionGateResult
-	DiffArtifacts []ApprovalArtifact
 }
 
-const approvalColumns = `id, task_id, execution_id, operation, target, content_version, params_hash, status,
-	invalidated_reason, decided_by, decided_at, expires_at, consumed_at, result, max_uses, use_count, created_at`
+// Preserve the existing owner API view while reading the generic schema.
+// Decisions are made by the owner; result is no longer an approvals column.
+const approvalColumns = `id, task_id, execution_id, operation, target, content_id, params_hash, status,
+	invalidated_reason, CASE WHEN decided_at IS NOT NULL THEN 'owner' END, decided_at,
+	expires_at, consumed_at, NULL, max_uses, use_count, created_at`
 
 type rowScanner interface{ Scan(...any) error }
 
@@ -89,8 +80,7 @@ func ListApprovals(ctx context.Context, db *sql.DB, status, before string, limit
 	return out, rows.Err()
 }
 
-// GetApprovalDetail reads the approval, its PR URL, Gate results and diff
-// artifact references in one snapshot. sql.ErrNoRows means no approval.
+// GetApprovalDetail reads the approval in one snapshot. sql.ErrNoRows means no approval.
 func GetApprovalDetail(ctx context.Context, db *sql.DB, id string) (ApprovalDetail, error) {
 	var detail ApprovalDetail
 	tx, err := db.BeginTx(ctx, nil)
@@ -100,29 +90,6 @@ func GetApprovalDetail(ctx context.Context, db *sql.DB, id string) (ApprovalDeta
 	defer tx.Rollback()
 	detail.Approval, err = GetApprovalTx(ctx, tx, id)
 	if err != nil {
-		return detail, err
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT pr_url FROM executions WHERE id = ?`, detail.ExecutionID).Scan(&detail.PRURL); err != nil {
-		return detail, err
-	}
-	if detail.GateResults, err = listExecutionGateResults(ctx, tx, detail.ExecutionID); err != nil {
-		return detail, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT id, sha256, size_bytes, created_at FROM artifacts
-		WHERE execution_id = ? AND kind = 'diff' ORDER BY created_at, id`, detail.ExecutionID)
-	if err != nil {
-		return detail, err
-	}
-	defer rows.Close()
-	detail.DiffArtifacts = []ApprovalArtifact{}
-	for rows.Next() {
-		var artifact ApprovalArtifact
-		if err := rows.Scan(&artifact.ID, &artifact.SHA256, &artifact.SizeBytes, &artifact.CreatedAt); err != nil {
-			return detail, err
-		}
-		detail.DiffArtifacts = append(detail.DiffArtifacts, artifact)
-	}
-	if err := rows.Err(); err != nil {
 		return detail, err
 	}
 	return detail, tx.Commit()
@@ -137,8 +104,26 @@ var ErrApprovalStale = errors.New("store: approval changed before it could be up
 // update is conditional on the expected current values, so a concurrent
 // decision or invalidation yields ErrApprovalStale.
 func DecideApprovalTx(ctx context.Context, tx *sql.Tx, id, contentVersion, status string, expiresAt *string, now string) error {
-	result, err := tx.ExecContext(ctx, `UPDATE approvals SET status = ?, decided_by = 'owner', decided_at = ?, expires_at = ?
-		WHERE id = ? AND status = 'pending' AND content_version = ?`, status, now, expiresAt, id, contentVersion)
+	result, err := tx.ExecContext(ctx, `UPDATE approvals SET status = ?, decided_at = ?, expires_at = ?
+		WHERE id = ? AND status = 'pending' AND content_id = ?`, status, now, expiresAt, id, contentVersion)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrApprovalStale
+	}
+	action := "approve"
+	if status == "rejected" {
+		action = "reject"
+	}
+	answer, err := json.Marshal(map[string]string{"action": action, "contentId": contentVersion})
+	if err != nil {
+		return err
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE owner_decisions SET status='answered',answer=?,answered_at=?
+		WHERE id=(SELECT decision_id FROM approvals WHERE id=?) AND status='open'`, string(answer), now, id)
 	if err != nil {
 		return err
 	}
@@ -181,11 +166,22 @@ func RenewApprovalTx(ctx context.Context, tx *sql.Tx, old Approval, now string) 
 			return "", ErrApprovalStale
 		}
 	}
-	id := ulid.Make().String()
-	result, err := tx.ExecContext(ctx, `INSERT INTO approvals (id, task_id, execution_id, operation, target,
-		content_version, params_hash, status, max_uses, use_count, created_at)
-		SELECT ?, task_id, execution_id, operation, target, content_version, params_hash, 'pending', max_uses, 0, ?
-		FROM approvals WHERE id = ? AND status = 'expired'`, id, now, old.ID)
+	id, decisionID := ulid.Make().String(), ulid.Make().String()
+	if _, err := tx.ExecContext(ctx, `UPDATE owner_decisions SET status='withdrawn',withdrawn_reason='expired'
+		WHERE id=(SELECT decision_id FROM approvals WHERE id=?) AND status='open'`, old.ID); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO owner_decisions
+		(id,kind,task_id,execution_id,subject_id,basis,detail,status,created_at)
+		SELECT ?,'approval',a.task_id,a.execution_id,?,a.content_id,d.detail,'open',?
+		FROM approvals a JOIN owner_decisions d ON d.id=a.decision_id WHERE a.id=? AND a.status='expired'`,
+		decisionID, id, now, old.ID); err != nil {
+		return "", err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target,
+		summary, content_id, params_hash, status, max_uses, use_count, created_at)
+		SELECT ?, task_id, execution_id, ?, requested_stage, operation, target, summary, content_id, params_hash, 'pending', max_uses, 0, ?
+		FROM approvals WHERE id = ? AND status = 'expired'`, id, decisionID, now, old.ID)
 	if err != nil {
 		return "", err
 	}

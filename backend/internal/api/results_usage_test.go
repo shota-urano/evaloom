@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 )
@@ -20,6 +21,8 @@ func TestResultRejectsInvalidUsageWithoutWrites(t *testing.T) {
 		{"negative_adapter_duration", "publishing", "succeeded", map[string]any{"wallTimeMs": 0, "harnessUsage": map[string]any{"wallTimeMs": -1}}},
 		{"negative_input_tokens", "publishing", "succeeded", map[string]any{"wallTimeMs": 0, "harnessUsage": map[string]any{"inputTokens": -1}}},
 		{"negative_output_tokens", "publishing", "succeeded", map[string]any{"wallTimeMs": 0, "harnessUsage": map[string]any{"outputTokens": -1}}},
+		{"negative_stage_input_tokens", "publishing", "succeeded", map[string]any{"wallTimeMs": 0, "inputTokens": -1}},
+		{"negative_stage_output_tokens", "publishing", "succeeded", map[string]any{"wallTimeMs": 0, "outputTokens": -1}},
 		{"progress", "claimed", "preparing", map[string]any{"wallTimeMs": 10}},
 		{"failure", "publishing", "failed", map[string]any{"wallTimeMs": 10}},
 	} {
@@ -34,6 +37,30 @@ func TestResultRejectsInvalidUsageWithoutWrites(t *testing.T) {
 				t.Fatalf("invalid usage mutated DB: before=%+v after=%+v", before, after)
 			}
 		})
+	}
+}
+
+func TestResultPersistsExplicitStageUsage(t *testing.T) {
+	f, token, id, _ := resultFixture(t, "publishing")
+	input := resultBody("publishing", "succeeded")
+	input["usage"] = map[string]any{"wallTimeMs": 1234, "inputTokens": 0, "outputTokens": nil, "costAmount": 0.125}
+	for _, stage := range []string{"", "work", "unknown"} {
+		input["stage"] = stage
+		status, body := postResult(t, f, token, id, input)
+		assertAuthError(t, status, body, 400, ValidationFailed)
+	}
+	input["stage"] = "publish"
+	status, body := postResult(t, f, token, id, input)
+	if status != 204 {
+		t.Fatalf("stage usage status=%d body=%s", status, body)
+	}
+	var stage string
+	var wall, tokens int64
+	var output sql.NullInt64
+	var cost float64
+	if err := f.db.QueryRow(`SELECT stage,wall_time_ms,input_tokens,output_tokens,cost_amount FROM usage_records WHERE execution_id=?`, id).
+		Scan(&stage, &wall, &tokens, &output, &cost); err != nil || stage != "publish" || wall != 1234 || tokens != 0 || output.Valid || cost != 0.125 {
+		t.Fatal(stage, wall, tokens, output, cost, err)
 	}
 }
 

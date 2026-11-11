@@ -17,25 +17,20 @@ func TestSpecEnumValues(t *testing.T) {
 	}{
 		{"adapter", decode[model.AdapterName], []string{"codex", "claude_code"}},
 		{"task", decode[model.TaskStatus], []string{
-			"received", "planning", "queued", "running", "verifying", "waiting_approval",
+			"received", "routing", "queued", "running", "waiting_approval",
 			"completed", "failed", "cancelled", "timed_out", "blocked",
 		}},
 		{"execution", decode[model.ExecutionStatus], []string{
-			"pending", "claimed", "preparing", "running", "verifying", "publishing",
-			"waiting_approval", "merging", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out",
+			"pending", "claimed", "preparing", "working", "checking", "publishing",
+			"waiting_approval", "succeeded", "blocked", "failed", "interrupted", "cancelled", "timed_out",
 		}},
 		{"event", decode[model.ExecutionEventType], []string{
-			"status_changed", "log", "worktree_ready", "context_pinned", "harness_started",
-			"harness_finished", "gate_result", "blocked", "pushed", "pr_created", "notification_sent",
+			"status_changed", "log", "context_pinned", "stage_started", "stage_finished", "check_result", "approval_requested", "approval_waived", "approval_consumed", "decision_opened", "decision_answered", "published", "notification_sent",
 			"notification_failed",
 		}},
 		{"error", decode[model.ErrorClass], []string{
-			"config_error", "execution_failed", "test_failed", "timeout", "cancelled",
+			"config_error", "work_failed", "check_failed", "timeout", "cancelled",
 			"interrupted", "publish_failed", "sandbox_error",
-		}},
-		{"block", decode[model.BlockCause], []string{
-			"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict",
-			"git_state",
 		}},
 		{"result", decode[model.ResultStatus], []string{"succeeded", "failed"}},
 	} {
@@ -62,7 +57,7 @@ func TestEnumsRejectInvalidGoValues(t *testing.T) {
 	for _, value := range []interface{ Validate() error }{
 		model.AdapterName("unknown"), model.TaskStatus("unknown"),
 		model.ExecutionStatus("unknown"), model.ExecutionEventType("unknown"),
-		model.ErrorClass("unknown"), model.BlockCause("unknown"), model.ResultStatus("unknown"),
+		model.ErrorClass("unknown"), model.ResultStatus("unknown"),
 	} {
 		if err := value.Validate(); err == nil {
 			t.Errorf("invalid Go enum accepted: %v", value)

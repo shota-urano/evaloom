@@ -102,9 +102,9 @@ func TestStateTransitionMapping(t *testing.T) {
 		kind, name string
 	}{
 		{model.TaskRunning, model.ExecutionPreparing, model.ExecutionRunning, "started", "In Progress"},
-		{model.TaskVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval", "PR Review"},
-		{model.TaskVerifying, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
-		{model.TaskWaitingApproval, model.ExecutionMerging, model.ExecutionSucceeded, "completed", "Done"},
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval", "PR Review"},
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed, "", ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionInterrupted, "", ""},
@@ -144,7 +144,7 @@ func cancel(t *testing.T, db *sql.DB, c store.TaskCancellation) {
 }
 
 func TestStateCancellationRequester(t *testing.T) {
-	for _, phase := range []string{"queued", "blocked", "waiting_approval", "running", "verifying", "merging", "held"} {
+	for _, phase := range []string{"queued", "blocked", "waiting_approval", "working", "checking", "publishing", "held"} {
 		for _, reason := range []string{"", "linear_label_removed", "linear_issue_cancelled", "linear_issue_removed", "linear_issue_moved"} {
 			for _, source := range []string{"linear", "manual"} {
 				if phase == "held" && source == "manual" {
@@ -155,7 +155,7 @@ func TestStateCancellationRequester(t *testing.T) {
 					id, execStatus := source+"-1", model.ExecutionStatus(phase)
 					if phase == "held" {
 						mustExec(t, db, `DELETE FROM executions WHERE task_id = ?`, id)
-						mustExec(t, db, `UPDATE tasks SET status = 'blocked', intake_block_cause = 'routing_no_label' WHERE id = ?`, id)
+						mustExec(t, db, `UPDATE tasks SET status = 'blocked', intake_block_cause = 'missing_acceptance_criteria' WHERE id = ?`, id)
 					} else {
 						if phase == "queued" {
 							execStatus = model.ExecutionPending
@@ -171,7 +171,7 @@ func TestStateCancellationRequester(t *testing.T) {
 						actor = "system"
 					}
 					cancel(t, db, store.TaskCancellation{TaskID: id, Actor: actor, Reason: reason})
-					if phase == "running" || phase == "verifying" || phase == "merging" {
+					if phase == "working" || phase == "checking" || phase == "publishing" {
 						if got := stateRows(t, db); len(got) != 0 {
 							t.Fatalf("cancel request changed Issue before transition: %+v", got)
 						}
@@ -214,8 +214,8 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
 	// A retry schedule does not protect an obsolete state from supersession.
 	mustExec(t, db, `UPDATE linear_outbox SET next_attempt_at = '2099-01-01T00:00:00Z'`)
-	setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing)
-	transition(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval)
+	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
 	for _, status := range []string{"sent", "failed", "skipped"} {
 		mustExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, action, kind, state_name,
 			dedupe_key, status, created_at) VALUES (?, 'linear-1', 'issue-1', 'set_state', 'started', 'In Progress', ?, ?, ?)`,
@@ -260,14 +260,14 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 func TestStateEnqueueRollsBackWithTransition(t *testing.T) {
 	db := outboxDB(t)
 	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
-	setStates(t, db, "linear-1", model.TaskVerifying, model.ExecutionPublishing)
+	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	if err := task.TransitionExecutionTx(context.Background(), tx, task.Transition{TaskID: "linear-1",
-		ExecutionID: "linear-1-e1", FromTask: model.TaskVerifying, FromExecution: model.ExecutionPublishing,
+		ExecutionID: "linear-1-e1", FromTask: model.TaskRunning, FromExecution: model.ExecutionPublishing,
 		ToExecution: model.ExecutionWaitingApproval}); err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestStateEnqueueRollsBackWithTransition(t *testing.T) {
 	}
 	wantState(t, db, "started", "In Progress", "linear-1-e1")
 	var status string
-	if err := db.QueryRow(`SELECT status FROM tasks WHERE id = 'linear-1'`).Scan(&status); err != nil || status != "verifying" {
+	if err := db.QueryRow(`SELECT status FROM tasks WHERE id = 'linear-1'`).Scan(&status); err != nil || status != "running" {
 		t.Fatalf("task = %q, err=%v", status, err)
 	}
 	if comments := outboxRows(t, db); len(comments) != 0 {

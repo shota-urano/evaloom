@@ -80,10 +80,10 @@ func Heartbeat(ctx context.Context, db *sql.DB, runnerID, bootID string, running
 }
 
 // RegisterRunner inserts a new offline Runner. Never replace an existing token.
-func RegisterRunner(ctx context.Context, db *sql.DB, id, name, tokenHash, root, createdAt string) error {
+func RegisterRunner(ctx context.Context, db *sql.DB, id, name, tokenHash, createdAt string) error {
 	result, err := db.ExecContext(ctx, `INSERT INTO runners
-		(id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES (?, ?, ?, ?, 'offline', '', ?) ON CONFLICT(id) DO NOTHING`, id, name, tokenHash, root, createdAt)
+		(id, name, token_hash, status, created_at)
+		VALUES (?, ?, ?, 'offline', ?) ON CONFLICT(id) DO NOTHING`, id, name, tokenHash, createdAt)
 	if err != nil {
 		return fmt.Errorf("store: register runner: %w", err)
 	}
@@ -127,7 +127,8 @@ func RunnerIDByTokenHash(ctx context.Context, db *sql.DB, hash string) (string, 
 
 // RunnerSummary deliberately excludes token_hash and local filesystem paths.
 type RunnerSummary struct {
-	ID, Name, Status, LastHeartbeatAt, CreatedAt string
+	ID, Name, Status, CreatedAt string
+	LastHeartbeatAt             *string
 }
 
 // ListRunners reads IDs in SQLite's binary ascending order, strictly after the

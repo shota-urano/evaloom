@@ -5,8 +5,8 @@ import { useEffect, useState } from 'react'
 
 const EVENT = 'evaloom:navigate'
 
-/** 画面遷移時に渡す一度きりの値（保存直後の警告など）。history.state に入れる。 */
-export type NavigationState = { warnings?: string[]; notice?: string } | null
+/** 画面遷移時に渡す一度きりの値（作成直後のお知らせなど）。history.state に入れる。 */
+export type NavigationState = { notice?: string } | null
 
 export function navigate(path: string, state: NavigationState = null) {
   window.history.pushState(state, '', path)

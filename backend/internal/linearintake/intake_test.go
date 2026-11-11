@@ -50,9 +50,9 @@ func (s *dbStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue linea
 	s.calls = append(s.calls, startCall{issue.ID, seq})
 	taskID := fmt.Sprintf("task-%s-%d", issue.ID, seq)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, project_id, title, body, acceptance_criteria,
-		short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source)
-		VALUES (?, 'p1', ?, ?, 'ac', ?, 'development', 'solo', 'queued', ?, 't', 't', 'linear')`,
-		taskID, issue.Title, issue.Description, strings.ToLower(issue.Identifier),
+		collaboration_mode, status, idempotency_key, created_at, updated_at, source)
+		VALUES (?, 'p1', ?, ?, 'ac', 'solo', 'queued', ?, 't', 't', 'linear')`,
+		taskID, issue.Title, issue.Description,
 		fmt.Sprintf("linear:%s:%d", issue.ID, seq)); err != nil {
 		return "", err
 	}
@@ -100,8 +100,8 @@ var base = time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 func newIntakeFixture(t *testing.T) *intakeFixture {
 	t.Helper()
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:two")
+	addProject(t, db, "p1", "team-a", "route:one")
+	addProject(t, db, "p2", "team-b", "route:two")
 	f := &intakeFixture{db: db, fetcher: &stubFetcher{issues: map[string]linear.Issue{}, errs: map[string]error{}},
 		starter: &dbStarter{}, canceller: &recordingCanceller{}, recheck: &recordingRechecker{}}
 	f.intake = &Intake{DB: db, Fetcher: f.fetcher, Starter: f.starter, Canceller: f.canceller,
@@ -137,7 +137,7 @@ func (f *intakeFixture) baseline(t *testing.T) { f.mustRound(t, "team-a") }
 
 func readyIssue(id string, updated time.Time) linear.Issue {
 	return linear.Issue{ID: id, Identifier: "ENG-" + id, URL: "https://linear.app/x/" + id, Title: "title " + id,
-		Description: "body", TeamID: "team-a", Labels: []string{"ai-ready", "repo:one"}, StateType: "unstarted",
+		Description: "body", TeamID: "team-a", Labels: []string{"ai-ready", "route:one"}, StateType: "unstarted",
 		UpdatedAt: updated}
 }
 
@@ -223,9 +223,7 @@ func TestFirstPollOnlyRecords(t *testing.T) {
 	if !baselineDone(t, f.db, "team-a") {
 		t.Fatal("baseline_done_at not set after the first poll")
 	}
-	if baselineDone(t, f.db, "team-b") {
-		t.Fatal("baseline_done_at set for a Team not polled yet")
-	}
+
 	// The next poll treats them as still attached, not as new attaches.
 	f.mustRound(t, "team-a", readyIssue("a", base), readyIssue("b", base))
 	if len(f.starter.calls) != 0 {
@@ -267,7 +265,7 @@ func TestStillAttachedEditsDoNothing(t *testing.T) {
 
 	edited := readyIssue("a", base.Add(time.Hour))
 	edited.Title, edited.Description = "changed", "changed body"
-	edited.Labels = []string{"ai-ready", "repo:two", "bug"}
+	edited.Labels = []string{"ai-ready", "route:two", "bug"}
 	edited.StateType = "started"
 	f.intake.Now = func() time.Time { return base.Add(2 * time.Hour) }
 	f.mustRound(t, "team-a", edited)
@@ -303,10 +301,9 @@ func TestMissingIssuesAreRefetched(t *testing.T) {
 		all = append(all, readyIssue(id, base))
 	}
 	f.mustRound(t, "team-a", all...)
-	f.mustRound(t, "team-b") // finish team-b's first poll
 
 	unlabelled := readyIssue("label", base.Add(time.Hour))
-	unlabelled.Labels = []string{"repo:one"}
+	unlabelled.Labels = []string{"route:one"}
 	f.fetcher.issues["label"] = unlabelled
 	cancelled := readyIssue("cancel", base.Add(time.Hour))
 	cancelled.StateType = "canceled"
@@ -331,6 +328,7 @@ func TestMissingIssuesAreRefetched(t *testing.T) {
 		{"deleted", ReasonIssueRemoved},
 		{"label", ReasonLabelRemoved},
 		{"moved", ReasonIssueMoved},
+		{"moved-reg", ReasonIssueMoved},
 	}
 	if !slices.Equal(f.canceller.calls, want) {
 		t.Fatalf("cancels = %v\nwant %v", f.canceller.calls, want)
@@ -349,7 +347,7 @@ func TestMissingIssuesAreRefetched(t *testing.T) {
 	if s := mustState(t, f.db, "moved"); s.aiReady || s.teamID != "team-unregistered" {
 		t.Fatalf("moved: %+v, want ai_ready=0 on the new Team", s)
 	}
-	if s := mustState(t, f.db, "moved-reg"); !s.aiReady || s.decision != string(DecisionStarted) || s.teamID != "team-a" {
+	if s := mustState(t, f.db, "moved-reg"); s.aiReady || s.decision != string(DecisionCancelled) || s.teamID != "team-b" {
 		t.Fatalf("moved to a registered Team changed: %+v", s)
 	}
 	if after := mustState(t, f.db, "fail"); after != beforeFail {
@@ -359,7 +357,7 @@ func TestMissingIssuesAreRefetched(t *testing.T) {
 	// The failed refetch is checked again next round; the others are not.
 	f.fetcher.calls = nil
 	delete(f.fetcher.errs, "fail")
-	f.fetcher.issues["fail"] = linear.Issue{ID: "fail", Identifier: "ENG-fail", TeamID: "team-a", Labels: []string{"repo:one"}}
+	f.fetcher.issues["fail"] = linear.Issue{ID: "fail", Identifier: "ENG-fail", TeamID: "team-a", Labels: []string{"route:one"}}
 	f.mustRound(t, "team-a")
 	if !slices.Contains(f.fetcher.calls, "fail") || slices.Contains(f.fetcher.calls, "label") {
 		t.Fatalf("refetches = %v", f.fetcher.calls)
@@ -401,7 +399,7 @@ func TestReattach(t *testing.T) {
 	f.baseline(t)
 	f.mustRound(t, "team-a", readyIssue("a", base))
 	detached := readyIssue("a", base)
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues["a"] = detached
 
 	// The first task is not terminal (the stub canceller leaves it queued).

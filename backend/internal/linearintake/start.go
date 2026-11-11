@@ -21,7 +21,7 @@ import (
 
 // DefaultRoutingLabelPrefix is the default of the global setting
 // linear.routingLabelPrefix (spec 15 3.4, Q48).
-const DefaultRoutingLabelPrefix = "repo:"
+const DefaultRoutingLabelPrefix = "route:"
 
 // BlockCause is a value of tasks.intake_block_cause (spec 15 3.6 and 3.8).
 type BlockCause string
@@ -46,8 +46,8 @@ type Routing struct {
 	Cause BlockCause
 }
 
-// TaskStarter implements Starter: routing by Linear Team and routing label
-// (Linear Project is never used, requirements 6.1), acceptance criteria
+// TaskStarter implements Starter: routing by the globally unique label,
+// acceptance criteria
 // extraction and task creation (spec 15 3.6).
 type TaskStarter struct {
 	RoutingLabelPrefix string // empty: the Poller's round settings, then DefaultRoutingLabelPrefix
@@ -77,9 +77,7 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 		}
 		r.Cause = CauseRoutingUnknownLabel
 		for _, route := range routes {
-			r.Cause = CauseRoutingTeamMismatch
-			if route.TeamID == issue.TeamID {
-				// UNIQUE(linear_team_id, linear_routing_label): at most one.
+			if route.ProjectID != "" {
 				r.ProjectID, r.Cause = route.ProjectID, ""
 				break
 			}
@@ -87,20 +85,18 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 	default:
 		r.Cause = CauseRoutingMultipleLabels
 	}
-	if !written {
-		// tasks.acceptance_criteria may be empty only with this cause (3.8),
-		// so it also replaces a routing cause when both apply.
-		r.Cause = CauseMissingAcceptanceCriteria
+	if r.Cause != "" {
 		return r, nil
 	}
-	if r.Cause != "" {
+	if !written {
+		r.Cause = CauseMissingAcceptanceCriteria
 		return r, nil
 	}
 	project, err := store.GetProject(ctx, tx, r.ProjectID)
 	if err != nil {
 		return Routing{}, fmt.Errorf("linearintake: read project: %w", err)
 	}
-	if _, err := store.GetProjectHarness(ctx, tx, project.ID, project.DefaultRole); errors.Is(err, sql.ErrNoRows) {
+	if _, err := store.GetProjectHarness(ctx, tx, project.ID, ""); errors.Is(err, sql.ErrNoRows) {
 		r.Cause = CauseConfigMissingAssignment
 	} else if err != nil {
 		return Routing{}, fmt.Errorf("linearintake: read assignment: %w", err)
@@ -187,6 +183,9 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 // commented once per task (3.5 rule 3). The comment carries the reason and
 // the fix, with the routing label prefix the decision used.
 func enqueueHold(ctx context.Context, tx *sql.Tx, taskID string, cause BlockCause, prefix string) error {
+	if strings.HasPrefix(string(cause), "routing_") {
+		return nil
+	}
 	kind := linearoutbox.KindIntakeBlocked
 	if cause == CauseMissingAcceptanceCriteria {
 		kind = linearoutbox.KindMissingAcceptanceCriteria

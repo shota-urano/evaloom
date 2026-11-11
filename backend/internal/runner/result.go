@@ -20,53 +20,7 @@ type ExecutionResult struct {
 	Status           model.ExecutionStatus `json:"status"`
 	ErrorClass       model.ErrorClass      `json:"errorClass,omitempty"`
 	ErrorMessage     string                `json:"errorMessage,omitempty"`
-	WorktreeID       string                `json:"worktreeId,omitempty"`
-	BranchName       string                `json:"branchName,omitempty"`
-	BaseSHA          string                `json:"baseSha,omitempty"`
-	Baseline         *model.TestRun        `json:"baseline,omitempty"`
-	Usage            *ExecutionUsage       `json:"usage,omitempty"`
-	HarnessHeadSHA   string                `json:"harnessHeadSha,omitempty"`
-	VerifiedSHA      string                `json:"verifiedSha,omitempty"`
-	GateResults      []GateResult          `json:"gateResults,omitempty"`
-	TestRuns         []model.TestRun       `json:"testRuns,omitempty"`
-	SetupStatus      string                `json:"setupStatus,omitempty"`
-	Block            *ResultBlock          `json:"block,omitempty"`
-	Worktree         *ResultWorktree       `json:"worktree,omitempty"`
-	Audit            *ResultAudit          `json:"audit,omitempty"`
-	PushedSHA        string                `json:"pushedSha,omitempty"`
-	PRNumber         *int                  `json:"prNumber,omitempty"`
-	PRURL            string                `json:"prUrl,omitempty"`
-	PRCreated        *bool                 `json:"prCreated,omitempty"`
 	HarnessSessionID string                `json:"harnessSessionId,omitempty"`
-	// MergeCommitSHA reports an approved merge (spec 17 3.5.2 step 4).
-	MergeCommitSHA string `json:"mergeCommitSha,omitempty"`
-}
-
-type ResultWorktree struct {
-	Action      string              `json:"action"`
-	ID          string              `json:"id"`
-	Path        string              `json:"path,omitempty"`
-	BranchName  string              `json:"branchName,omitempty"`
-	BaseSHA     string              `json:"baseSha,omitempty"`
-	CopiedFiles *[]model.CopiedFile `json:"copiedFiles,omitempty"`
-}
-
-type ResultAudit struct {
-	Action string            `json:"action"`
-	Detail map[string]string `json:"detail"`
-}
-
-type GateResult struct {
-	Gate      int             `json:"gate"`
-	Result    string          `json:"result"`
-	BaseSHA   string          `json:"baseSha"`
-	TargetSHA string          `json:"targetSha"`
-	Findings  []model.Finding `json:"findings"`
-}
-
-type ResultBlock struct {
-	Cause   model.BlockCause `json:"cause"`
-	HeadSHA string           `json:"headSha"`
 }
 
 type ResultReporter interface {
@@ -78,8 +32,7 @@ var _ ResultReporter = (*Runner)(nil)
 // ReportResult keeps a failed report pending on the calling execution and
 // retries transport/5xx failures without rerunning its stage. Use a delivery
 // context independent of the cancelled Execution. 4xx responses are returned:
-// transition reports reject duplicates with 409. Start SHA and baseline
-// measurement reports are idempotent, so lost acknowledgements can be retried.
+// transition reports reject duplicates with 409.
 func (runner *Runner) ReportResult(ctx context.Context, id string, result ExecutionResult) error {
 	if parsed, err := ulid.ParseStrict(id); err != nil || parsed.String() != id {
 		return fmt.Errorf("runner: invalid result execution ID")

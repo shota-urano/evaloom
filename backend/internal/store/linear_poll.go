@@ -19,13 +19,13 @@ type LinearPollTeam struct {
 	ConsecutiveFailures int
 }
 
-const registeredLinearTeams = `SELECT DISTINCT linear_team_id FROM projects
-	WHERE linear_team_id IS NOT NULL AND linear_team_id <> ''`
+// Polling scope comes from the global setting; routes have no Team column.
+const registeredLinearTeams = `SELECT json_extract(value, '$') AS team_id FROM settings
+ WHERE key='linear.teamId' AND json_valid(value)
+ AND json_type(CASE WHEN json_valid(value) THEN value ELSE 'null' END)='text'
+ AND trim(json_extract(value, '$')) <> ''`
 
-// PruneLinearPollTeams removes the rows of Teams no Project registers any
-// more (spec 15 3.8, Q64). The Project API calls it in the transaction that
-// removes or changes a linear_team_id, so registering the Team again before
-// the next poll still starts over from the first poll.
+// PruneLinearPollTeams removes baselines outside settings.linear.teamId.
 func PruneLinearPollTeams(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM linear_poll_teams WHERE team_id NOT IN (`+registeredLinearTeams+`)`); err != nil {
 		return fmt.Errorf("store: remove unregistered linear poll teams: %w", err)
@@ -33,10 +33,8 @@ func PruneLinearPollTeams(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-// SyncLinearPollTeams returns the Teams to poll: every distinct non-empty
-// projects.linear_team_id (spec 15 3.2, one entry even when several Projects
-// share a Team). Rows are created for newly registered Teams and removed for
-// Teams no Project registers any more (spec 15 3.8, Q64), in one transaction.
+// SyncLinearPollTeams returns the configured polling Team, creates its baseline
+// if needed, and removes the previous Team's baseline in the same transaction.
 func SyncLinearPollTeams(ctx context.Context, db *sql.DB) (_ []LinearPollTeam, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -51,7 +49,7 @@ func SyncLinearPollTeams(ctx context.Context, db *sql.DB) (_ []LinearPollTeam, e
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO linear_poll_teams (team_id, consecutive_failures)
-		SELECT linear_team_id, 0 FROM (`+registeredLinearTeams+`) WHERE true
+		SELECT team_id, 0 FROM (`+registeredLinearTeams+`) WHERE true
 		ON CONFLICT (team_id) DO NOTHING`); err != nil {
 		return nil, fmt.Errorf("store: add linear poll teams: %w", err)
 	}

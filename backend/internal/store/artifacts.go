@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,11 +18,12 @@ import (
 // Artifact describes a file whose StoragePath is relative to the configured
 // data directory. IDs are supplied by the caller, as for other store records.
 type Artifact struct {
-	ID, ExecutionID, Kind string
-	StoragePath, SHA256   string
-	SizeBytes             int64
-	Redacted              bool
-	CreatedAt             string
+	ID, ExecutionID, RouteProposalID string
+	Stage, Kind, Name                string
+	StoragePath, SHA256              string
+	SizeBytes                        int64
+	Redacted                         bool
+	CreatedAt                        string
 }
 
 // ArtifactStore stores bytes separately from SQLite, under dataDir/artifacts.
@@ -60,8 +60,8 @@ func (s *ArtifactStore) Close() error { return s.root.Close() }
 // and inserts the artifact only after the complete file is synced and closed.
 // On a write or database failure it removes only its newly created file.
 // Redacted records whether the caller applied redaction; Save does not do so.
-func (s *ArtifactStore) Save(ctx context.Context, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, err error) {
-	artifact, cleanup, err := s.write(ctx, id, executionID, kind, redacted, content)
+func (s *ArtifactStore) Save(ctx context.Context, artifact Artifact, content io.Reader) (_ Artifact, err error) {
+	artifact, cleanup, err := s.write(ctx, artifact, content)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -73,20 +73,20 @@ func (s *ArtifactStore) Save(ctx context.Context, id, executionID, kind string, 
 
 var ErrArtifactConflict = errors.New("artifact ID already used for another Execution or content")
 
-// RegisterTx requires the caller to check Execution ownership in tx before
-// calling it. The returned cleanup must run if tx is rolled back or commit
+// RegisterTx requires the caller to check Execution or proposal ownership in tx
+// before calling it. The returned cleanup must run if tx is rolled back or commit
 // fails. Duplicate uploads are removed here, leaving the original untouched.
-func (s *ArtifactStore) RegisterTx(ctx context.Context, tx *sql.Tx, id, executionID, kind string, redacted bool, content io.Reader) (Artifact, func() error, error) {
-	artifact, cleanup, err := s.write(ctx, id, executionID, kind, redacted, content)
+func (s *ArtifactStore) RegisterTx(ctx context.Context, tx *sql.Tx, artifact Artifact, content io.Reader) (Artifact, func() error, error) {
+	artifact, cleanup, err := s.write(ctx, artifact, content)
 	if err != nil {
 		return Artifact{}, nil, err
 	}
 	var previous Artifact
-	err = tx.QueryRowContext(ctx, `SELECT id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at
-		FROM artifacts WHERE id = ?`, id).Scan(&previous.ID, &previous.ExecutionID, &previous.Kind,
+	err = tx.QueryRowContext(ctx, `SELECT id, coalesce(execution_id, ''), coalesce(route_proposal_id, ''), stage, kind, name, storage_path, sha256, size_bytes, redacted, created_at
+		FROM artifacts WHERE id = ?`, artifact.ID).Scan(&previous.ID, &previous.ExecutionID, &previous.RouteProposalID, &previous.Stage, &previous.Kind, &previous.Name,
 		&previous.StoragePath, &previous.SHA256, &previous.SizeBytes, &previous.Redacted, &previous.CreatedAt)
 	if err == nil {
-		if previous.ExecutionID != executionID || previous.SHA256 != artifact.SHA256 {
+		if previous.ExecutionID != artifact.ExecutionID || previous.RouteProposalID != artifact.RouteProposalID || previous.SHA256 != artifact.SHA256 {
 			err = ErrArtifactConflict
 		}
 		return previous, func() error { return nil }, errors.Join(err, cleanup())
@@ -104,18 +104,18 @@ func insertArtifact(ctx context.Context, db interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, artifact Artifact) error {
 	_, err := db.ExecContext(ctx, `INSERT INTO artifacts
-		(id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, artifact.ID, artifact.ExecutionID, artifact.Kind,
+		(id, execution_id, route_proposal_id, stage, kind, name, storage_path, sha256, size_bytes, redacted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, artifact.ID, nullableArtifactID(artifact.ExecutionID), nullableArtifactID(artifact.RouteProposalID), artifact.Stage, artifact.Kind, artifact.Name,
 		artifact.StoragePath, artifact.SHA256, artifact.SizeBytes, artifact.Redacted, artifact.CreatedAt)
 	return err
 }
 
-func (s *ArtifactStore) write(ctx context.Context, id, executionID, kind string, redacted bool, content io.Reader) (_ Artifact, cleanup func() error, err error) {
+func (s *ArtifactStore) write(ctx context.Context, artifact Artifact, content io.Reader) (_ Artifact, cleanup func() error, err error) {
 	if err := ctx.Err(); err != nil {
 		return Artifact{}, nil, err
 	}
-	if id == "" || executionID == "" || content == nil {
-		return Artifact{}, nil, fmt.Errorf("store: artifact ID, execution ID and content are required")
+	if artifact.ID == "" || (artifact.ExecutionID == "") == (artifact.RouteProposalID == "") || artifact.Stage == "" || artifact.Name == "" || content == nil {
+		return Artifact{}, nil, fmt.Errorf("store: artifact ID, exactly one owner, stage, name and content are required")
 	}
 	// A generated filename avoids interpreting record IDs as filesystem paths.
 	path := filepath.Join("artifacts", rand.Text())
@@ -136,11 +136,10 @@ func (s *ArtifactStore) write(ctx context.Context, id, executionID, kind string,
 	if err = errors.Join(copyErr, file.Close()); err != nil {
 		return Artifact{}, nil, err
 	}
-	artifact := Artifact{
-		ID: id, ExecutionID: executionID, Kind: kind, StoragePath: path,
-		SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size,
-		Redacted: redacted, CreatedAt: recordTime(),
-	}
+	artifact.StoragePath = path
+	artifact.SHA256 = hex.EncodeToString(hash.Sum(nil))
+	artifact.SizeBytes = size
+	artifact.CreatedAt = recordTime()
 	return artifact, func() error { return s.root.Remove(path) }, nil
 }
 
@@ -148,9 +147,9 @@ func (s *ArtifactStore) write(ctx context.Context, id, executionID, kind string,
 // The execution ID scopes the lookup. The caller owns closing the returned file.
 func (s *ArtifactStore) Open(ctx context.Context, executionID, id string) (Artifact, *os.File, error) {
 	var artifact Artifact
-	err := s.db.QueryRowContext(ctx, `SELECT id, execution_id, kind, storage_path,
+	err := s.db.QueryRowContext(ctx, `SELECT id, execution_id, stage, kind, name, storage_path,
 		sha256, size_bytes, redacted, created_at FROM artifacts WHERE execution_id = ? AND id = ?`,
-		executionID, id).Scan(&artifact.ID, &artifact.ExecutionID, &artifact.Kind, &artifact.StoragePath,
+		executionID, id).Scan(&artifact.ID, &artifact.ExecutionID, &artifact.Stage, &artifact.Kind, &artifact.Name, &artifact.StoragePath,
 		&artifact.SHA256, &artifact.SizeBytes, &artifact.Redacted, &artifact.CreatedAt)
 	if err != nil {
 		return Artifact{}, nil, err
@@ -162,14 +161,13 @@ func (s *ArtifactStore) Open(ctx context.Context, executionID, id string) (Artif
 	return artifact, file, nil
 }
 
-// HarnessSummaryTx reads HarnessResult.summary from the Execution's
-// harness_output artifact inside tx (linearoutbox.SummarySource). As for the
-// claim's resume summary (Q74), several or no artifacts, an unreadable file
-// or invalid JSON make the summary unavailable rather than failing tx.
+// HarnessSummaryTx reads out/summary.md from the work_summary artifact inside tx
+// (linearoutbox.SummarySource). Several or no artifacts, an unreadable file or
+// invalid UTF-8 make the summary unavailable rather than failing tx.
 func (s *ArtifactStore) HarnessSummaryTx(ctx context.Context, tx *sql.Tx, executionID string) (string, bool) {
 	var path sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN count(*)=1 THEN min(storage_path) END
-		FROM artifacts WHERE execution_id=? AND kind='harness_output'`, executionID).Scan(&path); err != nil || !path.Valid {
+		FROM artifacts WHERE execution_id=? AND kind='work_summary'`, executionID).Scan(&path); err != nil || !path.Valid {
 		return "", false
 	}
 	file, err := s.root.Open(path.String)
@@ -181,11 +179,12 @@ func (s *ArtifactStore) HarnessSummaryTx(ctx context.Context, tx *sql.Tx, execut
 	if err != nil || !utf8.Valid(body) {
 		return "", false
 	}
-	var result struct {
-		Summary *string `json:"summary"`
+	return string(body), true
+}
+
+func nullableArtifactID(id string) any {
+	if id == "" {
+		return nil
 	}
-	if json.Unmarshal(body, &result) != nil || result.Summary == nil {
-		return "", false
-	}
-	return *result.Summary, true
+	return id
 }

@@ -113,7 +113,7 @@ func cancelLoopTask(t *testing.T, h *loopHarness, held bool) {
 	if held {
 		body = "no criteria"
 	}
-	id := attachLoopIssue(t, h, body, "ai-ready", "repo:p")
+	id := attachLoopIssue(t, h, body, "ai-ready", "route:p")
 	// Deliver the hold comment first, if present, so only cancellation is due.
 	h.send(t)
 	tx, err := h.db.Begin()
@@ -185,7 +185,7 @@ func TestLinearReattachedCanceledIssueDoesNotStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, labels := range [][]string{{"repo:p"}, {"ai-ready", "repo:p"}} {
+	for i, labels := range [][]string{{"route:p"}, {"ai-ready", "route:p"}} {
 		issue := linearIssueJSON("issue-1", loopCriteria, at.Add(time.Duration(i+1)*time.Minute), labels...)
 		issue["state"] = map[string]any{"id": state.ID, "name": state.Name, "type": state.Type}
 		h.fake.set("issue-1", issue)
@@ -214,7 +214,7 @@ func TestLinearReattachedCanceledIssueDoesNotStart(t *testing.T) {
 // タスクの重複防止だけでは防げない再起動も検出する (16 3.5.4、3.6.4)。
 func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 	h := newLoopHarness(t)
-	id := attachLoopIssue(t, h, loopCriteria, "ai-ready", "repo:p")
+	id := attachLoopIssue(t, h, loopCriteria, "ai-ready", "route:p")
 	var executionID string
 	if err := h.db.QueryRow(`SELECT id FROM executions WHERE task_id = ?`, id).Scan(&executionID); err != nil {
 		t.Fatal(err)
@@ -281,8 +281,8 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 	for _, hold := range []struct {
 		cause, body, label string
 	}{
-		{"missing_acceptance_criteria", "no criteria", "repo:p"},
-		{"routing_unknown_label", loopCriteria, "repo:unknown"},
+		{"missing_acceptance_criteria", "no criteria", "route:p"},
+		{"routing_unknown_label", loopCriteria, "route:unknown"},
 	} {
 		t.Run(hold.cause, func(t *testing.T) {
 			h := newLoopHarness(t)
@@ -290,18 +290,22 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 			h.send(t) // Deliver the initial hold comment.
 			h.poll(t) // Consume that comment's updatedAt before changing state.
 			var status, cause string
-			if err := h.db.QueryRow(`SELECT status, intake_block_cause FROM tasks WHERE id = ?`, id).Scan(&status, &cause); err != nil {
+			if err := h.db.QueryRow(`SELECT status, coalesce(intake_block_cause, '') FROM tasks WHERE id = ?`, id).Scan(&status, &cause); err != nil {
 				t.Fatal(err)
 			}
-			if status != "blocked" || cause != hold.cause {
+			wantStatus, wantCause, wantComments := "blocked", hold.cause, 1
+			if hold.cause == "routing_unknown_label" {
+				wantStatus, wantCause, wantComments = "routing", "", 0
+			}
+			if status != wantStatus || cause != wantCause {
 				t.Fatalf("held task = %s / %s, want blocked / %s", status, cause, hold.cause)
 			}
 			comments, _ := h.fake.snapshot()
-			if len(comments) != 1 {
+			if len(comments) != wantComments {
 				t.Fatalf("initial hold comments = %d, want 1", len(comments))
 			}
 			counts := h.counts(t)
-			if counts.tasks != 1 || counts.executions != 0 || counts.outbox != 1 {
+			if counts.tasks != 1 || counts.executions != 0 || counts.outbox != wantComments {
 				t.Fatalf("initial hold counts = %+v, want 1 task, 0 executions and 1 comment row", counts)
 			}
 			effects := h.effects(t)

@@ -14,9 +14,7 @@ import (
 type SandboxKind string
 
 const (
-	Harness   SandboxKind = "harness"
-	TestSetup SandboxKind = "test_setup"
-	TestRun   SandboxKind = "test_run"
+	Harness SandboxKind = "harness"
 )
 
 // NetworkPolicy's zero value denies all networking, for every Kind.
@@ -25,7 +23,6 @@ type NetworkPolicy string
 const (
 	NetworkNone    NetworkPolicy = "none"
 	NetworkHarness NetworkPolicy = "harness"
-	NetworkSetup   NetworkPolicy = "setup"
 )
 
 // ResourceLimits are supplied by the trusted caller. There are no Q15 defaults.
@@ -100,7 +97,7 @@ func (e *Error) ErrorClass() model.ErrorClass {
 }
 
 // ExitError is an ordinary workload failure, to be classified by its caller
-// (setup/config_error, harness/execution_failed, Gate 2/test_failed).
+// (harness/execution_failed).
 type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string {

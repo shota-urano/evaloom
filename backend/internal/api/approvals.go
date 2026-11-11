@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -50,18 +52,8 @@ type approvalView struct {
 	CreatedAt         Timestamp       `json:"createdAt"`
 }
 
-type approvalArtifactView struct {
-	ID        string    `json:"id"`
-	SHA256    string    `json:"sha256"`
-	SizeBytes int64     `json:"sizeBytes"`
-	CreatedAt Timestamp `json:"createdAt"`
-}
-
 type approvalDetailView struct {
 	approvalView
-	PRURL         *string                   `json:"prUrl"`
-	GateResults   []executionGateResultView `json:"gateResults"`
-	DiffArtifacts []approvalArtifactView    `json:"diffArtifacts"`
 }
 
 func newApprovalView(a store.Approval) (approvalView, error) {
@@ -165,29 +157,7 @@ func approvalDetail(ctx context.Context, db *sql.DB, id string) (approvalDetailV
 	if err != nil {
 		return approvalDetailView{}, err
 	}
-	view := approvalDetailView{approvalView: base, PRURL: detail.PRURL,
-		GateResults:   make([]executionGateResultView, 0, len(detail.GateResults)),
-		DiffArtifacts: make([]approvalArtifactView, 0, len(detail.DiffArtifacts)),
-	}
-	for _, gate := range detail.GateResults {
-		created, err := ParseTimestamp(gate.CreatedAt)
-		if err != nil {
-			return view, fmt.Errorf("gate result %q: invalid stored timestamp", gate.ID)
-		}
-		view.GateResults = append(view.GateResults, executionGateResultView{
-			ID: gate.ID, Gate: gate.Gate, Result: gate.Result, BaseSHA: gate.BaseSHA,
-			TargetSHA: gate.TargetSHA, Findings: gate.Findings, CreatedAt: created,
-		})
-	}
-	for _, artifact := range detail.DiffArtifacts {
-		created, err := ParseTimestamp(artifact.CreatedAt)
-		if err != nil {
-			return view, fmt.Errorf("artifact %q: invalid stored timestamp", artifact.ID)
-		}
-		view.DiffArtifacts = append(view.DiffArtifacts, approvalArtifactView{
-			ID: artifact.ID, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, CreatedAt: created,
-		})
-	}
+	view := approvalDetailView{approvalView: base}
 	return view, nil
 }
 
@@ -290,7 +260,7 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 	}
 	now := time.Now().UTC()
 	stamp := now.Format(time.RFC3339Nano)
-	status, to, reason := "approved", model.ExecutionMerging, "approval_approved"
+	status, to, reason := "approved", model.ExecutionPending, "approval_approved"
 	var expiresAt *string
 	if input.Decision == "approve" {
 		ttl := defaultApprovalTTL
@@ -310,6 +280,11 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 		FromExecution: model.ExecutionWaitingApproval, ToExecution: to,
 	}); err != nil {
 		return err
+	}
+	if to == model.ExecutionPending {
+		if _, err := tx.ExecContext(ctx, `UPDATE executions SET resume_stage='publish' WHERE id=? AND status='pending'`, execution.ID); err != nil {
+			return err
+		}
 	}
 	if to == model.ExecutionFailed {
 		// Q57: the PR stays open; the owner fixes it with a continue retry.
@@ -374,8 +349,8 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 		return "", &Error{Code: Conflict, Message: "Only an expired approval can be renewed"}
 	}
 	from := execution.Status
-	if !execution.Latest || execution.TaskStatus != model.TaskWaitingApproval ||
-		(from != model.ExecutionWaitingApproval && from != model.ExecutionMerging) {
+	if !execution.Latest || (execution.TaskStatus != model.TaskWaitingApproval && execution.TaskStatus != model.TaskQueued) ||
+		(from != model.ExecutionWaitingApproval && from != model.ExecutionPending) {
 		return "", &Error{Code: Conflict, Message: "Renewal requires the latest Execution waiting for approval"}
 	}
 	var open int
@@ -391,14 +366,14 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if from == model.ExecutionMerging {
+	if from == model.ExecutionPending {
 		if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
-			TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskWaitingApproval,
-			FromExecution: model.ExecutionMerging, ToExecution: model.ExecutionWaitingApproval,
+			TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskQueued,
+			FromExecution: model.ExecutionPending, ToExecution: model.ExecutionWaitingApproval,
 		}); err != nil {
 			return "", err
 		}
-		payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionMerging),
+		payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionPending),
 			"to": string(model.ExecutionWaitingApproval), "reason": "approval_expired"})
 		if _, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
 			return "", err
@@ -412,4 +387,10 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 		return "", err
 	}
 	return renewed, tx.Commit()
+}
+
+// fullCommitSHA accepts a lowercase, full SHA-1 or SHA-256 commit ID.
+func fullCommitSHA(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil && (len(value) == 40 || len(value) == 64) && value == strings.ToLower(value)
 }

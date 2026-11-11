@@ -154,12 +154,6 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
 	remoteHost := flags.String("remote-host", "", "single Tailscale DNS name allowed as Host with its HTTPS Origin")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
-	contextRoot := flags.String("context-root", ".", "evaloom repository root for Global Context")
-	var globalPaths []string
-	flags.Func("global-context", "selected Global Context file below context/ (repeatable)", func(value string) error {
-		globalPaths = append(globalPaths, value)
-		return nil
-	})
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -203,7 +197,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		}
 		defer func() { err = errors.Join(err, files.Close()) }()
 		artifacts = api.ArtifactConfig{Store: files, MaxBytes: *artifactMaxBytes}
-		// Linear comment bodies read 作業概要 from harness_output (spec 16 3.3).
+		// Linear comment bodies read 作業概要 from work_summary (spec 16 3.3).
 		defer linearoutbox.SetSummarySource(files.HarnessSummaryTx)()
 	}
 
@@ -223,8 +217,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	// in the settings table, so they survive a restart (spec 15 5章, Q48, Q76).
 	linearSettings := linearintake.NewLabelSettings(db, logger)
 	server := &http.Server{
-		Handler: api.NewHandlerWithSettings(db, logger, auth, web,
-			api.ContextConfig{RepositoryRoot: *contextRoot, GlobalPaths: globalPaths}, artifacts, linearSettings),
+		Handler:           api.NewHandlerWithSettings(db, logger, auth, web, artifacts, linearSettings),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -333,11 +326,11 @@ func phase1NotificationChannels(goos, home string, port int) []notification.Chan
 
 func registerRunner(ctx context.Context, path string, args []string, output io.Writer) (err error) {
 	if len(args) == 0 || args[0] != "register" {
-		return fmt.Errorf("usage: evaloomd -db <database file path> runner register -worktree-root <absolute path> [-name <display name>] <id>")
+		return fmt.Errorf("usage: evaloomd -db <database file path> runner register [-name <display name>] <id>")
 	}
 	flags := flag.NewFlagSet("evaloomd runner register", flag.ContinueOnError)
 	flags.SetOutput(output)
-	root := flags.String("worktree-root", "", "absolute directory for Runner worktrees (required)")
+	root := flags.String("worktree-root", "", "deprecated compatibility option; configure the workspace directory on the Runner")
 	name := flags.String("name", "", "display name (defaults to Runner ID)")
 	if err := flags.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

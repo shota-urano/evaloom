@@ -14,12 +14,9 @@
 設定不備は既存の`harnesscontext.ConfigError`で返す。
 中止は`errors.Is(err, context.Canceled)`で確認できる。
 
-`Runner.PrepareHarnessEnvironment`は作成と照合を行い、Projectの固定済みファイルと
-現在のworktree HEADを添えて、既存の`POST /api/executions/{id}/context`へ送る。
-Control Planeは既存のトランザクションで、各ファイルの相対パス・内容・SHA-256・
-Profileのcommit SHAを`layer=harness, kind=harness_config`として保存する。
-本人用API・テーブル・列は追加しない。Runnerは管理DBを直接開かない。
-保存の応答を確認するまで、呼び出し側に設定環境を返さない。
+Runner の旧工程（`Runner.PrepareHarnessEnvironment` と `POST /api/executions/{id}/context`）は、
+worktree と Project Context の固定とともに消した（`docs/specs/19-routing-and-stages.md` 3.11）。
+段の枠の実行器ができたら、そこから`Create`を呼ぶ。
 HTTP・保存・応答の検証に失敗した場合も、作成したディレクトリを削除する。
 応答が失われた場合は同じ入力で再実行でき、既存APIの再送処理でrevision IDを保つ。
 
@@ -131,11 +128,5 @@ volumeの更新から停止・認証回収・書き戻しまでを検証する�
 実Dockerの認証回収は`security_docker`の`TestDockerAuthenticationWriteback`で検証できる。
 通常の`make verify`では実Docker・実CLI・モデルAPIの試験を実行しない。
 
-`runner/authentication_logs_test.go`の
-`TestAuthenticationExcludedBeforeRunnerFilesArtifactsAndSSE`は、両Adapterの偽CLIから
-開始時と認証確認後の認証JSONとトークン単体を実際に出力する。
-認証確認でA、本実行でBに更新し、本実行のAと開始時の値を累積して除外する。
-成功・失敗・中止・タイムアウト・preflight失敗・不正JSON・サイズ超過・symlinkを通し、
-Runnerのローカルファイル、保存artifact、HTTPのSSEフレーム、summaryに認証が残らないことを
-確認する。通常行がCLI終了前にファイルとeventsへ届くこと、認証確認後の再取得失敗で
-以後のCLI出力を破棄すること、コマンド終了前に保管先を更新しないことも確認する。
+Runner の旧工程を通した認証の除外の結合テスト（`runner/authentication_logs_test.go`）は、
+旧工程とともに消した。段の枠の実行器で作り直す。

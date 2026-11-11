@@ -83,7 +83,7 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			err = invalid("projectId", "not_found")
 		}
 		if err == nil {
-			_, err = store.GetProjectHarness(ctx, tx, project.ID, project.DefaultRole)
+			_, err = store.GetProjectHarness(ctx, tx, project.ID, "")
 			if errors.Is(err, sql.ErrNoRows) {
 				err = &Error{Code: PreconditionFailed, Message: "Project has no Default Harness assignment",
 					Details: []Detail{{Field: "projectId", Reason: "default_harness_missing"}}}
@@ -153,7 +153,6 @@ type taskSummaryView struct {
 	IntakeBlockCause *string               `json:"intakeBlockCause"`
 	Linear           *taskLinearView       `json:"linear"`
 	LatestExecution  *executionSummaryView `json:"latestExecution"`
-	PRURL            *string               `json:"prUrl"`
 }
 
 // taskLinearView is the linked Linear Issue; null for manual tasks.
@@ -233,7 +232,6 @@ func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		views := make([]taskSummaryView, 0, len(rows))
 		for _, row := range rows {
 			view := newTaskSummaryView(row.Task, row.TaskOrigin)
-			view.PRURL = row.PRURL
 			if e := row.LatestExecution; e != nil {
 				view.LatestExecution = &executionSummaryView{e.ID, e.Seq, e.Mode, e.Status, e.ErrorClass}
 			}

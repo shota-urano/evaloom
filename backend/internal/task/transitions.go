@@ -31,10 +31,10 @@ func conflict(format string, args ...any) error {
 // A self-transition is not a task transition; Execution substeps are handled below.
 var taskTransitions = map[model.TaskStatus][]model.TaskStatus{
 	model.TaskReceived:        {model.TaskQueued},
-	model.TaskQueued:          {model.TaskRunning, model.TaskCancelled},
-	model.TaskRunning:         {model.TaskVerifying, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked},
-	model.TaskVerifying:       {model.TaskCompleted, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked, model.TaskWaitingApproval},
-	model.TaskWaitingApproval: {model.TaskCompleted, model.TaskFailed, model.TaskCancelled},
+	model.TaskRouting:         {model.TaskQueued, model.TaskCancelled},
+	model.TaskQueued:          {model.TaskRunning, model.TaskWaitingApproval, model.TaskCancelled},
+	model.TaskRunning:         {model.TaskCompleted, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskBlocked, model.TaskWaitingApproval},
+	model.TaskWaitingApproval: {model.TaskQueued, model.TaskCompleted, model.TaskFailed, model.TaskCancelled},
 	model.TaskBlocked:         {model.TaskQueued, model.TaskCancelled},
 	model.TaskFailed:          {model.TaskQueued},
 	model.TaskTimedOut:        {model.TaskQueued},
@@ -58,10 +58,9 @@ var executionTasks = map[model.ExecutionStatus]model.TaskStatus{
 	model.ExecutionClaimed:         model.TaskRunning,
 	model.ExecutionPreparing:       model.TaskRunning,
 	model.ExecutionRunning:         model.TaskRunning,
-	model.ExecutionVerifying:       model.TaskVerifying,
-	model.ExecutionPublishing:      model.TaskVerifying,
+	model.ExecutionVerifying:       model.TaskRunning,
+	model.ExecutionPublishing:      model.TaskRunning,
 	model.ExecutionWaitingApproval: model.TaskWaitingApproval,
-	model.ExecutionMerging:         model.TaskWaitingApproval,
 	model.ExecutionSucceeded:       model.TaskCompleted,
 	model.ExecutionBlocked:         model.TaskBlocked,
 	model.ExecutionFailed:          model.TaskFailed,
@@ -86,27 +85,19 @@ func TaskStatusForExecution(status model.ExecutionStatus) (model.TaskStatus, err
 // wait so the owner can approve again (3.5.2, 3.6). Retries create another
 // Execution; they must never reopen a terminal Execution.
 var executionTransitions = map[model.ExecutionStatus][]model.ExecutionStatus{
-	model.ExecutionPending:         {model.ExecutionClaimed, model.ExecutionCancelled},
+	model.ExecutionPending:         {model.ExecutionClaimed, model.ExecutionWaitingApproval, model.ExecutionCancelled},
 	model.ExecutionClaimed:         {model.ExecutionPreparing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
 	model.ExecutionPreparing:       {model.ExecutionRunning, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
 	model.ExecutionRunning:         {model.ExecutionVerifying, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
 	model.ExecutionVerifying:       {model.ExecutionPublishing, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked},
 	model.ExecutionPublishing:      {model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionCancelled, model.ExecutionBlocked, model.ExecutionWaitingApproval},
-	model.ExecutionWaitingApproval: {model.ExecutionMerging, model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled},
-	model.ExecutionMerging:         {model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled, model.ExecutionWaitingApproval},
+	model.ExecutionWaitingApproval: {model.ExecutionPending, model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled},
 	model.ExecutionBlocked:         {model.ExecutionPending, model.ExecutionCancelled},
 }
 
-// ValidateExecutionTransition also accepts starting directly at an approved
-// resume point after claim (spec 04, 3.8; spec 05, 3.3). The resume API must check
-// the block decision and SHA before setting resume_point; this is not authorization.
-func ValidateExecutionTransition(from, to model.ExecutionStatus, resumePoint string) error {
-	if from == model.ExecutionClaimed || from == model.ExecutionPreparing {
-		if (resumePoint == "gate2" || resumePoint == "gate3") && to == model.ExecutionVerifying ||
-			resumePoint == "publish" && to == model.ExecutionPublishing {
-			return nil
-		}
-	}
+// ValidateExecutionTransition checks one Execution state change against the
+// table above.
+func ValidateExecutionTransition(from, to model.ExecutionStatus) error {
 	for _, allowed := range executionTransitions[from] {
 		if to == allowed {
 			return nil

@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -35,36 +33,13 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES ('r1', 'r1', 'h', '/w', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`); err != nil {
+	if _, err := db.Exec(`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('r1', 'r1', 'h', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	// Fill every required column so the test follows schema changes.
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') WHERE "notnull" = 1 AND dflt_value IS NULL`)
-	if err != nil {
+	if _, err := db.Exec(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
 		t.Fatal(err)
 	}
-	columns := []string{"linear_team_id", "linear_routing_label"}
-	values := []any{"team-a", "repo:p"}
-	for rows.Next() {
-		var column string
-		if err := rows.Scan(&column); err != nil {
-			t.Fatal(err)
-		}
-		value := map[string]string{"id": "p1", "local_repo_path": "/repos/p1", "runner_id": "r1"}[column]
-		if value == "" {
-			value = "x"
-		}
-		columns = append(columns, column)
-		values = append(values, value)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO projects (`+strings.Join(columns, ", ")+`) VALUES (?`+
-		strings.Repeat(", ?", len(columns)-1)+`)`, values...); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

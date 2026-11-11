@@ -291,7 +291,7 @@ func TestFSMonitorDisabledIncludingExistingCallers(t *testing.T) {
 		t.Fatalf("Read = %v, %v", files, err)
 	}
 	if _, err := registry.ValidateRepository(context.Background(), registry.RepositoryInput{
-		Path: f.wt, URL: f.remote, BaseBranch: "main", WorktreeRoot: filepath.Join(f.root, "managed"),
+		Path: f.wt, URL: f.remote, WorktreeRoot: filepath.Join(f.root, "managed"),
 	}); err != nil {
 		t.Fatal(err)
 	}

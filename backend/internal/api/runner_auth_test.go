@@ -64,7 +64,7 @@ func TestRunnerRejectsInvalidBearerCredentials(t *testing.T) {
 func TestOwnerCannotAccessAnyDeclaredRunnerAPI(t *testing.T) {
 	for _, path := range []string{
 		"/api/runners/mac-mini/claim", "/api/runners/mac-mini/heartbeat",
-		"/api/executions/example/events", "/api/executions/example/result", "/api/executions/example/context",
+		"/api/executions/example/events", "/api/executions/example/result",
 		"/api/executions/example/artifacts",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -141,8 +141,8 @@ func TestRunnerAuthenticationFailsClosedOnDatabaseErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "ambiguous identity":
-				if _, err := f.db.Exec(`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-					SELECT 'other', name, token_hash, worktree_root, status, last_heartbeat_at, created_at FROM runners`); err != nil {
+				if _, err := f.db.Exec(`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at)
+					SELECT 'other', name, token_hash, status, last_heartbeat_at, created_at FROM runners`); err != nil {
 					t.Fatal(err)
 				}
 			}

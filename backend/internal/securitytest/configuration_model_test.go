@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter/claudecode"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/codex"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
-	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
@@ -133,17 +131,10 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	request := configurationRequest(f, profile)
 	var result adapter.HarnessResult
 	var logs []adapter.LogLine
-	handlers := make(map[runner.StageID]runner.StageFunc)
-	for _, stage := range runner.ExecutionStages() {
-		// Other stages are fixture boundaries. This test exercises the real
-		// Executor's harness stage, not setup, Gates, publishing or HTTP claim.
-		handlers[stage.ID] = func(context.Context, *runner.Execution) error { return nil }
-	}
-	handlers[runner.StageHarness] = func(ctx context.Context, execution *runner.Execution) error {
-		if execution.Claim.Execution.ID != request.ExecutionID {
-			return fmt.Errorf("Execution ID mismatch")
-		}
-		h, err := adapters.Lookup(execution.Claim.Profile.Adapter)
+	// The Runner's stage framework is not built yet (spec 19 3.11 removed the
+	// development stages), so the test calls the real Adapter directly.
+	run := func(ctx context.Context) error {
+		h, err := adapters.Lookup(cli.name)
 		if err != nil {
 			return err
 		}
@@ -162,19 +153,12 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 			logs = append(logs, line)
 		}
 		result, err = h.Result(id) // Waits for all CLI/Sandbox writers to stop.
-		execution.HarnessResult = &result
 		if err != nil {
 			return err
 		}
 		return configurationVerdict(result, logs, a, b, f.Home)
 	}
-	executor, err := runner.NewExecutor(handlers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var claim runner.Claim
-	claim.Execution.ID, claim.Profile.Adapter = request.ExecutionID, cli.name
-	if err := executor.Execute(ctx, claim); err != nil {
+	if err := run(ctx); err != nil {
 		// Raw output may include authentication details. Do not dump it.
 		class := "none"
 		if result.ErrorClass != nil {

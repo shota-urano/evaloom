@@ -27,18 +27,23 @@ func TestHarnessAdapterMigrationPreservesExistingDataAndForeignKeys(t *testing.T
 	seedTaskTables(t, db)
 	seedVerificationRecords(t, db)
 	mustTaskExec(t, db, `UPDATE executions SET harness_id = 'codex-developer', profile_id = 'profile-1'`)
-	before, err := GetHarness(context.Background(), db, "codex-developer")
+	var beforePath string
+	err = db.QueryRow(`SELECT repo_path FROM harnesses WHERE id='codex-developer'`).Scan(&beforePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	after, err := GetHarness(context.Background(), db, before.ID)
-	if err != nil || before.Adapter != after.Adapter || before.RepoPath != after.RepoPath || before.CreatedAt != after.CreatedAt {
-		t.Fatalf("migrated harness=%+v before=%+v err=%v", after, before, err)
+	db, err = open(context.Background(), path, migrationsBefore(t, 5))
+	if err != nil {
+		t.Fatal(err)
 	}
+	var afterPath string
+	if err := db.QueryRow(`SELECT repo_path FROM harnesses WHERE id='codex-developer'`).Scan(&afterPath); err != nil || afterPath != beforePath {
+		t.Fatalf("path=%s err=%v", afterPath, err)
+	}
+
 	var references int
 	if err := db.QueryRow(`SELECT count(*) FROM executions e
 		JOIN harnesses h ON h.id = e.harness_id
@@ -53,8 +58,9 @@ func TestHarnessAdapterMigrationPreservesExistingDataAndForeignKeys(t *testing.T
 	if _, err := db.Exec(`UPDATE harnesses SET adapter = 'new_harness'`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := GetHarness(context.Background(), db, before.ID); err != nil || got.Adapter != "new_harness" {
-		t.Fatalf("extension name=%+v err=%v", got, err)
+	var adapter string
+	if err := db.QueryRow(`SELECT adapter FROM harnesses WHERE id='codex-developer'`).Scan(&adapter); err != nil || adapter != "new_harness" {
+		t.Fatal(adapter, err)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4})
 }

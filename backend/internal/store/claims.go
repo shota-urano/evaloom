@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,55 +12,20 @@ import (
 )
 
 // Keep the active set identical for the global and per-Project limits (spec 04,
-// 3.3). Blocked, waiting_approval, merging (spec 17 3.9, Q59) and terminal
+// 3.3). Blocked, waiting_approval, pending and terminal
 // Executions do not occupy a slot.
-const activeExecutionStatuses = `('claimed', 'preparing', 'running', 'verifying', 'publishing')`
+const activeExecutionStatuses = `('claimed', 'preparing', 'working', 'checking', 'publishing')`
 
 var ErrClaimAssignmentMissing = errors.New("Project has no Default Harness assignment")
 
 type ClaimExecution struct {
-	ID                   string            `json:"id"`
-	TaskID               string            `json:"taskId"`
-	Seq                  int               `json:"seq"`
-	Mode                 string            `json:"mode"`
-	ResumePoint          *string           `json:"resumePoint"`
-	FreshNumber          *int              `json:"freshNumber"`
-	ResumeHeadSHA        *string           `json:"resumeHeadSha"`
-	HarnessHeadSHA       *string           `json:"harnessHeadSha"`
-	VerifiedSHA          *string           `json:"verifiedSha"`
-	VerifyRun            *model.TestRun    `json:"verifyRun"`
-	ResumeBlock          *ClaimResumeBlock `json:"resumeBlock"`
-	ResumeGateResults    []ClaimGateResult `json:"resumeGateResults"`
-	ResumeHarnessSummary *string           `json:"resumeHarnessSummary"`
+	ID     string `json:"id"`
+	TaskID string `json:"taskId"`
+	Seq    int    `json:"seq"`
+	Mode   string `json:"mode"`
 }
 
-type ClaimResumeBlock struct {
-	ID           string          `json:"id"`
-	Cause        string          `json:"cause"`
-	HeadSHA      string          `json:"headSha"`
-	GateResultID *string         `json:"gateResultId"`
-	Detail       json.RawMessage `json:"detail"`
-	DecidedAt    *string         `json:"decidedAt"`
-}
-
-type ClaimGateResult struct {
-	ID        string          `json:"id"`
-	Gate      int             `json:"gate"`
-	Result    string          `json:"result"`
-	BaseSHA   string          `json:"baseSha"`
-	TargetSHA string          `json:"targetSha"`
-	Findings  []model.Finding `json:"findings"`
-}
-
-type ClaimPullRequest struct {
-	Number     int     `json:"number"`
-	BranchName *string `json:"branchName"`
-	Seq        int     `json:"seq"`
-}
-
-// ClaimProject is the Project snapshot sent to the Runner. Its
-// setupAllowedHosts is projects.setup_allowed_hosts as registered (spec 04
-// 3.3.1, spec 03 3.3.1).
+// ClaimProject is the Project snapshot sent to the Runner.
 type ClaimProject struct {
 	model.Project
 }
@@ -81,52 +47,15 @@ type ClaimProfile struct {
 	ToolPermissions map[string]any  `json:"toolPermissions"`
 }
 
-type ClaimPrevious struct {
-	WorktreePath *string `json:"worktreePath"`
-	BranchName   *string `json:"branchName"`
-	PRNumber     *int    `json:"prNumber"`
-}
-
-// ClaimWorktree carries the original baseline with the worktree it measures.
-// A continue claim gets this from its predecessor; a resumed claim gets its
-// own saved association. A fresh worktree has no previous baseline.
-type ClaimWorktree struct {
-	ID                  string             `json:"id"`
-	Path                string             `json:"path"`
-	BaseSHA             string             `json:"baseSha"`
-	BranchName          string             `json:"branchName"`
-	SetupStatus         string             `json:"setupStatus"`
-	Baseline            *ClaimBaseline     `json:"baseline"`
-	CopiedFiles         []model.CopiedFile `json:"copiedFiles"`
-	Status              string             `json:"status"`
-	ExpectedHeadSHA     *string            `json:"expectedHeadSha"`
-	PreparationComplete bool               `json:"preparationComplete"`
-}
-
-// ClaimBaseline adds artifact contents only to the claim snapshot, not to the
-// persisted TestRun or result reporting schema. Unavailable IDs remain null.
-type ClaimBaseline struct {
-	model.TestRun
-	TestIDs []string `json:"testIds"`
-}
-
 // Claim contains only execution input, never Runner credentials. Assignment is
 // internal metadata from the saved pin, or the current assignment on first claim.
 type Claim struct {
-	Execution    ClaimExecution     `json:"execution"`
-	Task         ClaimTask          `json:"task"`
-	Project      ClaimProject       `json:"project"`
-	Profile      ClaimProfile       `json:"profile"`
-	Previous     *ClaimPrevious     `json:"previous"`
-	Worktree     *ClaimWorktree     `json:"worktree"`
-	PullRequests []ClaimPullRequest `json:"pullRequests"`
-	// Operation is null for an Execution claim; an approved operation is
-	// returned as OperationClaim instead (spec 17 3.5.1).
-	Operation *ClaimOperation `json:"operation"`
-	// Artifact selection is captured in the transaction; bytes are read after commit.
-	HarnessOutputArtifactID *string              `json:"-"`
-	Assignment              model.ProjectHarness `json:"-"`
-	profilePinned           bool
+	Execution     ClaimExecution       `json:"execution"`
+	Task          ClaimTask            `json:"task"`
+	Project       ClaimProject         `json:"project"`
+	Profile       ClaimProfile         `json:"profile"`
+	Assignment    model.ProjectHarness `json:"-"`
+	profilePinned bool
 }
 
 // NextClaim reads capacity, the oldest eligible Execution and its Registry
@@ -142,10 +71,10 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	}
 	var c Claim
 	var projectID string
-	var role, harnessID, profileID, version, commitSHA sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT e.id, e.task_id, e.seq, e.mode, e.resume_point,
-		t.project_id, t.title, t.body, t.acceptance_criteria, t.short_name,
-		e.role, e.harness_id, e.profile_id, e.profile_version, e.profile_commit_sha
+	var harnessID, profileID, version, commitSHA, params sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT e.id, e.task_id, e.seq, e.mode,
+		t.project_id, t.title, t.body, t.acceptance_criteria,
+		e.harness_id, e.profile_id, e.profile_version, e.profile_commit_sha, e.params
 		FROM executions e JOIN tasks t ON t.id = e.task_id
 		JOIN projects p ON p.id = t.project_id
 		WHERE e.status = 'pending' AND p.runner_id = ?
@@ -153,9 +82,9 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 			WHERE at.project_id = p.id AND a.status IN `+activeExecutionStatuses+`)
 		ORDER BY e.created_at, e.id LIMIT 1`, runnerID).
 		Scan(&c.Execution.ID, &c.Execution.TaskID, &c.Execution.Seq, &c.Execution.Mode,
-			&c.Execution.ResumePoint, &projectID, &c.Task.Title, &c.Task.Body,
-			&c.Task.AcceptanceCriteria, &c.Task.ShortName,
-			&role, &harnessID, &profileID, &version, &commitSHA)
+			&projectID, &c.Task.Title, &c.Task.Body,
+			&c.Task.AcceptanceCriteria,
+			&harnessID, &profileID, &version, &commitSHA, &params)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -171,10 +100,15 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 		// Blocked continuation keeps the same Execution and Profile (spec 04,
 		// 3.8 and 4). Its input must not depend on today's Default Role or pin.
 		c.Assignment = model.ProjectHarness{
-			ProjectID: projectID, Role: role.String, HarnessID: harnessID.String, ProfileID: profileID.String,
+			ProjectID: projectID, HarnessID: harnessID.String, ProfileID: profileID.String,
 		}
+		c.Project.HarnessID, c.Project.ProfileID = harnessID.String, profileID.String
+		if !params.Valid {
+			return nil, fmt.Errorf("store: Execution %s has no pinned params", c.Execution.ID)
+		}
+		c.Project.Params = json.RawMessage(params.String)
 	} else {
-		c.Assignment, err = GetProjectHarness(ctx, tx, projectID, c.Project.DefaultRole)
+		c.Assignment, err = GetProjectHarness(ctx, tx, projectID, "")
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrClaimAssignmentMissing
 		}
@@ -190,114 +124,44 @@ func NextClaim(ctx context.Context, tx *sql.Tx, runnerID string) (*Claim, error)
 	if err != nil {
 		return nil, err
 	}
-	c.Profile = ClaimProfile{HarnessID: harness.ID, Adapter: harness.Adapter,
+	// Read execution configuration from the pinned definition, never the mutable
+	// Harness registration. Legacy definitions remain readable during migration.
+	var definition struct {
+		ExecutionConfiguration struct {
+			Adapter string `json:"adapter"`
+		} `json:"executionConfiguration"`
+		Stages struct {
+			Work struct {
+				MicroHarness    string         `json:"microHarness"`
+				ToolPermissions map[string]any `json:"toolPermissions"`
+			} `json:"work"`
+		} `json:"stages"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(profile.Definition))
+	decoder.UseNumber()
+	if err := decoder.Decode(&definition); err != nil {
+		return nil, err
+	}
+	adapter := definition.Stages.Work.MicroHarness
+	if adapter == "" {
+		adapter = definition.ExecutionConfiguration.Adapter
+	}
+	if adapter == "" {
+		return nil, fmt.Errorf("store: pinned Profile has no work adapter")
+	}
+	c.Profile = ClaimProfile{HarnessID: harness.ID, Adapter: adapter,
 		Version: profile.Version, CommitSHA: profile.CommitSHA, Definition: profile.Definition,
-		HarnessRepoPath: harness.RepoPath, ToolPermissions: harness.ToolPermissions}
+		HarnessRepoPath: harness.RepoPath, ToolPermissions: definition.Stages.Work.ToolPermissions}
 	if c.profilePinned {
 		c.Profile.Version = version.String
 		c.Profile.CommitSHA = commitSHA.String
 	}
-	if c.Execution.Seq > 1 && c.Execution.Mode == "continue" {
-		var previous ClaimPrevious
-		err := tx.QueryRowContext(ctx, `SELECT w.path, e.branch_name, e.pr_number
-			FROM executions e LEFT JOIN worktrees w ON w.id = e.worktree_id
-			WHERE e.task_id = ? AND e.seq = ?`, c.Execution.TaskID, c.Execution.Seq-1).
-			Scan(&previous.WorktreePath, &previous.BranchName, &previous.PRNumber)
-		if err != nil {
-			return nil, err
-		}
-		c.Previous = &previous
-	}
-	if err := loadClaimWorktree(ctx, tx, &c, runnerID); err != nil {
-		return nil, err
-	}
-	if err := loadClaimAdditions(ctx, tx, &c); err != nil {
-		return nil, err
-	}
 	return &c, nil
-}
-
-func loadClaimWorktree(ctx context.Context, tx *sql.Tx, c *Claim, runnerID string) error {
-	var worktreeID, base sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT worktree_id, base_sha FROM executions WHERE id = ?`, c.Execution.ID).Scan(&worktreeID, &base)
-	if err != nil {
-		return err
-	}
-	if !worktreeID.Valid && c.Execution.Mode == "continue" && c.Execution.Seq > 1 {
-		err = tx.QueryRowContext(ctx, `SELECT worktree_id, base_sha FROM executions WHERE task_id = ? AND seq = ?`, c.Execution.TaskID, c.Execution.Seq-1).Scan(&worktreeID, &base)
-		if err != nil {
-			return err
-		}
-	}
-	if !worktreeID.Valid {
-		return nil
-	}
-	w := &ClaimWorktree{ID: worktreeID.String}
-	var copied string
-	// A cleaned worktree retains its branch and start SHA (spec 06, 3.3.6).
-	// Preparation needs this snapshot to restore it and reuse its baseline.
-	err = tx.QueryRowContext(ctx, `SELECT path, base_sha, branch_name, copied_files, setup_status, status FROM worktrees WHERE id = ? AND task_id = ? AND project_id = ? AND runner_id = ?`, w.ID, c.Execution.TaskID, c.Project.ID, runnerID).Scan(&w.Path, &w.BaseSHA, &w.BranchName, &copied, &w.SetupStatus, &w.Status)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal([]byte(copied), &w.CopiedFiles); err != nil {
-		return err
-	}
-	if base.Valid && base.String != w.BaseSHA {
-		return ErrBaselineScope
-	}
-	baseline, err := findBaseline(ctx, tx, w.ID)
-	if err != nil {
-		return err
-	}
-	if baseline != nil {
-		w.Baseline = &ClaimBaseline{TestRun: *baseline}
-	}
-	if w.Baseline != nil && w.Baseline.TargetSHA != w.BaseSHA {
-		return ErrBaselineScope
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT
-		(SELECT coalesce(nullif(pushed_sha,''),nullif(harness_head_sha,''),base_sha)
-		FROM executions WHERE task_id=? AND seq=?)`, c.Execution.TaskID, c.Execution.Seq-1).Scan(&w.ExpectedHeadSHA); err != nil {
-		return err
-	}
-	ready, err := WorktreeFilesReady(ctx, tx, w.ID)
-	if err != nil {
-		return err
-	}
-	setupReady := w.SetupStatus == "succeeded"
-	if ready && w.SetupStatus == "pending" {
-		// Require the saved skip record in the current preparation generation;
-		// today's setup command alone cannot prove preparation was completed.
-		err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worktrees w
-			JOIN executions h ON h.task_id=w.task_id AND h.runner_id=w.runner_id
-			JOIN execution_events skip ON skip.execution_id=h.id AND skip.type='log'
-			JOIN execution_events ready ON ready.execution_id=h.id AND ready.type='worktree_ready' AND ready.id<skip.id
-			WHERE w.id=? AND ((h.worktree_id=w.id AND h.base_sha=w.base_sha AND h.branch_name=w.branch_name)
-				OR EXISTS(SELECT 1 FROM audit_logs receipt WHERE receipt.target_type='execution' AND receipt.target_id=h.id
-					AND receipt.action='execution.result' AND json_extract(receipt.detail,'$.step')='worktree.restored'
-					AND json_extract(receipt.detail,'$.report.id')=w.id))
-			AND json_extract(ready.payload,'$.path')=w.path
-			AND json_extract(ready.payload,'$.branch')=w.branch_name
-			AND json_extract(ready.payload,'$.baseSha')=w.base_sha
-			AND json_extract(skip.payload,'$.sourceId')=?
-			AND json_extract(skip.payload,'$.stream')='runner'
-			AND NOT EXISTS(SELECT 1 FROM executions r JOIN execution_events start ON start.execution_id=r.id
-				WHERE r.task_id=h.task_id AND start.type='log' AND json_extract(start.payload,'$.sourceId')=?
-				AND (r.seq>h.seq OR (r.seq=h.seq AND start.id>ready.id))))`,
-			w.ID, setupSkippedPrefix+w.ID, restoreSourcePrefix+w.ID).Scan(&setupReady)
-		if err != nil {
-			return err
-		}
-	}
-	w.PreparationComplete = ready && setupReady
-	c.Worktree = w
-	return nil
 }
 
 // PinClaim saves Registry values only on first claim, after the guarded pending
 // -> claimed transition in the same transaction. Reclaim only renews acquisition
-// metadata, preserving the Execution's fixed role, Harness and Profile.
+// metadata, preserving the Execution's fixed route, params, Harness and Profile.
 func PinClaim(ctx context.Context, tx *sql.Tx, c *Claim, runnerID, claimedAt string) error {
 	var result sql.Result
 	var err error
@@ -305,9 +169,10 @@ func PinClaim(ctx context.Context, tx *sql.Tx, c *Claim, runnerID, claimedAt str
 		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, claimed_at = ?
 			WHERE id = ? AND status = 'claimed'`, runnerID, claimedAt, c.Execution.ID)
 	} else {
-		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, role = ?,
-			harness_id = ?, profile_id = ?, profile_version = ?, profile_commit_sha = ?, claimed_at = ?
-			WHERE id = ? AND status = 'claimed' AND profile_id IS NULL`, runnerID, c.Assignment.Role,
+		result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, route_kind = 'project', project_id = ?,
+			contract_version = (SELECT contract_version FROM harness_profiles WHERE id = ?),
+			params = (SELECT params FROM projects WHERE id = ?), harness_id = ?, profile_id = ?, profile_version = ?, profile_commit_sha = ?, claimed_at = ?
+			WHERE id = ? AND status = 'claimed' AND profile_id IS NULL`, runnerID, c.Project.ID, c.Assignment.ProfileID, c.Project.ID,
 			c.Assignment.HarnessID, c.Assignment.ProfileID, c.Profile.Version, c.Profile.CommitSHA,
 			claimedAt, c.Execution.ID)
 	}

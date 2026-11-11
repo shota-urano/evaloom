@@ -83,10 +83,9 @@ func TestConfigTimeoutDefaultsAndOverrides(t *testing.T) {
 		value any
 		want  DefaultTimeouts
 	}{
-		{"omitted", nil, DefaultTimeouts{900, 3600, 1800}},
-		{"empty", map[string]any{}, DefaultTimeouts{900, 3600, 1800}},
-		{"partial", map[string]any{"harnessSec": 42}, DefaultTimeouts{900, 42, 1800}},
-		{"explicit", map[string]any{"setupSec": 1, "harnessSec": 2, "testSec": 3}, DefaultTimeouts{1, 2, 3}},
+		{"omitted", nil, DefaultTimeouts{3600}},
+		{"empty", map[string]any{}, DefaultTimeouts{3600}},
+		{"explicit", map[string]any{"harnessSec": 42}, DefaultTimeouts{42}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			config := configDocument(t)
@@ -112,15 +111,14 @@ func TestConfigRejectsInvalidTypesAndValues(t *testing.T) {
 	}{
 		{"harnessAuthFiles", nil}, {"harnessAuthFiles", []string{}},
 		{"harnessAuthFiles", map[string]any{"codex": nil}}, {"harnessAuthFiles", map[string]any{"codex": 123}},
-		{"container", nil}, {"commitAuthor", nil}, {"defaultTimeouts", nil},
+		{"container", nil}, {"defaultTimeouts", nil},
 		{"container.image", ""}, {"container.proxyImage", " "},
 		{"container.runtimeEnv", nil}, {"container.runtimeEnv", map[string]any{"DOCKER_HOST": false}},
-		{"commitAuthor.name", ""}, {"commitAuthor.email", ""},
 		{"container.runtimePath", "/secret\x00path"},
-		{"githubAppPrivateKeyFile", "/secret/outside.pem"},
-		{"defaultTimeouts.setupSec", 0}, {"defaultTimeouts.harnessSec", -1},
-		{"defaultTimeouts.testSec", 1.5}, {"defaultTimeouts.setupSec", "secret"},
-		{"defaultTimeouts.harnessSec", nil}, {"defaultTimeouts.testSec", int64(1<<63 - 1)},
+		{"defaultTimeouts.harnessSec", 0}, {"defaultTimeouts.harnessSec", -1},
+		{"defaultTimeouts.harnessSec", 1.5}, {"defaultTimeouts.harnessSec", "secret"},
+		{"defaultTimeouts.harnessSec", nil}, {"defaultTimeouts.harnessSec", int64(1<<63 - 1)},
+		{"defaultTimeouts.setupSec", 1}, {"commitAuthor", map[string]any{}}, {"githubAppPrivateKeyFile", "/secret/key.pem"},
 	} {
 		t.Run(tt.key+"/"+strconv.Itoa(i), func(t *testing.T) {
 			config := configDocument(t)

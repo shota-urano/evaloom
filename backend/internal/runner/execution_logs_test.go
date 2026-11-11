@@ -66,7 +66,7 @@ func TestSavedExecutionLogsReturnRedactedRunnerArtifacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := "日本語\n[REDACTED] [REDACTED]\nAuthorization: [REDACTED]\n"
-			if logs[stream] != want || logs[stream] != string(saved) || len(logs) != 4 {
+			if logs[stream] != want || logs[stream] != string(saved) || len(logs) != 5 {
 				t.Fatalf("logs=%v saved=%q want=%q", logs, saved, want)
 			}
 			if strings.Contains(string(body), process.token) || strings.Contains(string(body), "model-secret") || strings.Contains(string(body), "private") {

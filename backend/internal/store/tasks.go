@@ -12,9 +12,9 @@ func GetTaskByIdempotencyKey(ctx context.Context, reader projectReader, key stri
 	var t model.Task
 	// A held Linear task has no Project (spec 15 3.6); it reads as "".
 	err := reader.QueryRowContext(ctx, `SELECT id, coalesce(project_id, ''), title, body, acceptance_criteria,
-		short_name, task_type, collaboration_mode, status, idempotency_key, created_at, updated_at
+		collaboration_mode, status, idempotency_key, created_at, updated_at
 		FROM tasks WHERE idempotency_key = ?`, key).Scan(&t.ID, &t.ProjectID, &t.Title, &t.Body,
-		&t.AcceptanceCriteria, &t.ShortName, &t.TaskType, &t.CollaborationMode, &t.Status,
+		&t.AcceptanceCriteria, &t.CollaborationMode, &t.Status,
 		&t.IdempotencyKey, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
@@ -26,10 +26,10 @@ func InsertTask(ctx context.Context, tx *sql.Tx, t *model.Task) error {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
+		(id, project_id, title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.ProjectID, t.Title, t.Body,
-		t.AcceptanceCriteria, t.ShortName, t.TaskType, t.CollaborationMode, t.Status,
+		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.ProjectID, t.Title, t.Body,
+		t.AcceptanceCriteria, t.CollaborationMode, t.Status,
 		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt)
 	return err
 }
@@ -45,19 +45,32 @@ func allocateTaskID(ctx context.Context, tx *sql.Tx, t *model.Task) error {
 
 // InsertLinearTask inserts a task created from a Linear Issue (spec 15 3.6)
 // with source=linear. An empty t.ProjectID stores NULL and blockCause is
-// tasks.intake_block_cause (empty: NULL); the schema rejects a NULL Project
-// or an empty acceptance_criteria unless the cause allows it (3.8).
+// tasks.intake_block_cause (empty: NULL). Routing reasons from the old intake
+// boundary become routing tasks; acceptance criteria depend on the Profile.
 func InsertLinearTask(ctx context.Context, tx *sql.Tx, t *model.Task, blockCause string) error {
+	status, cause := intakeTaskState(string(t.Status), blockCause)
+	t.Status = model.TaskStatus(status)
 	if err := allocateTaskID(ctx, tx, t); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria, short_name, task_type,
+		(id, project_id, title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
-		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'linear', nullif(?, ''))`, t.ID, t.ProjectID,
-		t.Title, t.Body, t.AcceptanceCriteria, t.ShortName, t.TaskType, t.CollaborationMode, t.Status,
-		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt, blockCause)
+		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, 'linear', nullif(?, ''))`, t.ID, t.ProjectID,
+		t.Title, t.Body, t.AcceptanceCriteria, t.CollaborationMode, t.Status,
+		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt, cause)
 	return err
+}
+
+// Routing failures are routing work, not intake holds (spec 02, 5.7).
+// The legacy intake caller may still report its transient routing reason;
+// never persist those removed enum values in tasks.intake_block_cause.
+func intakeTaskState(status, cause string) (string, string) {
+	switch cause {
+	case "routing_multiple_labels", "routing_unknown_label", "routing_team_mismatch", "routing_no_label", "routing":
+		return "routing", ""
+	}
+	return status, cause
 }
 
 func InsertInitialExecution(ctx context.Context, tx *sql.Tx, id, taskID, createdAt string) error {
@@ -67,12 +80,11 @@ func InsertInitialExecution(ctx context.Context, tx *sql.Tx, id, taskID, created
 }
 
 // TaskSummary is one row of the owner task list: the task, its latest
-// Execution (highest seq) and the newest PR URL reported by any Execution.
+// Execution (highest seq).
 type TaskSummary struct {
 	model.Task
 	TaskOrigin
 	LatestExecution *ExecutionSummary
-	PRURL           *string
 }
 
 // TaskOrigin is where a task came from (spec 15 3.8 and 5章): source, the
@@ -108,10 +120,9 @@ type TaskFilter struct {
 // the numeric part (task-1000 follows task-999). before <= 0 starts at the top.
 func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64, limit int) ([]TaskSummary, error) {
 	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
-		t.short_name, t.task_type, t.collaboration_mode, t.status, t.created_at, t.updated_at,
+		t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
-		e.id, e.seq, e.mode, e.status, e.error_class,
-		(SELECT pr_url FROM executions WHERE task_id = t.id AND pr_url IS NOT NULL ORDER BY seq DESC LIMIT 1)
+		e.id, e.seq, e.mode, e.status, e.error_class
 		FROM tasks t
 		LEFT JOIN executions e ON e.task_id = t.id AND e.seq = (SELECT max(seq) FROM executions WHERE task_id = t.id)
 		WHERE (? = '' OR t.status = ?) AND (? = '' OR t.project_id = ?)
@@ -127,11 +138,11 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 		var s TaskSummary
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
-		var errorClass, prURL sql.NullString
+		var errorClass sql.NullString
 		if err := rows.Scan(&s.ID, &s.ProjectID, &s.Title, &s.Body, &s.AcceptanceCriteria,
-			&s.ShortName, &s.TaskType, &s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
+			&s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
 			&s.Source, &s.IntakeBlockCause, &s.LinearIdentifier, &s.LinearURL,
-			&executionID, &seq, &mode, &status, &errorClass, &prURL); err != nil {
+			&executionID, &seq, &mode, &status, &errorClass); err != nil {
 			return nil, err
 		}
 		if executionID.Valid {
@@ -139,9 +150,6 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 			if errorClass.Valid {
 				s.LatestExecution.ErrorClass = &errorClass.String
 			}
-		}
-		if prURL.Valid {
-			s.PRURL = &prURL.String
 		}
 		tasks = append(tasks, s)
 	}

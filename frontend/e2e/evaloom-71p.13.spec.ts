@@ -12,10 +12,9 @@ import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-71p.13: Approvals 画面（承認待ち一覧、詳細、承認・却下、履歴）と Dashboard の承認待ち（17 3.3・3.4・3.6・5章・6章）。
 //
-// 52y.6 と同じく、global-setup がビルドしたバイナリを空きポートで別に起動し、Runner の役はテストが Runner 用 API を直接呼んで務める。
-// 承認待ちは、Git Publisher と同じ工程内報告（pushed・pr）と publishing→succeeded の報告で Control Plane に作らせる（17 3.3）。
-// verifying から publishing までの Gate 2 の計測（基準値・テスト実行）は本画面の対象外なので、その結果にあたる行
-// （Gate 2・3 の pass、verified_sha、branch_name、Execution の publishing）だけを DB へ直接入れる。
+// global-setup がビルドしたバイナリを空きポートで別に起動し、Runner の役はテストが Runner 用 API を直接呼んで務める。
+// Git Publisher（PR の作成）は software-engineer へ移した（19-routing-and-stages 3.11）ので、Control Plane は承認待ちを作らない。
+// Runner として publishing まで報告した後、承認待ち（approvals の pending の行と、Execution・タスクの waiting_approval）だけを DB へ直接入れる。
 
 const SCREENSHOTS = fileURLToPath(new URL('../../docs/design/screenshots/', import.meta.url))
 const HARNESS = 'claude-developer'
@@ -23,7 +22,6 @@ const PROJECTS = [
   { id: 'alpha-app', name: 'Alpha アプリ' },
   { id: 'beta-app', name: 'Beta アプリ' },
 ] as const
-const BASE_SHA = 'a'.repeat(40)
 
 type Server = { origin: string; cookie: string; runnerToken: string; db: string }
 
@@ -91,13 +89,12 @@ function ulid(): string {
 const sha = () => randomBytes(20).toString('hex')
 
 type Approval = { id: string; taskId: string; executionId: string; contentVersion: string; status: string; target: { prNumber: number } }
-type Pending = { taskId: string; title: string; executionId: string; headSha: string; prNumber: number; prUrl: string; diff: string; approval: Approval }
+type Pending = { taskId: string; title: string; executionId: string; headSha: string; prNumber: number; approval: Approval }
 
 let prSeq = 100
 
 /**
- * タスクを作り、Runner として claim から PR 作成までを報告して、承認待ち（waiting_approval と pending の承認）にする。
- * 差分は Runner の成果物の登録（kind=diff）で入れる。
+ * タスクを作り、Runner として claim から publishing までを報告して、承認待ち（waiting_approval と pending の承認）にする。
  */
 async function openApproval(server: Server, projectId: string, title: string): Promise<Pending> {
   const task = (await owner(
@@ -113,37 +110,27 @@ async function openApproval(server: Server, projectId: string, title: string): P
   const headSha = sha()
   await reportResult(server, executionId, { fromStatus: 'claimed', status: 'preparing' })
   await reportResult(server, executionId, { fromStatus: 'preparing', status: 'running' })
-  await reportResult(server, executionId, { fromStatus: 'running', status: 'verifying', baseSha: BASE_SHA, harnessHeadSha: headSha })
+  await reportResult(server, executionId, { fromStatus: 'running', status: 'verifying' })
+  await reportResult(server, executionId, { fromStatus: 'verifying', status: 'publishing' })
 
-  const diff = `diff --git a/src/${task.id}.ts b/src/${task.id}.ts\n--- a/src/${task.id}.ts\n+++ b/src/${task.id}.ts\n@@ -1 +1 @@\n-export const value = 1\n+export const value = 2 // ${title}\n`
-  const artifact = await runner(server, 'POST', `/api/executions/${executionId}/artifacts?artifactId=${ulid()}&kind=diff&redacted=0`, diff, 'application/octet-stream')
-  expect(artifact.status, `artifact: ${artifact.text}`).toBe(204)
-
-  // Gate 2・3 を通った結果（10-verification-gates）と、verifying→publishing の後の Execution の値。
-  const branch = `evaloom/${task.id}-approval`
+  const prNumber = prSeq++
+  const target = JSON.stringify({ repository: `example/${projectId}`, prNumber, baseBranch: 'main', headBranch: `evaloom/${task.id}-approval` })
   const now = new Date().toISOString()
   run('sqlite3', [
     server.db,
     `BEGIN;
-     INSERT INTO gate_results (id, execution_id, gate, result, base_sha, target_sha, findings, created_at)
-       VALUES ('${ulid()}', '${executionId}', 2, 'pass', '${BASE_SHA}', '${headSha}', '[]', '${now}');
-     INSERT INTO gate_results (id, execution_id, gate, result, base_sha, target_sha, findings, created_at)
-       VALUES ('${ulid()}', '${executionId}', 3, 'pass', '${BASE_SHA}', '${headSha}', '[]', '${now}');
-     UPDATE executions SET status = 'publishing', verified_sha = '${headSha}', branch_name = '${branch}' WHERE id = '${executionId}';
+     INSERT INTO approvals (id, task_id, execution_id, operation, target, content_version, params_hash, status, created_at)
+       VALUES ('${ulid()}', '${task.id}', '${executionId}', 'merge_pull_request', '${target}', '${headSha}', 'hash-${headSha}', 'pending', '${now}');
+     UPDATE executions SET status = 'waiting_approval' WHERE id = '${executionId}';
+     UPDATE tasks SET status = 'waiting_approval', updated_at = '${now}' WHERE id = '${task.id}';
      COMMIT;`,
   ])
-
-  const prNumber = prSeq++
-  const prUrl = `https://github.com/example/${projectId}/pull/${prNumber}`
-  await reportResult(server, executionId, { fromStatus: 'publishing', status: 'publishing', pushedSha: headSha, branchName: branch })
-  await reportResult(server, executionId, { fromStatus: 'publishing', status: 'publishing', prNumber, prUrl, prCreated: true })
-  await reportResult(server, executionId, { fromStatus: 'publishing', status: 'succeeded', usage: { wallTimeMs: 0 } })
 
   const list = (await owner(server, 'GET', '/api/approvals?status=pending')) as { items: Approval[] }
   const approval = list.items.find((a) => a.executionId === executionId)
   if (!approval) throw new Error(`承認待ちができていない: ${JSON.stringify(list.items)}`)
   expect(approval.contentVersion).toBe(headSha)
-  return { taskId: task.id, title, executionId, headSha, prNumber, prUrl, diff, approval }
+  return { taskId: task.id, title, executionId, headSha, prNumber, approval }
 }
 
 function sessionCookie(value: string) {
@@ -165,17 +152,13 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       const runnerToken = registered.stderr.trim()
       if (registered.status !== 0 || !/^[A-Za-z0-9_-]{43}$/.test(runnerToken)) throw new Error(`runner register が失敗した: ${registered.stderr}`)
       seedHarness(db, harness)
-      // 差分の成果物を保存できるよう、成果物の保存先を与えて起動する。
       setupOwner(binary, db)
-      const evaloomd: Evaloomd = await startEvaloomd(binary, db, '0', undefined, ['-data-dir', join(temp, 'data'), '-artifact-max-bytes', '1048576'])
+      const evaloomd: Evaloomd = await startEvaloomd(binary, db, '0')
       try {
         const server: Server = { origin: evaloomd.origin, cookie: await login(evaloomd.origin), runnerToken, db }
         await owner(server, 'POST', '/api/harness-profiles', { harnessId: HARNESS, version: '1.0.0' })
         for (const project of PROJECTS) {
-          const repo = createRepo(temp, project.id)
-          await owner(server, 'POST', '/api/projects', {
-            id: project.id, name: project.name, localRepoPath: repo.path, gitRemoteUrl: repo.url, runnerId: 'local', baseBranch: 'main', defaultRole: 'developer',
-          })
+          await owner(server, 'POST', '/api/projects', { id: project.id, name: project.name, runnerId: 'local', defaultRole: 'developer' })
           await owner(server, 'POST', `/api/projects/${project.id}/harnesses`, { role: 'developer', harnessId: HARNESS, version: '1.0.0' })
         }
         await provide(server)
@@ -224,17 +207,15 @@ test('承認待ちの件数が Dashboard に出て、承認待ちの一覧から
   await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-71p.13-approvals.png'), fullPage: true })
 })
 
-test('詳細に PR の URL・head SHA・Gate の結果・差分が出て、承認の送信に表示中の contentVersion が含まれる', async ({ page, server }) => {
+test('詳細に対象と head SHA が出て、承認の送信に表示中の contentVersion が含まれる', async ({ page, server }) => {
   const pending = await openApproval(server, PROJECTS[0].id, 'Alpha の承認')
   await openDetail(page, pending, PROJECTS[0].id)
 
-  await expect(page.getByTestId('approval-pr-url').getByRole('link', { name: pending.prUrl })).toHaveAttribute('href', pending.prUrl)
+  await expect(page.getByTestId('approval-pr-url')).toHaveText(`example/${PROJECTS[0].id}#${pending.prNumber}`)
   await expect(page.getByTestId('approval-content-version')).toHaveText(pending.headSha)
-  const gates = page.getByRole('list', { name: 'Gate の結果' })
-  await expect(gates.locator('[data-gate="2"]')).toContainText('pass')
-  await expect(gates.locator('[data-gate="3"]')).toContainText('pass')
-  await expect(gates).toContainText(pending.headSha)
-  await expect(page.getByLabel('差分')).toContainText('+export const value = 2 // Alpha の承認')
+  // Gate の結果と差分は承認詳細の API が返さなくなったので出さない。
+  await expect(page.getByRole('heading', { name: 'Gate の結果' })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '差分' })).toHaveCount(0)
   await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-71p.13-approval-detail.png'), fullPage: true })
 
   const displayed = await page.getByTestId('approval-content-version').textContent()
@@ -248,18 +229,10 @@ test('詳細に PR の URL・head SHA・Gate の結果・差分が出て、承�
   expect(task.status).toBe('waiting_approval')
   expect(task.executions.at(-1)?.status).toBe('merging')
 
-  // 承認済みの操作を Runner として受け取り、消費してマージ結果を報告する（後のテストの claim の対象にしないため）。
-  const claimed = await runner(server, 'POST', '/api/runners/local/claim')
-  expect(claimed.status).toBe(200)
-  expect((JSON.parse(claimed.text) as { operation: { approvalId: string } }).operation.approvalId).toBe(pending.approval.id)
-  const consumed = await runner(server, 'POST', `/api/approvals/${pending.approval.id}/consume`, { headSha: pending.headSha, baseBranch: 'main', open: true, merged: false })
-  expect(JSON.parse(consumed.text)).toMatchObject({ allowed: true, contentVersion: pending.headSha })
-  await reportResult(server, pending.executionId, { fromStatus: 'merging', status: 'succeeded', mergeCommitSha: sha() })
-
-  // 履歴に consumed として出る。
+  // 履歴に approved として出る。
   await page.goto('/approvals')
   const history = page.getByRole('table', { name: '履歴' })
-  await expect(history.locator(`[data-approval-id="${pending.approval.id}"]`).locator('[data-status]')).toHaveText('consumed')
+  await expect(history.locator(`[data-approval-id="${pending.approval.id}"]`).locator('[data-status]')).toHaveText('approved')
   await expect(page.getByRole('table', { name: '承認待ち' }).locator(`[data-approval-id="${pending.approval.id}"]`)).toHaveCount(0)
 })
 

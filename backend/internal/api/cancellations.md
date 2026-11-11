@@ -2,15 +2,14 @@
 
 正本は`docs/specs/04-task-lifecycle.md`の3.2・3.5・6節、
 `02-data-model.md`のexecutions・audit_logs・5.2〜5.4節、
-`05-runner.md`の3.6・5節、`06-worktree.md`の3.6節、
-`11-git-publisher.md`の5節、`12-notification.md`の3.1節。
+`05-runner.md`の3.6・5節、`12-notification.md`の3.1節。
 
 `POST /api/tasks/{id}/cancel`は既存の本人用認証で保護する。
 セッション・CSRF・Origin・Hostの検証を通った要求だけを処理する。
 claim・resultと同じ`BEGIN IMMEDIATE`で最新Executionを読み、
 状態と最新seqを条件にして更新する。
 queued・blockedの即時中止には既存の遷移関数と結果メタデータ保存を使う。
-終了時刻、worktreeのretainedへの更新、通知対象外の処理も既存関数を共有する。
+終了時刻、通知対象外の処理も既存関数を共有する。
 
 仕様に記載がない部分は、次のように判断した。
 
@@ -27,14 +26,11 @@ queued・blockedの即時中止には既存の遷移関数と結果メタデー�
   実行中の要求は状態を変えないため、監査記録だけを追加する。
   Runnerのcancelled報告時に既存のresult APIが状態変更イベントを追加する。
   仕様02にないイベント種別や、同じ状態への遷移イベントは追加しない。
-- blockedの中止ではBlockの原因・HEAD・詳細・判断の記録を変更しない。
-  `blockId`と`headSha`を指定するresumeのabort操作は仕様04の3.8節に属する。
 - claimと中止は同じ書き込み予約で直列化する。中止が先ならpendingをcancelledにし、
   claimの候補から外す。claimが先なら、中止は読み取り時点のrunningに従って要求時刻を保存する。
   古い状態を前提とした更新は、既存の状態条件と最新seq条件で拒否する。
 
-このworktreeではheartbeatは認証付きの予約ルートだったため、
-既存のRunner認証と`store/runners.go`に処理を追加した。
+heartbeatは既存のRunner認証と`store/runners.go`で処理する。
 
 - 要求は仕様05の`{bootId, runningExecutionIds}`とする。
   bootIdは空白以外を含む文字列、runningExecutionIdsはULIDの配列を必須にする。

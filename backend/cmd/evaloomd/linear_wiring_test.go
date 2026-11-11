@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 	"io"
 	"log/slog"
 	"net/http"
@@ -103,7 +103,7 @@ func linearIssueJSON(id, body string, updated time.Time, labels ...string) map[s
 		"labels": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}
 }
 
-// setupLinearProject registers p1 for team-a and repo:p with a Default
+// setupLinearProject registers p1 for team-a and route:p with a Default
 // Harness assignment, so a routed Issue can be queued.
 func setupLinearProject(t *testing.T, db *sql.DB) {
 	t.Helper()
@@ -113,42 +113,14 @@ func setupLinearProject(t *testing.T, db *sql.DB) {
 			t.Fatal(err)
 		}
 	}
-	execAll(`INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES ('r1', 'r1', 'h', '/w', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`)
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') WHERE "notnull" = 1 AND dflt_value IS NULL`)
-	if err != nil {
+	execAll(`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('r1', 'r1', 'h', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`)
+	if err := testregistry.Seed(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
-	columns := []string{"linear_team_id", "linear_routing_label"}
-	values := []any{"team-a", "repo:p"}
-	for rows.Next() {
-		var column string
-		if err := rows.Scan(&column); err != nil {
-			t.Fatal(err)
-		}
-		value := map[string]string{"id": "p1", "local_repo_path": "/repos/p1", "runner_id": "r1",
-			"copy_allowlist": "[]", "allowed_operations": "{}", "approval_policy": "{}", "timeouts": "{}"}[column]
-		if value == "" {
-			value = "x"
-		}
-		columns = append(columns, column)
-		values = append(values, value)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	execAll(`INSERT INTO projects (`+strings.Join(columns, ", ")+`) VALUES (?`+
-		strings.Repeat(", ?", len(columns)-1)+`)`, values...)
-	execAll(`INSERT INTO harnesses (id, name, specialty, supported_tasks, adapter, repo_path, repo_url,
-		supported_models, available_tools, tool_permissions, contract_version, created_at, updated_at)
-		VALUES ('h1', 'Developer', 'developer', '["development"]', 'codex', '/repos/h', 'https://example.invalid/h.git',
-		'["m"]', '[]', '{}', '1', 't', 't')`)
-	execAll(`INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition,
-		definition_hash, model_id, operation_status, registered_at)
-		VALUES ('hp1', 'h1', '1', 'sha', 'v1', '{}', 'hash', 'm', 'provisional', 't')`)
-	// default_role was filled with "x" above.
-	execAll(`INSERT INTO project_harnesses (project_id, role, harness_id, profile_id, assigned_at)
-		VALUES ('p1', 'x', 'h1', 'hp1', 't')`)
+	execAll(`INSERT INTO projects (id,name,harness_id,profile_id,runner_id,created_at,updated_at) VALUES ('p1','Project','fixture-harness','fixture-profile','r1','t','t')`)
+	execAll(`INSERT INTO routes VALUES ('route:p','p1',NULL,'t','t')`)
+	execAll(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`)
+
 }
 
 // The production wiring (linearPoller) carries one Issue through the
@@ -202,18 +174,18 @@ func TestLinearPollerWiringStartsRechecksAndCancels(t *testing.T) {
 
 	poll() // first poll of team-a: baseline only
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	fake.set("issue-1", linearIssueJSON("issue-1", "no criteria", at, "ai-ready", "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", "no criteria", at, "ai-ready", "route:p"))
 	poll()
 	if got := readTask(); got.status != "blocked" || got.cause.String != "missing_acceptance_criteria" || got.executions != 0 {
 		t.Fatalf("held task = %+v", got)
 	}
-	fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(time.Minute), "ai-ready", "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(time.Minute), "ai-ready", "route:p"))
 	poll()
 	queued := readTask()
 	if queued.status != "queued" || queued.cause.Valid || queued.executions != 1 {
 		t.Fatalf("rechecked task = %+v", queued)
 	}
-	fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(2*time.Minute), "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", "## Acceptance Criteria\n- login works", at.Add(2*time.Minute), "route:p"))
 	poll()
 	if got := readTask(); got.id != queued.id || got.status != "cancelled" {
 		t.Fatalf("cancelled task = %+v", got)
@@ -295,7 +267,7 @@ func TestLinearPollerWiringKeepsRemovedIssueRecord(t *testing.T) {
 	poll() // first poll of team-a: baseline only
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	body := "## Acceptance Criteria\n- login works"
-	fake.set("issue-1", linearIssueJSON("issue-1", body, at, "ai-ready", "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at, "ai-ready", "route:p"))
 	poll()
 	if got := taskStatus("linear:issue-1:1"); got != "queued" {
 		t.Fatalf("first task = %s", got)
@@ -311,7 +283,7 @@ func TestLinearPollerWiringKeepsRemovedIssueRecord(t *testing.T) {
 	}
 	tasks, executions := counts()
 
-	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(time.Minute), "ai-ready", "repo:p")) // restored
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(time.Minute), "ai-ready", "route:p")) // restored
 	poll()
 	if got := readState(); !got.aiReady || got.seq != 1 || got.removedAt.Valid || got.decision != "skipped_restored" {
 		t.Fatalf("row after restore = %+v", got)
@@ -320,12 +292,12 @@ func TestLinearPollerWiringKeepsRemovedIssueRecord(t *testing.T) {
 		t.Fatalf("restore created tasks/executions: %d/%d, want %d/%d", gotTasks, gotExecutions, tasks, executions)
 	}
 
-	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(2*time.Minute), "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(2*time.Minute), "route:p"))
 	poll()
 	if got := readState(); got.aiReady || got.seq != 1 {
 		t.Fatalf("row after removing ai-ready = %+v", got)
 	}
-	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(3*time.Minute), "ai-ready", "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", body, at.Add(3*time.Minute), "ai-ready", "route:p"))
 	poll()
 	if got := readState(); !got.aiReady || got.seq != 2 || got.decision != "started" {
 		t.Fatalf("row after re-adding ai-ready = %+v", got)
@@ -375,11 +347,11 @@ func TestLinearPollerWiringAsksForAcceptanceCriteriaOnce(t *testing.T) {
 
 	step() // first poll of team-a: baseline only
 	at := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	fake.set("issue-1", linearIssueJSON("issue-1", "no criteria", at, "ai-ready", "repo:p"))
+	fake.set("issue-1", linearIssueJSON("issue-1", "no criteria", at, "ai-ready", "route:p"))
 	step()
 	for i := 1; i <= 2; i++ {
 		fake.set("issue-1", linearIssueJSON("issue-1", fmt.Sprintf("still no criteria %d", i),
-			at.Add(time.Duration(i)*time.Minute), "ai-ready", "repo:p"))
+			at.Add(time.Duration(i)*time.Minute), "ai-ready", "route:p"))
 		step()
 	}
 

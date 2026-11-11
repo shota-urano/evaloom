@@ -38,9 +38,6 @@ func TestValidateRepositoryRejectsFailedPreconditions(t *testing.T) {
 		{"different URL", func(i *registry.RepositoryInput) { i.URL = "https://user:secret@example.invalid/other.git" }, "url", "remote_mismatch"},
 		{"empty URL", func(i *registry.RepositoryInput) { i.URL = "" }, "url", "remote_mismatch"},
 		{"missing remote", func(i *registry.RepositoryInput) { i.Remote = "missing" }, "url", "remote_not_found"},
-		{"missing branch", func(i *registry.RepositoryInput) { i.BaseBranch = "missing" }, "baseBranch", "not_found"},
-		{"invalid branch", func(i *registry.RepositoryInput) { i.BaseBranch = "main*" }, "baseBranch", "invalid_branch"},
-		{"empty worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = "" }, "worktreeRoot", "not_absolute"},
 		{"file worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = file }, "worktreeRoot", "not_resolvable"},
 		{"inside worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = filepath.Dir(i.Path) }, "path", "within_worktree_root"},
 		{"equal worktree root", func(i *registry.RepositoryInput) { i.WorktreeRoot = i.Path }, "path", "within_worktree_root"},
@@ -165,38 +162,12 @@ func TestValidateRepositoryRejectsUnreadableDirectory(t *testing.T) {
 	assertRejected(t, input, "path", "not_readable")
 }
 
-func TestValidateRepositoryChecksLiveRemoteBranch(t *testing.T) {
-	input := newRepository(t)
-	sha := strings.TrimSpace(runGit(t, input.URL, "rev-parse", "refs/heads/main"))
-	// Leave the cached origin/main in place after deleting the actual remote ref.
-	runGit(t, input.URL, "update-ref", "-d", "refs/heads/main")
-	assertRejected(t, input, "baseBranch", "not_found")
-	// A tag with the same name is not a Base Branch.
-	runGit(t, input.URL, "update-ref", "refs/tags/main", sha)
-	assertRejected(t, input, "baseBranch", "not_found")
-}
-
-func TestValidateRepositoryFindsBranchNotFetchedLocally(t *testing.T) {
-	input := newRepository(t)
-	runGit(t, input.URL, "update-ref", "refs/heads/new-branch", "refs/heads/main")
-	input.BaseBranch = "new-branch"
-	assertValid(t, input)
-}
-
-func TestValidateRepositoryFailsClosedWhenRemoteUnavailable(t *testing.T) {
-	input := newRepository(t)
-	input.URL = filepath.Join(t.TempDir(), "unavailable.git")
-	runGit(t, input.Path, "remote", "set-url", "origin", input.URL)
-	assertRejected(t, input, "baseBranch", "remote_unavailable")
-}
-
 func TestValidateRepositorySupportsConfiguredRemoteAndHarness(t *testing.T) {
 	input := newRepository(t)
 	runGit(t, input.Path, "remote", "rename", "origin", "upstream")
 	input.Remote = "upstream"
 	assertValid(t, input)
-	// A Harness has no Base Branch, so no remote connection is required.
-	input.BaseBranch = ""
+	// No remote connection is required.
 	input.URL = filepath.Join(t.TempDir(), "offline.git")
 	runGit(t, input.Path, "remote", "set-url", "upstream", input.URL)
 	assertValid(t, input)
@@ -274,7 +245,7 @@ func newRepository(t *testing.T) registry.RepositoryInput {
 	runGit(t, repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
 	runGit(t, repo, "remote", "add", "origin", remote)
 	runGit(t, repo, "push", "--quiet", "origin", "main")
-	return registry.RepositoryInput{Path: repo, URL: remote, BaseBranch: "main", WorktreeRoot: t.TempDir()}
+	return registry.RepositoryInput{Path: repo, URL: remote, WorktreeRoot: t.TempDir()}
 }
 
 func repositoryState(t *testing.T, repo string) string {

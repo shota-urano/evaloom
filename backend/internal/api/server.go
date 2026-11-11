@@ -24,24 +24,18 @@ func NewHandler(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, registries ...
 // NewHandlerWithWeb additionally serves the built Management UI from web on the
 // same origin (architecture 3.1). A nil web keeps unknown routes as 404.
 func NewHandlerWithWeb(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, registries ...*adapter.Registry) http.Handler {
-	return NewHandlerWithContext(db, logger, auth, web, ContextConfig{}, registries...)
-}
-
-// NewHandlerWithContext enables explicitly selected Global Context files. The
-// configuration belongs to the Control Plane, never the Runner request.
-func NewHandlerWithContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, registries ...*adapter.Registry) http.Handler {
-	return NewHandlerWithArtifacts(db, logger, auth, web, contexts, ArtifactConfig{}, registries...)
+	return NewHandlerWithArtifacts(db, logger, auth, web, ArtifactConfig{}, registries...)
 }
 
 // NewHandlerWithArtifacts uses only Control Plane supplied storage and limits.
 // The Linear label settings are read from and written to db's settings table.
-func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, registries ...*adapter.Registry) http.Handler {
-	return NewHandlerWithSettings(db, logger, auth, web, contexts, artifacts, linearintake.NewLabelSettings(db, logger), registries...)
+func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, artifacts ArtifactConfig, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithSettings(db, logger, auth, web, artifacts, linearintake.NewLabelSettings(db, logger), registries...)
 }
 
 // NewHandlerWithSettings serves GET/PATCH /api/settings from settings, which
 // the Control Plane shares with its Linear Poller (spec 15 5章).
-func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, contexts ContextConfig, artifacts ArtifactConfig, settings LinearSettings, registries ...*adapter.Registry) http.Handler {
+func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, artifacts ArtifactConfig, settings LinearSettings, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
@@ -50,14 +44,11 @@ func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, we
 	mux.Handle("/api/", auth.Protect(newOwnerRoutes(db, logger, adapters, artifacts, settings)))
 	mux.Handle("/auth/login", auth.Boundary(http.HandlerFunc(auth.login)))
 	mux.Handle("POST /auth/logout", auth.Protect(http.HandlerFunc(auth.logout)))
-	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger, artifacts)))
-	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, contexts, adapters)))
+	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts)))
-	mux.Handle("POST /api/approvals/{id}/consume", auth.protectRunner(consumeApproval(db, logger, auth)))
-	mux.Handle("POST /api/executions/{id}/publish-check", auth.protectRunner(publishCheck(db, logger, auth)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	}))
@@ -79,7 +70,6 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("GET /api/tasks/{id}", getTask(db, logger))
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", cancelTask(db, logger))
 	mux.HandleFunc("POST /api/tasks/{id}/retry", retryTask(db, logger))
-	mux.HandleFunc("POST /api/tasks/{id}/resume", resumeTask(db, logger))
 	mux.HandleFunc("GET /api/approvals", listApprovals(db, logger))
 	mux.HandleFunc("GET /api/approvals/{id}", getApproval(db, logger))
 	mux.HandleFunc("POST /api/approvals/{id}/decision", decideApproval(db, logger))
@@ -88,7 +78,6 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("POST /api/projects", writeProject(db, logger, true))
 	mux.HandleFunc("GET /api/projects/{id}", getProject(db, logger))
 	mux.HandleFunc("PATCH /api/projects/{id}", writeProject(db, logger, false))
-	mux.HandleFunc("POST /api/projects/{id}/harnesses", assignProjectHarness(db, logger))
 	mux.HandleFunc("GET /api/harnesses", listHarnesses(db, logger))
 	mux.HandleFunc("POST /api/harnesses", writeHarness(db, logger, adapters, true))
 	mux.HandleFunc("PATCH /api/harnesses/{id}", writeHarness(db, logger, adapters, false))
@@ -117,8 +106,8 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 		items := make([]runnerResponse, 0, len(rows))
 		for _, row := range rows {
 			var heartbeat *Timestamp
-			if row.LastHeartbeatAt != "" {
-				parsed, err := ParseTimestamp(row.LastHeartbeatAt)
+			if row.LastHeartbeatAt != nil {
+				parsed, err := ParseTimestamp(*row.LastHeartbeatAt)
 				if err != nil {
 					WriteError(w, logger, fmt.Errorf("runner %q: invalid stored heartbeat", row.ID))
 					return

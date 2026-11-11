@@ -1,6 +1,5 @@
 import type { ApiClient } from './client'
 import { listAll } from './registry'
-import type { GateResult } from './tasks'
 
 // 承認の本人用 API（17-approval 5章、backend/internal/api/approvals.go・approvals.md）の形。
 
@@ -34,11 +33,8 @@ export type Approval = {
   createdAt: string
 }
 
-/** 差分の成果物への参照。本文は GET /api/executions/{id}/artifacts/{artifactId} で読む。 */
-export type ApprovalArtifact = { id: string; sha256: string; sizeBytes: number; createdAt: string }
-
-/** GET /api/approvals/{id}。 */
-export type ApprovalDetail = Approval & { prUrl: string | null; gateResults: GateResult[]; diffArtifacts: ApprovalArtifact[] }
+/** GET /api/approvals/{id}（approvals の列だけ）。 */
+export type ApprovalDetail = Approval
 
 /** 17 5章の decision の値。 */
 export type ApprovalDecision = 'approve' | 'reject'

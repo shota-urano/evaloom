@@ -80,17 +80,6 @@ func queueTaskRetry(ctx context.Context, db *sql.DB, id, mode string) error {
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO executions (id, task_id, seq, mode, status, created_at)
 		VALUES (?, ?, ?, ?, 'pending', ?)`, executionID.String(), id, seq.Int64+1, mode, now.Format(time.RFC3339))
-	if err == nil && mode == "continue" {
-		// Preserve the checkpoint before any Runner stage can fail or be
-		// cancelled. In particular, do not wait for successful Git checks or
-		// directory restoration. Never inherit verification/push measurements.
-		_, err = tx.ExecContext(ctx, `UPDATE executions SET
-			(worktree_id,base_sha,branch_name,harness_head_sha) =
-			(SELECT p.worktree_id,p.base_sha,p.branch_name,
-				coalesce(nullif(p.pushed_sha,''),nullif(p.harness_head_sha,''),p.base_sha)
-			 FROM executions p WHERE p.task_id=? AND p.seq=? AND p.worktree_id IS NOT NULL)
-			WHERE id=?`, id, seq.Int64, executionID.String())
-	}
 	if err == nil {
 		err = task.QueueExecutionTx(ctx, tx, id, executionID.String(), status)
 	}

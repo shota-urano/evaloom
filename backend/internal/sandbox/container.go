@@ -183,7 +183,7 @@ func overlapsOnDisk(a, b string) (bool, error) {
 }
 
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string, configVolume ...string) ([]string, error) {
-	if spec.Kind != Harness && spec.Kind != TestSetup && spec.Kind != TestRun {
+	if spec.Kind != Harness {
 		return nil, &Error{Op: "unsupported sandbox kind"}
 	}
 	if err := c.validateNetwork(spec); err != nil {
@@ -201,8 +201,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 			return nil, &Error{Op: "invalid command argument"}
 		}
 	}
-	if spec.Worktree == "" || (spec.Kind == Harness && (spec.GitDir == "" || spec.ConfigDir == "")) ||
-		(spec.Kind != Harness && (spec.ConfigDir != "" || spec.ConfigWritable)) {
+	if spec.Worktree == "" || spec.GitDir == "" || spec.ConfigDir == "" {
 		return nil, &Error{Op: "missing or inappropriate sandbox directories"}
 	}
 	mem := strconv.FormatInt(spec.Limits.MemoryBytes, 10)
@@ -254,7 +253,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 			}
 			mount = "type=volume,source=" + configVolume[0] + ",target=" + path + ",volume-nocopy"
 		}
-		if (i == 2 && !spec.ConfigWritable) || (i == 1 && spec.Kind != Harness) {
+		if i == 2 && !spec.ConfigWritable {
 			mount += ",readonly"
 		}
 		args = append(args, "--mount", mount)
@@ -273,7 +272,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 	}
 	sort.Strings(vars)
 	args = append(args, vars...)
-	if spec.Network == NetworkHarness || spec.Network == NetworkSetup {
+	if spec.Network == NetworkHarness {
 		// Sandbox-owned settings override both image ENV and caller values.
 		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			args = append(args, key+"="+sandboxproxy.URL)
@@ -343,7 +342,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
 		return fail("Linux image without implicit volumes required")
 	}
-	if spec.Network == NetworkHarness || spec.Network == NetworkSetup {
+	if spec.Network == NetworkHarness {
 		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
 		if err := network.prepare(ctx, spec); err != nil {
 			return fail("network isolation unconfirmed")

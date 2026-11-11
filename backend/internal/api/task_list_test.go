@@ -47,7 +47,7 @@ func taskIDs(page taskListPage) []string {
 func TestListTasksFiltersByStatusAndProjectNewestFirst(t *testing.T) {
 	f := taskFixture(t)
 	status, body := postAssignment(t, f, "project-b", "developer", "harness-a", "1.2.0")
-	requireAssignment(t, status, body, 201)
+	requireAssignment(t, status, body, 200)
 	for i, project := range []string{"project-a", "project-b", "project-a"} {
 		input := manualTaskInput()
 		input["projectId"] = project
@@ -57,20 +57,14 @@ func TestListTasksFiltersByStatusAndProjectNewestFirst(t *testing.T) {
 	if status, body := requestCancellation(t, f, "task-003"); status != 204 {
 		t.Fatalf("cancel status=%d body=%s", status, body)
 	}
-	if _, err := f.db.Exec(`UPDATE executions SET pr_url = 'https://example.com/pr/1' WHERE task_id = 'task-002'`); err != nil {
-		t.Fatal(err)
-	}
 
 	all := requireTaskList(t, f, "")
 	if got := fmt.Sprint(taskIDs(all)); got != "[task-003 task-002 task-001]" || all.NextCursor != "" {
 		t.Fatalf("all=%s cursor=%q", got, all.NextCursor)
 	}
 	first := all.Items[2]
-	if first.LatestExecution == nil || first.LatestExecution.Seq != 1 || first.LatestExecution.Status != "pending" || first.PRURL != nil {
+	if first.LatestExecution == nil || first.LatestExecution.Seq != 1 || first.LatestExecution.Status != "pending" {
 		t.Fatalf("task-001 summary=%+v", first)
-	}
-	if pr := all.Items[1].PRURL; pr == nil || *pr != "https://example.com/pr/1" {
-		t.Fatalf("task-002 prUrl=%v", pr)
 	}
 	if e := all.Items[0].LatestExecution; all.Items[0].Status != "cancelled" || e == nil || e.Status != "cancelled" {
 		t.Fatalf("task-003 summary=%+v", all.Items[0])

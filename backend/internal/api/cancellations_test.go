@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -19,21 +17,21 @@ import (
 )
 
 type cancellationSnapshot struct {
-	Execution, Task, ErrorClass, Worktree string
-	Requested, Finished                   sql.NullString
-	Events, Audits, Notifications         int
+	Execution, Task, ErrorClass   string
+	Requested, Finished           sql.NullString
+	Events, Audits, Notifications int
 }
 
 func cancellationState(t *testing.T, f *authFixture, id string) cancellationSnapshot {
 	t.Helper()
 	var s cancellationSnapshot
-	err := f.db.QueryRow(`SELECT e.status, t.status, coalesce(e.error_class, ''), coalesce(w.status, ''),
+	err := f.db.QueryRow(`SELECT e.status, t.status, coalesce(e.error_class, ''),
 		e.cancel_requested_at, e.finished_at,
 		(SELECT count(*) FROM execution_events WHERE execution_id = e.id),
 		(SELECT count(*) FROM audit_logs WHERE action = 'task.cancel' AND target_id = t.id),
 		(SELECT count(*) FROM notification_requests WHERE execution_id = e.id)
-		FROM executions e JOIN tasks t ON t.id = e.task_id LEFT JOIN worktrees w ON w.id = e.worktree_id
-		WHERE e.id = ?`, id).Scan(&s.Execution, &s.Task, &s.ErrorClass, &s.Worktree,
+		FROM executions e JOIN tasks t ON t.id = e.task_id
+		WHERE e.id = ?`, id).Scan(&s.Execution, &s.Task, &s.ErrorClass,
 		&s.Requested, &s.Finished, &s.Events, &s.Audits, &s.Notifications)
 	if err != nil {
 		t.Fatal(err)
@@ -60,8 +58,7 @@ func requireCancelled(t *testing.T, f *authFixture, id string, before cancellati
 	after := cancellationState(t, f, id)
 	if after.Execution != "cancelled" || after.Task != "cancelled" || after.ErrorClass != "cancelled" ||
 		after.Requested != before.Requested || !after.Finished.Valid || after.Events != before.Events+1 ||
-		after.Audits != before.Audits+1 || after.Notifications != before.Notifications ||
-		(before.Worktree != "" && after.Worktree != "retained") {
+		after.Audits != before.Audits+1 || after.Notifications != before.Notifications {
 		t.Fatalf("cancellation before=%+v after=%+v", before, after)
 	}
 	if _, err := ParseTimestamp(after.Finished.String); err != nil {
@@ -119,45 +116,15 @@ func TestCancelQueuedImmediatelyAndNeverClaimed(t *testing.T) {
 	}
 }
 
-func TestCancelBlockedRetainsWorktreeAndBlockEvidence(t *testing.T) {
-	for _, cause := range []string{"gate2_missing_tests", "gate2_unverifiable", "gate3_mismatch", "context_conflict", "git_state"} {
-		t.Run(cause, func(t *testing.T) {
-			f, token, id, worktree := resultFixture(t, "verifying")
-			input := resultBody("verifying", "blocked")
-			input["block"].(map[string]any)["cause"] = cause
-			status, body := postResult(t, f, token, id, input)
-			if status != 204 {
-				t.Fatalf("block=%d %s", status, body)
-			}
-			path := t.TempDir()
-			file := filepath.Join(path, "changes.txt")
-			if err := os.WriteFile(file, []byte("uncommitted work"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.db.Exec(`UPDATE worktrees SET path = ? WHERE id = ?`, path, worktree); err != nil {
-				t.Fatal(err)
-			}
-			var evidence string
-			if err := f.db.QueryRow(`SELECT json_object('id', id, 'cause', cause, 'head', head_sha, 'detail', detail,
-				'decision', decision, 'decidedAt', decided_at) FROM execution_blocks WHERE execution_id = ?`, id).Scan(&evidence); err != nil {
-				t.Fatal(err)
-			}
-			before := cancellationState(t, f, id)
-			status, body = requestCancellation(t, f, executionTaskID(t, f, id))
-			if status != 204 {
-				t.Fatalf("cancel blocked=%d %s", status, body)
-			}
-			requireCancelled(t, f, id, before)
-			var afterEvidence string
-			if err := f.db.QueryRow(`SELECT json_object('id', id, 'cause', cause, 'head', head_sha, 'detail', detail,
-				'decision', decision, 'decidedAt', decided_at) FROM execution_blocks WHERE execution_id = ?`, id).Scan(&afterEvidence); err != nil || afterEvidence != evidence {
-				t.Fatalf("block evidence changed: %s err=%v", afterEvidence, err)
-			}
-			if contents, err := os.ReadFile(file); err != nil || string(contents) != "uncommitted work" {
-				t.Fatalf("retained worktree changed: %q err=%v", contents, err)
-			}
-		})
+func TestCancelBlocked(t *testing.T) {
+	f, _, id, _ := resultFixture(t, "checking")
+	blockExecution(t, f, id, "checking")
+	before := cancellationState(t, f, id)
+	status, body := requestCancellation(t, f, executionTaskID(t, f, id))
+	if status != 204 {
+		t.Fatalf("cancel blocked=%d %s", status, body)
 	}
+	requireCancelled(t, f, id, before)
 }
 
 func postHeartbeat(t *testing.T, f *authFixture, token, runner string, input any) (int, []byte) {
@@ -194,7 +161,7 @@ func requireHeartbeat(t *testing.T, status int, body []byte, ids ...string) {
 }
 
 func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
-	for _, from := range []string{"claimed", "preparing", "running", "verifying", "publishing"} {
+	for _, from := range []string{"claimed", "preparing", "working", "checking", "publishing"} {
 		t.Run(from, func(t *testing.T) {
 			f, token, id, _ := resultFixture(t, from)
 			before := cancellationState(t, f, id)
@@ -230,7 +197,7 @@ func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
 				}
 			}
 			var runnerStatus, runnerAt, executionAt string
-			if err := f.db.QueryRow(`SELECT r.status, r.last_heartbeat_at, e.last_heartbeat_at
+			if err := f.db.QueryRow(`SELECT r.status, coalesce(r.last_heartbeat_at, ''), e.last_heartbeat_at
 				FROM executions e JOIN runners r ON r.id = e.runner_id WHERE e.id = ?`, id).
 				Scan(&runnerStatus, &runnerAt, &executionAt); err != nil || runnerStatus != "online" || runnerAt != executionAt {
 				t.Fatalf("liveness: %s %s %s err=%v", runnerStatus, runnerAt, executionAt, err)
@@ -244,7 +211,7 @@ func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
 			}
 			finished := cancellationState(t, f, id)
 			if finished.Execution != "cancelled" || finished.Task != "cancelled" || finished.ErrorClass != "cancelled" ||
-				!finished.Finished.Valid || finished.Requested != after.Requested || finished.Worktree != "retained" ||
+				!finished.Finished.Valid || finished.Requested != after.Requested ||
 				finished.Events != after.Events+1 || finished.Audits != after.Audits || finished.Notifications != 0 {
 				t.Fatalf("runner cancellation=%+v", finished)
 			}
@@ -258,7 +225,7 @@ func TestCancelCompletedAndOtherForbiddenStatesDoNotWrite(t *testing.T) {
 	for _, state := range []struct{ execution, task string }{
 		{"succeeded", "completed"}, {"failed", "failed"}, {"timed_out", "timed_out"},
 		{"interrupted", "failed"}, {"cancelled", "cancelled"}, {"pending", "received"},
-		{"pending", "planning"}, {"pending", "waiting_approval"}, {"running", "queued"},
+		{"pending", "routing"}, {"pending", "waiting_approval"}, {"working", "queued"},
 	} {
 		t.Run(state.task+"_"+state.execution, func(t *testing.T) {
 			f, token, id, _ := resultFixture(t, "publishing")
@@ -286,7 +253,7 @@ func TestCancelCompletedAndOtherForbiddenStatesDoNotWrite(t *testing.T) {
 }
 
 func TestCancelOnlyLatestExecutionAndValidTask(t *testing.T) {
-	f, _, id, _ := resultFixture(t, "running")
+	f, _, id, _ := resultFixture(t, "working")
 	newID := ulid.Make().String()
 	if _, err := f.db.Exec(`UPDATE executions SET status = 'failed' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
@@ -305,7 +272,7 @@ func TestCancelOnlyLatestExecutionAndValidTask(t *testing.T) {
 	}
 	requireCancelled(t, f, newID, before)
 	old := cancellationState(t, f, id)
-	if old.Execution != "failed" || old.Requested.Valid || old.Finished.Valid || old.Worktree != "active" {
+	if old.Execution != "failed" || old.Requested.Valid || old.Finished.Valid {
 		t.Fatalf("historical execution modified: %+v", old)
 	}
 	status, body = requestCancellation(t, f, "task-999999")
@@ -315,7 +282,7 @@ func TestCancelOnlyLatestExecutionAndValidTask(t *testing.T) {
 }
 
 func TestCancellationRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	path := "/api/tasks/" + executionTaskID(t, f, id) + "/cancel"
 	for _, tc := range []struct {
 		name, reason string
@@ -362,12 +329,9 @@ func TestCancellationRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
 
 func TestCancelRollsBackRequestTransitionAndRecordsOnFailure(t *testing.T) {
 	for _, from := range []string{"claimed", "blocked"} {
-		f, token, id, _ := resultFixture(t, "claimed")
+		f, _, id, _ := resultFixture(t, "claimed")
 		if from == "blocked" {
-			status, body := postResult(t, f, token, id, resultBody("claimed", "blocked"))
-			if status != 204 {
-				t.Fatalf("block=%d %s", status, body)
-			}
+			blockExecution(t, f, id, "claimed")
 		}
 		triggers := []string{`BEFORE INSERT ON audit_logs WHEN NEW.action = 'task.cancel'`}
 		if from == "claimed" {
@@ -447,7 +411,7 @@ func TestClaimAndCancelSerializeWithoutLosingCancellation(t *testing.T) {
 }
 
 func TestHeartbeatNeverLeaksOrRenewsAnotherRunnersExecutions(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	status, body := requestCancellation(t, f, executionTaskID(t, f, id))
 	if status != 204 {
 		t.Fatalf("cancel=%d %s", status, body)
@@ -484,7 +448,7 @@ func TestHeartbeatNeverLeaksOrRenewsAnotherRunnersExecutions(t *testing.T) {
 }
 
 func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "running")
+	f, token, id, _ := resultFixture(t, "working")
 	for _, input := range []any{
 		map[string]any{"runningExecutionIds": []string{}},
 		map[string]any{"bootId": "test"},
@@ -502,7 +466,7 @@ func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
 	assertAuthError(t, status, body, 500, Internal)
 	var runnerStatus, runnerAt string
 	var executionAt sql.NullString
-	if err := f.db.QueryRow(`SELECT r.status, r.last_heartbeat_at, e.last_heartbeat_at
+	if err := f.db.QueryRow(`SELECT r.status, coalesce(r.last_heartbeat_at, ''), e.last_heartbeat_at
 		FROM executions e JOIN runners r ON r.id = e.runner_id WHERE e.id = ?`, id).
 		Scan(&runnerStatus, &runnerAt, &executionAt); err != nil || runnerStatus != "offline" || runnerAt != "" || executionAt.Valid {
 		t.Fatalf("partial heartbeat survived: %s %s %+v err=%v", runnerStatus, runnerAt, executionAt, err)
@@ -514,10 +478,9 @@ func TestHeartbeatValidationAndStorageFailureAreAtomic(t *testing.T) {
 // Execution that is not held is still a conflict.
 func TestCancelHeldLinearTaskWithoutExecution(t *testing.T) {
 	f, _, _ := claimFixture(t)
-	for _, task := range []struct{ id, cause string }{{"task-900001", "routing_no_label"}, {"task-900002", ""}} {
-		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, short_name,
-			task_type, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
-			VALUES (?, 'project-a', 't', 'b', 'ac', 'eng-1', 'development', 'solo', 'blocked', ?, 't', 't', 'linear', nullif(?, ''))`,
+	for _, task := range []struct{ id, cause string }{{"task-900001", "missing_acceptance_criteria"}, {"task-900002", ""}} {
+		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+			VALUES (?, 'project-a', 't', 'b', 'ac', 'solo', 'blocked', ?, 't', 't', 'linear', nullif(?, ''))`,
 			task.id, "linear:"+task.id+":1", task.cause); err != nil {
 			t.Fatal(err)
 		}

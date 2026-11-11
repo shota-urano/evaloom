@@ -110,7 +110,7 @@ func (c *pollClient) ListReadyIssues(context.Context, string, string) ([]linear.
 func sharedPoller(t *testing.T, db *sql.DB, client linearintake.Client, gate *linear.AuthAlertGate,
 	alerter linearintake.Alerter) *linearintake.Poller {
 	t.Helper()
-	mustExec(t, db, `UPDATE projects SET linear_team_id = 'team-a'`)
+	mustExec(t, db, `INSERT OR IGNORE INTO settings VALUES ('linear.teamId','"team-a"','t')`)
 	return &linearintake.Poller{DB: db, Client: client, AuthGate: gate, Alerter: alerter, TriggerLabel: "ai-ready"}
 }
 

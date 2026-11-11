@@ -1,7 +1,9 @@
 # ホスト側 Git の実行境界
 
-Trusted Runner と、今後実装する Git Publisher は `safegit.Output` を使う。
-HTTP API、DB スキーマ、仕様書は変更していない。
+Control Plane と Runner がホスト上で Git を読むとき（スペシャルハーネスのリポジトリの検証、
+Profile と Context のファイルの読み取り）は `safegit.Output` を使う。
+worktree、Gate、Git Publisher は software-engineer へ移した（`docs/specs/19-routing-and-stages.md` 3.11）。
+push・fetch などの扱いは、ホスト側の Git 操作を安全にする境界として残している。
 
 ## 無効化する設定
 
@@ -43,12 +45,11 @@ Git の alias、外部サブコマンド、グローバルオプションは受�
 - 引数と PATH は信頼できるアプリケーション側で組み立てる。
 - Sandbox の書き込みプロセスを停止してから呼ぶ。設定の列挙と Git 実行の間に、別のプロセスが設定や include 先を変更する競合は、このラッパーだけでは排除できない。
 - Git 領域へのアクセス制限、パス、remote の宛先、ref と commit の検証は、それぞれの担当処理で行う。
-- 作業用クローンから登録URLへfetchするときは、`ValidateFetchURL`で取得元の変更設定を事前に拒否する。同名remote、`url.*.insteadOf`、`fetch.bundleURI`をincludeや有効なconfig.worktreeも含めて検査する。旧形式のremote定義とパスの検査は呼び出し元が行う。検査からfetch終了までSandboxの書き込みを停止しておく。
-- Git Publisher の認証方式は Q29 の担当範囲で決める。リポジトリ内の credential helper を復活させて認証しない。
+- リポジトリ内の credential helper を復活させて認証しない。
 
 ## 検証
 
 `git_test.go` は一時リポジトリ、linked worktree、bare remote、ローカル TCP/HTTP
 サーバを使う。実際に副作用ファイルを作るフックや実行設定を仕込み、
 ラッパー経由では副作用がなく、通常の Git では副作用があることを比較する。
-Git Publisher 本体は未実装のため、push は共通ラッパーから bare remote に対して検証する。
+push は共通ラッパーから bare remote に対して検証する。

@@ -1,11 +1,10 @@
 import { useState, type FormEvent } from 'react'
 
 import { conflictFieldErrors, preconditionFieldErrors, type FieldErrors } from '@/api/errors'
-import { registry, TIMEOUT_KEYS, type Project, type ProjectInput, type Runner, type TimeoutKey } from '@/api/registry'
+import { registry, type Project, type ProjectInput, type Runner } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
-import { ConfirmDialog } from '@/components/confirm-dialog'
-import { SelectField, TextAreaField, TextField } from '@/components/form-field'
+import { SelectField, TextField, TextAreaField } from '@/components/form-field'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
@@ -13,176 +12,27 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { navigate } from '@/lib/router'
 import { Loading, PageTitle } from '@/components/page'
-import {
-  APPROVAL_POLICY_LABELS,
-  LINEAR_CONFLICT_FIELDS,
-  PROJECT_LABELS as L,   REPOSITORY_CHECK_FIELDS,
-  REPOSITORY_CHECK_LABELS,
-  TIMEOUT_LABELS,
-  type MergePullRequestPolicy,
-} from './labels'
+import { ERROR_FIELD_LABELS, LINEAR_CONFLICT_FIELDS, PRECONDITION_FIELDS, PROJECT_LABELS as L } from './labels'
 
-type FormValues = {
-  id: string
-  name: string
-  localRepoPath: string
-  gitRemoteUrl: string
-  runnerId: string
-  baseBranch: string
-  defaultRole: string
-  testCommand: string
-  testReportFormat: string
-  testReportPath: string
-  setupCommand: string
-  setupAllowedHosts: string
-  copyAllowlist: string
-  allowedOperations: string
-  /** approvalPolicy.mergePullRequest の値（17 3.2）。 */
-  approvalPolicy: MergePullRequestPolicy
-  linearTeamId: string
-  linearRoutingLabel: string
-} & Record<`timeouts.${TimeoutKey}`, string>
-
-// サーバーの details[].field と同じ名前。400 の details をこの名前の項目へ出す（13 6節）。
-const FIELDS = [
-  'id',
-  'name',
-  'localRepoPath',
-  'gitRemoteUrl',
-  'runnerId',
-  'baseBranch',
-  'defaultRole',
-  'testCommand',
-  'testReportFormat',
-  'testReportPath',
-  'setupCommand',
-  'setupAllowedHosts',
-  'copyAllowlist',
-  'allowedOperations',
-  'approvalPolicy',
-  'approvalPolicy.version',
-  'approvalPolicy.mergePullRequest',
-  'linearTeamId',
-  'linearRoutingLabel',
-  'timeouts',
-  ...TIMEOUT_KEYS.map((key) => `timeouts.${key}` as const),
-] as const
-
-const REQUIRED = ['name', 'localRepoPath', 'gitRemoteUrl', 'runnerId', 'baseBranch', 'defaultRole'] as const
-
-const EMPTY: FormValues = {
-  id: '',
-  name: '',
-  localRepoPath: '',
-  gitRemoteUrl: '',
-  runnerId: '',
-  baseBranch: 'main',
-  defaultRole: 'developer',
-  testCommand: '',
-  testReportFormat: '',
-  testReportPath: '',
-  setupCommand: '',
-  setupAllowedHosts: '',
-  copyAllowlist: '',
-  allowedOperations: '{}',
-  // 既定は PR マージを承認対象に残す（17 3.2、requirements 15.3）。
-  approvalPolicy: 'require_approval',
-  linearTeamId: '',
-  linearRoutingLabel: '',
-  'timeouts.setupSec': '',
-  'timeouts.harnessSec': '',
-  'timeouts.testSec': '',
-}
-
+type FormValues = { id: string; name: string; runnerId: string; harnessId: string; profileId: string; params: string; approvalWaivers: string }
+const FIELDS = ['id', 'name', 'runnerId', 'harnessId', 'profileId', 'params', 'approvalWaivers'] as const
+const REQUIRED = ['name', 'runnerId', 'harnessId', 'profileId'] as const
+const EMPTY: FormValues = { id: '', name: '', runnerId: '', harnessId: '', profileId: '', params: '{}', approvalWaivers: '' }
 function toValues(project: Project): FormValues {
-  const timeout = (key: TimeoutKey) => (project.timeouts[key] === undefined ? '' : String(project.timeouts[key]))
-  return {
-    id: project.id,
-    name: project.name,
-    localRepoPath: project.localRepoPath,
-    gitRemoteUrl: project.gitRemoteUrl,
-    runnerId: project.runnerId,
-    baseBranch: project.baseBranch,
-    defaultRole: project.defaultRole,
-    testCommand: project.testCommand ?? '',
-    testReportFormat: project.testReportFormat ?? '',
-    testReportPath: project.testReportPath ?? '',
-    setupCommand: project.setupCommand ?? '',
-    setupAllowedHosts: project.setupAllowedHosts.join('\n'),
-    copyAllowlist: project.copyAllowlist.join('\n'),
-    allowedOperations: JSON.stringify(project.allowedOperations, null, 2),
-    // 既存の値はマイグレーション（0020）で 17 3.2 の形になっている。direct_push と明示されていなければ安全側に倒す。
-    approvalPolicy: project.approvalPolicy.mergePullRequest === 'direct_push' ? 'direct_push' : 'require_approval',
-    linearTeamId: project.linearTeamId ?? '',
-    linearRoutingLabel: project.linearRoutingLabel ?? '',
-    'timeouts.setupSec': timeout('setupSec'),
-    'timeouts.harnessSec': timeout('harnessSec'),
-    'timeouts.testSec': timeout('testSec'),
-  }
+  return { id: project.id, name: project.name, runnerId: project.runnerId, harnessId: project.harnessId, profileId: project.profileId,
+    params: JSON.stringify(project.params, null, 2), approvalWaivers: project.approvalWaivers.join('\n') }
 }
-
-const lines = (value: string) =>
-  value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
-const optional = (value: string) => (value.trim() === '' ? null : value.trim())
-
-function parseObject(value: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(value.trim() === '' ? '{}' : value)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, unknown>
-  } catch {
-    // 下で項目のエラーにする。
-  }
-  return undefined
-}
-
-/** 画面での検証（正本はサーバー、13 3.1）。通れば送信内容を返す。 */
 function validate(values: FormValues, create: boolean): { input?: ProjectInput; errors: FieldErrors } {
   const errors: FieldErrors = {}
-  const fields = create ? (['id', ...REQUIRED] as const) : REQUIRED
-  for (const field of fields) {
+  for (const field of create ? ['id', ...REQUIRED] as const : REQUIRED) {
     if (values[field].trim() === '') errors[field] = ['入力してください']
   }
-  const allowedOperations = parseObject(values.allowedOperations)
-  if (!allowedOperations) errors.allowedOperations = ['JSON のオブジェクト（{ … }）で入力してください']
-  const timeouts: ProjectInput['timeouts'] = {}
-  for (const key of TIMEOUT_KEYS) {
-    const raw = values[`timeouts.${key}`].trim()
-    if (raw === '') continue
-    if (!/^\d+$/.test(raw) || Number(raw) <= 0) {
-      errors[`timeouts.${key}`] = ['1 以上の整数で入力してください']
-    } else {
-      timeouts[key] = Number(raw)
-    }
-  }
-  if (Object.keys(errors).length > 0 || !allowedOperations) return { errors }
-  return {
-    errors,
-    input: {
-      name: values.name.trim(),
-      localRepoPath: values.localRepoPath.trim(),
-      gitRemoteUrl: values.gitRemoteUrl.trim(),
-      runnerId: values.runnerId,
-      baseBranch: values.baseBranch.trim(),
-      defaultRole: values.defaultRole.trim(),
-      testCommand: optional(values.testCommand),
-      testReportFormat: optional(values.testReportFormat),
-      testReportPath: optional(values.testReportPath),
-      setupCommand: optional(values.setupCommand),
-      // 何も入力しなければ空配列を送る（null は 400、backend/internal/api/projects.md）。
-      setupAllowedHosts: lines(values.setupAllowedHosts),
-      copyAllowlist: lines(values.copyAllowlist),
-      allowedOperations,
-      // 17 3.2（Q60）の形だけを Backend が受け付ける。
-      approvalPolicy: { version: 1, mergePullRequest: values.approvalPolicy },
-      timeouts,
-      // 空欄は null で送って解除する（省略しても null 扱いなので、編集時も毎回送る。backend/internal/api/projects.md）。
-      linearTeamId: optional(values.linearTeamId),
-      linearRoutingLabel: optional(values.linearRoutingLabel),
-    },
-  }
+  let params: unknown
+  try { params = JSON.parse(values.params) } catch { /* reported below */ }
+  if (!params || typeof params !== 'object' || Array.isArray(params)) errors.params = ['JSON のオブジェクトを入力してください']
+  if (Object.keys(errors).length) return { errors }
+  return { errors, input: { name: values.name.trim(), runnerId: values.runnerId, harnessId: values.harnessId.trim(), profileId: values.profileId.trim(),
+    params: params as Record<string, unknown>, approvalWaivers: values.approvalWaivers.split('\n').map((value) => value.trim()).filter(Boolean) } }
 }
 
 function runnerLabel(runner: Runner): string {
@@ -203,10 +53,8 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
   const [values, setValues] = useState<FormValues>(() => (project ? toValues(project) : EMPTY))
   const [localErrors, setLocalErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
-  // direct_push を選んだときの確認ダイアログ（17 3.2）。確認するまで入力欄の値は変えない。
-  const [confirmDirectPush, setConfirmDirectPush] = useState(false)
   const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
-  const repositoryErrors = preconditionFieldErrors(error, REPOSITORY_CHECK_FIELDS)
+  const preconditionErrors = preconditionFieldErrors(error, PRECONDITION_FIELDS)
   const conflictErrors = conflictFieldErrors(error, LINEAR_CONFLICT_FIELDS)
   // 409 に項目の details があるのは Linear Team ID と実行先ラベルの組の重複。読み直しても解消しないので、ボタンは出さない。
   const linearConflict = Object.keys(conflictErrors).length > 0
@@ -215,17 +63,11 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
     const messages = [
       ...(localErrors[field] ?? []),
       ...(fieldErrors[field] ?? []),
-      ...(repositoryErrors[field] ?? []),
+      ...(preconditionErrors[field] ?? []),
       ...(conflictErrors[field] ?? []),
     ]
     return messages.length > 0 ? messages : undefined
   }
-  const policyErrors = [
-    ...(errorsFor('approvalPolicy') ?? []),
-    ...(errorsFor('approvalPolicy.version') ?? []),
-    ...(errorsFor('approvalPolicy.mergePullRequest') ?? []),
-  ]
-  const setApprovalPolicy = (value: MergePullRequestPolicy) => setValues((previous) => ({ ...previous, approvalPolicy: value }))
 
   const bind = (field: keyof FormValues) => ({
     name: field,
@@ -245,7 +87,7 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
     try {
       const id = create ? values.id.trim() : project.id
       const saved = create ? await registry.createProject(api, id, input) : await registry.updateProject(api, id, input)
-      navigate(`/projects/${encodeURIComponent(saved.id)}`, { warnings: saved.warnings })
+      navigate(`/projects/${encodeURIComponent(saved.id)}`)
     } catch (cause) {
       setError(cause)
       setSubmitting(false)
@@ -265,7 +107,7 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
         error={error}
         unmatchedDetails={unmatched}
         onReload={linearConflict ? undefined : reload}
-        fieldLabels={REPOSITORY_CHECK_LABELS}
+        fieldLabels={ERROR_FIELD_LABELS}
         title={linearConflict ? 'Linear の実行先が重複しています' : undefined}
         description={
           linearConflict
@@ -276,11 +118,7 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>リポジトリ</CardTitle>
-          <CardDescription>
-            登録時に、パスが Git リポジトリのルートであること、origin が Git リポジトリ URL と一致すること、Base Branch が
-            remote にあることを確かめます。
-          </CardDescription>
+          <CardTitle>基本情報</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2">
           <TextField
@@ -292,22 +130,6 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
             {...bind('id')}
           />
           <TextField label={L.name} autoComplete="off" {...bind('name')} />
-          <TextField
-            label={L.localRepoPath}
-            placeholder="/Users/you/workspace/app"
-            autoComplete="off"
-            spellCheck={false}
-            hint="Runner のマシン上の絶対パス。"
-            {...bind('localRepoPath')}
-          />
-          <TextField
-            label={L.gitRemoteUrl}
-            placeholder="git@github.com:you/app.git"
-            autoComplete="off"
-            spellCheck={false}
-            hint="git remote get-url origin と同じ値。"
-            {...bind('gitRemoteUrl')}
-          />
           <SelectField
             label={L.runnerId}
             hint={runners.length === 0 ? 'Runner が登録されていません。evaloomd の runner register で登録してください。' : undefined}
@@ -320,152 +142,25 @@ function ProjectForm({ project, runners, onReload }: FormProps) {
               </option>
             ))}
           </SelectField>
-          <TextField label={L.baseBranch} autoComplete="off" spellCheck={false} {...bind('baseBranch')} />
-          <TextField
-            label={L.defaultRole}
-            autoComplete="off"
-            spellCheck={false}
-            hint="タスクの実行に使う役割。プロジェクト詳細で、この役割に Harness と版を割り当てます。"
-            {...bind('defaultRole')}
-          />
+          <TextField label={L.harnessId} autoComplete="off" {...bind('harnessId')} />
+          <TextField label={L.profileId} autoComplete="off" {...bind('profileId')} />
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>テストとセットアップ</CardTitle>
-          <CardDescription>テストコマンドの正本はここです。ハーネスからは変更できません。</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextField label={L.testCommand} placeholder="make verify" autoComplete="off" spellCheck={false} {...bind('testCommand')} />
-          <TextField label={L.setupCommand} placeholder="npm ci" autoComplete="off" spellCheck={false} {...bind('setupCommand')} />
-          <TextField
-            label={L.testReportFormat}
-            placeholder="junit_xml"
-            autoComplete="off"
-            spellCheck={false}
-            {...bind('testReportFormat')}
-          />
-          <TextField
-            label={L.testReportPath}
-            placeholder="test-results/junit.xml"
-            autoComplete="off"
-            spellCheck={false}
-            hint="worktree 内のパス。"
-            {...bind('testReportPath')}
-          />
-          <TextAreaField
-            label={L.setupAllowedHosts}
-            rows={3}
-            spellCheck={false}
-            placeholder={'registry.npmjs.org:443\nproxy.golang.org:443'}
-            hint="セットアップコマンドの実行中だけ接続を許す宛先を、host:port で1行に1つ。ワイルドカード・IP アドレス・localhost などのローカルの名前・ポートの無い値は使えません。空欄なら setup もネットワークに接続しません。"
-            {...bind('setupAllowedHosts')}
-          />
-          <TextAreaField
-            label={L.copyAllowlist}
-            rows={3}
-            spellCheck={false}
-            hint="worktree へコピーしてよいファイルを、リポジトリルートからの相対パスで1行に1つ。.. ・絶対パス・ワイルドカードは使えません。秘密情報は載せず、値が必要ならテスト専用のダミー値を使ってください。"
-            {...bind('copyAllowlist')}
-          />
-          {TIMEOUT_KEYS.map((key) => (
-            <TextField
-              key={key}
-              label={TIMEOUT_LABELS[key]}
-              inputMode="numeric"
-              autoComplete="off"
-              hint="空欄なら全体の既定値を使います。"
-              {...bind(`timeouts.${key}`)}
-            />
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Linear 連携</CardTitle>
-          <CardDescription>
-            両方を設定すると、この Team の Issue のうち、この実行先ラベルが付いたものをこのプロジェクトで実行します。どちらかが空欄なら
-            Linear からは実行しません。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextField label={L.linearTeamId} autoComplete="off" spellCheck={false} {...bind('linearTeamId')} />
-          <TextField
-            label={L.linearRoutingLabel}
-            placeholder="repo:customer-system"
-            autoComplete="off"
-            spellCheck={false}
-            {...bind('linearRoutingLabel')}
-          />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>権限設定</CardTitle>
-          <CardDescription>
-            Phase 1 は保存と表示のみです。承認が必要な操作は、この設定にかかわらず Runner が実行しません。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <TextAreaField label={L.allowedOperations} rows={4} spellCheck={false} className="font-mono" {...bind('allowedOperations')} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{L.approvalPolicy}</CardTitle>
-          <CardDescription>承認対象から外せるのは PR マージだけです。Runner とハーネスからは変更できません。</CardDescription>
+          <CardTitle>スペシャルハーネスへの入力</CardTitle>
+          <CardDescription>鍵やパスワードを渡す値に入れないでください。</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
-          <SelectField
-            label={L.approvalPolicy}
-            name="approvalPolicy"
-            value={values.approvalPolicy}
-            errors={policyErrors.length > 0 ? policyErrors : undefined}
-            onChange={(event) => {
-              const value = event.target.value as MergePullRequestPolicy
-              // direct_push へ変えるときは確認ダイアログを経る（17 3.2）。確認するまで値は変えない。
-              if (value === 'direct_push' && values.approvalPolicy !== 'direct_push') setConfirmDirectPush(true)
-              else setApprovalPolicy(value)
-            }}
-          >
-            {(Object.keys(APPROVAL_POLICY_LABELS) as MergePullRequestPolicy[]).map((value) => (
-              <option key={value} value={value}>
-                {APPROVAL_POLICY_LABELS[value]}
-              </option>
-            ))}
-          </SelectField>
+          <TextAreaField label={L.params} rows={5} spellCheck={false} {...bind('params')} />
+          <TextAreaField label={L.approvalWaivers} rows={3} hint="操作の名前を1行に1つ。Profile が省略を認めた操作だけを指定できます。" {...bind('approvalWaivers')} />
         </CardContent>
       </Card>
-
-      {confirmDirectPush ? (
-        <ConfirmDialog
-          title="PR マージを承認対象から外しますか"
-          confirmLabel="direct_push にする"
-          initialFocus="cancel"
-          onCancel={() => setConfirmDirectPush(false)}
-          onConfirm={() => {
-            setApprovalPolicy('direct_push')
-            setConfirmDirectPush(false)
-          }}
-        >
-          <p>
-            direct_push にすると、Evaloom は PR を作らず、Gate 2・3 を通った commit をベースブランチへ fast-forward で push します。
-          </p>
-          <p className="text-foreground font-medium">
-            PR のレビューに任せていた範囲（既存テストの書き換え、テストの実行設定・CI の定義の変更など）を確認する人がいなくなります。
-          </p>
-          <p>push の前の確認は Gate 2・3 だけになり、GitHub の CI は push の後にベースブランチで動きます。</p>
-          <p>この時点ではまだ保存されません。フォームの「{create ? '登録' : '保存'}」を押すと保存します。</p>
-        </ConfirmDialog>
-      ) : null}
 
       <div className="flex gap-3">
         <Button type="submit" disabled={submitting}>
-          {submitting ? '確かめています…' : create ? '登録' : '保存'}
+          {submitting ? '保存しています…' : create ? '登録' : '保存'}
         </Button>
         <Button asChild variant="outline">
           <Link to={create ? '/projects' : `/projects/${encodeURIComponent(project.id)}`}>キャンセル</Link>

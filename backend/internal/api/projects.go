@@ -8,14 +8,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -24,7 +21,7 @@ func projectError(err error) error {
 		return &Error{Code: NotFound, Message: "Project not found"}
 	}
 	if errors.Is(err, store.ErrProjectConflict) {
-		return &Error{Code: Conflict, Message: "Project ID or repository path already registered"}
+		return &Error{Code: Conflict, Message: "Project ID already registered"}
 	}
 	return err
 }
@@ -122,10 +119,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
-		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{
-			ContextLocation: "AGENTS.md", SetupAllowedHosts: []string{}, CopyAllowlist: []string{},
-			AllowedOperations: map[string]any{}, ApprovalPolicy: defaultApprovalPolicy(), Timeouts: map[string]int{},
-		}}
+		before := model.Project{ID: id, ProjectSettings: model.ProjectSettings{Params: json.RawMessage(`{}`), ApprovalWaivers: []string{}}}
 		if !create {
 			var err error
 			before, err = store.GetProject(r.Context(), db, id)
@@ -134,35 +128,18 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 				return
 			}
 		}
-		settings, err := decodeSettings(before.ProjectSettings, patch, create, "reviewRole", "testCommand", "testReportFormat", "testReportPath", "setupCommand",
-			"linearTeamId", "linearRoutingLabel")
+		settings, err := decodeSettings(before.ProjectSettings, patch, create)
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		warnings, err := validateProjectSettings(settings)
-		if err != nil {
+		if err := validateProjectSettings(settings); err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		root, err := store.RunnerWorktreeRoot(r.Context(), db, settings.RunnerID)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = &Error{Code: PreconditionFailed, Message: "Runner not found", Details: []Detail{{Field: "runnerId", Reason: "not_found"}}}
-		}
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		settings.LocalRepoPath, err = registry.ValidateRepository(r.Context(), registry.RepositoryInput{
-			Path: settings.LocalRepoPath, URL: settings.GitRemoteURL, BaseBranch: settings.BaseBranch, WorktreeRoot: root,
-		})
-		if err != nil {
-			WriteError(w, logger, err)
-			return
-		}
-		// Remote Git validation must not hold the store's only DB connection.
-		// Recheck the values it depended on inside the saving transaction so a
-		// concurrent update cannot be overwritten with the stale merged settings.
+		// Recheck the values the merge depended on inside the saving
+		// transaction so a concurrent update cannot be overwritten with the
+		// stale merged settings.
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
 			WriteError(w, logger, err)
@@ -172,67 +149,42 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		if !create {
 			current, err := store.GetProject(r.Context(), tx, id)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && !reflect.DeepEqual(current, before)) {
-				err = &Error{Code: Conflict, Message: "Project changed during repository validation; retry the request"}
+				err = &Error{Code: Conflict, Message: "Project changed during the update; retry the request"}
 			}
 			if err != nil {
 				WriteError(w, logger, err)
 				return
 			}
 		}
-		currentRoot, err := store.RunnerWorktreeRoot(r.Context(), tx, settings.RunnerID)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && currentRoot != root) {
-			err = &Error{Code: Conflict, Message: "Runner changed during repository validation; retry the request"}
+		// The Runner's existence is checked in the saving transaction.
+		err = store.RunnerExists(r.Context(), tx, settings.RunnerID)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: PreconditionFailed, Message: "Runner not found", Details: []Detail{{Field: "runnerId", Reason: "not_found"}}}
 		}
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		// Symlink resolution preserves spelling on case-insensitive volumes.
-		// Also compare directory identities while holding the write transaction.
-		paths, err := store.ProjectRepositoryPaths(r.Context(), tx, id)
-		if err == nil {
-			var duplicate bool
-			duplicate, err = sameRepository(settings.LocalRepoPath, paths)
-			if duplicate {
-				err = store.ErrProjectConflict
-			}
-		}
-		if err != nil {
-			WriteError(w, logger, projectError(err))
+		if err := validateProjectProfile(r.Context(), tx, settings); err != nil {
+			WriteError(w, logger, err)
 			return
-		}
-		// UNIQUE(linear_team_id, linear_routing_label) (spec 15 3.8): name the
-		// field so the form can show which value collided.
-		if settings.LinearTeamID != nil && settings.LinearRoutingLabel != nil {
-			taken, err := store.LinearRouteTaken(r.Context(), tx, *settings.LinearTeamID, *settings.LinearRoutingLabel, id)
-			if err == nil && taken {
-				err = &Error{Code: Conflict, Message: "Linear Team and routing label already registered to another Project",
-					Details: []Detail{{Field: "linearRoutingLabel", Reason: "duplicate"}}}
-			}
-			if err != nil {
-				WriteError(w, logger, err)
-				return
-			}
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		after := model.Project{ID: id, ProjectSettings: settings, CreatedAt: before.CreatedAt, UpdatedAt: now}
 		action, status := "project.update", http.StatusOK
-		var old any = auditProjectSettings(before.ProjectSettings)
+		var old any = before.ProjectSettings
 		if create {
 			after.CreatedAt = now
 			action, status, old = "project.register", http.StatusCreated, nil
 		}
 		err = store.SaveProject(r.Context(), tx, after, create)
-		if err == nil {
-			err = store.PruneLinearPollTeams(r.Context(), tx)
-		}
 		if err == nil && !create {
 			err = markLinearRecheck(r.Context(), tx, before.ProjectSettings, after, now)
 		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: action, TargetType: "project", TargetID: id,
-				Detail: map[string]any{"before": old, "after": auditProjectSettings(after.ProjectSettings)},
+				Detail: map[string]any{"before": old, "after": after.ProjectSettings},
 			})
 		}
 		if err == nil {
@@ -242,178 +194,68 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, projectError(err))
 			return
 		}
-		writeJSON(w, status, struct {
-			model.Project
-			Warnings []string `json:"warnings"`
-		}{after, warnings})
+		writeJSON(w, status, after)
 	}
 }
 
-// markLinearRecheck puts the recheck mark on the Issues of the held tasks a
-// Project update may release (spec 15 3.6.3, the table of setting changes,
-// Q81), in the update's transaction. An update that leaves linear_team_id,
-// linear_routing_label and default_role unchanged marks nothing.
+// markLinearRecheck keeps existing held tasks eligible for reassessment when
+// their direct Profile pin changes. Routing is managed separately in routes.
 func markLinearRecheck(ctx context.Context, tx *sql.Tx, before model.ProjectSettings, after model.Project, at string) error {
-	routing := !reflect.DeepEqual(before.LinearTeamID, after.LinearTeamID) ||
-		!reflect.DeepEqual(before.LinearRoutingLabel, after.LinearRoutingLabel)
-	if !routing && before.DefaultRole == after.DefaultRole {
+	if before.HarnessID == after.HarnessID && before.ProfileID == after.ProfileID {
 		return nil
 	}
-	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID, Routing: routing}, at)
+	return store.MarkLinearRecheck(ctx, tx, store.LinearRecheck{ProjectID: after.ID}, at)
 }
 
-func validateProjectSettings(p model.ProjectSettings) ([]string, error) {
-	for _, field := range []struct{ name, value string }{
-		{"name", p.Name}, {"localRepoPath", p.LocalRepoPath}, {"gitRemoteUrl", p.GitRemoteURL},
-		{"runnerId", p.RunnerID}, {"baseBranch", p.BaseBranch}, {"defaultRole", p.DefaultRole},
-	} {
+func validateProjectSettings(p model.ProjectSettings) error {
+	for _, field := range []struct{ name, value string }{{"name", p.Name}, {"runnerId", p.RunnerID}, {"harnessId", p.HarnessID}, {"profileId", p.ProfileID}} {
 		if strings.TrimSpace(field.value) == "" {
-			return nil, invalid(field.name, "required")
+			return invalid(field.name, "required")
 		}
 	}
-	if p.ContextLocation != "AGENTS.md" {
-		return nil, invalid("contextLocation", "invalid_format")
+	if p.ApprovalWaivers == nil {
+		return invalid("approvalWaivers", "invalid_format")
 	}
-	if p.ReviewRole != nil {
-		return nil, invalid("reviewRole", "invalid")
+	var params map[string]json.RawMessage
+	if json.Unmarshal(p.Params, &params) != nil || params == nil {
+		return invalid("params", "invalid_format")
 	}
-	// Clearing uses null; a blank value would never match a Linear Team or
-	// label and is rejected rather than stored.
-	for _, field := range []struct {
-		name  string
-		value *string
-	}{{"linearTeamId", p.LinearTeamID}, {"linearRoutingLabel", p.LinearRoutingLabel}} {
-		if field.value != nil && strings.TrimSpace(*field.value) == "" {
-			return nil, invalid(field.name, "required")
-		}
-	}
-	if err := validateApprovalPolicy(p.ApprovalPolicy); err != nil {
-		return nil, err
-	}
-	for _, seconds := range []string{"setupSec", "harnessSec", "testSec"} {
-		if n, ok := p.Timeouts[seconds]; ok && n <= 0 {
-			return nil, invalid("timeouts."+seconds, "out_of_range")
-		}
-	}
-	for key := range p.Timeouts {
-		if key != "setupSec" && key != "harnessSec" && key != "testSec" {
-			return nil, invalid("timeouts", "invalid")
-		}
-	}
-	for _, host := range p.SetupAllowedHosts {
-		if !validSetupHost(host) {
-			return nil, invalid("setupAllowedHosts", "invalid_format")
-		}
-	}
-	// spec 03 3.3.1 (Q87): the same host:port listed twice is rejected, not
-	// deduplicated. Elements are already exact lowercase host:port strings.
-	seenHosts := make(map[string]struct{}, len(p.SetupAllowedHosts))
-	for _, host := range p.SetupAllowedHosts {
-		if _, seen := seenHosts[host]; seen {
-			return nil, invalid("setupAllowedHosts", "duplicate")
-		}
-		seenHosts[host] = struct{}{}
-	}
-	warnings := []string{}
-	for _, name := range p.CopyAllowlist {
-		if name == "" || filepath.IsAbs(name) || strings.Contains(name, "..") || strings.ContainsAny(name, "*?[]\\\x00") {
-			return nil, invalid("copyAllowlist", "invalid_format")
-		}
-		for _, segment := range strings.Split(name, "/") {
-			if segment == "." || segment == "" {
-				return nil, invalid("copyAllowlist", "invalid_format")
-			}
-		}
-		base := path.Base(name)
-		if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") || strings.HasPrefix(base, "id_") {
-			warnings = append(warnings, name+" may contain secrets; use test-only dummy values")
-		}
-	}
-	return warnings, nil
+	return nil
 }
 
-// defaultApprovalPolicy is the Phase 2 approval policy a Project gets when
-// registration omits approvalPolicy (spec 17 3.2, Q60): PR merges need the
-// owner's approval. The number is a json.Number like values read back from
-// the store, so a registered Project compares equal to its stored form.
-func defaultApprovalPolicy() map[string]any {
-	return map[string]any{"version": json.Number("1"), "mergePullRequest": "require_approval"}
+func validateProjectProfile(ctx context.Context, tx *sql.Tx, settings model.ProjectSettings) error {
+	profile, err := store.GetHarnessProfileByID(ctx, tx, settings.ProfileID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && profile.HarnessID != settings.HarnessID) {
+		return &Error{Code: PreconditionFailed, Message: "Profile does not belong to this Harness", Details: []Detail{{Field: "profileId", Reason: "invalid"}}}
+	}
+	if err != nil {
+		return err
+	}
+	return validateProfileWaivers(profile.Definition, settings.ApprovalWaivers)
 }
 
-// validateApprovalPolicy accepts only the spec 17 3.2 shape
-// {"version": 1, "mergePullRequest": "require_approval" | "direct_push"}.
-// Only the PR merge can be taken out of approval, so any other key, a
-// missing key, or an unknown value is a 400 (requirements 15.3).
-func validateApprovalPolicy(policy map[string]any) error {
-	for key := range policy {
-		if key != "version" && key != "mergePullRequest" {
-			return invalid("approvalPolicy", "invalid")
+// Only waivable operations explicitly declared by the pinned Profile may be
+// skipped. Full Profile/params schema validation belongs to the contract task.
+func validateProfileWaivers(definition json.RawMessage, waivers []string) error {
+	var def struct {
+		Approvals []struct {
+			Operation string `json:"operation"`
+			Waivable  bool   `json:"waivable"`
+		} `json:"approvals"`
+	}
+	if err := json.Unmarshal(definition, &def); err != nil {
+		return err
+	}
+	allowed := map[string]bool{}
+	for _, a := range def.Approvals {
+		allowed[a.Operation] = a.Waivable
+	}
+	seen := map[string]bool{}
+	for _, w := range waivers {
+		if !allowed[w] || seen[w] {
+			return &Error{Code: PreconditionFailed, Message: "Operation is not waivable in this Profile", Details: []Detail{{Field: "approvalWaivers", Reason: "invalid"}}}
 		}
+		seen[w] = true
 	}
-	if version, ok := policy["version"].(json.Number); !ok || version.String() != "1" {
-		return invalid("approvalPolicy.version", "invalid")
-	}
-	switch policy["mergePullRequest"] {
-	case "require_approval", "direct_push":
-		return nil
-	}
-	return invalid("approvalPolicy.mergePullRequest", "invalid")
-}
-
-// validSetupHost accepts only a lowercase DNS host name and a port 1-65535
-// joined by ":" (spec 03 3.3.1, spec 09 3.3): the container proxy matches
-// destinations exactly. Wildcards, IP literals, and local names that would
-// resolve to the host or the local network are rejected.
-func validSetupHost(value string) bool {
-	host, port, found := strings.Cut(value, ":")
-	if !found || port == "" || len(port) > 5 || port[0] == '0' {
-		return false
-	}
-	number := 0
-	for _, digit := range port {
-		if digit < '0' || digit > '9' {
-			return false
-		}
-		number = number*10 + int(digit-'0')
-	}
-	if number < 1 || number > 65535 || host == "" || len(host) > 253 {
-		return false
-	}
-	labels := strings.Split(host, ".")
-	// A single-label name is resolved through local search domains, never a
-	// public registry; such names count as local names here.
-	if len(labels) < 2 {
-		return false
-	}
-	for _, label := range labels {
-		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return false
-			}
-		}
-	}
-	// An all-numeric last label makes the value an IPv4 literal (including
-	// shorthand forms such as 127.1), not a DNS name.
-	last := labels[len(labels)-1]
-	if strings.Trim(last, "0123456789") == "" {
-		return false
-	}
-	// localhost (RFC 6761), mDNS .local (RFC 6762), and .internal names such
-	// as host.docker.internal reach the host or the local network.
-	for _, local := range []string{"localhost", "local", "internal"} {
-		if last == local {
-			return false
-		}
-	}
-	return true
-}
-
-// Credentials in a remote URL are not configuration history. Retain the
-// repository identity while omitting URL userinfo, query, and fragment.
-func auditProjectSettings(p model.ProjectSettings) model.ProjectSettings {
-	p.GitRemoteURL = auditRepositoryURL(p.GitRemoteURL)
-	return p
+	return nil
 }

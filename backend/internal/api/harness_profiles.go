@@ -71,7 +71,7 @@ func registerHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, harnessError(err))
 			return
 		}
-		profile, definitionErr := registry.ReadProfile(r.Context(), before.RepoPath, input.Version, before.Adapter)
+		profile, definitionErr := registry.ReadProfile(r.Context(), before.RepoPath, input.Version, "")
 		if profile.CommitSHA == "" {
 			WriteError(w, logger, definitionErr)
 			return

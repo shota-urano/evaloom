@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +15,7 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
 	"github.com/shota-urano/evaloom/backend/internal/store"
+	"github.com/shota-urano/evaloom/backend/internal/testregistry"
 )
 
 // stubClient stands in for the Linear API; no test reaches the real one.
@@ -86,13 +84,12 @@ func (h *recordingHandler) HandleTeamIssues(_ context.Context, team store.Linear
 
 func openDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "evaloom.db"))
+	db, err := testregistry.Open(context.Background(), filepath.Join(t.TempDir(), "evaloom.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	exec(t, db, `INSERT INTO runners (id, name, token_hash, worktree_root, status, last_heartbeat_at, created_at)
-		VALUES ('r1', 'r1', 'h', '/w', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`)
+	exec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('r1', 'r1', 'h', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`)
 	return db
 }
 
@@ -103,38 +100,17 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-// addProject inserts a Project registering teamID (nil leaves it NULL).
+// addProject registers a direct Profile pin and, optionally, a route. The
+// polling Team is a global setting; the first non-empty Team configures it.
 func addProject(t *testing.T, db *sql.DB, id string, teamID any, label any) {
 	t.Helper()
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('projects') WHERE "notnull" = 1 AND dflt_value IS NULL`)
-	if err != nil {
-		t.Fatal(err)
+	exec(t, db, `INSERT INTO projects (id,name,harness_id,profile_id,runner_id,created_at,updated_at) VALUES (?,'Project','fixture-harness','fixture-profile','r1','t','t')`, id)
+	if team, ok := teamID.(string); ok && team != "" {
+		exec(t, db, `INSERT OR IGNORE INTO settings VALUES ('linear.teamId',?,'t')`, strconv.Quote(team))
 	}
-	var columns []string
-	var values []any
-	for rows.Next() {
-		var column string
-		if err := rows.Scan(&column); err != nil {
-			t.Fatal(err)
-		}
-		columns = append(columns, column)
-		switch column {
-		case "id":
-			values = append(values, id)
-		case "local_repo_path":
-			values = append(values, "/repos/"+id)
-		case "runner_id":
-			values = append(values, "r1")
-		default:
-			values = append(values, "x")
-		}
+	if label, ok := label.(string); ok && label != "" {
+		exec(t, db, `INSERT INTO routes VALUES (?, ?, NULL,'t','t')`, label, id)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	columns = append(columns, "linear_team_id", "linear_routing_label")
-	values = append(values, teamID, label)
-	exec(t, db, `INSERT INTO projects (`+strings.Join(columns, ", ")+`) VALUES (?`+strings.Repeat(", ?", len(columns)-1)+`)`, values...)
 }
 
 type teamRow struct {
@@ -172,7 +148,7 @@ func pollOnce(t *testing.T, p *Poller) Result {
 func TestNoRegisteredTeamDoesNotQuery(t *testing.T) {
 	db := openDB(t)
 	addProject(t, db, "p-none", nil, nil)
-	addProject(t, db, "p-empty", "", "repo:x")
+	addProject(t, db, "p-empty", "", "route:x")
 	// A stale row of a Team no Project registers any more is removed (3.8).
 	exec(t, db, `INSERT INTO linear_poll_teams (team_id, consecutive_failures) VALUES ('gone', 3)`)
 	client := &stubClient{}
@@ -189,90 +165,10 @@ func TestNoRegisteredTeamDoesNotQuery(t *testing.T) {
 	}
 }
 
-func TestSharedTeamIsQueriedOnceWithTriggerLabel(t *testing.T) {
-	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-a", "repo:two")
-	addProject(t, db, "p3", "team-b", "repo:one")
-	issues := []linear.Issue{{ID: "issue-1", TeamID: "team-a"}, {ID: "issue-2", TeamID: "team-a"}}
-	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
-		if teamID == "team-a" {
-			return issues, nil
-		}
-		return nil, nil
-	}}
-	handler := &recordingHandler{}
-	p := newPoller(db, client, nil)
-	p.Handler = handler
-	if result := pollOnce(t, p); !result.Polled {
-		t.Fatal("round not polled")
-	}
-	calls, _, _ := client.snapshot()
-	if strings.Join(calls, ",") != "team-a/ai-ready,team-b/ai-ready" {
-		t.Fatalf("calls = %v", calls)
-	}
-	if strings.Join(handler.teams, ",") != "team-a,team-b" || len(handler.issues[0]) != 2 {
-		t.Fatalf("handler got teams=%v issues=%v", handler.teams, handler.issues)
-	}
-	for _, team := range []string{"team-a", "team-b"} {
-		if row := readTeam(t, db, team); !row.lastSuccess.Valid || row.lastError.Valid || row.failures != 0 {
-			t.Fatalf("%s row = %+v", team, row)
-		}
-	}
-}
-
-func TestFailureIsRecordedAndSuccessResetsIt(t *testing.T) {
-	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
-	var failMu sync.Mutex
-	var failErr error
-	setFail := func(err error) { failMu.Lock(); failErr = err; failMu.Unlock() }
-	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
-		failMu.Lock()
-		err := failErr
-		failMu.Unlock()
-		if err != nil && teamID == "team-a" {
-			return nil, err
-		}
-		return []linear.Issue{{ID: "i", TeamID: teamID}}, nil
-	}}
-	handler := &recordingHandler{}
-	p := newPoller(db, client, nil)
-	p.Handler = handler
-
-	pollOnce(t, p)
-	success := readTeam(t, db, "team-a").lastSuccess
-	setFail(&linear.Error{Op: "list issues", Class: linear.ClassNetwork})
-	pollOnce(t, p)
-	if row := readTeam(t, db, "team-a"); row.lastError.String != "network" || row.failures != 1 || row.lastSuccess != success {
-		t.Fatalf("after network failure: %+v", row)
-	}
-	setFail(errors.New("unclassified"))
-	pollOnce(t, p)
-	if row := readTeam(t, db, "team-a"); row.lastError.String != "other" || row.failures != 2 {
-		t.Fatalf("after other failure: %+v", row)
-	}
-	// Another Team's success is recorded independently.
-	if row := readTeam(t, db, "team-b"); row.lastError.Valid || row.failures != 0 {
-		t.Fatalf("team-b affected by team-a failure: %+v", row)
-	}
-	// The failed Team's list never reaches the handler (spec 15 3.2).
-	if got := strings.Join(handler.teams, ","); got != "team-a,team-b,team-b,team-b" {
-		t.Fatalf("handler teams = %s", got)
-	}
-	setFail(nil)
-	time.Sleep(time.Millisecond)
-	pollOnce(t, p)
-	if row := readTeam(t, db, "team-a"); row.lastError.Valid || row.failures != 0 || !row.lastSuccess.Valid || row.lastSuccess == success {
-		t.Fatalf("after recovery: %+v", row)
-	}
-}
-
 func TestFiveConsecutiveFailuresAlertOncePerStreak(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
+
 	var failing atomic.Bool
 	failing.Store(true)
 	client := &stubClient{list: func(string) ([]linear.Issue, error) {
@@ -313,63 +209,10 @@ func TestFiveConsecutiveFailuresAlertOncePerStreak(t *testing.T) {
 	}
 }
 
-func TestKeyFileProblemsMarkEveryTeamAuthWithoutQuerying(t *testing.T) {
-	const canary = "lin_api_EVALOOM_IAO4_FAKE_KEY_91ab"
-	cases := map[string]func(t *testing.T) string{
-		"missing": func(t *testing.T) string { return filepath.Join(t.TempDir(), linear.APIKeyFileName) },
-		"0644": func(t *testing.T) string {
-			path := filepath.Join(t.TempDir(), linear.APIKeyFileName)
-			if err := os.WriteFile(path, []byte(canary), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(path, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			return path
-		},
-	}
-	for name, keyPath := range cases {
-		t.Run(name, func(t *testing.T) {
-			db := openDB(t)
-			addProject(t, db, "p1", "team-a", "repo:one")
-			addProject(t, db, "p2", "team-b", "repo:one")
-			var requests atomic.Int32
-			server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
-			defer server.Close()
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logs, nil))
-			client, err := linear.NewClient(server.Client(), server.URL, keyPath(t), logger)
-			if err != nil {
-				t.Fatal(err)
-			}
-			alerter := &recordingAlerter{}
-			p := &Poller{DB: db, Client: client, Logger: logger, Alerter: alerter}
-			for round := 1; round <= FailureAlertThreshold+1; round++ {
-				pollOnce(t, p)
-			}
-			if requests.Load() != 0 {
-				t.Fatalf("Linear queried with an unusable key file: %d requests", requests.Load())
-			}
-			for _, team := range []string{"team-a", "team-b"} {
-				if row := readTeam(t, db, team); row.lastError.String != "auth" || row.failures != FailureAlertThreshold+1 {
-					t.Fatalf("%s row = %+v", team, row)
-				}
-			}
-			// Auth alerts as soon as it starts, once for the whole streak.
-			if alerter.count() != 1 || alerter.alerts[0].Class != linear.ClassAuth {
-				t.Fatalf("alerts = %+v", alerter.alerts)
-			}
-			if !strings.Contains(logs.String(), "reason=api_key_") || strings.Contains(logs.String(), canary) {
-				t.Fatalf("reason missing or key leaked in logs: %q", logs.String())
-			}
-		})
-	}
-}
-
 func TestRateLimitStopsRoundUntilResetHint(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
+
 	const wait = 400 * time.Millisecond
 	var limited atomic.Bool
 	limited.Store(true)
@@ -409,29 +252,9 @@ func TestRateLimitStopsRoundUntilResetHint(t *testing.T) {
 	}
 }
 
-func TestRateLimitIsRecordedAndReturnsResumeAt(t *testing.T) {
-	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
-	addProject(t, db, "p2", "team-b", "repo:one")
-	resetAt := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
-	client := &stubClient{list: func(string) ([]linear.Issue, error) {
-		return nil, &linear.Error{Op: "list issues", Class: linear.ClassRateLimited, ResetAt: resetAt}
-	}}
-	result := pollOnce(t, newPoller(db, client, nil))
-	if !result.ResumeAt.Equal(resetAt) {
-		t.Fatalf("ResumeAt = %v; want %v", result.ResumeAt, resetAt)
-	}
-	if row := readTeam(t, db, "team-a"); row.lastError.String != "rate_limited" || row.failures != 1 {
-		t.Fatalf("team-a = %+v", row)
-	}
-	if row := readTeam(t, db, "team-b"); row.lastError.Valid || row.failures != 0 {
-		t.Fatalf("team-b changed although not queried: %+v", row)
-	}
-}
-
 func TestRunPollsAtStartupThenEachInterval(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
 	client := &stubClient{}
 	p := newPoller(db, client, nil)
 	p.Interval = 150 * time.Millisecond
@@ -465,7 +288,7 @@ func TestRunPollsAtStartupThenEachInterval(t *testing.T) {
 
 func TestSlowRoundsNeverOverlap(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
 	var active, maxActive atomic.Int32
 	client := &stubClient{list: func(string) ([]linear.Issue, error) {
 		n := active.Add(1)
@@ -501,7 +324,7 @@ func TestSlowRoundsNeverOverlap(t *testing.T) {
 
 func TestShutdownDuringQueryIsNotRecordedAsFailure(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "repo:one")
+	addProject(t, db, "p1", "team-a", "route:one")
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &stubClient{list: func(string) ([]linear.Issue, error) {
 		cancel()
@@ -512,5 +335,28 @@ func TestShutdownDuringQueryIsNotRecordedAsFailure(t *testing.T) {
 	}
 	if row := readTeam(t, db, "team-a"); row.lastError.Valid || row.failures != 0 {
 		t.Fatalf("cancelled round recorded: %+v", row)
+	}
+}
+func TestGlobalTeamIsQueriedOnceRegardlessOfProjectCount(t *testing.T) {
+	db := openDB(t)
+	addProject(t, db, "p1", "team-a", "route:one")
+	addProject(t, db, "p2", "team-a", "route:two")
+	client := &stubClient{}
+	p := newPoller(db, client, nil)
+	pollOnce(t, p)
+	calls, _, _ := client.snapshot()
+	if strings.Join(calls, ",") != "team-a/ai-ready" {
+		t.Fatalf("calls=%v", calls)
+	}
+	// Projects do not determine the polling Team.
+	exec(t, db, `UPDATE settings SET value='"team-b"' WHERE key='linear.teamId'`)
+	pollOnce(t, p)
+	calls, _, _ = client.snapshot()
+	if strings.Join(calls, ",") != "team-a/ai-ready,team-b/ai-ready" {
+		t.Fatal(calls)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM linear_poll_teams WHERE team_id='team-a'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal(count, err)
 	}
 }

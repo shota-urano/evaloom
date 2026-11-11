@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,11 @@ func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause BlockCause
 	t.Helper()
 	f.mustRound(t, issue)
 	held := readStarted(t, f.db, "1", 1)
-	if held.status != "blocked" || held.cause.String != string(cause) || held.executions != 0 {
+	wantStatus, wantCause := "blocked", string(cause)
+	if strings.HasPrefix(wantCause, "routing_") {
+		wantStatus, wantCause = "routing", ""
+	}
+	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 {
 		t.Fatalf("held task = %+v", held)
 	}
 	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) {
@@ -98,16 +103,15 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 		issue linear.Issue
 		cause BlockCause
 	}{
-		{"unknown label", routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel},
-		{"two labels", routedIssue("1", "repo:one", "repo:three"), CauseRoutingMultipleLabels},
+		{"unknown label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel},
+		{"two labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels},
 		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel},
-		{"team mismatch", routedIssue("1", "repo:two"), CauseRoutingTeamMismatch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRecheckFixture(t)
 			held := f.hold(t, test.issue, test.cause)
 
-			fixed := routedIssue("1", "repo:one")
+			fixed := routedIssue("1", "route:one")
 			fixed.UpdatedAt = base.Add(time.Minute)
 			f.now = base.Add(2 * time.Minute)
 			f.mustRound(t, fixed)
@@ -140,7 +144,7 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 			}
 			// The queued task is not rechecked again by a later edit.
 			fixed.UpdatedAt = base.Add(time.Hour)
-			fixed.Labels = []string{"ai-ready", "repo:unknown"}
+			fixed.Labels = []string{"ai-ready", "route:unknown"}
 			f.mustRound(t, fixed)
 			if again := readStarted(t, f.db, "1", 1); again.status != "queued" || again.executions != 1 || again.cause.Valid {
 				t.Fatalf("queued task changed: %+v", again)
@@ -153,7 +157,7 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 // written; the criteria are taken from the new body (spec 15 3.6.3).
 func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 	f := newRecheckFixture(t)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
 	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
 
@@ -170,20 +174,20 @@ func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 // 受け入れ基準: 更新時刻が変わらない照会では再判定しない。
 func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 
-	fixed := routedIssue("1", "repo:one") // same updatedAt as recorded
+	fixed := routedIssue("1", "route:one") // same updatedAt as recorded
 	f.now = base.Add(time.Minute)
 	f.mustRound(t, fixed)
 	got := readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.executions != 0 ||
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
 		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("rechecked without a newer updatedAt: %+v", got)
 	}
 	// An older updatedAt is not newer either.
 	fixed.UpdatedAt = base.Add(-time.Minute)
 	f.mustRound(t, fixed)
-	if got := readStarted(t, f.db, "1", 1); got.status != "blocked" {
+	if got := readStarted(t, f.db, "1", 1); got.status != "routing" {
 		t.Fatalf("rechecked with an older updatedAt: %+v", got)
 	}
 }
@@ -192,18 +196,18 @@ func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 // A different cause is written to the task, which stays held.
 func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	before := mustState(t, f.db, "1")
 	heldAt := taskUpdatedAt(t, f.db, held.id)
 
-	edited := routedIssue("1", "repo:other", "bug")
+	edited := routedIssue("1", "route:other", "bug")
 	edited.Title = "edited"
 	edited.UpdatedAt = base.Add(time.Minute)
 	f.now = base.Add(2 * time.Minute)
 	f.mustRound(t, edited)
 	got := readStarted(t, f.db, "1", 1)
 	after := mustState(t, f.db, "1")
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.executions != 0 ||
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
 		got.title != held.title || taskUpdatedAt(t, f.db, held.id) != heldAt || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("same cause changed the task: %+v", got)
 	}
@@ -212,15 +216,15 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	}
 
 	// The cause changes: written, still held, no Execution.
-	edited.Labels = []string{"ai-ready", "repo:one", "repo:three"}
+	edited.Labels = []string{"ai-ready", "route:one", "route:three"}
 	edited.UpdatedAt = base.Add(3 * time.Minute)
 	f.mustRound(t, edited)
 	got = readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingMultipleLabels) || got.executions != 0 ||
-		recheckAudits(t, f.db, held.id) != 1 {
+	if got.status != "routing" || got.cause.Valid || got.executions != 0 ||
+		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("changed cause = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != stamp(f.now) {
+	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != before.decidedAt {
 		t.Fatalf("state = %+v", s)
 	}
 	if n := countTasks(t, f.db, "1"); n != 1 {
@@ -231,7 +235,7 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 // 受け入れ基準: 保留していないタスクの Issue の更新では何も起きない。
 func TestRecheckIgnoresTaskNotHeld(t *testing.T) {
 	f := newRecheckFixture(t)
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	f.mustRound(t, issue)
 	started := readStarted(t, f.db, "1", 1)
 	if started.status != "queued" {
@@ -241,7 +245,7 @@ func TestRecheckIgnoresTaskNotHeld(t *testing.T) {
 	before := mustState(t, f.db, "1")
 
 	// Even an edit that would be held at creation does nothing.
-	issue.Labels = []string{"ai-ready", "repo:unknown"}
+	issue.Labels = []string{"ai-ready", "route:unknown"}
 	issue.Description = "no criteria"
 	issue.UpdatedAt = base.Add(time.Minute)
 	f.now = base.Add(2 * time.Minute)
@@ -267,17 +271,17 @@ func TestRecheckIgnoresTaskNotHeld(t *testing.T) {
 // task and linear_issue_states unchanged, so the next poll rechecks again.
 func TestRecheckFailureIsRetried(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	exec(t, f.db, `CREATE TRIGGER fail_execution BEFORE INSERT ON executions
 		BEGIN SELECT RAISE(ABORT, 'injected execution failure'); END`)
 
-	fixed := routedIssue("1", "repo:one")
+	fixed := routedIssue("1", "route:one")
 	fixed.UpdatedAt = base.Add(time.Minute)
 	if err := f.round(t, fixed); err == nil {
 		t.Fatal("failed recheck was not reported")
 	}
 	got := readStarted(t, f.db, "1", 1)
-	if got.status != "blocked" || got.cause.String != string(CauseRoutingUnknownLabel) || got.project.Valid ||
+	if got.status != "routing" || got.cause.Valid || got.project.Valid ||
 		got.executions != 0 || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("task after failure = %+v", got)
 	}
@@ -296,7 +300,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 // pending seq 1; UpdateHeldLinearTask touches only a held task.
 func TestHeldTaskGuards(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	ctx := context.Background()
 	tx, err := f.db.Begin()
 	if err != nil {
@@ -328,7 +332,7 @@ func TestHeldTaskGuards(t *testing.T) {
 // and 3.7, and the recheck mark is cleared with that decision.
 func TestRecheckMarkClearedWhenIssueLeavesList(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "repo:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
 	if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at = ? WHERE linear_issue_id = '1'`,
 		stamp(base)); err != nil {
 		t.Fatal(err)

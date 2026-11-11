@@ -113,7 +113,7 @@ func TestInvalidContractValues(t *testing.T) {
 
 func TestFailedResultAcceptsAllSpecifiedErrorClasses(t *testing.T) {
 	for _, classification := range []string{
-		"config_error", "execution_failed", "test_failed", "timeout", "cancelled",
+		"config_error", "work_failed", "check_failed", "timeout", "cancelled",
 		"interrupted", "publish_failed", "sandbox_error",
 	} {
 		t.Run(classification, func(t *testing.T) {

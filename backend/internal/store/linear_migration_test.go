@@ -17,6 +17,13 @@ import (
 const legacyTaskColumns = `id, project_id, title, body, acceptance_criteria, short_name,
 	task_type, collaboration_mode, status, idempotency_key, created_at, updated_at`
 
+// registryProjectColumns are the 0001 projects columns that remained until
+// migration 0025 removed the development columns.
+const registryProjectColumns = `id, name, local_repo_path, git_remote_url, runner_id, base_branch,
+	default_role, review_role, context_location, test_command, test_report_format,
+	test_report_path, setup_command, copy_allowlist,
+	allowed_operations, approval_policy, timeouts, created_at, updated_at`
+
 func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evaloom.db")
 	db, err := open(context.Background(), path, beforeLinearMigration(t))
@@ -50,8 +57,12 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A second open also checks that the migration is not applied twice.
+	// Stop before 0025, which removes the development tables and columns.
 	for range 2 {
-		db = openRegistry(t, path)
+		db, err = open(context.Background(), path, migrationsBefore(t, 25))
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i, query := range queries {
 			if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before[i]) {
 				t.Fatalf("migration changed %s: got %#v, want %#v", query, got, before[i])
@@ -76,12 +87,17 @@ func TestLinearMigrationPreservesPhase1DataAndReferences(t *testing.T) {
 }
 
 func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
-	db := openTaskTables(t)
+	db, err := open(context.Background(), filepath.Join(t.TempDir(), "old.db"), migrationsBefore(t, 26))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedRegistry(t, db)
 	insertRegistryProject(t, db, "project-b", "/repos/project-b")
 	insertRegistryProject(t, db, "project-c", "/repos/project-c")
 	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a',
 		linear_routing_label = 'repo:a' WHERE id = 'project-a'`)
-	_, err := db.Exec(`UPDATE projects SET linear_team_id = 'team-a',
+	_, err = db.Exec(`UPDATE projects SET linear_team_id = 'team-a',
 		linear_routing_label = 'repo:a' WHERE id = 'project-b'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 	// Both components take part in the key; incomplete routing stays nullable.
@@ -92,16 +108,18 @@ func TestLinearMigrationProjectRoutingUnique(t *testing.T) {
 	}
 	mustTaskExec(t, db, `UPDATE projects SET linear_team_id = 'team-a' WHERE id = 'project-c'`)
 	// INSERT, as well as UPDATE, must reject a duplicate complete pair.
-	_, err = db.Exec(`INSERT INTO projects (` + registryProjectColumns + `, linear_team_id, linear_routing_label)
-		SELECT 'duplicate', name, '/repos/duplicate', git_remote_url, runner_id, base_branch,
-		default_role, review_role, context_location, test_command, test_report_format, test_report_path,
-		setup_command, copy_allowlist, allowed_operations, approval_policy, timeouts, created_at, updated_at,
+	_, err = db.Exec(`INSERT INTO projects (id, name, runner_id, default_role,
+		created_at, updated_at, linear_team_id, linear_routing_label)
+		SELECT 'duplicate', name, runner_id, default_role,
+		created_at, updated_at,
 		linear_team_id, linear_routing_label FROM projects WHERE id = 'project-a'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
 }
 
 func TestLinearMigrationTaskProjectNullability(t *testing.T) {
-	db := openTaskTables(t)
+	db := openBefore(t, filepath.Join(t.TempDir(), "evaloom.db"), 27)
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
 	_, err := db.Exec(`UPDATE tasks SET project_id = NULL WHERE id = 'task-001'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
 	for _, test := range []struct {
@@ -226,6 +244,12 @@ func TestLinearMigrationPollStateTables(t *testing.T) {
 
 func beforeLinearMigration(t *testing.T) fstest.MapFS {
 	t.Helper()
+	return migrationsBefore(t, 10)
+}
+
+// migrationsBefore returns the migrations older than version.
+func migrationsBefore(t *testing.T, version int64) fstest.MapFS {
+	t.Helper()
 	source, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +260,7 @@ func beforeLinearMigration(t *testing.T) fstest.MapFS {
 	}
 	previous := fstest.MapFS{}
 	for _, migration := range migrations {
-		if migration.version < 10 {
+		if migration.version < version {
 			previous[migration.name] = &fstest.MapFile{Data: []byte(migration.sql)}
 		}
 	}
@@ -319,15 +343,17 @@ func TestLinearMigrationRollsBackRebuildOnFailure(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	db = openBefore(t, path, 27)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 }
 
 // TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria checks 0011: an
 // empty acceptance_criteria is allowed only for source=linear held as
 // missing_acceptance_criteria (spec 15 3.8, decided 2026-11-08).
 func TestEmptyAcceptanceCriteriaOnlyForLinearMissingCriteria(t *testing.T) {
-	db := openTaskTables(t)
+	db := openBefore(t, filepath.Join(t.TempDir(), "evaloom.db"), 27)
+	seedRegistry(t, db)
+	seedTaskTables(t, db)
 	insert := func(id string, project, source, cause any, criteria string) error {
 		_, err := db.Exec(`INSERT INTO tasks (`+legacyTaskColumns+`, source, intake_block_cause)
 			VALUES (?, ?, 'Title', 'Body', ?, 'change', 'development', 'solo', 'blocked', ?, ?, ?, ?, ?)`,
@@ -413,11 +439,11 @@ func TestEmptyAcceptanceCriteriaMigrationPreservesLinearTasks(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
+	db = openBefore(t, path, 27)
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed tasks: got %#v, want %#v", got, before)
 	}
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if violations := migrationRows(t, db, "PRAGMA foreign_key_check"); len(violations) != 0 {
 		t.Fatalf("foreign key violations = %#v", violations)
 	}
@@ -466,8 +492,8 @@ func TestLinearIssueRemovedAtMigrationLeavesExistingRowsNull(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	db = openBefore(t, path, 27)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -517,8 +543,8 @@ func TestLinearIssueRecheckRequestedAtMigrationLeavesExistingRowsNull(t *testing
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	db = openBefore(t, path, 27)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -573,8 +599,8 @@ func TestLinearOutboxOutcomeUnknownMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	db = openBefore(t, path, 27)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}
@@ -648,8 +674,8 @@ func TestLinearOutboxFailureRecordMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	db = openBefore(t, path, 27)
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26})
 	if got := migrationRows(t, db, query); !reflect.DeepEqual(got, before) {
 		t.Fatalf("migration changed rows: got %#v, want %#v", got, before)
 	}

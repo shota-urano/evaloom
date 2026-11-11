@@ -54,7 +54,7 @@ func (f *cancelFixture) mustRound(t *testing.T, issues ...linear.Issue) {
 // taskStates are the task states reached by a Linear task, with the latest
 // Execution's status ("" for a held task, which has none).
 var taskStates = map[string]string{
-	"queued": "pending", "running": "running", "verifying": "verifying", "blocked": "blocked",
+	"queued": "pending", "working": "working", "checking": "checking", "blocked": "blocked",
 	"held": "", "completed": "succeeded", "failed": "failed", "cancelled": "cancelled", "timed_out": "timed_out",
 }
 
@@ -62,15 +62,19 @@ var taskStates = map[string]string{
 // by TaskStarter; the later states stand in for the Runner's progress.
 func (f *cancelFixture) attach(t *testing.T, state string) (linear.Issue, string) {
 	t.Helper()
-	issue := routedIssue("1", "repo:one")
+	issue := routedIssue("1", "route:one")
 	if state == "held" {
-		issue = routedIssue("1", "repo:unknown")
+		issue = routedIssue("1", "route:unknown")
 	}
 	f.mustRound(t, issue)
 	task := readStarted(t, f.db, "1", 1)
 	if execution := taskStates[state]; state != "held" && state != "queued" {
 		exec(t, f.db, `UPDATE executions SET status = ? WHERE task_id = ?`, execution, task.id)
-		exec(t, f.db, `UPDATE tasks SET status = ? WHERE id = ?`, state, task.id)
+		taskState := state
+		if state == "working" || state == "checking" {
+			taskState = "running"
+		}
+		exec(t, f.db, `UPDATE tasks SET status = ? WHERE id = ?`, taskState, task.id)
 	}
 	return issue, task.id
 }
@@ -117,7 +121,7 @@ var detachTriggers = []struct {
 	run    func(t *testing.T, f *cancelFixture, issue linear.Issue)
 }{
 	{"label removed", ReasonLabelRemoved, func(t *testing.T, f *cancelFixture, issue linear.Issue) {
-		issue.Labels = []string{"repo:one"}
+		issue.Labels = []string{"route:one"}
 		f.fetcher.issues[issue.ID] = issue
 		f.mustRound(t)
 	}},
@@ -149,7 +153,7 @@ var detachTriggers = []struct {
 // Issue のキャンセル、削除・アーカイブでも同じになる; audit_logs の actor が system で、理由が 3.4 の表の値になる。
 func TestLinearCancellationTakesOwnerPath(t *testing.T) {
 	for _, trigger := range detachTriggers {
-		for _, state := range []string{"queued", "running", "verifying", "blocked", "held"} {
+		for _, state := range []string{"queued", "working", "checking", "blocked", "held"} {
 			t.Run(trigger.name+"/"+state, func(t *testing.T) {
 				f := newCancelFixture(t)
 				issue, taskID := f.attach(t, state)
@@ -157,9 +161,9 @@ func TestLinearCancellationTakesOwnerPath(t *testing.T) {
 				got := readCancelled(t, f.db, taskID)
 				// The same results as the owner's cancellation (spec 04 3.5).
 				switch state {
-				case "running", "verifying":
+				case "working", "checking":
 					// The Runner stops it on its next heartbeat.
-					if got.task != state || got.execution != state || !got.requested || got.finished {
+					if got.task != "running" || got.execution != state || !got.requested || got.finished {
 						t.Fatalf("task = %+v; want a cancel request", got)
 					}
 				case "held":
@@ -175,7 +179,7 @@ func TestLinearCancellationTakesOwnerPath(t *testing.T) {
 				if got.cancelAudits != 1 {
 					t.Fatalf("cancel audits = %d", got.cancelAudits)
 				}
-				assertSystemAudit(t, f.db, taskID, trigger.reason, state == "running" || state == "verifying")
+				assertSystemAudit(t, f.db, taskID, trigger.reason, state == "working" || state == "checking")
 				if n := countRows(t, f.db, `SELECT count(*) FROM notification_requests`); n != 0 {
 					t.Fatalf("cancellation requested %d notifications", n)
 				}
@@ -216,7 +220,7 @@ func TestLinearCancellationStopsOnlyActiveTaskOfIssue(t *testing.T) {
 	f := newCancelFixture(t)
 	issue, first := f.attach(t, "completed")
 	detached := issue
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues[issue.ID] = detached
 	f.mustRound(t)
 	f.mustRound(t, issue) // attached again: a second task
@@ -243,7 +247,7 @@ func TestLinearCancellationFailureIsRetried(t *testing.T) {
 	exec(t, f.db, `UPDATE tasks SET status = 'running' WHERE id = ?`, taskID)
 	before := mustState(t, f.db, "1")
 	detached := issue
-	detached.Labels = []string{"repo:one"}
+	detached.Labels = []string{"route:one"}
 	f.fetcher.issues[issue.ID] = detached
 	if err := f.round(t); err == nil {
 		t.Fatal("round succeeded with a conflicting task")

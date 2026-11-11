@@ -32,7 +32,8 @@ type TaskStatus string
 
 const (
 	TaskReceived        TaskStatus = "received"
-	TaskPlanning        TaskStatus = "planning"
+	TaskRouting         TaskStatus = "routing"
+	TaskPlanning        TaskStatus = "planning" // obsolete; rejected by Validate
 	TaskQueued          TaskStatus = "queued"
 	TaskRunning         TaskStatus = "running"
 	TaskVerifying       TaskStatus = "verifying"
@@ -46,7 +47,7 @@ const (
 
 func (v TaskStatus) Validate() error {
 	switch v {
-	case TaskReceived, TaskPlanning, TaskQueued, TaskRunning, TaskVerifying, TaskWaitingApproval, TaskCompleted, TaskFailed, TaskCancelled, TaskTimedOut, TaskBlocked:
+	case TaskReceived, TaskRouting, TaskQueued, TaskRunning, TaskWaitingApproval, TaskCompleted, TaskFailed, TaskCancelled, TaskTimedOut, TaskBlocked:
 		return nil
 	default:
 		return fmt.Errorf("invalid TaskStatus %q", v)
@@ -65,8 +66,8 @@ const (
 	ExecutionPending    ExecutionStatus = "pending"
 	ExecutionClaimed    ExecutionStatus = "claimed"
 	ExecutionPreparing  ExecutionStatus = "preparing"
-	ExecutionRunning    ExecutionStatus = "running"
-	ExecutionVerifying  ExecutionStatus = "verifying"
+	ExecutionRunning    ExecutionStatus = "working"
+	ExecutionVerifying  ExecutionStatus = "checking"
 	ExecutionPublishing ExecutionStatus = "publishing"
 	// Phase 2 approval states (spec 17, 3.9). Neither is terminal.
 	ExecutionWaitingApproval ExecutionStatus = "waiting_approval"
@@ -81,7 +82,7 @@ const (
 
 func (v ExecutionStatus) Validate() error {
 	switch v {
-	case ExecutionPending, ExecutionClaimed, ExecutionPreparing, ExecutionRunning, ExecutionVerifying, ExecutionPublishing, ExecutionWaitingApproval, ExecutionMerging, ExecutionSucceeded, ExecutionBlocked, ExecutionFailed, ExecutionInterrupted, ExecutionCancelled, ExecutionTimedOut:
+	case ExecutionPending, ExecutionClaimed, ExecutionPreparing, ExecutionRunning, ExecutionVerifying, ExecutionPublishing, ExecutionWaitingApproval, ExecutionSucceeded, ExecutionBlocked, ExecutionFailed, ExecutionInterrupted, ExecutionCancelled, ExecutionTimedOut:
 		return nil
 	default:
 		return fmt.Errorf("invalid ExecutionStatus %q", v)
@@ -96,6 +97,15 @@ func (v *ExecutionStatus) UnmarshalJSON(data []byte) error {
 type ExecutionEventType string
 
 const (
+	EventStageStarted       ExecutionEventType = "stage_started"
+	EventStageFinished      ExecutionEventType = "stage_finished"
+	EventCheckResult        ExecutionEventType = "check_result"
+	EventApprovalRequested  ExecutionEventType = "approval_requested"
+	EventApprovalWaived     ExecutionEventType = "approval_waived"
+	EventApprovalConsumed   ExecutionEventType = "approval_consumed"
+	EventDecisionOpened     ExecutionEventType = "decision_opened"
+	EventDecisionAnswered   ExecutionEventType = "decision_answered"
+	EventPublished          ExecutionEventType = "published"
 	EventStatusChanged      ExecutionEventType = "status_changed"
 	EventLog                ExecutionEventType = "log"
 	EventWorktreeReady      ExecutionEventType = "worktree_ready"
@@ -112,7 +122,7 @@ const (
 
 func (v ExecutionEventType) Validate() error {
 	switch v {
-	case EventStatusChanged, EventLog, EventWorktreeReady, EventContextPinned, EventHarnessStarted, EventHarnessFinished, EventGateResult, EventBlocked, EventPushed, EventPRCreated, EventNotificationSent, EventNotificationFailed:
+	case EventStatusChanged, EventLog, EventContextPinned, EventStageStarted, EventStageFinished, EventCheckResult, EventApprovalRequested, EventApprovalWaived, EventApprovalConsumed, EventDecisionOpened, EventDecisionAnswered, EventPublished, EventNotificationSent, EventNotificationFailed:
 		return nil
 	default:
 		return fmt.Errorf("invalid ExecutionEventType %q", v)
@@ -127,19 +137,23 @@ func (v *ExecutionEventType) UnmarshalJSON(data []byte) error {
 type ErrorClass string
 
 const (
-	ErrorConfig          ErrorClass = "config_error"
-	ErrorExecutionFailed ErrorClass = "execution_failed"
-	ErrorTestFailed      ErrorClass = "test_failed"
-	ErrorTimeout         ErrorClass = "timeout"
-	ErrorCancelled       ErrorClass = "cancelled"
-	ErrorInterrupted     ErrorClass = "interrupted"
-	ErrorPublishFailed   ErrorClass = "publish_failed"
-	ErrorSandbox         ErrorClass = "sandbox_error"
+	ErrorPrepareFailed    ErrorClass = "prepare_failed"
+	ErrorPublishUnknown   ErrorClass = "publish_unknown"
+	ErrorApprovalRejected ErrorClass = "approval_rejected"
+	ErrorContract         ErrorClass = "contract_error"
+	ErrorConfig           ErrorClass = "config_error"
+	ErrorExecutionFailed  ErrorClass = "work_failed"
+	ErrorTestFailed       ErrorClass = "check_failed"
+	ErrorTimeout          ErrorClass = "timeout"
+	ErrorCancelled        ErrorClass = "cancelled"
+	ErrorInterrupted      ErrorClass = "interrupted"
+	ErrorPublishFailed    ErrorClass = "publish_failed"
+	ErrorSandbox          ErrorClass = "sandbox_error"
 )
 
 func (v ErrorClass) Validate() error {
 	switch v {
-	case ErrorConfig, ErrorExecutionFailed, ErrorTestFailed, ErrorTimeout, ErrorCancelled, ErrorInterrupted, ErrorPublishFailed, ErrorSandbox:
+	case ErrorPrepareFailed, ErrorPublishUnknown, ErrorApprovalRejected, ErrorContract, ErrorConfig, ErrorExecutionFailed, ErrorTestFailed, ErrorTimeout, ErrorCancelled, ErrorInterrupted, ErrorPublishFailed, ErrorSandbox:
 		return nil
 	default:
 		return fmt.Errorf("invalid ErrorClass %q", v)
@@ -147,30 +161,6 @@ func (v ErrorClass) Validate() error {
 }
 
 func (v *ErrorClass) UnmarshalJSON(data []byte) error {
-	return decodeEnum(data, v)
-}
-
-// BlockCause represents block causes in spec 02, section 5.6.
-type BlockCause string
-
-const (
-	BlockGate2MissingTests BlockCause = "gate2_missing_tests"
-	BlockGate2Unverifiable BlockCause = "gate2_unverifiable"
-	BlockGate3Mismatch     BlockCause = "gate3_mismatch"
-	BlockContextConflict   BlockCause = "context_conflict"
-	BlockGitState          BlockCause = "git_state"
-)
-
-func (v BlockCause) Validate() error {
-	switch v {
-	case BlockGate2MissingTests, BlockGate2Unverifiable, BlockGate3Mismatch, BlockContextConflict, BlockGitState:
-		return nil
-	default:
-		return fmt.Errorf("invalid BlockCause %q", v)
-	}
-}
-
-func (v *BlockCause) UnmarshalJSON(data []byte) error {
 	return decodeEnum(data, v)
 }
 

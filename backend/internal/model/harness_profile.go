@@ -29,6 +29,7 @@ type ProfileDefinition struct {
 }
 
 type HarnessProfile struct {
+	ContractVersion string          `json:"contractVersion"`
 	ID              string          `json:"id"`
 	HarnessID       string          `json:"harnessId"`
 	Version         string          `json:"version"`

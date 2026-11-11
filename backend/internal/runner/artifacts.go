@@ -17,7 +17,7 @@ var _ ArtifactRegistrar = (*Runner)(nil)
 // with the same ID and retains the file, including when an acknowledgement is
 // lost after the Control Plane has committed the artifact.
 func (runner *Runner) RegisterLogArtifact(ctx context.Context, artifact LogArtifact) error {
-	if artifact.Kind != "harness_log" && artifact.Kind != "setup_log" && artifact.Kind != "test_log" {
+	if artifact.Kind != "log" {
 		return fmt.Errorf("runner: invalid log artifact kind")
 	}
 	return runner.registerArtifact(ctx, artifact)
@@ -45,7 +45,7 @@ func (runner *Runner) deliverArtifact(ctx context.Context, artifact LogArtifact)
 	}
 }
 
-// registerArtifact also serves Runner-generated diffs and harness results.
+// registerArtifact uploads the supplied stage and display name unchanged.
 func (runner *Runner) registerArtifact(ctx context.Context, artifact LogArtifact) error {
 	for _, value := range []string{artifact.ID, artifact.ExecutionID} {
 		if id, err := ulid.ParseStrict(value); err != nil || id.String() != value {
@@ -60,7 +60,7 @@ func (runner *Runner) registerArtifact(ctx context.Context, artifact LogArtifact
 	if artifact.Redacted {
 		redacted = "1"
 	}
-	query := url.Values{"artifactId": {artifact.ID}, "kind": {artifact.Kind}, "redacted": {redacted}}
+	query := url.Values{"artifactId": {artifact.ID}, "stage": {artifact.Stage}, "kind": {artifact.Kind}, "name": {artifact.Name}, "redacted": {redacted}}
 	file, err := os.Open(artifact.Path)
 	if err != nil {
 		return fmt.Errorf("runner: open saved artifact failed")

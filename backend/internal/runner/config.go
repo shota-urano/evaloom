@@ -20,16 +20,14 @@ import (
 )
 
 type Config struct {
-	RunnerID                string             `json:"runnerId"`
-	ControlPlaneURL         string             `json:"controlPlaneUrl"`
-	TokenFile               string             `json:"tokenFile"`
-	WorktreeRoot            string             `json:"worktreeRoot"`
-	DataDir                 string             `json:"dataDir"`
-	HarnessAuthFiles        map[string]string  `json:"harnessAuthFiles"`
-	GitHubAppPrivateKeyFile string             `json:"githubAppPrivateKeyFile"`
-	Container               ContainerConfig    `json:"container"`
-	CommitAuthor            CommitAuthorConfig `json:"commitAuthor"`
-	DefaultTimeouts         DefaultTimeouts    `json:"defaultTimeouts"`
+	RunnerID         string            `json:"runnerId"`
+	ControlPlaneURL  string            `json:"controlPlaneUrl"`
+	TokenFile        string            `json:"tokenFile"`
+	WorktreeRoot     string            `json:"worktreeRoot"`
+	DataDir          string            `json:"dataDir"`
+	HarnessAuthFiles map[string]string `json:"harnessAuthFiles"`
+	Container        ContainerConfig   `json:"container"`
+	DefaultTimeouts  DefaultTimeouts   `json:"defaultTimeouts"`
 }
 
 type ContainerConfig struct {
@@ -43,23 +41,16 @@ type ContainerConfig struct {
 }
 
 // ResourceLimits converts validated Runner configuration to the common limits
-// for Harness, setup and test sandboxes. The stage supplies its own timeout
+// for Harness sandboxes. The stage supplies its own timeout
 // after applying Project overrides; CPU and memory are always Runner-owned.
 func (config ContainerConfig) ResourceLimits(timeout time.Duration) sandbox.ResourceLimits {
 	return sandbox.ResourceLimits{CPU: config.CPUs, MemoryBytes: config.MemoryMiB * (1 << 20), Time: timeout}
 }
 
-type CommitAuthorConfig struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
 // DefaultTimeouts stores seconds as specified by the configuration file, not
 // time.Duration's nanoseconds. Wiring these limits into stages is separate.
 type DefaultTimeouts struct {
-	SetupSec   int `json:"setupSec"`
 	HarnessSec int `json:"harnessSec"`
-	TestSec    int `json:"testSec"`
 }
 
 // LoadConfig reads one JSON object. Paths are absolute, independent of the
@@ -86,7 +77,7 @@ func LoadConfig(path string) (Config, error) {
 	}
 	config := Config{
 		Container:       ContainerConfig{CPUs: 4, MemoryMiB: 8192},
-		DefaultTimeouts: DefaultTimeouts{SetupSec: 900, HarnessSec: 3600, TestSec: 1800},
+		DefaultTimeouts: DefaultTimeouts{HarnessSec: 3600},
 	}
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return Config{}, fmt.Errorf("runner: invalid config JSON")
@@ -155,7 +146,6 @@ func (config Config) validate() error {
 	}
 	for _, path := range []struct{ name, value string }{
 		{"tokenFile", config.TokenFile}, {"worktreeRoot", config.WorktreeRoot}, {"dataDir", config.DataDir},
-		{"githubAppPrivateKeyFile", config.GitHubAppPrivateKeyFile},
 		{"container.runtimePath", config.Container.RuntimePath}, {"container.proxyBinary", config.Container.ProxyBinary},
 	} {
 		if !filepath.IsAbs(path.value) || strings.ContainsRune(path.value, 0) {
@@ -179,13 +169,8 @@ func (config Config) validate() error {
 			return fmt.Errorf("runner: harnessAuthFiles permissions must be 0600")
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || !filepath.IsAbs(home) || !configPathWithin(filepath.Join(home, ".config", "evaloom"), config.GitHubAppPrivateKeyFile) {
-		return fmt.Errorf("runner: githubAppPrivateKeyFile must be inside the host's ~/.config/evaloom directory")
-	}
 	for _, field := range []struct{ name, value string }{
 		{"container.image", config.Container.Image}, {"container.proxyImage", config.Container.ProxyImage},
-		{"commitAuthor.name", config.CommitAuthor.Name}, {"commitAuthor.email", config.CommitAuthor.Email},
 	} {
 		if strings.TrimSpace(field.value) == "" {
 			return fmt.Errorf("runner: %s is required", field.name)
@@ -195,9 +180,7 @@ func (config Config) validate() error {
 		name    string
 		seconds int
 	}{
-		{"defaultTimeouts.setupSec", config.DefaultTimeouts.SetupSec},
 		{"defaultTimeouts.harnessSec", config.DefaultTimeouts.HarnessSec},
-		{"defaultTimeouts.testSec", config.DefaultTimeouts.TestSec},
 	} {
 		if field.seconds <= 0 || uint64(field.seconds) > uint64((1<<63-1)/time.Second) {
 			return fmt.Errorf("runner: %s must be positive seconds within the supported duration range", field.name)

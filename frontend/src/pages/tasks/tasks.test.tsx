@@ -30,7 +30,6 @@ const task = (id: string, projectId: string, status: TaskSummary['status'], extr
   createdAt: '2026-10-27T00:00:00Z',
   updatedAt: '2026-10-27T00:00:00Z',
   latestExecution: { id: `e-${id}`, seq: 1, mode: 'continue', status: 'pending', errorClass: null },
-  prUrl: null,
   ...extra,
 })
 
@@ -39,7 +38,6 @@ const INITIAL_TASKS = [
   task('task-003', 'alpha', 'cancelled', { latestExecution: { id: 'e3', seq: 1, mode: 'continue', status: 'cancelled', errorClass: 'cancelled' } }),
   task('task-002', 'beta', 'completed', {
     latestExecution: { id: 'e2', seq: 2, mode: 'continue', status: 'succeeded', errorClass: null },
-    prUrl: 'https://example.com/pr/2',
   }),
   task('task-001', 'alpha', 'queued'),
 ]
@@ -169,7 +167,7 @@ describe('タスク作成', () => {
 describe('Tasks 一覧', () => {
   const rows = () => within(screen.getByRole('table', { name: 'タスク' })).getAllByRole('row').slice(1)
 
-  it('タスク、状態、プロジェクト、最新 Execution、PR へのリンクを出す', async () => {
+  it('タスク、状態、プロジェクト、最新 Execution を出す', async () => {
     renderAt('/tasks')
     await screen.findByRole('table', { name: 'タスク' })
     expect(rows()).toHaveLength(3)
@@ -178,7 +176,6 @@ describe('Tasks 一覧', () => {
     expect(done).toHaveTextContent('Completed')
     expect(done).toHaveTextContent('Beta')
     expect(done).toHaveTextContent('#2 succeeded')
-    expect(within(done).getByRole('link', { name: 'PR を開く' })).toHaveAttribute('href', 'https://example.com/pr/2')
     expect(rows()[2]).toHaveTextContent('Queued')
   })
 
@@ -273,17 +270,15 @@ describe('Tasks 一覧', () => {
     await waitFor(() => expect(fake.events.open(url)).toHaveLength(1))
     const [again] = fake.events.open(url)
 
-    // PR まで作って完了すると、状態と PR へのリンクが更新され、終端になったので購読を閉じる。
+    // 完了すると状態が更新され、終端になったので購読を閉じる。
     TASKS[2] = {
       ...TASKS[2],
       status: 'completed',
       latestExecution: { ...TASKS[2].latestExecution!, status: 'succeeded' },
-      prUrl: 'https://example.com/pr/1',
     }
     act(() => again.emit('status_changed', { from: 'publishing', to: 'succeeded', reason: 'runner_result' }, 9))
     expect(await within(row).findByText('Completed')).toBeVisible()
     expect(row).toHaveTextContent('#1 succeeded')
-    expect(within(row).getByRole('link', { name: 'PR を開く' })).toHaveAttribute('href', 'https://example.com/pr/1')
     await waitFor(() => {
       expect(again.closed).toBe(true)
       expect(fake.events.sources.every((s) => s.closed)).toBe(true)
