@@ -209,6 +209,7 @@ func configPathWithin(root, path string) bool {
 
 // Resolve existing ancestors too: configuration may name files/directories
 // that will only be created later, but an existing symlink must not escape.
+// Follow dangling symlinks as well, so containment and existence are separate.
 func resolveConfigPath(path string) (string, error) {
 	path = strings.TrimRight(path, string(filepath.Separator))
 	if path == "" {
@@ -218,7 +219,18 @@ func resolveConfigPath(path string) (string, error) {
 	if err == nil || !os.IsNotExist(err) {
 		return real, err
 	}
-	if _, linkErr := os.Lstat(path); linkErr == nil || !os.IsNotExist(linkErr) {
+	if info, linkErr := os.Lstat(path); linkErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			parent, _ := filepath.Split(path)
+			// Do not clean target yet: resolve links before any '..'.
+			target = parent + target
+		}
+		return resolveConfigPath(target)
+	} else if linkErr == nil || !os.IsNotExist(linkErr) {
 		return "", err
 	}
 	// Split before cleaning: link/../file must resolve link before '..'.

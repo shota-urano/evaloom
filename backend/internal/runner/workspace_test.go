@@ -48,16 +48,39 @@ func TestExecuteStagesCreatesEmptyPrivateWorkspace(t *testing.T) {
 
 func TestExecuteStagesRejectsWorkspaceEscape(t *testing.T) {
 	for _, created := range []bool{false, true} {
-		for _, missingTarget := range []bool{false, true} {
-			t.Run(fmt.Sprintf("created=%v/missing-target=%v", created, missingTarget), func(t *testing.T) {
+		for _, targetKind := range []string{"existing", "missing", "missing-relative", "missing-chain", "missing-ancestor", "missing-parent-traversal"} {
+			t.Run(fmt.Sprintf("created=%v/target=%s", created, targetKind), func(t *testing.T) {
 				r, claim, reporter, services := stageFixture(t, false)
 				outside := t.TempDir()
+				missingTarget := targetKind != "existing"
 				if missingTarget {
 					outside = filepath.Join(outside, "not-created")
 				}
 				claim.Workspace.Path = filepath.Join(r.workspaceRoot, "escape")
 				claim.Workspace.ID, claim.Workspace.Created = "escape", created
-				if err := os.Symlink(outside, claim.Workspace.Path); err != nil {
+				target := outside
+				switch targetKind {
+				case "missing-relative":
+					var err error
+					target, err = filepath.Rel(r.workspaceRoot, outside)
+					if err != nil {
+						t.Fatal(err)
+					}
+				case "missing-chain", "missing-ancestor", "missing-parent-traversal":
+					aliasTarget := outside
+					target = "alias"
+					if targetKind == "missing-ancestor" {
+						target += "/child"
+					} else if targetKind == "missing-parent-traversal" {
+						// Resolve alias before '..'; cleaning first would hide the escape.
+						aliasTarget = filepath.Dir(outside)
+						target += "/../not-created"
+					}
+					if err := os.Symlink(aliasTarget, filepath.Join(r.workspaceRoot, "alias")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(target, claim.Workspace.Path); err != nil {
 					t.Fatal(err)
 				}
 				services.Executor = stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
@@ -82,25 +105,56 @@ func TestExecuteStagesRejectsWorkspaceEscape(t *testing.T) {
 
 func TestExecuteStagesMissingInheritedWorkspace(t *testing.T) {
 	for _, resume := range []bool{false, true} {
-		t.Run(fmt.Sprintf("resumed=%v", resume), func(t *testing.T) {
-			r, claim, reporter, services := stageFixture(t, false)
-			claim.Workspace.ID = "missing"
-			claim.Workspace.Path = filepath.Join(r.workspaceRoot, claim.Workspace.ID)
-			if resume {
-				setStageResume(t, &claim, stageResume{Stage: model.StageWork})
-			}
-			services.Executor = stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
-				t.Fatal("missing inherited workspace must not run any stage")
-				return StageOutcome{}
+		for _, link := range []string{"none", "absolute", "relative", "chain", "ancestor"} {
+			t.Run(fmt.Sprintf("resumed=%v/link=%s", resume, link), func(t *testing.T) {
+				r, claim, reporter, services := stageFixture(t, false)
+				setMissingWorkspace(t, r, &claim, link)
+				if resume {
+					setStageResume(t, &claim, stageResume{Stage: model.StageWork})
+				}
+				services.Executor = stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
+					t.Fatal("missing inherited workspace must not run any stage")
+					return StageOutcome{}
+				})
+				if err := r.ExecuteStages(t.Context(), claim, services); err != nil {
+					t.Fatal(err)
+				}
+				requireWorkspaceError(t, reporter, "workspace_missing")
+				if _, err := os.Stat(claim.Workspace.Path); !os.IsNotExist(err) {
+					t.Fatalf("recreated an inherited workspace: %v", err)
+				}
 			})
-			if err := r.ExecuteStages(t.Context(), claim, services); err != nil {
-				t.Fatal(err)
-			}
-			requireWorkspaceError(t, reporter, "workspace_missing")
-			if _, err := os.Stat(claim.Workspace.Path); !os.IsNotExist(err) {
-				t.Fatalf("recreated an inherited workspace: %v", err)
-			}
-		})
+		}
+	}
+}
+
+// Keep the missing-path cases identical in unit and Control Plane tests.
+func setMissingWorkspace(t *testing.T, r *Runner, claim *Claim, link string) {
+	t.Helper()
+	claim.Workspace.ID = "missing"
+	claim.Workspace.Path = filepath.Join(r.workspaceRoot, claim.Workspace.ID)
+	target := filepath.Join(r.workspaceRoot, "absent")
+	switch link {
+	case "none":
+		return
+	case "absolute":
+	case "relative":
+		target = "absent"
+	case "chain":
+		if err := os.Symlink("absent", filepath.Join(r.workspaceRoot, "alias")); err != nil {
+			t.Fatal(err)
+		}
+		target = "alias"
+	case "ancestor":
+		if err := os.Symlink("absent", filepath.Join(r.workspaceRoot, "alias")); err != nil {
+			t.Fatal(err)
+		}
+		target = filepath.Join("alias", "child")
+	default:
+		t.Fatalf("unknown missing workspace case: %s", link)
+	}
+	if err := os.Symlink(target, claim.Workspace.Path); err != nil {
+		t.Fatal(err)
 	}
 }
 
