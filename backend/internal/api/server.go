@@ -75,7 +75,7 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("GET /api/approvals/{id}", getApproval(db, logger))
 	mux.HandleFunc("GET /api/decisions", listDecisions(db, logger))
 	mux.HandleFunc("GET /api/decisions/{id}", getDecision(db, logger))
-	mux.HandleFunc("POST /api/decisions/{id}/answer", answerDecision(db, logger, existingApprovalAnswers{}))
+	mux.HandleFunc("POST /api/decisions/{id}/answer", answerDecision(db, logger, lifecycleAnswers{}))
 	mux.HandleFunc("GET /api/routes", listRoutes(db, logger))
 	mux.HandleFunc("POST /api/routes", writeRoute(db, logger, true))
 	mux.HandleFunc("PATCH /api/routes/{label}", writeRoute(db, logger, false))
