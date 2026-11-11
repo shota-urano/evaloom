@@ -25,10 +25,10 @@ func testConfig(t *testing.T, endpoint string) Config {
 	}
 	return Config{
 		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
-		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
-		HarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
-		Container:        ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
-		DefaultTimeouts:  DefaultTimeouts{HarnessSec: 3600},
+		WorkspaceRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
+		SecretsDir:            filepath.Join(dir, "data", "secrets"),
+		MicroHarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		Container:             ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 	}
 }
 

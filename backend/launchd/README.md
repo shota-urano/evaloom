@@ -87,9 +87,10 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
   "runnerId": "mac-mini",
   "controlPlaneUrl": "http://127.0.0.1:8080",
   "tokenFile": "/absolute/path/data/runner.token",
-  "worktreeRoot": "/absolute/path/worktrees",
+  "workspaceRoot": "/absolute/path/worktrees",
   "dataDir": "/absolute/path/data/runner",
-  "harnessAuthFiles": {
+  "secretsDir": "/absolute/path/data/runner/secrets",
+  "microHarnessAuthFiles": {
     "codex": "/absolute/path/data/runner/codex/auth.json",
     "claude_code": "/absolute/path/data/runner/claude/.credentials.json"
   },
@@ -103,9 +104,11 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 ```
 
 パスはすべて絶対パスで指定する。
-`harnessAuthFiles`は`dataDir`内に置く。既存のシンボリックリンクが外部を指す場合も拒否し、既存ファイルの権限は0600かを検査する。
+`microHarnessAuthFiles`は`dataDir`内に置く。既存のシンボリックリンクが外部を指す場合も拒否し、既存ファイルの権限は0600かを検査する。
 `container.runtimeEnv`は任意の文字列のマップで、ランタイムCLIに渡す環境変数を指定する。
-`defaultTimeouts`は省略でき、`harnessSec`は3600秒になる。指定値は正の整数とする。
+`workspaceRoot`と`dataDir`は、同一のディレクトリや親子のディレクトリを指定できない。シンボリックリンクの解決後も検査する。
+`container.cpus`は省略すると4、`container.memoryMiB`は省略すると8192になる。いずれも0以下の値を拒否する。
+旧設定の`worktreeRoot`・`harnessAuthFiles`・`defaultTimeouts`は未知の項目として起動を拒否する。
 GitHub App の秘密鍵（`githubAppPrivateKeyFile`）、commit の作者（`commitAuthor`）、setup とテストの期限（`setupSec`・`testSec`）は
 Git Publisher・setup・テストとともに software-engineer へ移したため、指定すると未知の項目として起動を拒否する（`docs/specs/19-routing-and-stages.md` 3.11）。
 ディレクトリの作成、データディレクトリがGit管理外かの検証は、この実装単位では行わない。
