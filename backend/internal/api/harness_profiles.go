@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/store"
@@ -68,7 +70,7 @@ func getHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	}
 }
 
-func registerHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
+func registerHarnessProfile(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			HarnessID string `json:"harnessId"`
@@ -90,7 +92,12 @@ func registerHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, harnessError(err))
 			return
 		}
-		profile, definitionErr := registry.ReadProfile(r.Context(), before.RepoPath, input.Version, "")
+		environment, err := profileEnvironment(r.Context(), db, adapters)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		profile, definitionErr := registry.ReadProfile(r.Context(), before.RepoPath, input.Version, environment)
 		if profile.CommitSHA == "" {
 			WriteError(w, logger, definitionErr)
 			return
@@ -162,4 +169,37 @@ func registerHarnessProfile(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, profile)
 	}
+}
+
+// profileEnvironment collects what Profile registration needs from this
+// deployment (spec 03 3.4): limits.stageTimeoutMaxSec from the settings, and
+// the Tool Permissions conversion and model API destinations of each
+// registered Adapter (spec 08 3.2, 3.9; spec 09 3.3). Adapters provide them by
+// implementing registry.ToolPermissionsChecker and registry.ModelAPIDeclarer.
+func profileEnvironment(ctx context.Context, db *sql.DB, adapters *adapter.Registry) (registry.Environment, error) {
+	settings, err := store.ReadSettings(ctx, db)
+	if err != nil {
+		return registry.Environment{}, err
+	}
+	raw, present := settings["limits.stageTimeoutMaxSec"]
+	environment := registry.Environment{
+		StageTimeoutMaxSecs: registry.ParseStageTimeoutMaxSec(raw, present),
+		ToolPermissions:     map[model.AdapterName]registry.ToolPermissionsChecker{},
+		ModelAPIs:           map[string]bool{},
+	}
+	for _, name := range adapters.Names() {
+		implementation, err := adapters.Lookup(name)
+		if err != nil {
+			return registry.Environment{}, err
+		}
+		if checker, ok := implementation.(registry.ToolPermissionsChecker); ok {
+			environment.ToolPermissions[model.AdapterName(name)] = checker
+		}
+		if declarer, ok := implementation.(registry.ModelAPIDeclarer); ok {
+			for _, destination := range declarer.ModelAPIDestinations() {
+				environment.ModelAPIs[destination] = true
+			}
+		}
+	}
+	return environment, nil
 }

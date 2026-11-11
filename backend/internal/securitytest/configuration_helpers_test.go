@@ -16,7 +16,6 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/model"
-	"github.com/shota-urano/evaloom/backend/internal/registry"
 )
 
 type configurationCLI struct {
@@ -80,11 +79,16 @@ func configurationProfile(t *testing.T, ctx context.Context, f *Fixture, cli con
 			t.Fatal(err)
 		}
 	}
-	profile, err := registry.ReadProfile(ctx, repo, "1.0.0", cli.name)
+	// This definition is in the legacy micro-harness Adapter protocol, not a
+	// contract v1 Profile, so pin the tagged commit directly instead of
+	// registering it.
+	sha, err := f.git(ctx, "-C", repo, "rev-parse", "--verify", "refs/tags/profile/v1.0.0^{commit}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile.HarnessID = "isolation-" + cli.name
+	hash := sha256.Sum256(data)
+	profile := model.HarnessProfile{HarnessID: "isolation-" + cli.name, Version: "1.0.0", TagName: "profile/v1.0.0",
+		CommitSHA: sha, Definition: data, DefinitionHash: hex.EncodeToString(hash[:]), ModelID: modelID}
 	var def model.ProfileDefinition
 	if err := json.Unmarshal(profile.Definition, &def); err != nil {
 		t.Fatal(err)

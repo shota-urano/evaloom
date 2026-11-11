@@ -19,20 +19,24 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
-const profileYAML = `profileVersion: "1.2.0"
-harnessVersion: "1.2.0"
-modelId: "test-model"
-promptVersion: "first"
-skillVersions:
-  - { name: "check", version: "first" }
-toolConfiguration:
-  allowedTools: []
-contextPolicyVersion: "1"
-executionConfiguration:
-  adapter: "codex"
-  args: []
-collaborationPolicy: "solo"
-evaluationPolicyVersion: null
+// profileYAML is a contract v1 Profile whose referenced files the test commits.
+const profileYAML = `contractVersion: "1"
+profileVersion: "1.2.0"
+name: "context-test"
+description: "Reads pinned files"
+acceptanceCriteria: optional
+stages:
+  work:
+    microHarness: "codex"
+    model: "test-model"
+    instructions: ["prompts/developer.md"]
+    timeoutSec: 600
+  check:
+    command: ["evaloom/check/run"]
+    timeoutSec: 60
+  publish:
+    command: ["evaloom/publish/run"]
+    timeoutSec: 60
 `
 
 func TestReadUsesRegisteredSHAAfterTagHeadIndexAndWorkingTreeChange(t *testing.T) {
@@ -59,6 +63,8 @@ func TestReadUsesRegisteredSHAAfterTagHeadIndexAndWorkingTreeChange(t *testing.T
 				t.Fatal(err)
 			}
 			writeFile(t, repo, "evaloom/profile.yaml", profileYAML)
+			writeFile(t, repo, "evaloom/check/run", "#!/bin/sh\n")
+			writeFile(t, repo, "evaloom/publish/run", "#!/bin/sh\n")
 			writeFile(t, repo, "unselected.md", "must not be included\n")
 			baseSHA := commit(t, repo)
 			tagArgs := []string{"tag"}
@@ -66,7 +72,7 @@ func TestReadUsesRegisteredSHAAfterTagHeadIndexAndWorkingTreeChange(t *testing.T
 				tagArgs = append(tagArgs, "-a", "-m", "test profile")
 			}
 			git(t, repo, append(tagArgs, "profile/v1.2.0")...)
-			profile, err := registry.ReadProfile(context.Background(), repo, "1.2.0", "codex")
+			profile, err := registry.ReadProfile(context.Background(), repo, "1.2.0", registry.Environment{StageTimeoutMaxSecs: registry.DefaultStageTimeoutMaxSec})
 			if err != nil || profile.CommitSHA != baseSHA {
 				t.Fatalf("ReadProfile = (%+v, %v), want pin %s", profile, err, baseSHA)
 			}
