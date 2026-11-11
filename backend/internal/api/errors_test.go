@@ -20,7 +20,8 @@ func TestErrorContractArchitecture53(t *testing.T) {
 		status int
 	}{
 		{"validation_failed", 400}, {"unauthenticated", 401}, {"forbidden", 403},
-		{"not_found", 404}, {"conflict", 409}, {"precondition_failed", 422}, {"internal", 500},
+		{"not_found", 404}, {"conflict", 409}, {"precondition_failed", 422},
+		{"too_many_requests", 429}, {"internal", 500},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			var logs bytes.Buffer

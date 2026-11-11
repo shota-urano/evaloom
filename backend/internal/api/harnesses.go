@@ -27,6 +27,22 @@ func harnessError(err error) error {
 	return err
 }
 
+func getHarness(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := ValidateID("id", id, SlugID); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		harness, err := store.GetHarness(r.Context(), db, id)
+		if err != nil {
+			WriteError(w, logger, harnessError(err))
+			return
+		}
+		writeJSON(w, http.StatusOK, harness)
+	}
+}
+
 func listHarnesses(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)

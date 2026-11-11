@@ -12,7 +12,11 @@ import (
 func requireLoginFailure(t *testing.T, f *authFixture, id, password string, status int) {
 	t.Helper()
 	result := f.passwordLogin(t, id, password, nil)
-	assertAuthError(t, result.status, result.raw, status, Unauthenticated)
+	code := Unauthenticated
+	if status == http.StatusTooManyRequests {
+		code = TooManyRequests
+	}
+	assertAuthError(t, result.status, result.raw, status, code)
 	if len(result.cookies) != 0 {
 		t.Fatalf("failed login issued cookies: %v", result.cookies)
 	}
@@ -61,7 +65,7 @@ func TestOwnerLoginCooldownSkipsCredentialsAndExpiresAfterSixtySeconds(t *testin
 		t.Fatalf("login failures were not audited: %+v", failures)
 	}
 	for _, row := range failures[5:] {
-		if row.Detail["status"] != float64(429) || row.Detail["reason"] != "login_cooldown" || row.Detail["via"] != "loopback" {
+		if row.Detail["status"] != float64(429) || row.Detail["code"] != "too_many_requests" || row.Detail["reason"] != "login_cooldown" || row.Detail["via"] != "loopback" {
 			t.Fatalf("cooldown audit: %+v", row)
 		}
 	}

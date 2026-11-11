@@ -12,6 +12,8 @@ import (
 
 // Approval is one approvals row (spec 17 3.9) as the owner APIs show it.
 type Approval struct {
+	DecisionID, RequestedStage              string
+	Summary                                 *string
 	ID, TaskID, ExecutionID, Operation      string
 	Target                                  json.RawMessage
 	ContentVersion, ParamsHash, Status      string
@@ -29,7 +31,7 @@ type ApprovalDetail struct {
 
 // Preserve the existing owner API view while reading the generic schema.
 // Decisions are made by the owner; result is no longer an approvals column.
-const approvalColumns = `id, task_id, execution_id, operation, target, content_id, params_hash, status,
+const approvalColumns = `id, decision_id, requested_stage, summary, task_id, execution_id, operation, target, content_id, params_hash, status,
 	invalidated_reason, CASE WHEN decided_at IS NOT NULL THEN 'owner' END, decided_at,
 	expires_at, consumed_at, NULL, max_uses, use_count, created_at`
 
@@ -39,7 +41,7 @@ func scanApproval(row rowScanner) (Approval, error) {
 	var a Approval
 	var target string
 	var result sql.NullString
-	err := row.Scan(&a.ID, &a.TaskID, &a.ExecutionID, &a.Operation, &target, &a.ContentVersion, &a.ParamsHash, &a.Status,
+	err := row.Scan(&a.ID, &a.DecisionID, &a.RequestedStage, &a.Summary, &a.TaskID, &a.ExecutionID, &a.Operation, &target, &a.ContentVersion, &a.ParamsHash, &a.Status,
 		&a.InvalidatedReason, &a.DecidedBy, &a.DecidedAt, &a.ExpiresAt, &a.ConsumedAt, &result,
 		&a.MaxUses, &a.UseCount, &a.CreatedAt)
 	if err != nil {
@@ -99,10 +101,9 @@ func GetApprovalDetail(ctx context.Context, db *sql.DB, id string) (ApprovalDeta
 // read (decided, invalidated, or expired by another request).
 var ErrApprovalStale = errors.New("store: approval changed before it could be updated")
 
-// DecideApprovalTx records the owner's decision on a pending approval bound
-// to contentVersion (spec 17 3.4). expiresAt is set only for approvals. The
-// update is conditional on the expected current values, so a concurrent
-// decision or invalidation yields ErrApprovalStale.
+// DecideApprovalTx updates a pending approval bound to contentVersion. The
+// caller records owner_decisions and the related lifecycle changes in this
+// same transaction. A concurrent change yields ErrApprovalStale.
 func DecideApprovalTx(ctx context.Context, tx *sql.Tx, id, contentVersion, status string, expiresAt *string, now string) error {
 	result, err := tx.ExecContext(ctx, `UPDATE approvals SET status = ?, decided_at = ?, expires_at = ?
 		WHERE id = ? AND status = 'pending' AND content_id = ?`, status, now, expiresAt, id, contentVersion)
@@ -114,24 +115,7 @@ func DecideApprovalTx(ctx context.Context, tx *sql.Tx, id, contentVersion, statu
 	} else if n != 1 {
 		return ErrApprovalStale
 	}
-	action := "approve"
-	if status == "rejected" {
-		action = "reject"
-	}
-	answer, err := json.Marshal(map[string]string{"action": action, "contentId": contentVersion})
-	if err != nil {
-		return err
-	}
-	result, err = tx.ExecContext(ctx, `UPDATE owner_decisions SET status='answered',answer=?,answered_at=?
-		WHERE id=(SELECT decision_id FROM approvals WHERE id=?) AND status='open'`, string(answer), now, id)
-	if err != nil {
-		return err
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return err
-	} else if n != 1 {
-		return ErrApprovalStale
-	}
+
 	return nil
 }
 

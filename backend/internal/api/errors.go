@@ -19,6 +19,7 @@ const (
 	NotFound           Code = "not_found"
 	Conflict           Code = "conflict"
 	PreconditionFailed Code = "precondition_failed"
+	TooManyRequests    Code = "too_many_requests"
 	Internal           Code = "internal"
 )
 
@@ -50,6 +51,8 @@ func (e *Error) StatusCode() int {
 		return http.StatusConflict
 	case PreconditionFailed:
 		return http.StatusUnprocessableEntity
+	case TooManyRequests:
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
@@ -82,8 +85,7 @@ func WriteError(w http.ResponseWriter, logger *slog.Logger, err error) {
 	writeErrorResponse(w, public.StatusCode(), public)
 }
 
-// writeErrorResponse writes an already sanitized public error. Login cooldown
-// uses the existing auth error code with the 429 status required by spec 18.
+// writeErrorResponse writes an already sanitized public error.
 func writeErrorResponse(w http.ResponseWriter, status int, public *Error) {
 	if public.Details == nil {
 		public.Details = []Detail{}
