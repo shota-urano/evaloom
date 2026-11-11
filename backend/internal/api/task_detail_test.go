@@ -68,7 +68,7 @@ func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 	finish := func(id, terminal string) {
 		t.Helper()
 		from := "claimed"
-		for _, next := range []string{"preparing", "working", "checking", "publishing", terminal} {
+		for _, next := range []string{"working", "checking", "publishing", terminal} {
 			input := resultBody(from, next)
 			status, body := postResult(t, f, token, id, input)
 			if status != 204 {

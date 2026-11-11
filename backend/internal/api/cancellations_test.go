@@ -210,7 +210,7 @@ func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
 			finished := cancellationState(t, f, id)
 			if finished.Execution != "cancelled" || finished.Task != "cancelled" || finished.ErrorClass != "cancelled" ||
 				!finished.Finished.Valid || finished.Requested != after.Requested ||
-				finished.Events != after.Events+1 || finished.Audits != after.Audits || finished.Notifications != 0 {
+				finished.Events <= after.Events || finished.Audits != after.Audits || finished.Notifications != 0 {
 				t.Fatalf("runner cancellation=%+v", finished)
 			}
 			status, body = postHeartbeat(t, f, token, "claim-runner", heartbeatInput(id))

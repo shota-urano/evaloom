@@ -135,7 +135,8 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 				}
 				switch want {
 				case "failed":
-					if n.ErrorClass != model.ErrorExecutionFailed || n.Reason != "Harness exited" {
+					// runnerError carries no message (spec 04 3.4.1).
+					if n.ErrorClass != model.ErrorExecutionFailed {
 						t.Fatalf("missing failure detail: %+v", n)
 					}
 				case "timed_out":
@@ -157,8 +158,15 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 			// Recreate the DB connection, auth/routing, Dispatcher AND Notifier.
 			restartNotificationFixture(t, f)
 			if target == want {
+				// A resend of the same stage report returns the saved response
+				// and records nothing (spec 04 3.4.1).
+				// blocked was set without a stage report, so nothing is resent.
 				status, body := postResult(t, f, token, id, input)
-				assertAuthError(t, status, body, 409, Conflict)
+				if target == "blocked" {
+					assertAuthError(t, status, body, 409, Conflict)
+				} else if status != 204 {
+					t.Fatalf("resend status=%d body=%s", status, body)
+				}
 			}
 			fresh := &recordingNotifier{}
 			restarted := notificationDispatcher(f, fresh)

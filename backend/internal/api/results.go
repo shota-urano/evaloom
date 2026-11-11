@@ -1,37 +1,63 @@
 package api
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"math"
 	"net/http"
-	"strings"
+	"slices"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
-// Status strings are validated as transitions, including unknown values (409).
-// Other enum values are input validation errors (400).
-type resultInput struct {
-	Stage            string           `json:"stage"`
-	FromStatus       string           `json:"fromStatus"`
-	Status           string           `json:"status"`
-	HarnessSessionID *string          `json:"harnessSessionId"`
-	ErrorClass       model.ErrorClass `json:"errorClass"`
-	ErrorMessage     *string          `json:"errorMessage"`
-	Usage            *resultUsage     `json:"usage"`
+// maxResultBody bounds one stage report. A result JSON carries at most 500
+// findings of 1000 characters and a 4000-character summary (contract 6.5).
+const maxResultBody = 4 << 20
+
+// stageStartedInput is the start of a stage (spec 04 3.4.1).
+type stageStartedInput struct {
+	Type              string      `json:"type"`
+	Stage             model.Stage `json:"stage"`
+	RequestArtifactID string      `json:"requestArtifactId"`
 }
 
-// Usage measurements belong to the explicitly reported stage (spec 04, 3.4.1).
-type resultUsage struct {
+// stageFinishedInput is the end of a stage (spec 04 3.4.1). Every field is
+// required; nullable fields must be present as null.
+type stageFinishedInput struct {
+	Type             string           `json:"type"`
+	Stage            model.Stage      `json:"stage"`
+	Attempt          *int             `json:"attempt"`
+	ExitCode         *int             `json:"exitCode"`
+	RunnerError      *string          `json:"runnerError"`
+	Result           json.RawMessage  `json:"result"`
+	ResultArtifactID *string          `json:"resultArtifactId"`
+	Work             *stageWorkInput  `json:"work"`
+	Usage            *stageUsageInput `json:"usage"`
+}
+
+type stageWorkInput struct {
+	SessionID         *string         `json:"sessionId"`
+	SummaryArtifactID *string         `json:"summaryArtifactId"`
+	Question          json.RawMessage `json:"question"`
+}
+
+type stageUsageInput struct {
 	WallTimeMS   *int64   `json:"wallTimeMs"`
 	InputTokens  *int64   `json:"inputTokens"`
 	OutputTokens *int64   `json:"outputTokens"`
 	CostAmount   *float64 `json:"costAmount"`
+}
+
+func isNull(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null"
 }
 
 func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.HandlerFunc {
@@ -41,8 +67,39 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			WriteError(w, logger, err)
 			return
 		}
-		var input resultInput
-		if err := DecodeJSON(r, &input); err != nil {
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxResultBody))
+		if err != nil {
+			WriteError(w, logger, invalid("body", "invalid_json"))
+			return
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &head); err != nil {
+			WriteError(w, logger, invalid("body", "invalid_json"))
+			return
+		}
+		var started stageStartedInput
+		var finished stageFinishedInput
+		var reportHash string
+		switch head.Type {
+		case "stage_started":
+			err = decodeReport(data, &started)
+			if err == nil {
+				err = validateStarted(started)
+			}
+		case "stage_finished":
+			err = decodeReport(data, &finished)
+			if err == nil {
+				err = validateFinished(finished)
+			}
+			if err == nil {
+				reportHash, err = canonicalHash(data)
+			}
+		default:
+			err = invalid("type", "invalid")
+		}
+		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
@@ -67,140 +124,156 @@ func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) htt
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
 			return
 		}
-		if !execution.Latest || input.FromStatus != string(execution.Status) || !runnerResultSource(execution.Status) || !runnerResultTarget(input.Status) {
-			WriteError(w, logger, &Error{Code: Conflict, Message: "Result does not match an active, latest Execution transition"})
-			return
-		}
-		// Validate the transition before accepting any metadata or side effects.
-		err = task.ValidateExecutionTransition(execution.Status, model.ExecutionStatus(input.Status))
-		if err == nil {
-			err = validateResult(r, tx, execution, input)
-		}
-		if err == nil {
-			err = saveResult(r, tx, execution, input)
-		}
-		to, reason := model.ExecutionStatus(input.Status), "runner_result"
-		if err == nil {
-			err = task.TransitionExecutionTx(ctx, tx, task.Transition{
-				TaskID: execution.TaskID, ExecutionID: id, FromTask: execution.TaskStatus,
-				FromExecution: execution.Status, ToExecution: to,
+		var response any
+		if head.Type == "stage_started" {
+			var attempt int
+			attempt, err = store.StartStageTx(ctx, tx, store.StageStart{
+				ExecutionID: id, RunnerID: runner, Stage: started.Stage, RequestArtifactID: started.RequestArtifactID,
 			})
-		}
-		if err == nil {
-			payload, _ := json.Marshal(map[string]string{"from": input.FromStatus, "to": string(to), "reason": reason})
-			_, err = store.AppendExecutionEvent(ctx, tx, id, model.EventStatusChanged, payload)
-		}
-		if err == nil {
-			_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
-				Actor: "runner:" + runner, Action: "execution.result", TargetType: "execution", TargetID: id,
-				Detail: map[string]any{"taskId": execution.TaskID, "from": input.FromStatus, "to": string(to)},
-			})
+			response = map[string]int{"attempt": attempt}
+		} else {
+			response, err = store.FinishStageTx(ctx, tx, finishedReport(id, runner, reportHash, finished))
 		}
 		if err == nil {
 			err = tx.Commit()
 		}
-		if errors.Is(err, task.ErrConflict) {
+		var invalidReport *store.StageReportInvalid
+		switch {
+		case errors.As(err, &invalidReport):
+			err = invalid(invalidReport.Field, invalidReport.Reason)
+		case errors.Is(err, task.ErrConflict):
 			err = &Error{Code: Conflict, Message: err.Error()}
 		}
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
-func runnerResultSource(status model.ExecutionStatus) bool {
-	switch status {
-	case model.ExecutionClaimed, model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionVerifying, model.ExecutionPublishing:
-		return true
+// decodeReport rejects unknown fields, including the removed development
+// items (spec 19 3.11), and missing required fields.
+func decodeReport(data []byte, dst any) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return invalid("body", "invalid_json")
 	}
-	return false
-}
-
-func runnerResultTarget(status string) bool {
-	switch model.ExecutionStatus(status) {
-	case model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionVerifying, model.ExecutionPublishing,
-		model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionCancelled, model.ExecutionTimedOut:
-		return true
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return invalid("body", "invalid_json")
 	}
-	return false
-}
-
-func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
-	if input.Status == "succeeded" {
-		if input.Usage == nil || input.Usage.WallTimeMS == nil {
-			return invalid("usage.wallTimeMs", "required")
+	if _, err := decoder.Token(); err != io.EOF {
+		return invalid("body", "invalid_json")
+	}
+	var required []string
+	switch dst.(type) {
+	case *stageStartedInput:
+		required = []string{"stage", "requestArtifactId"}
+	case *stageFinishedInput:
+		required = []string{"stage", "attempt", "exitCode", "runnerError", "result", "resultArtifactId", "work", "usage"}
+	}
+	for _, field := range required {
+		if _, ok := fields[field]; !ok {
+			return invalid(field, "required")
 		}
-	} else if input.Usage != nil {
-		return invalid("usage", "only_for_succeeded")
-	}
-	if usage := input.Usage; usage != nil {
-		stage := map[model.ExecutionStatus]string{
-			model.ExecutionPreparing: "prepare", model.ExecutionRunning: "work",
-			model.ExecutionVerifying: "check", model.ExecutionPublishing: "publish",
-		}[execution.Status]
-		if input.Stage == "" || input.Stage != stage {
-			return invalid("stage", "status_mismatch")
-		}
-		for _, value := range []*int64{usage.WallTimeMS, usage.InputTokens, usage.OutputTokens} {
-			if value != nil && *value < 0 {
-				return invalid("usage", "out_of_range")
-			}
-		}
-	}
-
-	if input.Status == "failed" && input.ErrorClass == "" {
-		return invalid("errorClass", "required")
-	}
-	if input.ErrorClass != "" && input.Status != "failed" && input.Status != "cancelled" && input.Status != "timed_out" {
-		return invalid("errorClass", "only_for_failure")
-	}
-	if input.Status == "timed_out" && input.ErrorClass != "" && input.ErrorClass != model.ErrorTimeout ||
-		input.Status == "cancelled" && input.ErrorClass != "" && input.ErrorClass != model.ErrorCancelled {
-		return invalid("errorClass", "status_mismatch")
 	}
 	return nil
 }
 
-func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
-	if usage := input.Usage; usage != nil {
-		record := store.UsageRecord{
-			ID: ulid.Make().String(), ExecutionID: execution.ID, Stage: input.Stage,
-			WallTimeMS: *usage.WallTimeMS, InputTokens: usage.InputTokens,
-			OutputTokens: usage.OutputTokens, CostAmount: usage.CostAmount,
-		}
-		if err := store.RecordUsage(r.Context(), tx, record); err != nil {
-			return err
-		}
+func validateStarted(in stageStartedInput) error {
+	if err := in.Stage.Validate(); err != nil {
+		return invalid("stage", "invalid")
 	}
-	// Identifiers and column names are fixed in code; values remain parameters.
-	columns := []string{}
-	values := []any{}
-	for _, field := range []struct {
-		column string
-		value  *string
-	}{{"work_session_id", input.HarnessSessionID}, {"error_message", input.ErrorMessage}} {
-		if field.value != nil {
-			columns = append(columns, field.column+" = ?")
-			values = append(values, *field.value)
-		}
-	}
-	classification := input.ErrorClass
-	if input.Status == "timed_out" {
-		classification = model.ErrorTimeout
-	} else if input.Status == "cancelled" {
-		classification = model.ErrorCancelled
-	}
-	if classification != "" {
-		columns = append(columns, "error_class = ?")
-		values = append(values, classification)
-	}
-	if len(columns) > 0 {
-		values = append(values, execution.ID)
-		if _, err := tx.ExecContext(r.Context(), `UPDATE executions SET `+strings.Join(columns, ", ")+` WHERE id = ?`, values...); err != nil {
-			return err
-		}
+	if in.RequestArtifactID == "" {
+		return invalid("requestArtifactId", "required")
 	}
 	return nil
+}
+
+func validateFinished(in stageFinishedInput) error {
+	if err := in.Stage.Validate(); err != nil {
+		return invalid("stage", "invalid")
+	}
+	if in.Attempt == nil || *in.Attempt < 1 {
+		return invalid("attempt", "out_of_range")
+	}
+	if in.RunnerError != nil && !slices.Contains(store.RunnerErrors, *in.RunnerError) {
+		return invalid("runnerError", "invalid")
+	}
+	work := in.Stage == model.StageWork
+	// The Runner sends the result JSON it collected from a program stage, and
+	// null when it decided the failure itself (runnerError) or for work.
+	if (work || in.RunnerError != nil) != isNull(in.Result) {
+		return invalid("result", "stage_mismatch")
+	}
+	if work && in.RunnerError == nil {
+		if in.Work == nil {
+			return invalid("work", "required")
+		}
+		if in.ExitCode == nil {
+			return invalid("exitCode", "required")
+		}
+	} else if !work && in.Work != nil {
+		return invalid("work", "stage_mismatch")
+	}
+	if work && in.ResultArtifactID != nil {
+		return invalid("resultArtifactId", "stage_mismatch")
+	}
+	if in.Work != nil && in.Work.SessionID != nil && *in.Work.SessionID == "" {
+		return invalid("work.sessionId", "invalid")
+	}
+	u := in.Usage
+	if u == nil || u.WallTimeMS == nil {
+		return invalid("usage.wallTimeMs", "required")
+	}
+	for _, value := range []*int64{u.WallTimeMS, u.InputTokens, u.OutputTokens} {
+		if value != nil && *value < 0 {
+			return invalid("usage", "out_of_range")
+		}
+	}
+	if u.CostAmount != nil && (*u.CostAmount < 0 || math.IsNaN(*u.CostAmount) || math.IsInf(*u.CostAmount, 0)) {
+		return invalid("usage", "out_of_range")
+	}
+	return nil
+}
+
+// canonicalHash identifies a report's content independent of key order and
+// whitespace, so a resend matches the saved report (spec 04 3.4.1).
+func canonicalHash(data []byte) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", invalid("body", "invalid_json")
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func finishedReport(id, runner, hash string, in stageFinishedInput) store.StageFinish {
+	out := store.StageFinish{
+		ExecutionID: id, RunnerID: runner, Stage: in.Stage, Attempt: *in.Attempt, ExitCode: in.ExitCode,
+		ResultArtifactID: in.ResultArtifactID, ReportSHA256: hash,
+		Usage: store.StageUsage{WallTimeMS: *in.Usage.WallTimeMS, InputTokens: in.Usage.InputTokens,
+			OutputTokens: in.Usage.OutputTokens, CostAmount: in.Usage.CostAmount},
+	}
+	if in.RunnerError != nil {
+		out.RunnerError = *in.RunnerError
+	}
+	if !isNull(in.Result) {
+		out.Result = in.Result
+	}
+	if in.Work != nil {
+		out.Work = &store.StageWork{SessionID: in.Work.SessionID, SummaryArtifactID: in.Work.SummaryArtifactID}
+		if !isNull(in.Work.Question) {
+			out.Work.Question = in.Work.Question
+		}
+	}
+	return out
 }
