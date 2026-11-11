@@ -81,7 +81,7 @@ func builtin(name string) bool {
 	case "init", "clone", "rev-parse", "ls-tree", "cat-file", "remote", "check-ref-format",
 		"ls-remote", "status", "worktree", "checkout", "switch", "restore", "add", "commit",
 		"fetch", "push", "diff", "show", "log", "ls-files", "show-ref", "for-each-ref",
-		"rev-list", "merge-base", "symbolic-ref":
+		"rev-list", "merge-base", "symbolic-ref", "archive":
 		return true
 	}
 	return false
