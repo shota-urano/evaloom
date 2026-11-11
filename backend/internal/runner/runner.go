@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +30,9 @@ type Runner struct {
 	workspaceRoot               string
 	client                      *http.Client
 	mu                          sync.Mutex
+	heartbeatMu                 sync.Mutex
 	executions                  map[string]context.CancelFunc
+	cleanedWorkspaces           map[string]struct{}
 	claimPending                bool
 	loopRunning                 bool
 	pollInterval                time.Duration
@@ -70,7 +73,8 @@ func New(config Config) (*Runner, error) {
 			// Redirects must not forward credentials or change POST semantics.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		executions: make(map[string]context.CancelFunc),
+		executions:        make(map[string]context.CancelFunc),
+		cleanedWorkspaces: make(map[string]struct{}),
 	}, nil
 }
 
@@ -101,21 +105,34 @@ func (runner *Runner) ForgetExecution(id string) {
 	delete(runner.executions, id)
 }
 
-// Heartbeat sends the current state once and dispatches cancellation requests.
-// On failure it leaves all executions running; the caller can resend with the
-// same bootId. Run schedules subsequent heartbeats; report retries are separate.
+// Heartbeat sends the current state once and dispatches cancellation and cleanup.
+// Transport or response failures leave executions running and cleanup reports
+// pending. Cleanup failures are returned after processing the other instructions.
+// Run schedules subsequent heartbeats; other report retries are separate.
 func (runner *Runner) Heartbeat(ctx context.Context) error {
+	// Serialize exchanges so a concurrent heartbeat cannot consume cleanup
+	// acknowledgements added after its request was sent.
+	runner.heartbeatMu.Lock()
+	defer runner.heartbeatMu.Unlock()
 	runner.mu.Lock()
 	ids := make([]string, 0, len(runner.executions))
 	for id := range runner.executions {
 		ids = append(ids, id)
 	}
+	cleaned := make([]string, 0, len(runner.cleanedWorkspaces))
+	for id := range runner.cleanedWorkspaces {
+		cleaned = append(cleaned, id)
+	}
 	runner.mu.Unlock()
 	sort.Strings(ids)
+	sort.Strings(cleaned)
 	body, err := json.Marshal(struct {
-		BootID              string   `json:"bootId"`
-		RunningExecutionIDs []string `json:"runningExecutionIds"`
-	}{runner.bootID, ids})
+		BootID                  string   `json:"bootId"`
+		RunningExecutionIDs     []string `json:"runningExecutionIds"`
+		RunningRouteProposalIDs []string `json:"runningRouteProposalIds"`
+		// Older Control Planes reject this field, so omit an empty report.
+		CleanedWorkspaceIDs []string `json:"cleanedWorkspaceIds,omitempty"`
+	}{runner.bootID, ids, []string{}, cleaned})
 	if err != nil {
 		return fmt.Errorf("runner: encode heartbeat: %w", err)
 	}
@@ -136,6 +153,7 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 	}
 	var reply struct {
 		CancelExecutionIDs []string `json:"cancelExecutionIds"`
+		CleanWorkspaceIDs  []string `json:"cleanWorkspaceIds"`
 	}
 	const maxResponseBytes = 1 << 20
 	content, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
@@ -145,6 +163,11 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 	if err := json.Unmarshal(content, &reply); err != nil || reply.CancelExecutionIDs == nil {
 		return fmt.Errorf("runner: invalid heartbeat response")
 	}
+	runner.mu.Lock()
+	for _, id := range cleaned {
+		delete(runner.cleanedWorkspaces, id)
+	}
+	runner.mu.Unlock()
 	for _, id := range reply.CancelExecutionIDs {
 		runner.mu.Lock()
 		cancel := runner.executions[id]
@@ -154,5 +177,15 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 			cancel()
 		}
 	}
-	return nil
+	var cleanupErr error
+	for _, id := range reply.CleanWorkspaceIDs {
+		if err := runner.cleanWorkspace(id); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+			continue
+		}
+		runner.mu.Lock()
+		runner.cleanedWorkspaces[id] = struct{}{}
+		runner.mu.Unlock()
+	}
+	return cleanupErr
 }
