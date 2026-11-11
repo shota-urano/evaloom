@@ -9,8 +9,8 @@ import (
 // ListLogArtifacts excludes non-log artifacts and closes the query before the
 // caller opens files through ArtifactStore (the DB has a single connection).
 func ListLogArtifacts(ctx context.Context, db *sql.DB, executionID string) ([]Artifact, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, kind FROM artifacts
-		WHERE execution_id = ? AND kind IN ('harness_log', 'setup_log', 'test_log')
+	rows, err := db.QueryContext(ctx, `SELECT id, kind, stage FROM artifacts
+		WHERE execution_id = ? AND kind = 'log'
 		ORDER BY created_at, id`, executionID)
 	if err != nil {
 		return nil, err
@@ -19,7 +19,7 @@ func ListLogArtifacts(ctx context.Context, db *sql.DB, executionID string) ([]Ar
 	var artifacts []Artifact
 	for rows.Next() {
 		var artifact Artifact
-		if err := rows.Scan(&artifact.ID, &artifact.Kind); err != nil {
+		if err := rows.Scan(&artifact.ID, &artifact.Kind, &artifact.Stage); err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, artifact)

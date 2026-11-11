@@ -53,7 +53,7 @@ func TestFinishedRunnerLogsRegisterMatchingContentAndSHA256(t *testing.T) {
 			}
 			stored, err := os.ReadFile(filepath.Join(f.dataDir, path))
 			sum := sha256.Sum256(local)
-			if err != nil || string(stored) != want || hash != hex.EncodeToString(sum[:]) || size != int64(len(local)) || kind != stream+"_log" || redacted != 1 {
+			if err != nil || string(stored) != want || hash != hex.EncodeToString(sum[:]) || size != int64(len(local)) || kind != "log" || redacted != 1 {
 				t.Fatalf("stored=%q sha256=%s size=%d kind=%s redacted=%d err=%v", stored, hash, size, kind, redacted, err)
 			}
 		})
@@ -83,7 +83,7 @@ func TestArtifactHTTPRetryAfterLostAcknowledgementKeepsOneRow(t *testing.T) {
 	// Reopen the Control Plane DB and retry explicitly with the same identity.
 	f.stop()
 	f.start()
-	if err := process.RegisterLogArtifact(context.Background(), LogArtifact{ID: log.id, ExecutionID: logExecution, Kind: "harness_log", Path: log.Path()}); err != nil {
+	if err := process.RegisterLogArtifact(context.Background(), LogArtifact{ID: log.id, ExecutionID: logExecution, Kind: "log", Stage: "work", Name: filepath.Base(log.Path()), Path: log.Path()}); err != nil {
 		t.Fatal(err)
 	}
 	var count int

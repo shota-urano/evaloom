@@ -42,7 +42,7 @@ func TestArtifactFilesRoundTripOutsideGitTracking(t *testing.T) {
 	files := openArtifactStore(t, db, dataDir)
 	ctx := context.Background()
 	content := "setup output\n[REDACTED]\n日本語\x00"
-	artifact, err := files.Save(ctx, "01K8ACW0000000000000000001", "execution-1", "setup_log", true, strings.NewReader(content))
+	artifact, err := files.Save(ctx, Artifact{ID: "01K8ACW0000000000000000001", ExecutionID: "execution-1", Stage: "prepare", Kind: "log", Name: "prepare.log", Redacted: true}, strings.NewReader(content))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestArtifactSaveFailureLeavesNoPartialData(t *testing.T) {
 	dataDir := t.TempDir()
 	files := openArtifactStore(t, db, dataDir)
 	ctx := context.Background()
-	first, err := files.Save(ctx, "artifact-1", "execution-1", "diff", false, strings.NewReader("original"))
+	first, err := files.Save(ctx, Artifact{ID: "artifact-1", ExecutionID: "execution-1", Stage: "check", Kind: "out_file", Name: "report.md"}, strings.NewReader("original"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,14 +113,14 @@ func TestArtifactSaveFailureLeavesNoPartialData(t *testing.T) {
 		reader                    io.Reader
 		wantErr                   error
 	}{
-		{"duplicate ID", first.ID, "execution-1", "diff", ctx, strings.NewReader("replacement"), nil},
-		{"missing execution", "missing", "no-such-execution", "diff", ctx, strings.NewReader("bad reference"), nil},
+		{"duplicate ID", first.ID, "execution-1", "out_file", ctx, strings.NewReader("replacement"), nil},
+		{"missing execution", "missing", "no-such-execution", "out_file", ctx, strings.NewReader("bad reference"), nil},
 		{"unknown kind", "bad-kind", "execution-1", "unknown", ctx, strings.NewReader("invalid kind"), nil},
-		{"partial read", "read-error", "execution-1", "test_log", ctx, io.MultiReader(strings.NewReader("partial"), failingArtifactReader{readErr}), readErr},
-		{"cancelled", "cancelled", "execution-1", "diff", cancelled, strings.NewReader("cancelled"), context.Canceled},
+		{"partial read", "read-error", "execution-1", "log", ctx, io.MultiReader(strings.NewReader("partial"), failingArtifactReader{readErr}), readErr},
+		{"cancelled", "cancelled", "execution-1", "out_file", cancelled, strings.NewReader("cancelled"), context.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := files.Save(test.ctx, test.id, test.execution, test.kind, false, test.reader)
+			got, err := files.Save(test.ctx, Artifact{ID: test.id, ExecutionID: test.execution, Stage: "check", Kind: test.kind, Name: "report.md"}, test.reader)
 			if err == nil || got != (Artifact{}) || (test.wantErr != nil && !errors.Is(err, test.wantErr)) {
 				t.Fatalf("Save = %#v, %v; want zero artifact and error %v", got, err, test.wantErr)
 			}
@@ -141,7 +141,7 @@ func TestArtifactSaveFailureLeavesNoPartialData(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := files.Save(ctx, "closed-db", "execution-1", "diff", false, strings.NewReader("data")); err == nil {
+	if _, err := files.Save(ctx, Artifact{ID: "closed-db", ExecutionID: "execution-1", Stage: "check", Kind: "out_file", Name: "report.md"}, strings.NewReader("data")); err == nil {
 		t.Fatal("Save succeeded with closed database")
 	}
 	entries, err := os.ReadDir(filepath.Join(dataDir, "artifacts"))
@@ -154,7 +154,7 @@ func TestArtifactOpenRejectsPathsOutsideDataDirectory(t *testing.T) {
 	db := openTaskTables(t)
 	root := t.TempDir()
 	files := openArtifactStore(t, db, filepath.Join(root, "data"))
-	artifact, err := files.Save(context.Background(), "artifact-1", "execution-1", "diff", false, strings.NewReader("safe"))
+	artifact, err := files.Save(context.Background(), Artifact{ID: "artifact-1", ExecutionID: "execution-1", Stage: "check", Kind: "out_file", Name: "report.md"}, strings.NewReader("safe"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,6 +173,58 @@ func TestArtifactOpenRejectsPathsOutsideDataDirectory(t *testing.T) {
 			}
 			t.Fatalf("Open accepted escaped path %q: %v", path, err)
 		}
+	}
+}
+
+func TestArtifactProposalOwnerAndMetadataRoundTrip(t *testing.T) {
+	db := openTaskTables(t)
+	mustTaskExec(t, db, `INSERT INTO route_proposals (id,task_id,trigger,seen_labels,candidates,status,created_at)
+		VALUES ('proposal','task-001','no_label','[]','[]','queued','t')`)
+	dir := t.TempDir()
+	files := openArtifactStore(t, db, dir)
+	ctx := context.Background()
+	input := Artifact{ID: "proposal-file", RouteProposalID: "proposal", Stage: "proposal", Kind: "proposal_result", Name: "out/result.json", Redacted: true}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	artifact, cleanup, err := files.RegisterTx(ctx, tx, input, strings.NewReader("proposal result"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		cleanup()
+		t.Fatal(err)
+	}
+	tx, err = db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	retry, _, err := files.RegisterTx(ctx, tx, input, strings.NewReader("proposal result"))
+	if err != nil || retry != artifact {
+		t.Fatal(retry, artifact, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var execution sql.NullString
+	var proposal, stage, kind, name string
+	if err := db.QueryRow(`SELECT execution_id, route_proposal_id, stage, kind, name FROM artifacts`).Scan(&execution, &proposal, &stage, &kind, &name); err != nil || execution.Valid || proposal != input.RouteProposalID || stage != input.Stage || kind != input.Kind || name != input.Name {
+		t.Fatal(execution, proposal, stage, kind, name, err)
+	}
+	for _, owner := range []Artifact{
+		{ID: "missing-owner", Stage: "proposal", Kind: "log", Name: "log"},
+		{ID: "two-owners", ExecutionID: "execution-1", RouteProposalID: "proposal", Stage: "proposal", Kind: "log", Name: "log"},
+	} {
+		if _, err := files.Save(ctx, owner, strings.NewReader("invalid")); err == nil {
+			t.Fatal("invalid owner accepted", owner)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "artifacts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatal(entries, err)
 	}
 }
 

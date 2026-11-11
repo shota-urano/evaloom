@@ -19,7 +19,7 @@ import (
 
 const artifactID = "01ARZ3NDEKTSV4RRFFQ69G5FAX"
 const artifactPath = "/api/executions/" + streamExecution + "/artifacts"
-const artifactQuery = "?artifactId=" + artifactID + "&kind=harness_log&redacted=0"
+const artifactQuery = "?artifactId=" + artifactID + "&stage=work&kind=log&name=work.log&redacted=0"
 const artifactDownloadPath = artifactPath + "/" + artifactID
 
 func uploadDownloadArtifact(t *testing.T, f *authFixture, token, content string) {
@@ -232,10 +232,13 @@ func TestArtifactRejectsInvalidInputWithoutWrites(t *testing.T) {
 	f, token, dir := artifactFixture(t)
 	for _, query := range []string{
 		"", strings.ReplaceAll(artifactQuery, artifactID, "../unsafe"),
-		strings.ReplaceAll(artifactQuery, "harness_log", "unknown"),
+		strings.ReplaceAll(artifactQuery, "kind=log", "kind=unknown"),
+		strings.ReplaceAll(artifactQuery, "stage=work", "stage=unknown"),
+		strings.ReplaceAll(artifactQuery, "name=work.log", "name="),
 		strings.ReplaceAll(artifactQuery, "redacted=0", "redacted=2"),
 		artifactQuery + "&artifactId=" + artifactID,
 		artifactQuery + "&redacted=1", artifactQuery + "&kind=diff", "?invalid=%zz",
+		artifactQuery + "&stage=work", artifactQuery + "&name=other.log",
 	} {
 		status, body := postArtifact(t, f, token, artifactPath+query, "content")
 		assertAuthError(t, status, body, 400, ValidationFailed)
@@ -251,10 +254,10 @@ func TestArtifactRejectsInvalidInputWithoutWrites(t *testing.T) {
 }
 
 func TestArtifactAcceptsSpecifiedKindsAndEmptyFiles(t *testing.T) {
-	for _, kind := range []string{"harness_log", "test_log", "setup_log", "diff", "test_report", "test_ids", "harness_output"} {
+	for _, kind := range []string{"log", "out_file", "request_json", "result_json", "work_summary", "question", "proposal_result"} {
 		t.Run(kind, func(t *testing.T) {
 			f, token, dir := artifactFixture(t)
-			status, body := postArtifact(t, f, token, artifactPath+strings.ReplaceAll(artifactQuery, "harness_log", kind), "")
+			status, body := postArtifact(t, f, token, artifactPath+strings.ReplaceAll(artifactQuery, "kind=log", "kind="+kind), "")
 			if status != 204 {
 				t.Fatalf("empty upload status=%d body=%s", status, body)
 			}

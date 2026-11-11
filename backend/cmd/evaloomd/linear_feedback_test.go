@@ -141,7 +141,7 @@ func TestDefaultLinearFeedbackUsesProductionConfiguration(t *testing.T) {
 
 // evaloomd with -data-dir installs the artifact reader for 作業概要 (spec 16
 // 3.3): a transition to succeeded while it runs writes a comment body with
-// the summary of the Execution's harness_output artifact.
+// the summary of the Execution's work_summary artifact.
 func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	dir := t.TempDir()
 	path, dataDir := filepath.Join(dir, "evaloom.db"), filepath.Join(dir, "data")
@@ -171,7 +171,7 @@ func TestRunWiresHarnessSummaryIntoLinearCommentBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = files.Save(context.Background(), "out-1", "e1", "harness_output", true, strings.NewReader(`{"summary":"SUMMARY-FROM-ARTIFACT"}`))
+	_, err = files.Save(context.Background(), store.Artifact{ID: "out-1", ExecutionID: "e1", Stage: "work", Kind: "work_summary", Name: "summary.md", Redacted: true}, strings.NewReader("SUMMARY-FROM-ARTIFACT"))
 	files.Close()
 	if err != nil {
 		t.Fatal(err)

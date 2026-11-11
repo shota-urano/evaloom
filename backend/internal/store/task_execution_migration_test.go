@@ -105,7 +105,7 @@ func TestTaskExecutionMigrationPreservesDataAndSSESequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		db = openRegistry(t, path)
+		db = openBefore(t, path, 29)
 		var taskStatus, executionStatus, session, classification, route, project, profile string
 		if err := db.QueryRow(`SELECT t.status,e.status,e.work_session_id,e.error_class,e.route_kind,e.project_id,e.profile_id FROM executions e JOIN tasks t ON t.id=e.task_id`).Scan(&taskStatus, &executionStatus, &session, &classification, &route, &project, &profile); err != nil {
 			t.Fatal(err)

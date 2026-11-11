@@ -31,7 +31,7 @@ func TestExecutionLogsFinishedStreamsMatchUploadedArtifacts(t *testing.T) {
 			for stream, id := range map[string]string{
 				"harness": artifactID, "setup": "01ARZ3NDEKTSV4RRFFQ69G5FAY", "test": "01ARZ3NDEKTSV4RRFFQ69G5FAZ",
 			} {
-				status, body := postArtifact(t, f, token, artifactPath+"?artifactId="+id+"&kind="+stream+"_log&redacted=0", want[stream])
+				status, body := postArtifact(t, f, token, artifactPath+"?artifactId="+id+"&stage="+map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[stream]+"&kind=log&name=stage.log&redacted=0", want[stream])
 				if status != http.StatusNoContent {
 					t.Fatalf("upload %s status=%d body=%s", stream, status, body)
 				}
@@ -58,7 +58,7 @@ func TestExecutionLogsFinishedStreamsMatchUploadedArtifacts(t *testing.T) {
 
 func TestExecutionLogsExcludeOtherExecutionsAndNonLogArtifacts(t *testing.T) {
 	f, token, _ := artifactFixture(t)
-	status, body := postArtifact(t, f, token, artifactPath+strings.ReplaceAll(artifactQuery, "harness_log", "diff"), "not a log")
+	status, body := postArtifact(t, f, token, artifactPath+strings.ReplaceAll(artifactQuery, "kind=log", "kind=out_file"), "not a log")
 	if status != http.StatusNoContent {
 		t.Fatalf("upload status=%d body=%s", status, body)
 	}
@@ -66,7 +66,7 @@ func TestExecutionLogsExcludeOtherExecutionsAndNonLogArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherPath := "/api/executions/" + otherExecution
-	status, body = postArtifact(t, f, token, otherPath+"/artifacts?artifactId=01ARZ3NDEKTSV4RRFFQ69G5FAY&kind=harness_log&redacted=0", "other execution log")
+	status, body = postArtifact(t, f, token, otherPath+"/artifacts?artifactId=01ARZ3NDEKTSV4RRFFQ69G5FAY&stage=work&kind=log&name=work.log&redacted=0", "other execution log")
 	if status != http.StatusNoContent {
 		t.Fatalf("other upload status=%d body=%s", status, body)
 	}
@@ -88,7 +88,7 @@ func TestExecutionLogsMultipleArtifactsPreserveBytesInOrder(t *testing.T) {
 		{artifactID, "first\r\n"},
 		{"01ARZ3NDEKTSV4RRFFQ69G5FAY", ""},
 	} {
-		status, body := postArtifact(t, f, token, artifactPath+"?artifactId="+item.id+"&kind=test_log&redacted=0", item.text)
+		status, body := postArtifact(t, f, token, artifactPath+"?artifactId="+item.id+"&stage=check&kind=log&name=check.log&redacted=0", item.text)
 		if status != http.StatusNoContent {
 			t.Fatalf("upload status=%d body=%s", status, body)
 		}

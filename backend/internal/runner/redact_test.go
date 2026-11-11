@@ -32,7 +32,7 @@ func (r *storedLogRegistrar) RegisterLogArtifact(ctx context.Context, artifact L
 		return err
 	}
 	defer file.Close()
-	_, err = r.files.Save(ctx, artifact.ID, artifact.ExecutionID, artifact.Kind, artifact.Redacted, file)
+	_, err = r.files.Save(ctx, store.Artifact{ID: artifact.ID, ExecutionID: artifact.ExecutionID, Stage: artifact.Stage, Kind: artifact.Kind, Name: artifact.Name, Redacted: artifact.Redacted}, file)
 	return err
 }
 

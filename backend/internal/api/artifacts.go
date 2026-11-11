@@ -60,7 +60,7 @@ func getArtifact(logger *slog.Logger, config ArtifactConfig) http.HandlerFunc {
 
 func artifactKind(kind string) bool {
 	switch kind {
-	case "harness_log", "test_log", "setup_log", "diff", "test_report", "test_ids", "harness_output":
+	case "log", "out_file", "request_json", "result_json", "work_summary", "question", "proposal_result":
 		return true
 	}
 	return false
@@ -73,7 +73,7 @@ func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config A
 			WriteError(w, logger, invalid("query", "invalid"))
 			return
 		}
-		for _, field := range []string{"artifactId", "kind", "redacted"} {
+		for _, field := range []string{"artifactId", "stage", "kind", "name", "redacted"} {
 			if len(query[field]) != 1 {
 				WriteError(w, logger, invalid(field, "required_once"))
 				return
@@ -81,6 +81,16 @@ func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config A
 		}
 		if err := ValidateID("artifactId", query.Get("artifactId"), ULID); err != nil {
 			WriteError(w, logger, err)
+			return
+		}
+		switch query.Get("stage") {
+		case "prepare", "work", "check", "publish", "runner", "proposal":
+		default:
+			WriteError(w, logger, invalid("stage", "invalid"))
+			return
+		}
+		if query.Get("name") == "" {
+			WriteError(w, logger, invalid("name", "required"))
 			return
 		}
 		if !artifactKind(query.Get("kind")) {
@@ -107,7 +117,7 @@ func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config A
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, config.MaxBytes)
-		_, cleanup, err := config.Store.RegisterTx(r.Context(), tx, query.Get("artifactId"), r.PathValue("id"), query.Get("kind"), query.Get("redacted") == "1", r.Body)
+		_, cleanup, err := config.Store.RegisterTx(r.Context(), tx, store.Artifact{ID: query.Get("artifactId"), ExecutionID: r.PathValue("id"), Stage: query.Get("stage"), Kind: query.Get("kind"), Name: query.Get("name"), Redacted: query.Get("redacted") == "1"}, r.Body)
 		if err == nil {
 			err = tx.Commit()
 			if err != nil {

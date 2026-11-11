@@ -3,7 +3,6 @@ package linearoutbox_test
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +19,7 @@ const (
 
 // claimedLinearExecution gives linear-1-e1 the state a claimed Execution has:
 // harness h at Profile 1.0.0 and Runner "runner" (worktree root /worktrees).
-// The harness_output artifact holds summary (none when empty),
+// The work_summary artifact holds summary (none when empty),
 // read through the Control Plane's ArtifactStore as evaloomd does.
 func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	t.Helper()
@@ -35,8 +34,7 @@ func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	t.Cleanup(func() { files.Close() })
 	t.Cleanup(linearoutbox.SetSummarySource(files.HarnessSummaryTx))
 	if summary != "" {
-		data, _ := json.Marshal(map[string]string{"summary": summary})
-		if _, err := files.Save(context.Background(), "out-1", "linear-1-e1", "harness_output", true, strings.NewReader(string(data))); err != nil {
+		if _, err := files.Save(context.Background(), store.Artifact{ID: "out-1", ExecutionID: "linear-1-e1", Stage: "work", Kind: "work_summary", Name: "summary.md", Redacted: true}, strings.NewReader(summary)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,8 +161,8 @@ func TestCommentBodyHasNoLogTextOrRunnerPath(t *testing.T) {
 		error_message = 'cannot open /worktrees/linear-1-r1/.git path=/worktrees/private/main.go 失敗（/worktrees/private/main.go） [/worktrees/private/main.go] URL=https://example.com/worktrees/private/main.go' WHERE id = 'linear-1-e1'`)
 	mustExec(t, db, `INSERT INTO execution_events (execution_id, type, payload, created_at)
 		VALUES ('linear-1-e1', 'log', '{"sourceId":"s1","stream":"harness","text":"LOG-BODY-CANARY"}', ?)`, testTime)
-	mustExec(t, db, `INSERT INTO artifacts (id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
-		VALUES ('log-1', 'linear-1-e1', 'harness_log', 'artifacts/LOG-PATH-CANARY.log', 'x', 1, 0, ?)`, testTime)
+	mustExec(t, db, `INSERT INTO artifacts (id, execution_id, stage, kind, name, storage_path, sha256, size_bytes, redacted, created_at)
+		VALUES ('log-1', 'linear-1-e1', 'work', 'log', 'work.log', 'artifacts/LOG-PATH-CANARY.log', 'x', 1, 0, ?)`, testTime)
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed)
 	checkBody(t, onlyBody(t, db), []string{
