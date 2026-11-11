@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"reflect"
@@ -115,7 +116,7 @@ func TestRetryFailedCreatesNextPendingExecutionAndRecordsMode(t *testing.T) {
 				if seq == 2 {
 					status, body = requestClaim(t, f, token)
 					claim := requireClaim(t, status, body)
-					if claim.Execution.ID != id || claim.Execution.Seq != seq || claim.Execution.Mode != mode {
+					if claim.Execution.ID != id || claim.Execution.Seq != seq || string(claim.Execution.Mode) != mode {
 						t.Fatalf("retry not delivered by claim: %+v", claim.Execution)
 					}
 					status, body = postResult(t, f, token, id, resultBody("claimed", "failed"))
@@ -129,7 +130,7 @@ func TestRetryFailedCreatesNextPendingExecutionAndRecordsMode(t *testing.T) {
 }
 
 func TestRetryAcceptsAllRetriableStatesAndPreservesEvidence(t *testing.T) {
-	for _, state := range []string{"timed_out", "cancelled", "succeeded", "blocked", "interrupted"} {
+	for _, state := range []string{"timed_out", "cancelled", "succeeded", "interrupted"} {
 		t.Run(state, func(t *testing.T) {
 			to := state
 			if state == "interrupted" {
@@ -158,6 +159,8 @@ func TestRetryRunningAndOtherForbiddenStatesReturn409WithoutWrites(t *testing.T)
 		{"running", "working"}, {"running", "claimed"}, {"running", "preparing"},
 		{"running", "checking"}, {"running", "publishing"}, {"queued", "pending"},
 		{"received", "pending"}, {"routing", "pending"}, {"waiting_approval", "pending"},
+		{"waiting_approval", "waiting_approval"}, {"blocked", "blocked"}, // Q131
+
 		{"failed", "working"}, // Fail closed when the latest Execution disagrees.
 	} {
 		t.Run(state.task+"_"+state.execution, func(t *testing.T) {
@@ -304,4 +307,62 @@ func TestRetryRequiresOwnerSessionCSRFAndBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Spec 04 3.10 step 4: the retry is recorded as task.retry in the same
+// transaction (the rollback test above covers the failure side).
+func TestRetryRecordsTaskRetryAuditLog(t *testing.T) {
+	f, _, id := retryFixture(t, "failed")
+	taskID := executionTaskID(t, f, id)
+	status, body := requestRetry(t, f, taskID, `{"mode":"fresh"}`, nil)
+	requireRetrySuccess(t, status, body)
+	newID := requireRetryPending(t, f, taskID, "fresh", 2)
+	var actor, detail string
+	var count int
+	err := f.db.QueryRow(`SELECT actor, detail, (SELECT count(*) FROM audit_logs WHERE action = 'task.retry')
+		FROM audit_logs WHERE action = 'task.retry' AND target_type = 'task' AND target_id = ?`, taskID).
+		Scan(&actor, &detail, &count)
+	if err != nil || actor != "owner" || count != 1 {
+		t.Fatalf("actor=%s count=%d err=%v", actor, count, err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(detail), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"executionId": newID, "seq": float64(2), "mode": "fresh", "from": "failed", "to": "queued"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("detail=%v", got)
+	}
+}
+
+// Spec 04 3.10 step 2: a task routed directly to a harness that lost its
+// default_profile_id is 422, and nothing is written.
+func TestRetryDirectRouteWithoutDefaultProfileReturns422(t *testing.T) {
+	f, token, profiles := claimFixture(t)
+	enableDirectRouting(t, f, profiles[0].ID, "claim-runner")
+	created := createDirectTask(t, f, "direct-retry")
+	status, body := requestClaim(t, f, token)
+	claim := requireClaim(t, status, body)
+	status, body = postResult(t, f, token, claim.Execution.ID, resultBody("claimed", "failed"))
+	if status != 204 {
+		t.Fatalf("fail: %d %s", status, body)
+	}
+	if _, err := f.db.Exec(`UPDATE harnesses SET default_profile_id = NULL WHERE id = 'harness-a'`); err != nil {
+		t.Fatal(err)
+	}
+	status, body = requestRetry(t, f, created.ID, `{"mode":"continue"}`, nil)
+	requireProjectError(t, status, body, 422, PreconditionFailed, "harnessId", "default_profile_missing")
+	var executions, audits int
+	var taskStatus string
+	if err := f.db.QueryRow(`SELECT (SELECT count(*) FROM executions WHERE task_id = t.id),
+		(SELECT count(*) FROM audit_logs WHERE action = 'task.retry'), t.status FROM tasks t WHERE t.id = ?`,
+		created.ID).Scan(&executions, &audits, &taskStatus); err != nil || executions != 1 || audits != 0 || taskStatus != "failed" {
+		t.Fatalf("executions=%d audits=%d task=%s err=%v", executions, audits, taskStatus, err)
+	}
+	if _, err := f.db.Exec(`UPDATE harnesses SET default_profile_id = ? WHERE id = 'harness-a'`, profiles[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	status, body = requestRetry(t, f, created.ID, `{"mode":"continue"}`, nil)
+	requireRetrySuccess(t, status, body)
+	requireRetryPending(t, f, created.ID, "continue", 2)
 }

@@ -50,6 +50,7 @@ func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, we
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts)))
+	mux.Handle("POST /api/route-proposals/{id}/result", auth.protectRunner(reportRouteProposalResult(db, logger, auth)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	}))
@@ -75,7 +76,7 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("GET /api/approvals/{id}", getApproval(db, logger))
 	mux.HandleFunc("GET /api/decisions", listDecisions(db, logger))
 	mux.HandleFunc("GET /api/decisions/{id}", getDecision(db, logger))
-	mux.HandleFunc("POST /api/decisions/{id}/answer", answerDecision(db, logger, existingApprovalAnswers{}))
+	mux.HandleFunc("POST /api/decisions/{id}/answer", answerDecision(db, logger, lifecycleAnswers{}))
 	mux.HandleFunc("GET /api/routes", listRoutes(db, logger))
 	mux.HandleFunc("POST /api/routes", writeRoute(db, logger, true))
 	mux.HandleFunc("PATCH /api/routes/{label}", writeRoute(db, logger, false))

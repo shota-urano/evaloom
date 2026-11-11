@@ -26,6 +26,7 @@ type Runner struct {
 	bootID, token, heartbeatURL string
 	claimURL                    string
 	controlPlaneURL, dataDir    string
+	workspaceRoot               string
 	client                      *http.Client
 	mu                          sync.Mutex
 	executions                  map[string]context.CancelFunc
@@ -63,6 +64,9 @@ func New(config Config) (*Runner, error) {
 		bootID: hex.EncodeToString(boot[:]), token: token, heartbeatURL: endpoint,
 		claimURL: claimURL, pollInterval: 5 * time.Second,
 		controlPlaneURL: config.ControlPlaneURL, dataDir: config.DataDir,
+		// The claim's workspaceRoot (spec 04 Q134). The configuration still
+		// names it worktreeRoot until the spec 05 4.1 settings are adopted.
+		workspaceRoot: config.WorktreeRoot,
 		client: &http.Client{
 			Timeout: heartbeatTimeout,
 			// Redirects must not forward credentials or change POST semantics.

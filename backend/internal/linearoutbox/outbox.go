@@ -151,3 +151,41 @@ func enqueueTx(ctx context.Context, tx *sql.Tx, t Trigger, stateName string) err
 	}
 	return nil
 }
+
+// EnqueueRouteLabelTx writes the routing label addition of spec 16 3.6.5 for
+// an approved route decision: action=add_label, kind=route_approved, the
+// approved label, dedupe_key <task_id>:label:<decision_id>. The table's
+// triggers reject a label that is not in routes or is the trigger label. A
+// manual task writes nothing.
+func EnqueueRouteLabelTx(ctx context.Context, tx *sql.Tx, taskID, decisionID, label string) error {
+	if taskID == "" || decisionID == "" || label == "" {
+		return errors.New("linearoutbox: label addition needs a task, decision and label")
+	}
+	var source string
+	var issueID sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT t.source,
+		(SELECT linear_issue_id FROM linear_issue_links WHERE task_id = t.id)
+		FROM tasks t WHERE t.id = ?`, taskID).Scan(&source, &issueID)
+	if err != nil {
+		return fmt.Errorf("linearoutbox: read task %s: %w", taskID, err)
+	}
+	if source != "linear" {
+		return nil
+	}
+	if !issueID.Valid {
+		return fmt.Errorf("linearoutbox: linear task %s has no linked Issue", taskID)
+	}
+	now := time.Now().UTC()
+	id, err := ulid.New(ulid.Timestamp(now), rand.Reader)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, kind,
+		dedupe_key, status, attempts, created_at, action, label_name) VALUES (?, ?, ?, 'route_approved', ?, 'pending', 0, ?, 'add_label', ?)
+		ON CONFLICT (dedupe_key) DO NOTHING`,
+		id.String(), taskID, issueID.String, taskID+":label:"+decisionID, now.Format(time.RFC3339Nano), label)
+	if err != nil {
+		return fmt.Errorf("linearoutbox: insert label: %w", err)
+	}
+	return nil
+}

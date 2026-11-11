@@ -11,6 +11,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
 
@@ -56,9 +57,10 @@ func queueTaskRetry(ctx context.Context, db *sql.DB, id, mode string) error {
 	defer tx.Rollback()
 	var status model.TaskStatus
 	var seq sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT t.status,
+	var projectID, harnessID sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT t.status, t.project_id, t.harness_id,
 		(SELECT max(seq) FROM executions WHERE task_id = t.id)
-		FROM tasks t WHERE t.id = ?`, id).Scan(&status, &seq)
+		FROM tasks t WHERE t.id = ?`, id).Scan(&status, &projectID, &harnessID, &seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &Error{Code: NotFound, Message: "Task not found"}
 	}
@@ -66,12 +68,20 @@ func queueTaskRetry(ctx context.Context, db *sql.DB, id, mode string) error {
 		return err
 	}
 	switch status {
-	case model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskCompleted, model.TaskBlocked:
+	case model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskCompleted:
+		// Spec 04 3.10 (Q131): terminal tasks only.
 	default:
 		return &Error{Code: Conflict, Message: "Task state does not allow retry"}
 	}
 	if !seq.Valid {
 		return &Error{Code: Conflict, Message: "Task has no latest Execution"}
+	}
+	// Spec 04 3.10 step 2: the route must still be runnable. A direct harness
+	// route without default_profile_id is 422; Projects always pin a Profile.
+	if projectID.String != "" || harnessID.String != "" {
+		if _, err := manualTaskProfileID(ctx, tx, projectID.String, harnessID.String); err != nil {
+			return err
+		}
 	}
 	now := time.Now().UTC()
 	executionID, err := ulid.New(ulid.Timestamp(now), rand.Reader)
@@ -82,6 +92,13 @@ func queueTaskRetry(ctx context.Context, db *sql.DB, id, mode string) error {
 		VALUES (?, ?, ?, ?, 'pending', ?)`, executionID.String(), id, seq.Int64+1, mode, now.Format(time.RFC3339))
 	if err == nil {
 		err = task.QueueExecutionTx(ctx, tx, id, executionID.String(), status)
+	}
+	if err == nil {
+		_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
+			Actor: "owner", Action: "task.retry", TargetType: "task", TargetID: id,
+			Detail: map[string]any{"executionId": executionID.String(), "seq": seq.Int64 + 1, "mode": mode,
+				"from": status, "to": model.TaskQueued},
+		})
 	}
 	if errors.Is(err, task.ErrConflict) {
 		err = &Error{Code: Conflict, Message: err.Error()}

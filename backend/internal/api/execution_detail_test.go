@@ -40,7 +40,7 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	id := requireClaim(t, status, body).Execution.ID
 	pin := readExecutionPin(t, f, id)
 	from := "claimed"
-	for _, next := range []string{"preparing", "working", "checking", "publishing", "succeeded"} {
+	for _, next := range []string{"working", "checking", "publishing", "succeeded"} {
 		input := resultBody(from, next)
 		status, body = postResult(t, f, token, id, input)
 		if status != 204 {

@@ -301,11 +301,22 @@ func saveDecisionAnswer(ctx context.Context, db *sql.DB, id string, fields map[s
 	return decision, tx.Commit()
 }
 
-type existingApprovalAnswers struct{}
+// lifecycleAnswers applies spec 04 3.6 for approval, blocked and question,
+// and 3.7 for route.
+type lifecycleAnswers struct{}
 
-func (existingApprovalAnswers) ApplyAnswer(ctx context.Context, tx *sql.Tx, decision store.OwnerDecision, answer decisionAnswer, now time.Time) error {
-	if decision.Kind != "approval" || decision.SubjectID == nil {
+func (lifecycleAnswers) ApplyAnswer(ctx context.Context, tx *sql.Tx, decision store.OwnerDecision, answer decisionAnswer, now time.Time) error {
+	switch decision.Kind {
+	case "blocked", "question":
+		return store.ApplyBlockedOrQuestionAnswerTx(ctx, tx, decision, answer.Action)
+	case "route":
+		return store.ApplyRouteAnswerTx(ctx, tx, decision, answer.Action, answer.Label)
+	case "approval":
+	default:
 		return fmt.Errorf("decision lifecycle handler is not connected for kind %q", decision.Kind)
+	}
+	if decision.SubjectID == nil {
+		return fmt.Errorf("approval decision %s has no approval", decision.ID)
 	}
 	approval, err := store.GetApprovalTx(ctx, tx, *decision.SubjectID)
 	if err != nil {

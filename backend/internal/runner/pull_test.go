@@ -2,10 +2,12 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -67,8 +69,12 @@ func TestPullLimitsExecutionsEvenWhenServerAlwaysOffersWork(t *testing.T) {
 			if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("Content-Type") != "application/json" {
 				t.Error("claim method or credentials incorrect")
 			}
+			var input map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || len(input) != 1 || !filepath.IsAbs(input["workspaceRoot"]) {
+				t.Errorf("claim body=%v err=%v", input, err)
+			}
 			n := claims.Add(1)
-			fmt.Fprintf(w, `{"execution":{"id":"e%d","taskId":"t%d","seq":1,"mode":"new"},"profile":{"definition":{"kept":true}}}`, n, n)
+			fmt.Fprintf(w, `{"job":{"kind":"execution","execution":{"id":"e%d","taskId":"t%d","seq":1,"mode":"new"},"profile":{"definition":{"kept":true}}}}`, n, n)
 		default:
 			t.Errorf("unexpected endpoint %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -140,7 +146,7 @@ func TestPullCancellationRetainsSlotUntilHandlerReturns(t *testing.T) {
 			return
 		}
 		n := claims.Add(1)
-		fmt.Fprintf(w, `{"execution":{"id":"e%d","taskId":"t%d"}}`, n, n)
+		fmt.Fprintf(w, `{"job":{"kind":"execution","execution":{"id":"e%d","taskId":"t%d"}}}`, n, n)
 	})
 	started, canceled := make(chan string, 8), make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -204,7 +210,7 @@ func TestPullRetriesCommunicationWithoutStoppingWork(t *testing.T) {
 			t.Error("claim ran before successful boot reconciliation")
 		}
 		if n == 1 {
-			io.WriteString(w, `{"execution":{"id":"active","taskId":"task"}}`)
+			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"active","taskId":"task"}}}`)
 			return
 		}
 		if n == 2 {
@@ -251,8 +257,11 @@ func TestClaimRejectsInvalidResponsesAndRedirects(t *testing.T) {
 		{"malformed", 200, testToken},
 		{"null", 200, `null`},
 		{"empty", 200, `{}`},
-		{"missing task", 200, `{"execution":{"id":"e"}}`},
-		{"trailing value", 200, `{"execution":{"id":"e","taskId":"t"}} {}`},
+		{"missing job", 200, `{"execution":{"id":"e","taskId":"t"}}`},
+		{"extra key", 200, `{"job":null,"worktree":{}}`},
+		{"route proposal", 200, `{"job":{"kind":"route_proposal","proposal":{"id":"p"}}}`},
+		{"missing task", 200, `{"job":{"kind":"execution","execution":{"id":"e"}}}`},
+		{"trailing value", 200, `{"job":{"kind":"execution","execution":{"id":"e","taskId":"t"}}} {}`},
 		{"oversize", 200, strings.Repeat(" ", 1<<20+1)},
 		{"redirect", 307, ""},
 	} {
@@ -298,13 +307,13 @@ func TestPullReservesCapacityWhileClaimIsInFlight(t *testing.T) {
 			return
 		}
 		if claims.Add(1) == 1 {
-			io.WriteString(w, `{"execution":{"id":"first","taskId":"task"}}`)
+			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"first","taskId":"task"}}}`)
 			return
 		}
 		close(claimStarted)
 		select {
 		case <-reply:
-			io.WriteString(w, `{"execution":{"id":"second","taskId":"task"}}`)
+			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"second","taskId":"task"}}}`)
 		case <-r.Context().Done():
 		}
 	})
@@ -326,5 +335,16 @@ func TestPullReservesCapacityWhileClaimIsInFlight(t *testing.T) {
 	await(t, started)
 	if err := process.RegisterExecution("third", func() {}); err == nil {
 		t.Fatal("third registration exceeded the execution limit")
+	}
+}
+
+// spec 04 3.3.1: {"job":null} means no work.
+func TestClaimNullJobIsNoWork(t *testing.T) {
+	process := newPullRunner(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"job":null}`)
+	})
+	claim, err := process.claim(context.Background())
+	if err != nil || claim != nil {
+		t.Fatalf("claim=%+v err=%v", claim, err)
 	}
 }

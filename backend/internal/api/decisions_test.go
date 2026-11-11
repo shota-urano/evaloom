@@ -206,18 +206,28 @@ func TestDecisionListDetailAndUnconnectedLifecycle(t *testing.T) {
 		status, body = approvalRequest(t, f, "GET", "/api/decisions?"+query, "")
 		assertAuthError(t, status, body, 400, ValidationFailed)
 	}
+	// A question whose Execution is not blocked is a conflict without writes.
 	status, body = approvalRequest(t, f, "POST", "/api/decisions/"+questionID+"/answer", `{"action":"answer","text":"reply","option":null}`)
-	assertAuthError(t, status, body, 500, Internal)
+	assertAuthError(t, status, body, 409, Conflict)
 	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id=? AND status='open' AND answer IS NULL`, questionID); n != 1 {
-		t.Fatal("unconnected lifecycle accepted answer")
+		t.Fatal("conflicting answer changed decision")
+	}
+	stageExec(t, f, `UPDATE owner_decisions SET status='withdrawn',withdrawn_reason='superseded' WHERE id=?`, questionID)
+	// A route decision whose proposal row is missing is inconsistent data:
+	// the answer is refused before any write.
+	routeID := seedDecision(t, f, executionID, "route", "")
+	status, body = approvalRequest(t, f, "POST", "/api/decisions/"+routeID+"/answer", `{"action":"reject"}`)
+	assertAuthError(t, status, body, 500, Internal)
+	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id=? AND status='open' AND answer IS NULL`, routeID); n != 1 {
+		t.Fatal("route answer without its proposal was accepted")
 	}
 	// Test a domain failure before any answer/audit write.
 	var fields map[string]json.RawMessage
-	json.Unmarshal([]byte(`{"action":"abort"}`), &fields)
-	_, err := saveDecisionAnswer(context.Background(), f.db, questionID, fields, answerApplierFunc(func(context.Context, *sql.Tx, store.OwnerDecision, decisionAnswer, time.Time) error {
+	json.Unmarshal([]byte(`{"action":"reject"}`), &fields)
+	_, err := saveDecisionAnswer(context.Background(), f.db, routeID, fields, answerApplierFunc(func(context.Context, *sql.Tx, store.OwnerDecision, decisionAnswer, time.Time) error {
 		return errors.New("domain failure")
 	}))
-	if err == nil {
+	if err == nil || err.Error() != "domain failure" {
 		t.Fatal("domain error ignored")
 	}
 }

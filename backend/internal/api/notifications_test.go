@@ -135,7 +135,8 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 				}
 				switch want {
 				case "failed":
-					if n.ErrorClass != model.ErrorExecutionFailed || n.Reason != "Harness exited" {
+					// runnerError carries no message (spec 04 3.4.1).
+					if n.ErrorClass != model.ErrorExecutionFailed {
 						t.Fatalf("missing failure detail: %+v", n)
 					}
 				case "timed_out":
@@ -157,8 +158,15 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 			// Recreate the DB connection, auth/routing, Dispatcher AND Notifier.
 			restartNotificationFixture(t, f)
 			if target == want {
+				// A resend of the same stage report returns the saved response
+				// and records nothing (spec 04 3.4.1).
+				// blocked was set without a stage report, so nothing is resent.
 				status, body := postResult(t, f, token, id, input)
-				assertAuthError(t, status, body, 409, Conflict)
+				if target == "blocked" {
+					assertAuthError(t, status, body, 409, Conflict)
+				} else if status != 204 {
+					t.Fatalf("resend status=%d body=%s", status, body)
+				}
 			}
 			fresh := &recordingNotifier{}
 			restarted := notificationDispatcher(f, fresh)
@@ -188,10 +196,15 @@ func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
 	d.DB = f.db
 	resume := func() {
 		t.Helper()
-		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "preparing"}, {"preparing", "working"}} {
+		// Spec 02 5.2: an answered question resumes at work.
+		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "working"}} {
 			fromTask, _ := task.TaskStatusForExecution(edge[0])
+			var stage model.Stage
+			if edge[1] == model.ExecutionPending {
+				stage = model.StageWork
+			}
 			if err := task.TransitionExecution(context.Background(), f.db, task.Transition{TaskID: executionTaskID(t, f, id),
-				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1]}); err != nil {
+				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1], ResumeStage: stage}); err != nil {
 				t.Fatal(err)
 			}
 		}

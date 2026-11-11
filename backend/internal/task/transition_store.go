@@ -17,6 +17,10 @@ type Transition struct {
 	FromTask            model.TaskStatus
 	FromExecution       model.ExecutionStatus
 	ToExecution         model.ExecutionStatus
+	// ResumeStage is required exactly when ToExecution is pending (an owner
+	// decision or a publish with every approval waived), and is written to
+	// executions.resume_stage in the same update (spec 02, 5.2 and 5.6).
+	ResumeStage model.Stage
 }
 
 // TransitionExecution atomically updates the latest Execution and its Task.
@@ -53,11 +57,11 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 			return err
 		}
 	}
-	var found int
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM executions
+	var storedResume sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT resume_stage FROM executions
 		WHERE id = ? AND task_id = ? AND status = ?
 		AND seq = (SELECT max(seq) FROM executions WHERE task_id = ?)`,
-		change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID).Scan(&found)
+		change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID).Scan(&storedResume)
 	if errors.Is(err, sql.ErrNoRows) {
 		return conflict("execution is missing, stale, or not the latest execution")
 	}
@@ -67,10 +71,27 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 	if err := ValidateExecutionTransition(change.FromExecution, change.ToExecution); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE executions SET status = ?
+	if change.FromExecution == model.ExecutionClaimed {
+		switch change.ToExecution {
+		case model.ExecutionPreparing, model.ExecutionRunning, model.ExecutionPublishing:
+			if err := ValidateStageStart(model.Stage(storedResume.String), change.ToExecution); err != nil {
+				return err
+			}
+		}
+	}
+	resume := storedResume
+	if change.ToExecution == model.ExecutionPending {
+		if err := ValidateResume(change.FromExecution, change.ResumeStage); err != nil {
+			return err
+		}
+		resume = sql.NullString{String: string(change.ResumeStage), Valid: true}
+	} else if change.ResumeStage != "" {
+		return conflict("resume stage is only written when an execution returns to pending")
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE executions SET status = ?, resume_stage = ?
 		WHERE id = ? AND task_id = ? AND status = ?
 		AND seq = (SELECT max(seq) FROM executions WHERE task_id = ?)`,
-		change.ToExecution, change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID)
+		change.ToExecution, resume, change.ExecutionID, change.TaskID, change.FromExecution, change.TaskID)
 	if err := expectOne(result, err); err != nil {
 		return err
 	}
@@ -178,6 +199,13 @@ func recordTransitionEffects(ctx context.Context, tx *sql.Tx, id string, status 
 // use this same transaction and roll it back on any error. Previous Executions
 // are kept unchanged; blocked resume uses TransitionExecutionTx instead.
 func QueueExecutionTx(ctx context.Context, tx *sql.Tx, taskID, executionID string, from model.TaskStatus) error {
+	switch from {
+	case model.TaskReceived, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskCompleted:
+		// Spec 04 3.2: creation, or a retry of a terminal task (Q131). A
+		// blocked or waiting_approval task resumes its own Execution instead.
+	default:
+		return conflict("task %q cannot be queued with a new execution", from)
+	}
 	if err := ValidateTaskTransition(from, model.TaskQueued); err != nil {
 		return err
 	}
@@ -252,6 +280,56 @@ func QueueHeldTaskTx(ctx context.Context, tx *sql.Tx, taskID, executionID string
 		return conflict("new execution must be pending")
 	}
 	return updateTask(ctx, tx, taskID, from, model.TaskQueued)
+}
+
+// TaskTransition is a task change without an Execution (spec 04, 3.2): the
+// intake paths of received, routing and an intake-held blocked task, and
+// their cancellation. IntakeBlockCause is required exactly when To is blocked.
+type TaskTransition struct {
+	TaskID           string
+	From, To         model.TaskStatus
+	IntakeBlockCause model.IntakeBlockCause
+}
+
+// taskOnlyTransitions are the rows of spec 04, 3.2 that change a task that
+// has no Execution. Queueing creates an Execution and uses QueueExecutionTx
+// or QueueHeldTaskTx instead.
+var taskOnlyTransitions = map[model.TaskStatus][]model.TaskStatus{
+	model.TaskReceived: {model.TaskRouting, model.TaskBlocked, model.TaskCancelled},
+	model.TaskRouting:  {model.TaskCancelled},
+	model.TaskBlocked:  {model.TaskRouting, model.TaskCancelled},
+}
+
+// TransitionTaskTx applies one task-only transition. The caller must roll
+// back the transaction on any error.
+func TransitionTaskTx(ctx context.Context, tx *sql.Tx, change TaskTransition) error {
+	allowed := false
+	for _, to := range taskOnlyTransitions[change.From] {
+		allowed = allowed || to == change.To
+	}
+	if !allowed {
+		return conflict("task transition %q -> %q requires an execution or is not allowed", change.From, change.To)
+	}
+	if err := ValidateTaskTransition(change.From, change.To); err != nil {
+		return err
+	}
+	cause := sql.NullString{}
+	if change.To == model.TaskBlocked {
+		if err := change.IntakeBlockCause.Validate(); err != nil {
+			return conflict("intake hold requires a cause: %v", err)
+		}
+		cause = sql.NullString{String: string(change.IntakeBlockCause), Valid: true}
+	} else if change.IntakeBlockCause != "" {
+		return conflict("intake cause is only written when a task is held")
+	}
+	// A blocked task with an Execution waits for an owner decision; only the
+	// intake hold (cause set, no Execution) may leave blocked here.
+	result, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, intake_block_cause = ?, updated_at = ?
+		WHERE id = ? AND status = ?
+		AND NOT EXISTS (SELECT 1 FROM executions WHERE task_id = tasks.id)
+		AND (status != 'blocked' OR intake_block_cause IS NOT NULL)`,
+		change.To, cause, time.Now().UTC().Format(time.RFC3339), change.TaskID, change.From)
+	return expectOne(result, err)
 }
 
 func updateTask(ctx context.Context, tx *sql.Tx, id string, from, to model.TaskStatus) error {

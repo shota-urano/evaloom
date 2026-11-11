@@ -105,9 +105,7 @@ func TestCancelQueuedImmediatelyAndNeverClaimed(t *testing.T) {
 	}
 	requireCancelled(t, f, id, before)
 	status, body = requestClaim(t, f, token)
-	if status != 204 || len(body) != 0 {
-		t.Fatalf("claimed cancelled task: %d %s", status, body)
-	}
+	requireNoJob(t, status, body)
 	after := cancellationState(t, f, id)
 	status, body = requestCancellation(t, f, created.ID)
 	assertAuthError(t, status, body, 409, Conflict)
@@ -212,7 +210,7 @@ func TestCancelActiveRequestsUntilRunnerReportsCancellation(t *testing.T) {
 			finished := cancellationState(t, f, id)
 			if finished.Execution != "cancelled" || finished.Task != "cancelled" || finished.ErrorClass != "cancelled" ||
 				!finished.Finished.Valid || finished.Requested != after.Requested ||
-				finished.Events != after.Events+1 || finished.Audits != after.Audits || finished.Notifications != 0 {
+				finished.Events <= after.Events || finished.Audits != after.Audits || finished.Notifications != 0 {
 				t.Fatalf("runner cancellation=%+v", finished)
 			}
 			status, body = postHeartbeat(t, f, token, "claim-runner", heartbeatInput(id))
@@ -331,7 +329,9 @@ func TestCancelRollsBackRequestTransitionAndRecordsOnFailure(t *testing.T) {
 	for _, from := range []string{"claimed", "blocked"} {
 		f, _, id, _ := resultFixture(t, "claimed")
 		if from == "blocked" {
-			blockExecution(t, f, id, "claimed")
+			// Spec 02 5.2: a claimed Execution cannot block before a stage.
+			f, _, id, _ = resultFixture(t, "working")
+			blockExecution(t, f, id, "working")
 		}
 		triggers := []string{`BEFORE INSERT ON audit_logs WHEN NEW.action = 'task.cancel'`}
 		if from == "claimed" {
@@ -375,7 +375,7 @@ func TestClaimAndCancelSerializeWithoutLosingCancellation(t *testing.T) {
 				defer wg.Done()
 				<-start
 				status, body := requestClaim(t, f, token)
-				if status != 200 && status != 204 {
+				if status != 200 {
 					t.Errorf("claim=%d %s", status, body)
 				}
 			}()

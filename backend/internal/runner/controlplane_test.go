@@ -106,11 +106,11 @@ func TestPullNoWorkCreatesNoExecutions(t *testing.T) {
 	var started atomic.Int32
 	startPull(t, process, func(context.Context, Claim) { started.Add(1) }, func(err error) { t.Error(err) })
 	for range 10 {
-		if status := await(t, attempts); status != http.StatusNoContent {
+		if status := await(t, attempts); status != http.StatusOK {
 			t.Fatalf("empty queue returned HTTP %d", status)
 		}
 	}
-	for _, table := range []string{"executions", "execution_events", "tasks"} {
+	for _, table := range []string{"executions", "execution_events", "tasks", "task_workspaces"} {
 		var count int
 		if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("empty claims changed %s: count=%d err=%v", table, count, err)
