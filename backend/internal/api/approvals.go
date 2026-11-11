@@ -227,26 +227,44 @@ func saveApprovalDecisionTx(ctx context.Context, tx *sql.Tx, id string, input ap
 	if err := store.DecideApprovalTx(ctx, tx, id, input.ContentVersion, status, expiresAt, stamp); err != nil {
 		return err
 	}
-	var resume model.Stage
-	if to == model.ExecutionPending {
-		resume = model.StagePublish
-	}
-	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
-		TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskWaitingApproval,
-		FromExecution: model.ExecutionWaitingApproval, ToExecution: to, ResumeStage: resume,
-	}); err != nil {
-		return err
-	}
 	if to == model.ExecutionFailed {
-		// Q57: the PR stays open; the owner fixes it with a continue retry.
-		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_message = ? WHERE id = ?`,
-			approvalRejectedReason, execution.ID); err != nil {
+		// Spec 17 3.6: the other unused approvals of the Execution are
+		// invalidated (cancelled) and their open decisions withdrawn.
+		if err := store.RejectApprovalSiblingsTx(ctx, tx, execution.ID); err != nil {
 			return err
 		}
+	} else {
+		// Spec 04 3.6: resume only when every approval wait is approved.
+		remaining, err := store.PendingApprovalCount(ctx, tx, execution.ID)
+		if err != nil {
+			return err
+		}
+		if remaining > 0 {
+			to = ""
+		}
 	}
-	payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionWaitingApproval), "to": string(to), "reason": reason})
-	if _, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
-		return err
+	if to != "" {
+		var resume model.Stage
+		if to == model.ExecutionPending {
+			resume = model.StagePublish
+		}
+		if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
+			TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskWaitingApproval,
+			FromExecution: model.ExecutionWaitingApproval, ToExecution: to, ResumeStage: resume,
+		}); err != nil {
+			return err
+		}
+		if to == model.ExecutionFailed {
+			// Q57: the PR stays open; the owner fixes it with a continue retry.
+			if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = ?, error_message = ? WHERE id = ?`,
+				model.ErrorApprovalRejected, approvalRejectedReason, execution.ID); err != nil {
+				return err
+			}
+		}
+		payload, _ := json.Marshal(map[string]string{"from": string(model.ExecutionWaitingApproval), "to": string(to), "reason": reason})
+		if _, err := store.AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
+			return err
+		}
 	}
 	detail := map[string]any{"taskId": approval.TaskID, "executionId": approval.ExecutionID, "operation": approval.Operation,
 		"decision": input.Decision, "contentVersion": approval.ContentVersion}
