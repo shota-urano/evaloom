@@ -31,6 +31,7 @@ type Runner struct {
 	client                      *http.Client
 	mu                          sync.Mutex
 	heartbeatMu                 sync.Mutex
+	profileMu                   sync.Mutex
 	executions                  map[string]context.CancelFunc
 	proposals                   map[string]context.CancelFunc
 	cleanedWorkspaces           map[string]struct{}

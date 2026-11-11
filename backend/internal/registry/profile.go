@@ -184,6 +184,20 @@ func referenceIssues(tree map[string]string, def contract.ProfileDefinition) []c
 	return found
 }
 
+// ValidateProfileReferences reuses registration's commit-tree checks for Runner
+// preflight. In particular, git archive represents submodules as empty directories,
+// so checking only the extracted filesystem would miss them.
+func ValidateProfileReferences(ctx context.Context, repo, sha string, def contract.ProfileDefinition) error {
+	tree, err := commitTree(ctx, repo, sha)
+	if err != nil {
+		return err
+	}
+	if found := referenceIssues(tree, def); len(found) > 0 {
+		return profileRejected(found)
+	}
+	return nil
+}
+
 // schemaPath returns params.schema when it is a valid committed file.
 func schemaPath(def contract.ProfileDefinition, found []contract.Issue) string {
 	if def.Params == nil || def.Params.Schema == "" {
