@@ -75,7 +75,7 @@ type ClaimLimits struct {
 }
 
 // ClaimResume is filled only for an Execution with resume_stage (spec 04
-// 3.3.1). Resumed claims are delivered by evaloom-9lz.4.
+// 3.3.1).
 type ClaimResume struct {
 	Stage            model.Stage                `json:"stage"`
 	CheckedContentID *string                    `json:"checkedContentId"`
@@ -165,7 +165,19 @@ func Claim(ctx context.Context, tx *sql.Tx, input ClaimInput) (ClaimResponse, er
 		if err != nil || candidate == nil {
 			return ClaimResponse{}, err
 		}
-		job, err := claimExecution(ctx, tx, input, candidate, settings)
+		var job *ExecutionJob
+		if candidate.resumeStage.Valid {
+			job, err = claimResumedExecution(ctx, tx, input, candidate, settings)
+			var missing *workspaceMissingError
+			if errors.As(err, &missing) {
+				if err := blockWorkspaceMissing(ctx, tx, candidate, missing); err != nil {
+					return ClaimResponse{}, err
+				}
+				continue
+			}
+		} else {
+			job, err = claimExecution(ctx, tx, input, candidate, settings)
+		}
 		var configErr *claimConfigError
 		if errors.As(err, &configErr) {
 			if err := failClaimConfig(ctx, tx, candidate, configErr.message); err != nil {
@@ -223,19 +235,20 @@ type pendingCandidate struct {
 	mode                model.ExecutionMode
 	projectID           sql.NullString
 	harnessID           sql.NullString
+	resumeStage         sql.NullString
 }
 
 // nextPendingExecution picks the oldest pending Execution whose route belongs
 // to runnerID and whose route (a Project, or a direct routing to a special
 // harness) has no active Execution (spec 04 3.3 step 3). Project tasks never
 // set tasks.harness_id, so Projects sharing a harness are separate routes.
-// Resumed Executions (resume_stage) are delivered by evaloom-9lz.4.
+// Resumed Executions (resume_stage set) compete in the same order and slots.
 func nextPendingExecution(ctx context.Context, tx *sql.Tx, runnerID, defaultRunner string) (*pendingCandidate, error) {
 	var c pendingCandidate
-	err := tx.QueryRowContext(ctx, `SELECT e.id, e.task_id, e.seq, e.mode, t.project_id, t.harness_id
+	err := tx.QueryRowContext(ctx, `SELECT e.id, e.task_id, e.seq, e.mode, t.project_id, t.harness_id, e.resume_stage
 		FROM executions e JOIN tasks t ON t.id = e.task_id
 		LEFT JOIN projects p ON p.id = t.project_id
-		WHERE e.status = 'pending' AND e.resume_stage IS NULL
+		WHERE e.status = 'pending'
 		AND ((t.project_id IS NOT NULL AND p.runner_id = ?)
 			OR (t.harness_id IS NOT NULL AND ? <> '' AND ? = ?))
 		AND NOT EXISTS (SELECT 1 FROM executions a JOIN tasks at ON at.id = a.task_id
@@ -243,7 +256,7 @@ func nextPendingExecution(ctx context.Context, tx *sql.Tx, runnerID, defaultRunn
 			AND ((t.project_id IS NOT NULL AND at.project_id = t.project_id)
 				OR (t.harness_id IS NOT NULL AND at.harness_id = t.harness_id)))
 		ORDER BY e.created_at, e.id LIMIT 1`, runnerID, defaultRunner, defaultRunner, runnerID).
-		Scan(&c.executionID, &c.taskID, &c.seq, &c.mode, &c.projectID, &c.harnessID)
+		Scan(&c.executionID, &c.taskID, &c.seq, &c.mode, &c.projectID, &c.harnessID, &c.resumeStage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -333,7 +346,7 @@ func claimExecution(ctx context.Context, tx *sql.Tx, input ClaimInput, c *pendin
 	if definition.AcceptanceCriteria == "required" && strings.TrimSpace(job.Task.AcceptanceCriteria) == "" {
 		return nil, configError("Profile requires acceptance criteria but the task has none")
 	}
-	if job.Limits.TimeoutSec, err = claimTimeouts(definition, settings); err != nil {
+	if job.Limits.TimeoutSec, err = claimTimeouts(definition, settings, true); err != nil {
 		return nil, err
 	}
 	if definition.Params != nil && definition.Params.Schema != "" {
@@ -358,32 +371,41 @@ func claimExecution(ctx context.Context, tx *sql.Tx, input ClaimInput, c *pendin
 	if err := expectOneRow(result, err); err != nil {
 		return nil, err
 	}
+	return job, markClaimed(ctx, tx, input, c, job)
+}
+
+// markClaimed moves the chosen Execution to claimed and records the Runner,
+// the event and the audit log (spec 04 3.3 step 6).
+func markClaimed(ctx context.Context, tx *sql.Tx, input ClaimInput, c *pendingCandidate, job *ExecutionJob) error {
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
 		TaskID: c.taskID, ExecutionID: c.executionID,
 		FromTask: model.TaskQueued, FromExecution: model.ExecutionPending, ToExecution: model.ExecutionClaimed,
 	}); err != nil {
-		return nil, err
+		return err
 	}
-	result, err = tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, claimed_at = ? WHERE id = ? AND status = 'claimed'`,
+	result, err := tx.ExecContext(ctx, `UPDATE executions SET runner_id = ?, claimed_at = ? WHERE id = ? AND status = 'claimed'`,
 		input.RunnerID, time.Now().UTC().Format(time.RFC3339), c.executionID)
 	if err := expectOneRow(result, err); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := AppendExecutionEvent(ctx, tx, c.executionID, model.EventStatusChanged,
 		json.RawMessage(`{"from":"pending","to":"claimed","reason":"runner_claimed"}`)); err != nil {
-		return nil, err
+		return err
 	}
 	detail := map[string]any{"taskId": c.taskID, "from": model.ExecutionPending, "to": model.ExecutionClaimed,
-		"routeKind": job.Route.Kind, "harnessId": harness.ID, "profileId": profile.ID,
-		"profileCommitSha": profile.CommitSHA, "workspaceId": job.Workspace.ID}
-	if c.projectID.Valid {
-		detail["projectId"] = c.projectID.String
+		"routeKind": job.Route.Kind, "harnessId": job.Profile.HarnessID, "profileId": job.Profile.ID,
+		"profileCommitSha": job.Profile.CommitSHA, "workspaceId": job.Workspace.ID}
+	if job.Route.ProjectID != nil {
+		detail["projectId"] = *job.Route.ProjectID
+	}
+	if job.Execution.ResumeStage != nil {
+		detail["resumeStage"] = *job.Execution.ResumeStage
 	}
 	_, err = RecordAuditLog(ctx, tx, AuditLog{
 		Actor: "runner:" + input.RunnerID, Action: "execution.claim", TargetType: "execution", TargetID: c.executionID,
 		Detail: detail,
 	})
-	return job, err
+	return err
 }
 
 func readClaimTask(ctx context.Context, tx *sql.Tx, taskID string, out *contract.RequestTask) error {
@@ -402,9 +424,10 @@ func readClaimTask(ctx context.Context, tx *sql.Tx, taskID string, out *contract
 	return nil
 }
 
-// claimTimeouts returns the declared stages' timeoutSec. A value above the
-// current limits.stageTimeoutMaxSec is a config_error (Q135).
-func claimTimeouts(definition claimDefinition, settings map[string]string) (map[model.Stage]int, error) {
+// claimTimeouts returns the declared stages' timeoutSec. When enforce is set
+// (a claim that pins the version), a value above the current
+// limits.stageTimeoutMaxSec is a config_error (Q135).
+func claimTimeouts(definition claimDefinition, settings map[string]string, enforce bool) (map[model.Stage]int, error) {
 	raw, present := settings["limits.stageTimeoutMaxSec"]
 	limits := registry.ParseStageTimeoutMaxSec(raw, present)
 	timeouts := map[model.Stage]int{
@@ -413,6 +436,9 @@ func claimTimeouts(definition claimDefinition, settings map[string]string) (map[
 	}
 	if definition.Stages.Prepare != nil {
 		timeouts[model.StagePrepare] = definition.Stages.Prepare.TimeoutSec
+	}
+	if !enforce {
+		return timeouts, nil
 	}
 	for stage, timeout := range timeouts {
 		if max := limits[stage]; max < 1 || timeout > max {
