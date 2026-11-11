@@ -99,7 +99,9 @@ func TestResultRejectsEveryUnlistedTransitionWithoutWrites(t *testing.T) {
 	// blocked had only development causes (Gate, Context, Git), which moved to
 	// software-engineer (spec 19 3.11); the Runner can no longer report it.
 	allowed := map[string][]string{
-		"claimed":    {"preparing", "failed", "timed_out", "cancelled"},
+		// Spec 02 5.2: without a prepare stage a claimed Execution starts
+		// working. Rejecting prepare for a Profile without it is spec 04 3.4.1.
+		"claimed":    {"preparing", "working", "failed", "timed_out", "cancelled"},
 		"preparing":  {"working", "failed", "timed_out", "cancelled"},
 		"working":    {"checking", "failed", "timed_out", "cancelled"},
 		"checking":   {"publishing", "failed", "timed_out", "cancelled"},

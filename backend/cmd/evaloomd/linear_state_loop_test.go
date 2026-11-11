@@ -227,7 +227,9 @@ func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 		{"In Progress", []model.ExecutionStatus{model.ExecutionClaimed}},
 		{"PR Review", []model.ExecutionStatus{model.ExecutionPreparing, model.ExecutionRunning,
 			model.ExecutionVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval}},
-		{"Done", []model.ExecutionStatus{model.ExecutionSucceeded}},
+		// Spec 02 5.2: approval resumes the publish stage, which succeeds.
+		{"Done", []model.ExecutionStatus{model.ExecutionPending, model.ExecutionClaimed,
+			model.ExecutionPublishing, model.ExecutionSucceeded}},
 	} {
 		t.Run(stage.name, func(t *testing.T) {
 			for _, to := range stage.steps {
@@ -235,8 +237,12 @@ func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				var resume model.Stage
+				if to == model.ExecutionPending {
+					resume = model.StagePublish
+				}
 				if err := task.TransitionExecution(context.Background(), h.db, task.Transition{TaskID: id,
-					ExecutionID: executionID, FromTask: fromTask, FromExecution: from, ToExecution: to}); err != nil {
+					ExecutionID: executionID, FromTask: fromTask, FromExecution: from, ToExecution: to, ResumeStage: resume}); err != nil {
 					t.Fatal(err)
 				}
 				from = to

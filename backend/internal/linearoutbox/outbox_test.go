@@ -51,8 +51,16 @@ func setStates(t *testing.T, db *sql.DB, taskID string, taskStatus model.TaskSta
 
 func transition(t *testing.T, db *sql.DB, taskID string, fromTask model.TaskStatus, from, to model.ExecutionStatus) {
 	t.Helper()
+	var resume model.Stage
+	if to == model.ExecutionPending {
+		// Spec 02 5.2: a question resumes work; approvals resume publish.
+		resume = model.StagePublish
+		if from == model.ExecutionBlocked {
+			resume = model.StageWork
+		}
+	}
 	if err := task.TransitionExecution(context.Background(), db, task.Transition{TaskID: taskID,
-		ExecutionID: taskID + "-e1", FromTask: fromTask, FromExecution: from, ToExecution: to}); err != nil {
+		ExecutionID: taskID + "-e1", FromTask: fromTask, FromExecution: from, ToExecution: to, ResumeStage: resume}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -141,7 +149,8 @@ func TestSameTriggerTwiceKeepsOneRow(t *testing.T) {
 		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked)
 		transition(t, db, "linear-1", model.TaskBlocked, model.ExecutionBlocked, model.ExecutionPending)
 		transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
-		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionBlocked)
+		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionRunning)
+		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked)
 		rows := outboxRows(t, db)
 		if len(rows) != 1 || rows[0].dedupeKey != "linear-1:blocked:linear-1-e1" {
 			t.Fatalf("outbox rows = %+v; want one blocked row", rows)
@@ -313,7 +322,9 @@ func TestWaitingApprovalCommentNamesRequiredApprovalOnce(t *testing.T) {
 		strings.Repeat("a", 40), strings.Repeat("d", 64), testTime)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
 	transition(t, db, "linear-1", model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionPending)
-	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionWaitingApproval)
+	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
+	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionPublishing)
+	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
 	rows := outboxRows(t, db)
 	if len(rows) != 1 || rows[0].kind != "waiting_approval" || rows[0].dedupeKey != "linear-1:waiting_approval:linear-1-e1" {
 		t.Fatalf("outbox rows = %+v; want one waiting_approval", rows)

@@ -227,16 +227,15 @@ func saveApprovalDecisionTx(ctx context.Context, tx *sql.Tx, id string, input ap
 	if err := store.DecideApprovalTx(ctx, tx, id, input.ContentVersion, status, expiresAt, stamp); err != nil {
 		return err
 	}
+	var resume model.Stage
+	if to == model.ExecutionPending {
+		resume = model.StagePublish
+	}
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
 		TaskID: execution.TaskID, ExecutionID: execution.ID, FromTask: model.TaskWaitingApproval,
-		FromExecution: model.ExecutionWaitingApproval, ToExecution: to,
+		FromExecution: model.ExecutionWaitingApproval, ToExecution: to, ResumeStage: resume,
 	}); err != nil {
 		return err
-	}
-	if to == model.ExecutionPending {
-		if _, err := tx.ExecContext(ctx, `UPDATE executions SET resume_stage='publish' WHERE id=? AND status='pending'`, execution.ID); err != nil {
-			return err
-		}
 	}
 	if to == model.ExecutionFailed {
 		// Q57: the PR stays open; the owner fixes it with a continue retry.
