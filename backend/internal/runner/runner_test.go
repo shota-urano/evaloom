@@ -25,18 +25,20 @@ func testConfig(t *testing.T, endpoint string) Config {
 	}
 	return Config{
 		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
-		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
-		HarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
-		Container:        ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
-		DefaultTimeouts:  DefaultTimeouts{HarnessSec: 3600},
+		WorkspaceRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
+		SecretsDir:            filepath.Join(dir, "data", "secrets"),
+		MicroHarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		Container:             ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 	}
 }
 
 var testToken = base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 
 type heartbeatInput struct {
-	BootID              string   `json:"bootId"`
-	RunningExecutionIDs []string `json:"runningExecutionIds"`
+	BootID                  string   `json:"bootId"`
+	RunningExecutionIDs     []string `json:"runningExecutionIds"`
+	RunningRouteProposalIDs []string `json:"runningRouteProposalIds"`
+	CleanedWorkspaceIDs     []string `json:"cleanedWorkspaceIds"`
 }
 
 func readHeartbeat(t *testing.T, r *http.Request) heartbeatInput {
@@ -48,7 +50,7 @@ func readHeartbeat(t *testing.T, r *http.Request) heartbeatInput {
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		t.Error(err)
 	}
-	if input.BootID == "" || input.RunningExecutionIDs == nil {
+	if input.BootID == "" || input.RunningExecutionIDs == nil || input.RunningRouteProposalIDs == nil {
 		t.Errorf("heartbeat must include bootId and a non-null ID array: %+v", input)
 	}
 	return input
@@ -142,6 +144,8 @@ func TestHeartbeatFailuresLeaveExecutionRunningAndCanResend(t *testing.T) {
 		{"missing array", 200, `{}`},
 		{"null array", 200, `{"cancelExecutionIds":null}`},
 		{"partial", 200, `{"cancelExecutionIds":["active"],`},
+		{"invalid cleanup array", 200, `{"cancelExecutionIds":["active"],"cleanWorkspaceIds":[123]}`},
+		{"invalid proposal cancellation array", 200, `{"cancelExecutionIds":["active"],"cancelRouteProposalIds":[123]}`},
 		{"trailing JSON", 200, `{"cancelExecutionIds":["active"]} {}`},
 		{"oversized", 200, `{"cancelExecutionIds":["active"]}` + strings.Repeat(" ", 1<<20)},
 	} {

@@ -53,7 +53,7 @@ func TestNewRejectsInvalidConfigAndToken(t *testing.T) {
 		func(c *Config) { c.ControlPlaneURL += "?token=secret" },
 		func(c *Config) { c.ControlPlaneURL += "#fragment" },
 		func(c *Config) { c.TokenFile = "relative" },
-		func(c *Config) { c.WorktreeRoot = "" },
+		func(c *Config) { c.WorkspaceRoot = "" },
 		func(c *Config) { c.DataDir = "relative" },
 	} {
 		config := valid
@@ -77,28 +77,74 @@ func TestNewRejectsInvalidConfigAndToken(t *testing.T) {
 	}
 }
 
-func TestConfigTimeoutDefaultsAndOverrides(t *testing.T) {
+func TestConfigWorkspaceAndDataRoots(t *testing.T) {
 	for _, tt := range []struct {
-		name  string
-		value any
-		want  DefaultTimeouts
+		name      string
+		change    func(*testing.T, *Config)
+		wantError bool
 	}{
-		{"omitted", nil, DefaultTimeouts{3600}},
-		{"empty", map[string]any{}, DefaultTimeouts{3600}},
-		{"explicit", map[string]any{"harnessSec": 42}, DefaultTimeouts{42}},
+		{"equal", func(t *testing.T, c *Config) { c.WorkspaceRoot = c.DataDir }, true},
+		{"workspace inside data", func(t *testing.T, c *Config) { c.WorkspaceRoot = filepath.Join(c.DataDir, "workspaces") }, true},
+		{"data inside workspace", func(t *testing.T, c *Config) { c.WorkspaceRoot = filepath.Dir(c.DataDir) }, true},
+		{"normalized equal", func(t *testing.T, c *Config) { c.WorkspaceRoot = c.DataDir + "/child/.." }, true},
+		{"trailing separators", func(t *testing.T, c *Config) { c.WorkspaceRoot = c.DataDir + "///" }, true},
+		{"filesystem root", func(t *testing.T, c *Config) { c.WorkspaceRoot = string(filepath.Separator) }, true},
+		{"workspace symlink", func(t *testing.T, c *Config) {
+			if err := os.Mkdir(c.DataDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(c.DataDir, c.WorkspaceRoot); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"workspace symlink ancestor", func(t *testing.T, c *Config) {
+			if err := os.Mkdir(c.DataDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(c.DataDir, c.WorkspaceRoot); err != nil {
+				t.Fatal(err)
+			}
+			c.WorkspaceRoot += "/future/workspaces"
+		}, true},
+		{"data symlink ancestor", func(t *testing.T, c *Config) {
+			if err := os.Mkdir(c.WorkspaceRoot, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(c.WorkspaceRoot, c.DataDir); err != nil {
+				t.Fatal(err)
+			}
+			c.DataDir += "/future/data"
+		}, true},
+		{"symlink parent traversal", func(t *testing.T, c *Config) {
+			target := filepath.Join(c.DataDir, "child")
+			if err := os.MkdirAll(target, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, c.WorkspaceRoot); err != nil {
+				t.Fatal(err)
+			}
+			c.WorkspaceRoot += "/../future/workspaces"
+		}, true},
+		{"separate uncreated roots", func(t *testing.T, c *Config) {}, false},
+		{"sibling prefix", func(t *testing.T, c *Config) { c.WorkspaceRoot = c.DataDir + "-workspaces" }, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			config := configDocument(t)
-			delete(config, "defaultTimeouts")
-			if tt.value != nil {
-				config["defaultTimeouts"] = tt.value
-			}
-			got, err := LoadConfig(writeConfigDocument(t, config))
+			config := testConfig(t, "https://control.example.test")
+			tt.change(t, &config)
+			content, err := json.Marshal(config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.DefaultTimeouts != tt.want {
-				t.Fatalf("timeouts=%+v, want %+v", got.DefaultTimeouts, tt.want)
+			var document map[string]any
+			if err := json.Unmarshal(content, &document); err != nil {
+				t.Fatal(err)
+			}
+			_, err = LoadConfig(writeConfigDocument(t, document))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("LoadConfig error = %v, want error %v", err, tt.wantError)
+			}
+			if tt.wantError && !strings.Contains(err.Error(), "workspaceRoot and dataDir must not overlap") {
+				t.Fatalf("expected root overlap error, got %v", err)
 			}
 		})
 	}
@@ -109,16 +155,14 @@ func TestConfigRejectsInvalidTypesAndValues(t *testing.T) {
 		key   string
 		value any
 	}{
-		{"harnessAuthFiles", nil}, {"harnessAuthFiles", []string{}},
-		{"harnessAuthFiles", map[string]any{"codex": nil}}, {"harnessAuthFiles", map[string]any{"codex": 123}},
-		{"container", nil}, {"defaultTimeouts", nil},
+		{"microHarnessAuthFiles", nil}, {"microHarnessAuthFiles", []string{}},
+		{"microHarnessAuthFiles", map[string]any{"codex": nil}}, {"microHarnessAuthFiles", map[string]any{"codex": 123}},
+		{"container", nil}, {"defaultTimeouts", map[string]any{}},
+		{"worktreeRoot", "/old/worktrees"}, {"harnessAuthFiles", map[string]any{}},
 		{"container.image", ""}, {"container.proxyImage", " "},
 		{"container.runtimeEnv", nil}, {"container.runtimeEnv", map[string]any{"DOCKER_HOST": false}},
 		{"container.runtimePath", "/secret\x00path"},
-		{"defaultTimeouts.harnessSec", 0}, {"defaultTimeouts.harnessSec", -1},
-		{"defaultTimeouts.harnessSec", 1.5}, {"defaultTimeouts.harnessSec", "secret"},
-		{"defaultTimeouts.harnessSec", nil}, {"defaultTimeouts.harnessSec", int64(1<<63 - 1)},
-		{"defaultTimeouts.setupSec", 1}, {"commitAuthor", map[string]any{}}, {"githubAppPrivateKeyFile", "/secret/key.pem"},
+		{"commitAuthor", map[string]any{}}, {"githubAppPrivateKeyFile", "/secret/key.pem"},
 	} {
 		t.Run(tt.key+"/"+strconv.Itoa(i), func(t *testing.T) {
 			config := configDocument(t)
@@ -186,7 +230,7 @@ func TestConfigAuthPathContainmentAndPermissions(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			config.HarnessAuthFiles["secret-harness"] = path
+			config.MicroHarnessAuthFiles["secret-harness"] = path
 			if err := config.validate(); err == nil || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("invalid authentication path accepted or echoed: %v", err)
 			}
@@ -197,7 +241,7 @@ func TestConfigAuthPathContainmentAndPermissions(t *testing.T) {
 		if err := os.Mkdir(config.DataDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(config.HarnessAuthFiles["codex"], []byte(`{}`), 0600); err != nil {
+		if err := os.WriteFile(config.MicroHarnessAuthFiles["codex"], []byte(`{}`), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if err := config.validate(); err != nil {
@@ -213,14 +257,14 @@ func TestConfigMapEntriesAreNotFixedKeys(t *testing.T) {
 		if !empty {
 			auth["another-harness"] = filepath.Join(config["dataDir"].(string), "another", "auth.json")
 		}
-		config["harnessAuthFiles"] = auth
+		config["microHarnessAuthFiles"] = auth
 		env := map[string]string{"DOCKER_HOST": "unix:///runtime/docker.sock"}
 		config["container"].(map[string]any)["runtimeEnv"] = env
 		got, err := LoadConfig(writeConfigDocument(t, config))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(got.HarnessAuthFiles, auth) || !reflect.DeepEqual(got.Container.RuntimeEnv, env) {
+		if !reflect.DeepEqual(got.MicroHarnessAuthFiles, auth) || !reflect.DeepEqual(got.Container.RuntimeEnv, env) {
 			t.Fatal("map entries changed while loading configuration")
 		}
 	}

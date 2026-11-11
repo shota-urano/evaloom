@@ -20,14 +20,14 @@ import (
 )
 
 type Config struct {
-	RunnerID         string            `json:"runnerId"`
-	ControlPlaneURL  string            `json:"controlPlaneUrl"`
-	TokenFile        string            `json:"tokenFile"`
-	WorktreeRoot     string            `json:"worktreeRoot"`
-	DataDir          string            `json:"dataDir"`
-	HarnessAuthFiles map[string]string `json:"harnessAuthFiles"`
-	Container        ContainerConfig   `json:"container"`
-	DefaultTimeouts  DefaultTimeouts   `json:"defaultTimeouts"`
+	RunnerID              string            `json:"runnerId"`
+	ControlPlaneURL       string            `json:"controlPlaneUrl"`
+	TokenFile             string            `json:"tokenFile"`
+	WorkspaceRoot         string            `json:"workspaceRoot"`
+	DataDir               string            `json:"dataDir"`
+	SecretsDir            string            `json:"secretsDir"`
+	MicroHarnessAuthFiles map[string]string `json:"microHarnessAuthFiles"`
+	Container             ContainerConfig   `json:"container"`
 }
 
 type ContainerConfig struct {
@@ -45,12 +45,6 @@ type ContainerConfig struct {
 // after applying Project overrides; CPU and memory are always Runner-owned.
 func (config ContainerConfig) ResourceLimits(timeout time.Duration) sandbox.ResourceLimits {
 	return sandbox.ResourceLimits{CPU: config.CPUs, MemoryBytes: config.MemoryMiB * (1 << 20), Time: timeout}
-}
-
-// DefaultTimeouts stores seconds as specified by the configuration file, not
-// time.Duration's nanoseconds. Wiring these limits into stages is separate.
-type DefaultTimeouts struct {
-	HarnessSec int `json:"harnessSec"`
 }
 
 // LoadConfig reads one JSON object. Paths are absolute, independent of the
@@ -76,8 +70,7 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("runner: invalid config JSON")
 	}
 	config := Config{
-		Container:       ContainerConfig{CPUs: 4, MemoryMiB: 8192},
-		DefaultTimeouts: DefaultTimeouts{HarnessSec: 3600},
+		Container: ContainerConfig{CPUs: 4, MemoryMiB: 8192},
 	}
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return Config{}, fmt.Errorf("runner: invalid config JSON")
@@ -145,28 +138,36 @@ func (config Config) validate() error {
 		return fmt.Errorf("runner: controlPlaneUrl must be an absolute HTTP(S) URL without credentials, query or fragment")
 	}
 	for _, path := range []struct{ name, value string }{
-		{"tokenFile", config.TokenFile}, {"worktreeRoot", config.WorktreeRoot}, {"dataDir", config.DataDir},
+		{"tokenFile", config.TokenFile}, {"workspaceRoot", config.WorkspaceRoot}, {"dataDir", config.DataDir}, {"secretsDir", config.SecretsDir},
 		{"container.runtimePath", config.Container.RuntimePath}, {"container.proxyBinary", config.Container.ProxyBinary},
 	} {
 		if !filepath.IsAbs(path.value) || strings.ContainsRune(path.value, 0) {
 			return fmt.Errorf("runner: %s must be an absolute path", path.name)
 		}
 	}
-	if config.HarnessAuthFiles == nil {
-		return fmt.Errorf("runner: harnessAuthFiles is required")
+	workspaceRoot, workspaceErr := resolveConfigPath(config.WorkspaceRoot)
+	dataDir, dataErr := resolveConfigPath(config.DataDir)
+	if workspaceErr != nil || dataErr != nil {
+		return fmt.Errorf("runner: cannot resolve workspaceRoot or dataDir")
 	}
-	for _, path := range config.HarnessAuthFiles {
+	if configPathsOverlap(config.WorkspaceRoot, config.DataDir) || configPathsOverlap(workspaceRoot, dataDir) {
+		return fmt.Errorf("runner: workspaceRoot and dataDir must not overlap")
+	}
+	if config.MicroHarnessAuthFiles == nil {
+		return fmt.Errorf("runner: microHarnessAuthFiles is required")
+	}
+	for _, path := range config.MicroHarnessAuthFiles {
 		if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) || !configPathWithin(config.DataDir, path) {
-			return fmt.Errorf("runner: harnessAuthFiles paths must be absolute and inside dataDir")
+			return fmt.Errorf("runner: microHarnessAuthFiles paths must be absolute and inside dataDir")
 		}
 		// Missing files are handled before the CLI starts (spec 08, 3.4).
 		// Check permissions now when a stored authentication file exists.
 		info, err := os.Stat(path)
 		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("runner: cannot inspect harnessAuthFiles permissions")
+			return fmt.Errorf("runner: cannot inspect microHarnessAuthFiles permissions")
 		}
 		if err == nil && info.Mode().Perm() != 0600 {
-			return fmt.Errorf("runner: harnessAuthFiles permissions must be 0600")
+			return fmt.Errorf("runner: microHarnessAuthFiles permissions must be 0600")
 		}
 	}
 	for _, field := range []struct{ name, value string }{
@@ -176,16 +177,6 @@ func (config Config) validate() error {
 			return fmt.Errorf("runner: %s is required", field.name)
 		}
 	}
-	for _, field := range []struct {
-		name    string
-		seconds int
-	}{
-		{"defaultTimeouts.harnessSec", config.DefaultTimeouts.HarnessSec},
-	} {
-		if field.seconds <= 0 || uint64(field.seconds) > uint64((1<<63-1)/time.Second) {
-			return fmt.Errorf("runner: %s must be positive seconds within the supported duration range", field.name)
-		}
-	}
 	if config.Container.CPUs <= 0 || math.IsNaN(config.Container.CPUs) || math.IsInf(config.Container.CPUs, 0) {
 		return fmt.Errorf("runner: container.cpus must be a finite positive number")
 	}
@@ -193,6 +184,14 @@ func (config Config) validate() error {
 		return fmt.Errorf("runner: container.memoryMiB must be positive MiB within the supported byte range")
 	}
 	return nil
+}
+
+func configPathsOverlap(first, second string) bool {
+	contains := func(root, path string) bool {
+		rel, err := filepath.Rel(root, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	return contains(first, second) || contains(second, first)
 }
 
 func configPathWithin(root, path string) bool {
@@ -210,6 +209,7 @@ func configPathWithin(root, path string) bool {
 
 // Resolve existing ancestors too: configuration may name files/directories
 // that will only be created later, but an existing symlink must not escape.
+// Follow dangling symlinks as well, so containment and existence are separate.
 func resolveConfigPath(path string) (string, error) {
 	path = strings.TrimRight(path, string(filepath.Separator))
 	if path == "" {
@@ -219,7 +219,18 @@ func resolveConfigPath(path string) (string, error) {
 	if err == nil || !os.IsNotExist(err) {
 		return real, err
 	}
-	if _, linkErr := os.Lstat(path); linkErr == nil || !os.IsNotExist(linkErr) {
+	if info, linkErr := os.Lstat(path); linkErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			parent, _ := filepath.Split(path)
+			// Do not clean target yet: resolve links before any '..'.
+			target = parent + target
+		}
+		return resolveConfigPath(target)
+	} else if linkErr == nil || !os.IsNotExist(linkErr) {
 		return "", err
 	}
 	// Split before cleaning: link/../file must resolve link before '..'.

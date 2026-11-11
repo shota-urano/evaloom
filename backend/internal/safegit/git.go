@@ -62,6 +62,12 @@ func Output(ctx context.Context, repo string, args ...string) ([]byte, error) {
 	}
 	command := append([]string{}, args...)
 	switch command[0] {
+	case "archive":
+		// Archives use committed .gitattributes, never host attribute files.
+		// Callers needing commit-only content must also isolate info/attributes
+		// by archiving through a private Git directory.
+		base = append(base, "-c", "core.attributesFile="+os.DevNull)
+		env = append(env, "GIT_ATTR_NOSYSTEM=1")
 	case "ls-remote":
 		// remote.*.uploadpack/receivepack use the first configuration value,
 		// so a later -c cannot reset them. Command options take precedence.
@@ -81,7 +87,7 @@ func builtin(name string) bool {
 	case "init", "clone", "rev-parse", "ls-tree", "cat-file", "remote", "check-ref-format",
 		"ls-remote", "status", "worktree", "checkout", "switch", "restore", "add", "commit",
 		"fetch", "push", "diff", "show", "log", "ls-files", "show-ref", "for-each-ref",
-		"rev-list", "merge-base", "symbolic-ref":
+		"rev-list", "merge-base", "symbolic-ref", "archive":
 		return true
 	}
 	return false
