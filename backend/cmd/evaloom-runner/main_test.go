@@ -148,10 +148,10 @@ func writeConfig(t *testing.T, endpoint string) string {
 	}
 	config := runner.Config{
 		RunnerID: "mac-mini", ControlPlaneURL: endpoint, TokenFile: tokenFile,
-		WorktreeRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
-		HarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
-		Container:        runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
-		DefaultTimeouts:  runner.DefaultTimeouts{HarnessSec: 3600},
+		WorkspaceRoot: filepath.Join(dir, "worktrees"), DataDir: filepath.Join(dir, "data"),
+		SecretsDir:            filepath.Join(dir, "data", "secrets"),
+		MicroHarnessAuthFiles: map[string]string{"codex": filepath.Join(dir, "data", "auth.json")},
+		Container:             runner.ContainerConfig{RuntimePath: "/usr/local/bin/docker", Image: "harness:test", ProxyImage: "proxy:test", ProxyBinary: "/opt/evaloom/proxy", CPUs: 4, MemoryMiB: 8192},
 	}
 	content, err := json.Marshal(config)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 		}
 	}
 	for _, key := range []string{
-		"runnerId", "controlPlaneUrl", "tokenFile", "worktreeRoot", "dataDir", "harnessAuthFiles",
+		"runnerId", "controlPlaneUrl", "tokenFile", "workspaceRoot", "dataDir", "secretsDir", "microHarnessAuthFiles",
 		"container", "container.runtimePath", "container.image", "container.proxyImage", "container.proxyBinary",
 	} {
 		cases = append(cases, invalidConfig{"missing/" + key, func(config map[string]any) {
@@ -238,7 +238,22 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 			delete(object, field)
 		}})
 	}
-	for _, section := range []string{"", "container", "defaultTimeouts"} {
+	for _, key := range []string{"worktreeRoot", "harnessAuthFiles", "defaultTimeouts"} {
+		cases = append(cases, invalidConfig{"removed/" + key, func(config map[string]any) { config[key] = map[string]any{} }})
+	}
+	for _, kind := range []string{"equal", "workspace inside data", "data inside workspace"} {
+		cases = append(cases, invalidConfig{"overlap/" + kind, func(config map[string]any) {
+			switch kind {
+			case "equal":
+				config["workspaceRoot"] = config["dataDir"]
+			case "workspace inside data":
+				config["workspaceRoot"] = config["dataDir"].(string) + "/workspaces"
+			case "data inside workspace":
+				config["workspaceRoot"] = filepath.Dir(config["dataDir"].(string))
+			}
+		}})
+	}
+	for _, section := range []string{"", "container"} {
 		cases = append(cases, invalidConfig{"unknown/" + section, func(config map[string]any) {
 			object := config
 			if section != "" {
@@ -247,7 +262,7 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 			object["secret-unknown-key"] = "secret-value"
 		}})
 	}
-	for _, key := range []string{"tokenFile", "worktreeRoot", "dataDir", "container.runtimePath", "container.proxyBinary", "harnessAuthFiles.codex"} {
+	for _, key := range []string{"tokenFile", "workspaceRoot", "dataDir", "secretsDir", "container.runtimePath", "container.proxyBinary", "microHarnessAuthFiles.codex"} {
 		cases = append(cases, invalidConfig{"relative/" + key, func(config map[string]any) {
 			object, field := configObject(config, key)
 			object[field] = "secret-relative-path"
@@ -255,7 +270,7 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 	}
 	cases = append(cases,
 		invalidConfig{"auth outside dataDir", func(config map[string]any) {
-			config["harnessAuthFiles"] = map[string]any{"codex": "/secret-outside/auth.json"}
+			config["microHarnessAuthFiles"] = map[string]any{"codex": "/secret-outside/auth.json"}
 		}},
 		invalidConfig{"case alias", func(config map[string]any) { config["RunnerId"] = config["runnerId"]; delete(config, "runnerId") }},
 	)
@@ -283,8 +298,13 @@ func TestStartupRejectsInvalidConfiguration(t *testing.T) {
 			if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 {
 				t.Fatalf("runner did not exit with startup error: %v\n%s", err, output)
 			}
-			if !bytes.Contains(output, []byte("runner:")) || bytes.Contains(output, []byte("started")) || bytes.Contains(output, []byte("secret")) {
+			if !bytes.Contains(output, []byte("runner:")) || bytes.Contains(output, []byte("started")) {
 				t.Fatalf("unexpected startup output: %s", output)
+			}
+			for _, privateValue := range []string{"secret-value", "secret-unknown-key", "secret-relative-path", "secret-outside"} {
+				if bytes.Contains(output, []byte(privateValue)) {
+					t.Fatalf("configuration value echoed in startup output: %s", output)
+				}
 			}
 		})
 	}

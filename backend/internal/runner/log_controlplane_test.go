@@ -74,7 +74,7 @@ func newLogControlPlane(t *testing.T) *logControlPlane {
 	f.dbPath = filepath.Join(f.dataDir, "evaloom.db")
 	f.start()
 	f.config = testConfig(t, f.server.URL)
-	token, err := runnerauth.Register(context.Background(), f.db, f.config.RunnerID, "Runner", f.config.WorktreeRoot)
+	token, err := runnerauth.Register(context.Background(), f.db, f.config.RunnerID, "Runner", f.config.WorkspaceRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

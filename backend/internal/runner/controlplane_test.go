@@ -79,7 +79,7 @@ func controlPlaneFixture(t *testing.T, observe func(*http.Request, int)) (*sql.D
 	server.Start()
 	config := testConfig(t, server.URL)
 	config.RunnerID = "mac%?#日本語"
-	token, err := runnerauth.Register(ctx, db, config.RunnerID, "Mac mini", config.WorktreeRoot)
+	token, err := runnerauth.Register(ctx, db, config.RunnerID, "Mac mini", config.WorkspaceRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
