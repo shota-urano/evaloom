@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,8 +12,10 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -27,10 +30,12 @@ func projectError(err error) error {
 }
 
 // projectView is a Project as read by the owner, with each role's pinned
-// Harness Profile (management UI: Projects list and detail).
+// Harness Profile (management UI: Projects list and detail) and the routing
+// label from routes (spec 03 3.1; null when the Project has none).
 type projectView struct {
 	model.Project
-	Harnesses []model.ProjectHarnessView `json:"harnesses"`
+	RoutingLabel *string                    `json:"routingLabel"`
+	Harnesses    []model.ProjectHarnessView `json:"harnesses"`
 }
 
 func withHarnesses(ctx context.Context, db *sql.DB, projects []model.Project) ([]projectView, error) {
@@ -42,9 +47,16 @@ func withHarnesses(ctx context.Context, db *sql.DB, projects []model.Project) ([
 	if err != nil {
 		return nil, err
 	}
+	labels, err := store.ProjectRouteLabels(ctx, db, ids)
+	if err != nil {
+		return nil, err
+	}
 	views := make([]projectView, len(projects))
 	for i, p := range projects {
 		views[i] = projectView{Project: p, Harnesses: []model.ProjectHarnessView{}}
+		if label, ok := labels[p.ID]; ok {
+			views[i].RoutingLabel = &label
+		}
 		for _, a := range assignments {
 			if a.ProjectID == p.ID {
 				views[i].Harnesses = append(views[i].Harnesses, a)
@@ -137,6 +149,13 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 			WriteError(w, logger, err)
 			return
 		}
+		// Git work (params.schema at the pinned commit) runs before the saving
+		// transaction. Profiles are immutable, so the result stays valid; the
+		// Harness/Profile relation and waivers are rechecked in the transaction.
+		if err := validateProjectParams(r.Context(), db, settings); err != nil {
+			WriteError(w, logger, err)
+			return
+		}
 		// Recheck the values the merge depended on inside the saving
 		// transaction so a concurrent update cannot be overwritten with the
 		// stale merged settings.
@@ -175,7 +194,7 @@ func writeProject(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc
 		var old any = before.ProjectSettings
 		if create {
 			after.CreatedAt = now
-			action, status, old = "project.register", http.StatusCreated, nil
+			action, status, old = "project.create", http.StatusCreated, nil
 		}
 		err = store.SaveProject(r.Context(), tx, after, create)
 		if err == nil && !create {
@@ -213,6 +232,9 @@ func validateProjectSettings(p model.ProjectSettings) error {
 			return invalid(field.name, "required")
 		}
 	}
+	if utf8.RuneCountInString(p.Name) > maxProjectNameLength {
+		return invalid("name", "too_long")
+	}
 	if p.ApprovalWaivers == nil {
 		return invalid("approvalWaivers", "invalid_format")
 	}
@@ -220,13 +242,65 @@ func validateProjectSettings(p model.ProjectSettings) error {
 	if json.Unmarshal(p.Params, &params) != nil || params == nil {
 		return invalid("params", "invalid_format")
 	}
+	var normalized bytes.Buffer
+	if err := json.Compact(&normalized, p.Params); err != nil {
+		return invalid("params", "invalid_format")
+	}
+	if normalized.Len() > maxProjectParamsBytes {
+		return invalid("params", "too_large")
+	}
 	return nil
+}
+
+const (
+	maxProjectNameLength  = 200       // spec 03 3.1
+	maxProjectParamsBytes = 64 * 1024 // Q129: normalized JSON, UTF-8
+)
+
+// validateProjectParams checks params against the pinned Profile (spec 03
+// 3.1, contract 5.2, Q115): with params.schema, only its shape is checked;
+// without it, only {} is accepted.
+func validateProjectParams(ctx context.Context, db *sql.DB, settings model.ProjectSettings) error {
+	harness, err := store.GetHarness(ctx, db, settings.HarnessID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &Error{Code: PreconditionFailed, Message: "Harness not found", Details: []Detail{{Field: "harnessId", Reason: "not_found"}}}
+	}
+	if err != nil {
+		return err
+	}
+	profile, err := store.GetHarnessProfileByID(ctx, db, settings.ProfileID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && profile.HarnessID != settings.HarnessID) {
+		return profileMismatch()
+	}
+	if err != nil {
+		return err
+	}
+	var def struct {
+		Params *struct {
+			Schema string `json:"schema"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(profile.Definition, &def); err != nil {
+		return err
+	}
+	if def.Params == nil || def.Params.Schema == "" {
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(settings.Params, &params); err != nil || len(params) != 0 {
+			return &Error{Code: PreconditionFailed, Message: "Profile without params.schema only accepts {}", Details: []Detail{{Field: "params", Reason: "invalid"}}}
+		}
+		return nil
+	}
+	return registry.ValidateProfileParams(ctx, harness.RepoPath, profile.CommitSHA, def.Params.Schema, settings.Params)
+}
+
+func profileMismatch() error {
+	return &Error{Code: PreconditionFailed, Message: "Profile does not belong to this Harness", Details: []Detail{{Field: "profileId", Reason: "invalid"}}}
 }
 
 func validateProjectProfile(ctx context.Context, tx *sql.Tx, settings model.ProjectSettings) error {
 	profile, err := store.GetHarnessProfileByID(ctx, tx, settings.ProfileID)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && profile.HarnessID != settings.HarnessID) {
-		return &Error{Code: PreconditionFailed, Message: "Profile does not belong to this Harness", Details: []Detail{{Field: "profileId", Reason: "invalid"}}}
+		return profileMismatch()
 	}
 	if err != nil {
 		return err
@@ -235,7 +309,7 @@ func validateProjectProfile(ctx context.Context, tx *sql.Tx, settings model.Proj
 }
 
 // Only waivable operations explicitly declared by the pinned Profile may be
-// skipped. Full Profile/params schema validation belongs to the contract task.
+// skipped.
 func validateProfileWaivers(definition json.RawMessage, waivers []string) error {
 	var def struct {
 		Approvals []struct {

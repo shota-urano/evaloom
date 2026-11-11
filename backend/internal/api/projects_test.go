@@ -166,11 +166,13 @@ func TestProjectsPatchRecordsBeforeAndAfterInAuditLogs(t *testing.T) {
 	input := projectInput(t, "project-a")
 	status, body := projectRequest(t, f, "POST", "/api/projects", input)
 	before := requireProject(t, status, body, 201)
-	patch := map[string]any{"name": "Renamed", "params": map[string]any{"target": "value"}}
+	// fixture-profile has no params.schema, so params stays {} (spec 03 3.1).
+	// Params values in the audit are covered by TestProjectParamsFollowProfileSchema.
+	patch := map[string]any{"name": "Renamed"}
 	status, body = projectRequest(t, f, "PATCH", "/api/projects/project-a", patch)
 	after := requireProject(t, status, body, 200)
 	if after.ID != before.ID || after.CreatedAt != before.CreatedAt || after.Name != "Renamed" || after.RunnerID != before.RunnerID ||
-		after.UpdatedAt == before.UpdatedAt || string(after.Params) != `{"target":"value"}` {
+		after.UpdatedAt == before.UpdatedAt || string(after.Params) != `{}` {
 		t.Fatalf("before=%+v after=%+v", before, after)
 	}
 	var actor, targetType, targetID, detail string

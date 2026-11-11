@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -59,4 +60,31 @@ func SaveRoute(ctx context.Context, tx *sql.Tx, route Route, create bool) error 
 		return ErrRouteConflict
 	}
 	return err
+}
+
+// ProjectRouteLabels returns the routing label of each given Project that has
+// one. A Project has at most one label (routes.project_id is UNIQUE).
+func ProjectRouteLabels(ctx context.Context, db *sql.DB, projectIDs []string) (map[string]string, error) {
+	labels := map[string]string{}
+	if len(projectIDs) == 0 {
+		return labels, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(projectIDs)), ", ")
+	args := make([]any, len(projectIDs))
+	for i, id := range projectIDs {
+		args[i] = id
+	}
+	rows, err := db.QueryContext(ctx, `SELECT project_id, label FROM routes WHERE project_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var projectID, label string
+		if err := rows.Scan(&projectID, &label); err != nil {
+			return nil, err
+		}
+		labels[projectID] = label
+	}
+	return labels, rows.Err()
 }
