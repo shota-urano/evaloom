@@ -36,11 +36,32 @@ func TestSecretCLIProcess(t *testing.T) {
 		main()
 		return
 	}
+	for _, suffix := range []string{"", "/", "///"} {
+		t.Run(fmt.Sprintf("dataDir_suffix_%q", suffix), func(t *testing.T) {
+			testSecretCLIProcess(t, suffix)
+		})
+	}
+}
+
+func testSecretCLIProcess(t *testing.T, dataDirSuffix string) {
+	t.Helper()
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { requests.Add(1); w.WriteHeader(500) }))
 	defer server.Close()
 	configPath := writeConfig(t, server.URL)
 	config, err := runner.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.DataDir += dataDirSuffix
+	content, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err = runner.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +102,12 @@ func TestSecretCLIProcess(t *testing.T) {
 		if err != nil || resolved.Environment()["EVALOOM_SECRET_GITHUB_TOKEN"] != value {
 			t.Fatal("Runner could not read CLI-registered key")
 		}
-		if i == 1 {
+		if i == 0 {
+			prepared, err := secretstore.New(config.DataDir).ForStage("software-engineer", model.StagePrepare, []contract.Secret{{Slot: "github_token", Access: "read"}})
+			if err != nil || prepared.Environment()["EVALOOM_SECRET_GITHUB_TOKEN"] != value {
+				t.Fatal("prepare could not read CLI-registered read key")
+			}
+		} else {
 			_, err := secretstore.New(config.DataDir).ForStage("software-engineer", model.StagePrepare, []contract.Secret{{Slot: "github_token", Access: "read"}})
 			var configError *secretstore.ConfigError
 			if !errors.As(err, &configError) {

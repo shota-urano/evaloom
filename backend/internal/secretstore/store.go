@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -114,15 +115,21 @@ func (s *Store) load(harnessID, slot string) (string, []byte, error) {
 // anchored to the opened data directory, including during concurrent rotation.
 // The Runner targets macOS and Linux, like the existing sandbox implementation.
 func (s *Store) directory(harnessID string, create bool) (*os.File, error) {
-	if !filepath.IsAbs(s.dataDir) || filepath.Clean(s.dataDir) != s.dataDir {
+	// Remove trailing separators before opening so O_NOFOLLOW still applies
+	// to the data directory itself, including when it is a symlink.
+	dataDir := strings.TrimRight(s.dataDir, string(filepath.Separator))
+	if dataDir == "" {
+		dataDir = string(filepath.Separator)
+	}
+	if !filepath.IsAbs(s.dataDir) || filepath.Clean(dataDir) != dataDir {
 		return nil, fmt.Errorf("secretstore: data directory must be an absolute clean path")
 	}
 	if create {
-		if os.MkdirAll(s.dataDir, 0700) != nil {
+		if os.MkdirAll(dataDir, 0700) != nil {
 			return nil, fmt.Errorf("secretstore: cannot create data directory")
 		}
 	}
-	fd, err := unix.Open(s.dataDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(dataDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("secretstore: cannot open data directory")
 	}

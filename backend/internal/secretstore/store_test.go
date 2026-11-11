@@ -130,7 +130,7 @@ func TestStageKeysFailClosed(t *testing.T) {
 }
 
 func TestStoreRejectsUnsafeFilesWithoutFollowingOrOverwritingThem(t *testing.T) {
-	for _, kind := range []string{"symlink-secrets", "symlink-harness", "symlink-key", "data-symlink", "hardlink", "public-file", "public-directory", "fifo", "directory", "invalid-access", "NUL", "empty"} {
+	for _, kind := range []string{"symlink-secrets", "symlink-harness", "symlink-key", "data-symlink", "data-symlink-trailing-slash", "hardlink", "public-file", "public-directory", "fifo", "directory", "invalid-access", "NUL", "empty"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
 			data := filepath.Join(root, "data")
@@ -144,12 +144,12 @@ func TestStoreRejectsUnsafeFilesWithoutFollowingOrOverwritingThem(t *testing.T) 
 				t.Fatal(err)
 			}
 			switch kind {
-			case "symlink-secrets", "symlink-harness", "data-symlink":
+			case "symlink-secrets", "symlink-harness", "data-symlink", "data-symlink-trailing-slash":
 				link := filepath.Dir(filepath.Dir(path))
 				if kind == "symlink-harness" {
 					link = filepath.Dir(path)
 				}
-				if kind == "data-symlink" {
+				if kind == "data-symlink" || kind == "data-symlink-trailing-slash" {
 					link = data
 				}
 				if err := os.Rename(link, link+"-real"); err != nil {
@@ -157,6 +157,9 @@ func TestStoreRejectsUnsafeFilesWithoutFollowingOrOverwritingThem(t *testing.T) 
 				}
 				if err := os.Symlink(link+"-real", link); err != nil {
 					t.Fatal(err)
+				}
+				if kind == "data-symlink-trailing-slash" {
+					s = New(data + "/")
 				}
 			case "symlink-key", "hardlink", "fifo", "directory":
 				if err := os.Remove(path); err != nil {
