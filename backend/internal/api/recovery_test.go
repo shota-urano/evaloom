@@ -186,9 +186,7 @@ func TestRecoveryBothPathsInterruptEveryActiveState(t *testing.T) {
 				status, body = postResult(t, f, token, id, resultBody(from, "failed"))
 				assertAuthError(t, status, body, 409, Conflict)
 				status, body = requestClaim(t, f, token)
-				if status != 204 {
-					t.Fatalf("recovery requeued work: %d %s", status, body)
-				}
+				requireNoJob(t, status, body)
 				if got := recoveryState(t, f, id); got != after {
 					t.Fatalf("repeat mutated recovery: %+v", got)
 				}

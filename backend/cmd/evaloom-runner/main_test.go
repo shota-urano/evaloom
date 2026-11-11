@@ -98,7 +98,7 @@ func TestRunReportsClaimFailedWithoutStageFramework(t *testing.T) {
 				return
 			}
 			claimed = true
-			io.WriteString(w, `{"execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"}}`)
+			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"}}}`)
 		case strings.HasSuffix(req.URL.Path, "/result"):
 			var result runner.ExecutionResult
 			if err := json.NewDecoder(req.Body).Decode(&result); err != nil {

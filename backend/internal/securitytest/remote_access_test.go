@@ -310,8 +310,8 @@ func remoteAccessRunnerBoundary(t *testing.T, f *remoteAccessControl) {
 		t.Fatal(err)
 	}
 	bearer := func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) }
-	response, raw := f.request(t, "POST", "/api/runners/test-runner/claim", "", nil, "", bearer)
-	if response.StatusCode != 204 {
+	response, raw := f.request(t, "POST", "/api/runners/test-runner/claim", `{"workspaceRoot":"/workspaces"}`, nil, "", bearer)
+	if response.StatusCode != 200 || strings.TrimSpace(string(raw)) != `{"job":null}` {
 		t.Fatalf("Runner positive control: %d %s", response.StatusCode, raw)
 	}
 	// All owner endpoints in specs 01 5.1, 12/15/17 5 and 18 5. A 404 or

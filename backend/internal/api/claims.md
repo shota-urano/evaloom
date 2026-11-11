@@ -1,34 +1,30 @@
 # Runnerのclaim API
 
-正本は`docs/specs/04-task-lifecycle.md`の3.3・6節、
-`02-data-model.md`の3.2・5.2・5.3節、`03-registry.md`、
-`05-runner.md`。`POST /api/runners/{id}/claim`は既存の
-`protectRunner`で保護し、認証したRunnerのProjectだけを取得する。
+正本は`docs/specs/04-task-lifecycle.md`の3.3・3.3.1・6節、
+`02-data-model.md`の3.3・5.2節、`05-runner.md`。`POST /api/runners/{id}/claim`は既存の
+`protectRunner`で保護する。処理は`store.Claim`にある。
 
-worktree、前回のPR、Gate結果、setupの許可宛先、Blockからの再開、承認済みのマージ操作は
-software-engineer へ移したため、claimに含めない（`docs/specs/19-routing-and-stages.md` 3.11）。
+worktree、ブランチ、PR、テストコマンドなど開発の項目は応答に含めない（04 3.3.1）。
 
-仕様にない部分と応答案の実装判断は次のとおり。
+仕様にない部分の実装判断は次のとおり。
 
-- 仕事があれば200で`execution`（`id`・`taskId`・`seq`・`mode`）、`task`、`project`、`profile`を返し、
-  仕事がなければ本文なしの204を返す。リクエスト本文は使用せず、取得対象はサーバー側で選ぶ。
-- 作成順はExecutionの`created_at`昇順とし、同時刻は`id`昇順で決める。
-- Projectは既存のRegistry表現で返す。Profile定義とSHAは登録済み行から読み、
-  Gitタグを再解決しない。ProfileにはHarness行のrepo_pathとtool_permissionsを載せる。
-- 保存済みのrole・Harness・Profileがある Execution を再びclaimする場合はそれを使う。
-  Profile定義は保存済みのProfile IDから読み、版とSHAはExecutionの列値を返す。
-  再claimではRunnerとclaim時刻だけを更新する。初回かどうかはProfile IDが未保存かで判定し、
-  新しいExecutionの再実行では現在の割り当てから版を固定する。
-- 作成後にDefault Roleの割り当てがなくなった場合も422
-  `precondition_failed`、詳細は`projectId/default_harness_missing`とする。
-  取得対象を別のExecutionに差し替えず、そのトランザクションを取り消す。
-  この条件は初回claimに適用し、固定済みのExecutionの続行は現在の割り当てに依存しない。
-- claim成功時は`status_changed`イベントにExecutionの`pending`から`claimed`への
-  遷移と`reason=runner_claimed`を記録する。監査記録は
-  `runner:<id>/execution.claim/execution/<Execution ID>`とし、Task ID、
-  Project ID、遷移前後、Profile ID、commit SHAを残す。claimでは通知しない。
-- ストアの接続設定に`_txlock=immediate`を指定する。既存の単一接続による
-  直列化を維持し、`BeginTx`時点で書き込みを予約する。設定は接続の交換後も
-  有効で、claim以外の既存トランザクションにも適用する。
-  上限確認、候補選択、既存の遷移関数、版の保存、イベント、監査記録の
-  すべてを同じトランザクションで行う。失敗時は全体をロールバックする。
+- 要求本文は`{"workspaceRoot":"<絶対パス>"}`だけを受け付ける。無い・相対パス・`filepath.Clean`で
+  変わるパスは400 `validation_failed`（`workspaceRoot/required`・`workspaceRoot/invalid_format`）。
+  知らない項目は`body/invalid_json`。
+- 仕事が無いときは200で`{"job":null}`を返す（以前の204はやめた）。
+- 提案とExecutionの作成順は`created_at`昇順、同時刻は`id`昇順。
+- 提案は、全体設定`routing.defaultRunnerId`が呼び出し元と同じときだけ渡す。`proposer`は
+  全体設定`routing.proposer`（無ければ02 3.8の既定値）、`timeoutSec`はQ201の300秒。
+- 振り分け先ごとの枠は、`tasks.project_id`（Project）か`tasks.harness_id`（直接の振り分け）で数える。
+  Projectのタスクは`tasks.harness_id`を持たないため、同じスペシャルハーネスを使う別のProjectとは別に数える。
+- resume_stageのあるExecutionは、このタスク（9lz.3）では渡さない（再開のclaimは9lz.4）。
+- 3.3の「config_error」に当たった候補は、同じトランザクションで`pending`→`failed`にし、
+  `error_class=config_error`、`error_message`、`status_changed`（`reason=config_error`）を書いて次の候補を見る。
+  通知の要求は遷移関数が作る。仕事が無くてもこの更新はコミットする。
+- params.schemaの検査（`registry.ValidateProfileParams`）は、claimのトランザクションの中でGitを動かす。
+  時間の上限はregistry側の定数に従う。
+- mode=`continue`で引き継ぐ作業領域の行は、`created_at`の新しい順で選ぶ。行の状態（`retained`）は書き換えない。
+- claim成功時は`status_changed`イベント（`pending`→`claimed`、`reason=runner_claimed`）と、監査記録
+  `runner:<id>/execution.claim/execution/<Execution ID>`（Task ID、振り分け先、Profile ID、commit SHA、作業領域のID）を残す。
+- ストアの接続設定の`_txlock=immediate`により、上限確認から応答の材料の読み出しまでを
+  1つの書き込みトランザクションで行う。失敗時は全体をロールバックする。

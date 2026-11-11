@@ -105,9 +105,7 @@ func TestCancelQueuedImmediatelyAndNeverClaimed(t *testing.T) {
 	}
 	requireCancelled(t, f, id, before)
 	status, body = requestClaim(t, f, token)
-	if status != 204 || len(body) != 0 {
-		t.Fatalf("claimed cancelled task: %d %s", status, body)
-	}
+	requireNoJob(t, status, body)
 	after := cancellationState(t, f, id)
 	status, body = requestCancellation(t, f, created.ID)
 	assertAuthError(t, status, body, 409, Conflict)
@@ -377,7 +375,7 @@ func TestClaimAndCancelSerializeWithoutLosingCancellation(t *testing.T) {
 				defer wg.Done()
 				<-start
 				status, body := requestClaim(t, f, token)
-				if status != 200 && status != 204 {
+				if status != 200 {
 					t.Errorf("claim=%d %s", status, body)
 				}
 			}()

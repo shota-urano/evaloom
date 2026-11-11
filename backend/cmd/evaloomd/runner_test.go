@@ -87,11 +87,11 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 	}{
 		{"Runner token on owner API", "GET", "/api/runners", "forbidden", false, true, 403},
 		{"owner session on Runner API", "POST", "/api/runners/mac-mini/claim", "forbidden", true, false, 403},
-		{"Runner token on Runner API", "POST", "/api/runners/mac-mini/claim", "", false, true, 204},
+		{"Runner token on Runner API", "POST", "/api/runners/mac-mini/claim", "", false, true, 200},
 		{"owner session on owner API", "GET", "/api/runners", "", true, false, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, err := http.NewRequest(tc.method, server.URL+tc.path, nil)
+			r, err := http.NewRequest(tc.method, server.URL+tc.path, strings.NewReader(`{"workspaceRoot":"/workspaces"}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,9 +107,9 @@ func TestRunnerRegistrationAndHTTPAuthenticationIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer response.Body.Close()
-			if tc.status == http.StatusNoContent {
+			if strings.HasSuffix(tc.path, "/claim") && tc.status == http.StatusOK {
 				body, err := io.ReadAll(response.Body)
-				if err != nil || response.StatusCode != tc.status || len(body) != 0 {
+				if err != nil || response.StatusCode != tc.status || strings.TrimSpace(string(body)) != `{"job":null}` {
 					t.Fatalf("empty claim status=%d body=%s err=%v", response.StatusCode, body, err)
 				}
 				return

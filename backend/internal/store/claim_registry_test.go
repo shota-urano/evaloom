@@ -2,76 +2,62 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 )
 
-func TestClaimReadsWorkConfigurationFromPinnedProfileWithoutLosingNumbers(t *testing.T) {
-	db := openRegistry(t, filepath.Join(t.TempDir(), "claim.db"))
-	seedRegistry(t, db)
-	seedTaskTables(t, db)
-	definition := `{"stages":{"work":{"microHarness":"claude_code","toolPermissions":{"limit":9007199254740993}}}}`
-	mustTaskExec(t, db, `UPDATE harness_profiles SET definition=? WHERE id='profile-1'`, definition)
-	tx, err := db.BeginTx(context.Background(), nil)
+func claimOnce(t *testing.T, db *sql.DB) *ExecutionJob {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	claim, err := NextClaim(context.Background(), tx, "mac-mini")
+	response, err := Claim(ctx, tx, ClaimInput{RunnerID: "mac-mini", WorkspaceRoot: "/workspaces"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claim == nil || claim.Profile.Adapter != "claude_code" || claim.Assignment.ProfileID != "profile-1" {
-		t.Fatalf("claim=%+v", claim)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
-	number, ok := claim.Profile.ToolPermissions["limit"].(json.Number)
-	if !ok || number.String() != "9007199254740993" {
-		t.Fatalf("permission lost precision: %+v", claim.Profile.ToolPermissions)
+	job, ok := response.Job.(*ExecutionJob)
+	if !ok {
+		var s, m sql.NullString
+		db.QueryRow(`SELECT status, error_message FROM executions`).Scan(&s, &m)
+		t.Fatalf("job=%#v execution status=%v error=%v", response.Job, s, m)
 	}
-	if string(claim.Profile.Definition) != definition {
-		t.Fatal("claim changed the Profile definition")
-	}
+	return job
 }
 
-func TestClaimPinsContractAndParamsAcrossReclaim(t *testing.T) {
+// spec 04 3.3 step 4: the claim pins Profile, contract version and params
+// without losing number precision, and later Project changes do not alter them.
+func TestClaimPinsContractAndParamsWithoutLosingNumbers(t *testing.T) {
 	db := openTaskTables(t)
-	ctx := context.Background()
 	const params = `{"number":9007199254740993}`
 	mustTaskExec(t, db, `UPDATE projects SET params=?`, params)
-	for attempt := range 2 {
-		tx, err := db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		func() {
-			defer tx.Rollback()
-			claim, err := NextClaim(ctx, tx, "mac-mini")
-			if err != nil || claim == nil {
-				t.Fatalf("claim=%+v err=%v", claim, err)
-			}
-			if string(claim.Project.Params) != params {
-				t.Fatalf("claim params=%s", claim.Project.Params)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE executions SET status='claimed'`); err != nil {
-				t.Fatal(err)
-			}
-			if err := PinClaim(ctx, tx, claim, "mac-mini", registryTime); err != nil {
-				t.Fatal(err)
-			}
-			var route, project, contract, pinnedParams string
-			if err := tx.QueryRowContext(ctx, `SELECT route_kind,project_id,contract_version,params FROM executions`).Scan(&route, &project, &contract, &pinnedParams); err != nil {
-				t.Fatal(err)
-			}
-			if route != "project" || project != "project-a" || contract != "1" || pinnedParams != params {
-				t.Fatal(route, project, contract, pinnedParams)
-			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-		}()
-		if attempt == 0 {
-			mustTaskExec(t, db, `UPDATE projects SET params='{"changed":true}'; UPDATE executions SET status='pending'; UPDATE tasks SET status='queued'`)
-		}
+	var definition string
+	if err := db.QueryRow(`SELECT definition FROM harness_profiles WHERE id='profile-1'`).Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	job := claimOnce(t, db)
+	if string(job.Params) != params || string(job.Profile.Definition) != definition || job.Profile.ID != "profile-1" {
+		t.Fatalf("job params=%s profile=%+v", job.Params, job.Profile)
+	}
+	encoded, err := json.Marshal(job)
+	if err != nil || !json.Valid(encoded) {
+		t.Fatalf("encode=%s err=%v", encoded, err)
+	}
+	mustTaskExec(t, db, `UPDATE projects SET params='{"changed":true}'`)
+	var route, project, contractVersion, pinnedParams, workspace, path string
+	if err := db.QueryRow(`SELECT e.route_kind, e.project_id, e.contract_version, e.params, e.workspace_id, w.path
+		FROM executions e JOIN task_workspaces w ON w.id = e.workspace_id`).
+		Scan(&route, &project, &contractVersion, &pinnedParams, &workspace, &path); err != nil {
+		t.Fatal(err)
+	}
+	if route != "project" || project != "project-a" || contractVersion != "1" || pinnedParams != params ||
+		workspace != job.Workspace.ID || path != "/workspaces/"+workspace || !job.Workspace.Created {
+		t.Fatal(route, project, contractVersion, pinnedParams, workspace, path)
 	}
 }

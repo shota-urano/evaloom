@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -112,10 +113,11 @@ func TestRunnerCredentialsAreCheckedAgainstDatabaseOnEveryRequest(t *testing.T) 
 		return f.request(t, "POST", "/api/runners/mac-mini/claim", false, "", func(r *http.Request) {
 			r.Header.Set("Authorization", "bEaReR "+token)
 			r.Header.Del("Origin")
+			r.Body = io.NopCloser(strings.NewReader(`{"workspaceRoot":"/workspaces"}`))
 		})
 	}
 	status, body := request()
-	if status != http.StatusNoContent || len(body) != 0 {
+	if status != http.StatusOK || strings.TrimSpace(string(body)) != `{"job":null}` {
 		t.Fatalf("empty claim status=%d body=%s", status, body)
 	}
 	if _, err := f.db.Exec(`UPDATE runners SET token_hash = 'revoked' WHERE id = 'mac-mini'`); err != nil {
