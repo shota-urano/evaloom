@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -22,57 +23,112 @@ func strictDecode(data []byte, dst any) error {
 }
 
 func checkShape(data []byte, typ reflect.Type, name string) error {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		if typ.Kind() == reflect.Pointer {
-			return nil
+	var first error
+	collectShape(data, typ, name, func(path, reason string) {
+		if first == nil {
+			first = fmt.Errorf("%s: %s", path, strings.ReplaceAll(reason, "_", " "))
 		}
-		return fmt.Errorf("%s: must not be null", name)
+	})
+	return first
+}
+
+// collectShape reports every shape problem instead of stopping at the first,
+// so Profile registration can return all failing paths (spec 03 3.4).
+// Paths are joined with "." and "[i]"; an empty name is the document root.
+func collectShape(data []byte, typ reflect.Type, name string, report func(path, reason string)) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		if typ.Kind() != reflect.Pointer {
+			report(rootName(name), "must_not_be_null")
+		}
+		return
 	}
 	if typ.Kind() == reflect.Pointer {
-		return checkShape(data, typ.Elem(), name)
+		collectShape(data, typ.Elem(), name, report)
+		return
 	}
 	if typ == rawMessageType {
-		return objectJSON(data, name)
+		if err := objectJSON(data, name); err != nil {
+			report(rootName(name), "expected_object")
+		}
+		return
 	}
 	switch typ.Kind() {
 	case reflect.Struct:
 		fields, err := objectFields(data, name)
 		if err != nil {
-			return err
+			report(rootName(name), "expected_object")
+			return
 		}
 		for i := 0; i < typ.NumField(); i++ {
 			field := typ.Field(i)
 			key := strings.Split(field.Tag.Get("json"), ",")[0]
+			path := joinPath(name, key)
 			raw, exists := fields[key]
 			if !exists {
 				if field.Tag.Get("required") == "true" {
-					return fmt.Errorf("%s.%s: required field missing", name, key)
+					report(path, "required")
 				}
 				continue
 			}
-			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && field.Tag.Get("nullable") != "true" {
-				return fmt.Errorf("%s.%s: must not be null", name, key)
-			}
-			if err := checkShape(raw, field.Type, name+"."+key); err != nil {
-				return err
-			}
 			delete(fields, key)
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && field.Tag.Get("nullable") != "true" {
+				report(path, "must_not_be_null")
+				continue
+			}
+			collectShape(raw, field.Type, path, report)
 		}
+		keys := make([]string, 0, len(fields))
 		for key := range fields {
-			return fmt.Errorf("%s.%s: unknown field", name, key)
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			report(joinPath(name, key), "unknown_field")
 		}
 	case reflect.Slice:
 		var elements []json.RawMessage
 		if err := json.Unmarshal(data, &elements); err != nil {
-			return fmt.Errorf("%s: expected array", name)
+			report(rootName(name), "expected_array")
+			return
 		}
 		for i, element := range elements {
-			if err := checkShape(element, typ.Elem(), fmt.Sprintf("%s[%d]", name, i)); err != nil {
-				return err
-			}
+			collectShape(element, typ.Elem(), fmt.Sprintf("%s[%d]", name, i), report)
+		}
+	case reflect.String:
+		var value string
+		if json.Unmarshal(data, &value) != nil {
+			report(rootName(name), "expected_string")
+		}
+	case reflect.Bool:
+		var value bool
+		if json.Unmarshal(data, &value) != nil {
+			report(rootName(name), "expected_boolean")
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		var value int64
+		if json.Unmarshal(data, &value) != nil {
+			report(rootName(name), "expected_integer")
+		}
+	case reflect.Float32, reflect.Float64:
+		var value float64
+		if json.Unmarshal(data, &value) != nil {
+			report(rootName(name), "expected_number")
 		}
 	}
-	return nil
+}
+
+func joinPath(name, key string) string {
+	if name == "" {
+		return key
+	}
+	return name + "." + key
+}
+
+func rootName(name string) string {
+	if name == "" {
+		return "$"
+	}
+	return name
 }
 
 func objectFields(data []byte, name string) (map[string]json.RawMessage, error) {

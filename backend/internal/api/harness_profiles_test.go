@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
@@ -15,45 +16,111 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-const validProfileYAML = `profileVersion: "1.2.0"
-harnessVersion: "1.2.0"
-modelId: "test-model"
-promptVersion: "2025-xx"
-skillVersions:
-  - { name: "test-skill", version: "first" }
-toolConfiguration:
-  allowedTools: ["read", "write"]
-contextPolicyVersion: "1"
-executionConfiguration:
-  adapter: "codex"
-  args: ["--example", "value"]
-collaborationPolicy: "solo"
-evaluationPolicyVersion: null
+// validProfileYAML is a minimal contract v1 Profile (contract 5章). Every
+// "1.2.0" is the version, so tests can substitute another version.
+const validProfileYAML = `contractVersion: "1"
+profileVersion: "1.2.0"
+name: "test-harness"
+description: "Test special harness"
+acceptanceCriteria: optional
+stages:
+  work:
+    microHarness: "codex"
+    model: "test-model"
+    instructions: ["evaloom/work/AGENTS.md"]
+    timeoutSec: 600
+  check:
+    command: ["evaloom/check/run"]
+    timeoutSec: 60
+  publish:
+    command: ["evaloom/publish/run"]
+    timeoutSec: 60
 `
+
+// profileTestAdapter stands in for a registered Adapter's Tool Permissions
+// conversion and model API destinations (spec 08 3.9, spec 09 3.3).
+type profileTestAdapter struct {
+	adapter.Adapter
+	name string
+}
+
+func (a profileTestAdapter) CheckToolPermissions(raw json.RawMessage) error {
+	var permissions map[string][]string
+	if err := json.Unmarshal(raw, &permissions); err != nil {
+		return err
+	}
+	for key, values := range permissions {
+		if a.name == "codex" && len(values) > 0 {
+			return fmt.Errorf("codex cannot express %s", key)
+		}
+	}
+	return nil
+}
+
+func (a profileTestAdapter) ModelAPIDestinations() []string {
+	if a.name == "codex" {
+		return []string{"api.openai.com:443"}
+	}
+	return []string{"api.anthropic.com:443"}
+}
 
 func profileFixture(t *testing.T) (*authFixture, string) {
 	t.Helper()
-	f := harnessFixture(t)
+	f := projectFixture(t)
+	for _, name := range []string{"codex", "claude_code"} {
+		if err := f.adapters.Register(name, profileTestAdapter{name: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	input := harnessInput(t, "harness-a")
 	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
 	h := requireHarness(t, status, body, 201)
 	return f, h.RepoPath
 }
 
+// profileSupportFiles are the files the Profiles in these tests refer to.
+var profileSupportFiles = map[string]string{
+	"evaloom/prepare/run":                 "#!/bin/sh\n",
+	"evaloom/work/AGENTS.md":              "instructions\n",
+	"evaloom/work/skills/sample/SKILL.md": "skill\n",
+	"evaloom/work/skills/check.sh":        "#!/bin/sh\n",
+	"evaloom/work/settings.json":          "{}\n",
+	"evaloom/check/run":                   "#!/bin/sh\n",
+	"evaloom/publish/run":                 "#!/bin/sh\n",
+	"evaloom/params.schema.json":          `{"type":"object"}`,
+	"evaloom/broken.schema.json":          `{"type":7}`,
+}
+
 func commitProfile(t *testing.T, repo, version, definition string, annotated bool) string {
 	t.Helper()
-	dir := filepath.Join(repo, "evaloom")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
+	files := map[string]string{"evaloom/profile.yaml": definition}
+	for name, content := range profileSupportFiles {
+		// Keep files a test committed itself, such as its own params schema.
+		if _, err := os.Lstat(filepath.Join(repo, name)); err != nil {
+			files[name] = content
+		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "profile.yaml"), []byte(definition), 0600); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(name)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	projectGit(t, repo, "add", "evaloom/profile.yaml")
+	link := filepath.Join(repo, "evaloom/work/link.json")
+	if _, err := os.Lstat(link); err != nil {
+		if err := os.Symlink("settings.json", link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projectGit(t, repo, "add", "evaloom")
 	projectGit(t, repo, "commit", "--quiet", "--allow-empty", "-m", "profile")
 	args := []string{"tag", "-f"}
 	if annotated {
@@ -105,58 +172,9 @@ func TestHarnessProfilesRejectDefinitionVersionMismatch(t *testing.T) {
 	f, repo := profileFixture(t)
 	commitProfile(t, repo, "1.2.0", strings.Replace(validProfileYAML, `profileVersion: "1.2.0"`, `profileVersion: "1.2.1"`, 1), false)
 	status, body := postProfile(t, f, "1.2.0")
-	requireProjectError(t, status, body, 422, PreconditionFailed, "profileVersion", "invalid")
+	requireProjectError(t, status, body, 422, PreconditionFailed, "profileVersion", "differs_from_tag")
 	if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
 		t.Fatal("mismatched definition was persisted")
-	}
-}
-
-func TestHarnessProfilesAdapterComesFromDefinition(t *testing.T) {
-	f, repo := profileFixture(t)
-	commitProfile(t, repo, "1.2.0", strings.Replace(validProfileYAML, `adapter: "codex"`, `adapter: "claude_code"`, 1), false)
-	status, body := postProfile(t, f, "1.2.0")
-	p := requireProfile(t, status, body, 201)
-	if !strings.Contains(string(p.Definition), `"adapter":"claude_code"`) {
-		t.Fatal(string(p.Definition))
-	}
-}
-
-func TestHarnessProfilesRejectDefinitionCaseAliases(t *testing.T) {
-	cases := []struct{ name, definition string }{
-		{
-			"profile version mismatch hidden by alias",
-			strings.Replace(validProfileYAML, `profileVersion: "1.2.0"`, `profileVersion: "9.9.9"`, 1) + "profileversion: \"1.2.0\"\n",
-		},
-		{
-			"adapter mismatch hidden by configuration alias",
-			strings.Replace(validProfileYAML, `adapter: "codex"`, `adapter: "claude_code"`, 1) + "executionconfiguration:\n  adapter: codex\n  args: []\n",
-		},
-		{
-			"nested alias alongside adapter mismatch",
-			strings.Replace(validProfileYAML, `adapter: "codex"`, "Adapter: codex\n  adapter: claude_code", 1),
-		},
-	}
-	// Check every object level, including objects inside the skill array.
-	for _, key := range []string{
-		"profileVersion", "harnessVersion", "modelId", "promptVersion", "skillVersions",
-		"toolConfiguration", "allowedTools", "contextPolicyVersion", "executionConfiguration",
-		"adapter", "args", "collaborationPolicy", "evaluationPolicyVersion", "name", "version",
-	} {
-		cases = append(cases, struct{ name, definition string }{
-			"incorrect case for " + key,
-			strings.Replace(validProfileYAML, key+":", strings.ToUpper(key)+":", 1),
-		})
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f, repo := profileFixture(t)
-			commitProfile(t, repo, "1.2.0", tc.definition, false)
-			status, body := postProfile(t, f, "1.2.0")
-			requireProjectError(t, status, body, 422, PreconditionFailed, "definition", "invalid_format")
-			if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
-				t.Fatal("definition with case alias was persisted")
-			}
-		})
 	}
 }
 
@@ -179,8 +197,8 @@ func TestHarnessProfilesRegisterProvisionalFromTaggedCommit(t *testing.T) {
 			if p.HarnessID != "harness-a" || p.Version != "1.2.0" || p.CommitSHA != sha || p.TagName != "profile/v1.2.0" || p.OperationStatus != "provisional" || p.ModelID != "test-model" {
 				t.Fatalf("registered=%+v", p)
 			}
-			var def model.ProfileDefinition
-			if err := json.Unmarshal(p.Definition, &def); err != nil || def.ProfileVersion != "1.2.0" || def.ExecutionConfiguration.Adapter != "codex" || len(def.SkillVersions) != 1 || !reflect.DeepEqual(def.ExecutionConfiguration.Args, []string{"--example", "value"}) {
+			var def contract.ProfileDefinition
+			if err := json.Unmarshal(p.Definition, &def); err != nil || def.ProfileVersion != "1.2.0" || def.Stages.Work.MicroHarness != "codex" || p.ContractVersion != "1" {
 				t.Fatalf("definition=%s err=%v", p.Definition, err)
 			}
 			hash := sha256.Sum256(p.Definition)
@@ -234,38 +252,6 @@ func TestHarnessProfilesDifferentSHAConflictPreservesRowAndAudits(t *testing.T) 
 	}
 	if targetID != before.ID || !strings.Contains(detail, before.CommitSHA) || !strings.Contains(detail, replacement) {
 		t.Fatalf("conflict audit=%s %s", targetID, detail)
-	}
-}
-
-func TestHarnessProfilesSchemaAndMissingSourceFailClosed(t *testing.T) {
-	for _, tc := range []struct{ name, definition, field, reason string }{
-		{"missing tag", "", "tagName", "not_found"},
-		{"missing file", "", "definition", "not_found"},
-		{"malformed YAML", "profileVersion: [", "definition", "invalid_format"},
-		{"missing fields", "profileVersion: 1.2.0", "definition", "invalid_format"},
-		{"unknown field", validProfileYAML + "unknown: value\n", "definition", "invalid_format"},
-		{"multiple documents", validProfileYAML + "---\n{}", "definition", "invalid_format"},
-		{"duplicate field", validProfileYAML + "modelId: other\n", "definition", "invalid_format"},
-		{"wrong scalar type", strings.Replace(validProfileYAML, `contextPolicyVersion: "1"`, "contextPolicyVersion: 1", 1), "definition", "invalid_format"},
-		{"wrong array type", strings.Replace(validProfileYAML, `allowedTools: ["read", "write"]`, "allowedTools: read", 1), "definition", "invalid_format"},
-		{"null args", strings.Replace(validProfileYAML, `args: ["--example", "value"]`, "args: null", 1), "definition", "invalid_format"},
-		{"invalid phase policy", strings.Replace(validProfileYAML, "evaluationPolicyVersion: null", `evaluationPolicyVersion: "1"`, 1), "definition", "invalid_format"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f, repo := profileFixture(t)
-			switch tc.name {
-			case "missing tag":
-			case "missing file":
-				projectGit(t, repo, "tag", "profile/v1.2.0")
-			default:
-				commitProfile(t, repo, "1.2.0", tc.definition, false)
-			}
-			status, body := postProfile(t, f, "1.2.0")
-			requireProjectError(t, status, body, 422, PreconditionFailed, tc.field, tc.reason)
-			if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
-				t.Fatal("invalid source was persisted")
-			}
-		})
 	}
 }
 

@@ -91,7 +91,7 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("PATCH /api/harnesses/{id}", writeHarness(db, logger, adapters, false))
 	mux.HandleFunc("GET /api/harness-profiles", listHarnessProfiles(db, logger))
 	mux.HandleFunc("GET /api/harness-profiles/{id}", getHarnessProfile(db, logger))
-	mux.HandleFunc("POST /api/harness-profiles", registerHarnessProfile(db, logger))
+	mux.HandleFunc("POST /api/harness-profiles", registerHarnessProfile(db, logger, adapters))
 	mux.HandleFunc("GET /api/executions/{id}", getExecution(db, logger))
 	mux.HandleFunc("GET /api/executions/{id}/events", executionEvents(db, logger))
 	mux.HandleFunc("GET /api/executions/{id}/logs", executionLogs(db, logger, artifacts))

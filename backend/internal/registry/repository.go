@@ -24,6 +24,10 @@ type RepositoryInput struct {
 	URL          string
 	Remote       string // Defaults to origin.
 	WorktreeRoot string
+	// SkipRemote stops after the path and repository-root checks. A special
+	// harness's repoUrl is display-only (spec 03 3.3, Q126), so its remote is
+	// not compared.
+	SkipRemote bool
 }
 
 // Detail identifies the failed check using the API's field/reason format.
@@ -126,6 +130,9 @@ func ValidateRepository(ctx context.Context, input RepositoryInput) (string, err
 	// Git reports the physical root's spelling. On case-insensitive volumes,
 	// EvalSymlinks alone can preserve a caller's different capitalization.
 	realPath = topPath
+	if input.SkipRemote {
+		return realPath, nil
+	}
 	remote := input.Remote
 	if remote == "" {
 		remote = "origin"

@@ -234,6 +234,10 @@ type LinearRecheck struct {
 	// linear_routing_label changed: every routing_unknown_label and
 	// routing_team_mismatch task is selected as well.
 	Routing bool
+	// HarnessID is the special harness whose default_profile_id was set: its
+	// direct-routed tasks held for config_missing_profile or
+	// missing_acceptance_criteria are selected (spec 15 3.6.3).
+	HarnessID string
 }
 
 // MarkLinearRecheck puts the recheck mark (recheck_requested_at) on the
@@ -249,8 +253,10 @@ func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at
 			JOIN tasks t ON t.id = l.task_id
 			WHERE t.source = 'linear' AND (
 				(t.status = 'blocked' AND t.intake_block_cause = 'config_missing_profile' AND t.project_id = ?)
-				OR (? AND t.status = 'routing')))`,
-		at, change.ProjectID, change.Routing)
+				OR (? AND t.status = 'routing')
+				OR (t.status = 'blocked' AND t.intake_block_cause IN ('config_missing_profile', 'missing_acceptance_criteria')
+					AND t.harness_id = nullif(?, ''))))`,
+		at, change.ProjectID, change.Routing, change.HarnessID)
 	if err != nil {
 		return fmt.Errorf("store: mark linear recheck: %w", err)
 	}

@@ -39,12 +39,12 @@ const (
 
 var idPatterns = map[IDFormat]*regexp.Regexp{
 	ULID:   regexp.MustCompile(`^[0-7][0-9A-HJKMNP-TV-Z]{25}$`),
-	SlugID: regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`),
+	SlugID: regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`), // spec 03 Q125
 	TaskID: regexp.MustCompile(`^task-[0-9]+$`),
 }
 
 // ValidateID follows data-model 3.1: ULID by default, slugs for projects and
-// harnesses, task-<sequence> for tasks. No unprovided length limit is imposed.
+// harnesses (63 characters at most, Q125), task-<sequence> for tasks.
 func ValidateID(field, value string, format IDFormat) error {
 	if value == "" {
 		return invalid(field, "required")

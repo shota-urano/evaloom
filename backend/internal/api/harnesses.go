@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -92,6 +93,9 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			}
 		}
 		settings, err := decodeSettings(before.HarnessSettings, patch, create, "defaultProfileId")
+		if shapeErr := waiverListShape(patch); err != nil && shapeErr != nil {
+			err = shapeErr
+		}
 		if err == nil {
 			err = validateHarnessSettings(settings, adapters)
 		}
@@ -100,10 +104,10 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			return
 		}
 		settings.RepoPath, err = registry.ValidateRepository(r.Context(), registry.RepositoryInput{
-			Path: settings.RepoPath, URL: settings.RepoURL,
+			Path: settings.RepoPath, SkipRemote: true,
 		})
 		if err != nil {
-			WriteError(w, logger, err)
+			WriteError(w, logger, repoPathError(err))
 			return
 		}
 
@@ -161,6 +165,11 @@ func writeHarness(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry, c
 			action, status, old = "harness.register", http.StatusCreated, nil
 		}
 		err = store.SaveHarness(r.Context(), tx, after, create)
+		if err == nil && !create && defaultProfileSet(before.DefaultProfileID, after.DefaultProfileID) {
+			// spec 03 3.3 / 15 3.6.3: setting the default version asks for the
+			// held direct-routed tasks to be decided again on the next poll.
+			err = store.MarkLinearRecheck(r.Context(), tx, store.LinearRecheck{HarnessID: id}, now)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{
 				Actor: "owner", Action: action, TargetType: "harness", TargetID: id,
@@ -184,10 +193,32 @@ func validateHarnessSettings(h model.HarnessSettings, _ *adapter.Registry) error
 			return invalid(field.name, "required")
 		}
 	}
-	if h.ApprovalWaivers == nil {
-		return invalid("approvalWaivers", "invalid_format")
+	if utf8.RuneCountInString(h.Name) > maxProjectNameLength { // spec 03 3.3: same limit as Project
+		return invalid("name", "too_long")
 	}
-	return nil
+	if !strings.HasPrefix(h.RepoURL, "https://") {
+		return invalid("repoUrl", "invalid_format")
+	}
+	return validateWaiverList(h.ApprovalWaivers)
+}
+
+// defaultProfileSet reports a PATCH that sets defaultProfileId to a new
+// version. Clearing it or keeping the same value releases no held task.
+func defaultProfileSet(before, after *string) bool {
+	return after != nil && (before == nil || *before != *after)
+}
+
+// repoPathError names the request field in the repository check's details.
+func repoPathError(err error) error {
+	var precondition *registry.PreconditionError
+	if !errors.As(err, &precondition) {
+		return err
+	}
+	public := &Error{Code: PreconditionFailed, Message: precondition.Message}
+	for _, detail := range precondition.Details {
+		public.Details = append(public.Details, Detail{Field: "repoPath", Reason: detail.Reason})
+	}
+	return public
 }
 
 func auditHarnessSettings(h model.HarnessSettings) model.HarnessSettings {

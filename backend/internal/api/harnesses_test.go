@@ -34,9 +34,10 @@ func harnessFixture(t *testing.T) *authFixture {
 
 func harnessInput(t *testing.T, id string) map[string]any {
 	t.Helper()
-	repo, remote := gitRepository(t)
+	repo, _ := gitRepository(t)
+	// repoUrl is display-only (spec 03 3.3): it need not match a Git remote.
 	return map[string]any{"id": id, "name": "Harness " + id,
-		"repoPath": repo, "repoUrl": remote}
+		"repoPath": repo, "repoUrl": "https://example.com/harness/" + id + ".git"}
 }
 
 func requireHarness(t *testing.T, status int, body []byte, want int) model.Harness {
@@ -241,5 +242,187 @@ func TestHarnessesInvalidInputsAndPagination(t *testing.T) {
 	requireProjectError(t, status, body, 400, ValidationFailed, "id", "invalid_format")
 	if !reflect.DeepEqual(storedHarness(t, f, before.ID), before) || projectCount(t, f, "audit_logs") != 1 {
 		t.Fatal("invalid input mutated data")
+	}
+}
+
+// spec 03 3.3: repoPath must be an absolute directory whose Git top level is
+// itself; failures are 422 and name the failed check. repoUrl is https://.
+func TestHarnessesRejectRepoPathThatIsNotGitRepositoryRoot(t *testing.T) {
+	f := harnessFixture(t)
+	input := harnessInput(t, "harness-a")
+	status, body := projectRequest(t, f, "POST", "/api/harnesses", input)
+	before := requireHarness(t, status, body, 201)
+	plain := t.TempDir()
+	sub := filepath.Join(before.RepoPath, "sub")
+	if err := os.Mkdir(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(plain, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ path, reason string }{
+		{plain, "not_git_repository"}, {sub, "not_git_repository"}, {filepath.Join(plain, "missing"), "not_found"},
+		{file, "not_directory"}, {"relative/repo", "not_absolute"},
+	} {
+		request := harnessInput(t, "harness-b")
+		request["repoPath"] = tc.path
+		status, body = projectRequest(t, f, "POST", "/api/harnesses", request)
+		requireProjectError(t, status, body, 422, PreconditionFailed, "repoPath", tc.reason)
+		status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"repoPath": tc.path})
+		requireProjectError(t, status, body, 422, PreconditionFailed, "repoPath", tc.reason)
+	}
+	for _, tc := range []struct {
+		key, value, reason string
+	}{
+		{"repoUrl", "http://example.com/harness.git", "invalid_format"},
+		{"repoUrl", "git@example.com:harness.git", "invalid_format"},
+		{"name", strings.Repeat("あ", 201), "too_long"},
+	} {
+		status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{tc.key: tc.value})
+		requireProjectError(t, status, body, 400, ValidationFailed, tc.key, tc.reason)
+	}
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"name": strings.Repeat("あ", 200)})
+	requireHarness(t, status, body, 200)
+	if projectCount(t, f, "harnesses") != 1 || projectCount(t, f, "audit_logs") != 2 || storedHarness(t, f, "harness-a").RepoPath != before.RepoPath {
+		t.Fatal("rejected repository changed persisted data")
+	}
+}
+
+// spec 03 3.3: a PATCH that points repoPath at a symbolic link stores the
+// resolved real path, and the change is audited with its before/after values.
+func TestHarnessesPatchStoresRealRepoPathAndAuditsChange(t *testing.T) {
+	f := harnessFixture(t)
+	status, body := projectRequest(t, f, "POST", "/api/harnesses", harnessInput(t, "harness-a"))
+	before := requireHarness(t, status, body, 201)
+	repo, _ := gitRepository(t)
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Fatal(err)
+	}
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"repoPath": link})
+	after := requireHarness(t, status, body, 200)
+	real, err := filepath.EvalSymlinks(repo)
+	if err != nil || after.RepoPath != real || storedHarness(t, f, "harness-a").RepoPath != real {
+		t.Fatalf("repoPath=%q stored=%q want %q err=%v", after.RepoPath, storedHarness(t, f, "harness-a").RepoPath, real, err)
+	}
+	var detail string
+	if err := f.db.QueryRow(`SELECT detail FROM audit_logs WHERE action = 'harness.update' AND target_id = 'harness-a'`).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var history struct{ Before, After model.HarnessSettings }
+	if err := json.Unmarshal([]byte(detail), &history); err != nil || history.Before.RepoPath != before.RepoPath || history.After.RepoPath != real {
+		t.Fatalf("update audit=%s err=%v", detail, err)
+	}
+}
+
+// spec 03 3.3: defaultProfileId must be a version of this Harness.
+func TestHarnessesRejectDefaultProfileOfAnotherHarness(t *testing.T) {
+	f, _, profiles := assignmentFixture(t)
+	status, body := projectRequest(t, f, "POST", "/api/harnesses", harnessInput(t, "harness-b"))
+	before := requireHarness(t, status, body, 201)
+	audits := projectCount(t, f, "audit_logs")
+	for _, profileID := range []string{profiles[0].ID, "01JAAAAAAAAAAAAAAAAAAAAAAA"} {
+		status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-b", map[string]any{"defaultProfileId": profileID})
+		requireProjectError(t, status, body, 422, PreconditionFailed, "defaultProfileId", "invalid")
+	}
+	if !reflect.DeepEqual(storedHarness(t, f, "harness-b"), before) || projectCount(t, f, "audit_logs") != audits {
+		t.Fatal("rejected defaultProfileId changed persisted data")
+	}
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"defaultProfileId": profiles[0].ID})
+	if got := requireHarness(t, status, body, 200); got.DefaultProfileID == nil || *got.DefaultProfileID != profiles[0].ID {
+		t.Fatalf("own profile rejected: %s", body)
+	}
+}
+
+// spec 03 3.3, 15 3.6.3: setting defaultProfileId marks the Issues of the
+// tasks routed directly to this Harness and held for config_missing_profile
+// (or missing_acceptance_criteria) in the same transaction as the write.
+func TestHarnessesDefaultProfileRequestsRecheckOfHeldTasks(t *testing.T) {
+	f, _, profiles := assignmentFixture(t)
+	status, body := projectRequest(t, f, "POST", "/api/harnesses", harnessInput(t, "harness-b"))
+	requireHarness(t, status, body, 201)
+	for i, task := range []struct{ project, harness, status, cause string }{
+		{"", "harness-a", "blocked", "config_missing_profile"},      // 1: marked
+		{"", "harness-a", "blocked", "missing_acceptance_criteria"}, // 2: marked
+		{"", "harness-b", "blocked", "config_missing_profile"},      // 3: other Harness
+		{"project-a", "", "blocked", "missing_acceptance_criteria"}, // 4: Project route
+		{"", "harness-a", "queued", ""},                             // 5: not held
+	} {
+		id := "task-90000" + string(rune('1'+i))
+		issue := "issue-" + string(rune('1'+i))
+		if _, err := f.db.Exec(`INSERT INTO tasks (id, project_id, harness_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
+			VALUES (?, nullif(?, ''), nullif(?, ''), 't', 'b', '', 'solo', ?, ?, 't', 't', 'linear', nullif(?, ''))`,
+			id, task.project, task.harness, task.status, "linear:"+id, task.cause); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.Exec(`INSERT INTO linear_issue_states (linear_issue_id, issue_identifier, team_id, ai_ready,
+			attach_seq, issue_updated_at, first_seen_at, last_seen_at) VALUES (?, 'ENG-1', 'team-a', 1, 1, 't', 't', 't')`, issue); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.Exec(`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url,
+			team_id, task_id, attach_seq, created_at) VALUES (?, ?, 'ENG-1', 'https://linear.app/x/ENG-1', 'team-a', ?, 1, 't')`,
+			"link-"+id, issue, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marked := func() string {
+		t.Helper()
+		var got string
+		rows, err := f.db.Query(`SELECT linear_issue_id FROM linear_issue_states WHERE recheck_requested_at IS NOT NULL ORDER BY linear_issue_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got += id + ","
+		}
+		return got
+	}
+	clear := func() {
+		t.Helper()
+		if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at = NULL`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patch := func(values map[string]any) {
+		t.Helper()
+		status, body := projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", values)
+		requireHarness(t, status, body, 200)
+	}
+
+	patch(map[string]any{"name": "Renamed"})
+	if got := marked(); got != "" {
+		t.Fatalf("name-only PATCH marked %s", got)
+	}
+	// A rolled-back write leaves no mark.
+	if _, err := f.db.Exec(`CREATE TRIGGER reject_harness_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'audit unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"defaultProfileId": profiles[0].ID})
+	requireProjectError(t, status, body, 500, Internal, "", "")
+	if _, err := f.db.Exec(`DROP TRIGGER reject_harness_audit`); err != nil {
+		t.Fatal(err)
+	}
+	if got := marked(); got != "" || storedHarness(t, f, "harness-a").DefaultProfileID != nil {
+		t.Fatalf("rolled-back PATCH marked %s", got)
+	}
+
+	patch(map[string]any{"defaultProfileId": profiles[0].ID})
+	if got := marked(); got != "issue-1,issue-2," {
+		t.Fatalf("marked = %s; want issue-1,issue-2,", got)
+	}
+	clear()
+	patch(map[string]any{"defaultProfileId": profiles[0].ID})
+	if got := marked(); got != "" {
+		t.Fatalf("unchanged defaultProfileId marked %s", got)
+	}
+	patch(map[string]any{"defaultProfileId": profiles[1].ID})
+	if got := marked(); got != "issue-1,issue-2," {
+		t.Fatalf("changed defaultProfileId marked %s", got)
 	}
 }
