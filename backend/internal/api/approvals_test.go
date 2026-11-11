@@ -116,6 +116,11 @@ func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 	status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion, "ttlSec": 3600})
 	view := decodeApproval(t, status, body, 200)
 	after := time.Now().UTC()
+	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions d JOIN approvals a ON a.decision_id=d.id
+		WHERE a.id=? AND d.status='answered' AND json_extract(d.answer,'$.action')='approve'
+		AND json_extract(d.answer,'$.contentId')=a.content_id AND d.answered_at=a.decided_at`, approval.ID); n != 1 {
+		t.Fatalf("answered decisions = %d; want 1", n)
+	}
 	if view.ID != approval.ID || view.Status != "approved" || view.DecidedBy == nil || *view.DecidedBy != "owner" ||
 		view.DecidedAt == nil || view.ExpiresAt == nil || view.ContentVersion != approval.ContentVersion || view.UseCount != 0 {
 		t.Fatalf("approval = %+v; want approved by owner", view)
@@ -178,8 +183,8 @@ func TestApproveDefaultsToTwentyFourHours(t *testing.T) {
 func TestDecisionOnInvalidatedOrExpiredApprovalIs409(t *testing.T) {
 	for _, update := range []string{
 		`UPDATE approvals SET status='invalidated', invalidated_reason='superseded' WHERE id=?`,
-		`UPDATE approvals SET status='expired', decided_by='owner', decided_at='2026-11-01T00:00:00Z', expires_at='2026-11-02T00:00:00Z' WHERE id=?`,
-		`UPDATE approvals SET status='rejected', decided_by='owner', decided_at='2026-11-01T00:00:00Z' WHERE id=?`,
+		`UPDATE approvals SET status='expired', decided_at='2026-11-01T00:00:00Z', expires_at='2026-11-02T00:00:00Z' WHERE id=?`,
+		`UPDATE approvals SET status='rejected', decided_at='2026-11-01T00:00:00Z' WHERE id=?`,
 	} {
 		f, _, _, _, approval := waitingApprovalFixture(t)
 		stageExec(t, f, update, approval.ID)
@@ -273,7 +278,7 @@ func TestRenewExpiredApprovalCreatesPending(t *testing.T) {
 	for _, tc := range []struct {
 		name, approvalUpdate, executionStatus string
 	}{
-		{"marked expired", `UPDATE approvals SET status='expired', decided_by='owner', decided_at='2026-11-01T00:00:00Z',
+		{"marked expired", `UPDATE approvals SET status='expired', decided_at='2026-11-01T00:00:00Z',
 			expires_at='2026-11-02T00:00:00Z' WHERE id=?`, "waiting_approval"},
 		{"approved past expiry", `UPDATE approvals SET expires_at='2026-11-02T00:00:00Z' WHERE id=?`, "pending"},
 	} {
@@ -303,6 +308,10 @@ func TestRenewExpiredApprovalCreatesPending(t *testing.T) {
 			}
 			fresh := byID[view.ID]
 			requirePendingApproval(t, fresh, taskID, id, approval.ContentVersion)
+			if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions d JOIN approvals a ON a.decision_id=d.id
+				WHERE a.id=? AND d.status='open' AND d.subject_id=a.id AND d.basis=a.content_id`, view.ID); n != 1 {
+				t.Fatalf("renewed open decisions = %d; want 1", n)
+			}
 			if fresh.ParamsHash != approval.ParamsHash || fresh.Target != approval.Target {
 				t.Fatalf("renewed binding = %+v; want %+v", fresh, approval)
 			}
@@ -349,9 +358,9 @@ func TestRenewNonExpiredApprovalIs409(t *testing.T) {
 // version.
 func TestListAndGetApprovals(t *testing.T) {
 	f, _, id, _, approval := waitingApprovalFixture(t)
-	stageExec(t, f, `INSERT INTO approvals (id, task_id, execution_id, operation, target, content_version, params_hash,
-		status, decided_by, decided_at, created_at) SELECT '00000000000000000000000001', task_id, execution_id, operation, target,
-		content_version, params_hash, 'rejected', 'owner', '2026-11-07T00:00:00Z', '2026-11-07T00:00:00Z' FROM approvals WHERE id=?`, approval.ID)
+	stageExec(t, f, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target, content_id, params_hash,
+		status, decided_at, created_at) SELECT '00000000000000000000000001', task_id, execution_id, decision_id, requested_stage, operation, target,
+		content_id, params_hash, 'rejected', '2026-11-07T00:00:00Z', '2026-11-07T00:00:00Z' FROM approvals WHERE id=?`, approval.ID)
 
 	status, body := approvalRequest(t, f, "GET", "/api/approvals?status=pending", "")
 	var page Page[approvalView]

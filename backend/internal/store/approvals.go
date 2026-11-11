@@ -39,6 +39,14 @@ func invalidateApprovalsWhereTx(ctx context.Context, tx *sql.Tx, reason, where s
 		return err
 	}
 	for _, row := range changed {
+		withdrawnReason := "superseded"
+		if reason == "cancelled" {
+			withdrawnReason = "cancelled"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE owner_decisions SET status='withdrawn',withdrawn_reason=?
+			WHERE id=(SELECT decision_id FROM approvals WHERE id=?) AND status='open'`, withdrawnReason, row.id); err != nil {
+			return err
+		}
 		if _, err := RecordAuditLog(ctx, tx, AuditLog{
 			Actor: "system", Action: "approval.invalidate", TargetType: "approval", TargetID: row.id,
 			Detail: map[string]any{"taskId": row.taskID, "executionId": row.executionID, "operation": row.operation, "reason": reason},
