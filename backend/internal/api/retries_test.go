@@ -129,7 +129,7 @@ func TestRetryFailedCreatesNextPendingExecutionAndRecordsMode(t *testing.T) {
 }
 
 func TestRetryAcceptsAllRetriableStatesAndPreservesEvidence(t *testing.T) {
-	for _, state := range []string{"timed_out", "cancelled", "succeeded", "blocked", "interrupted"} {
+	for _, state := range []string{"timed_out", "cancelled", "succeeded", "interrupted"} {
 		t.Run(state, func(t *testing.T) {
 			to := state
 			if state == "interrupted" {
@@ -158,6 +158,8 @@ func TestRetryRunningAndOtherForbiddenStatesReturn409WithoutWrites(t *testing.T)
 		{"running", "working"}, {"running", "claimed"}, {"running", "preparing"},
 		{"running", "checking"}, {"running", "publishing"}, {"queued", "pending"},
 		{"received", "pending"}, {"routing", "pending"}, {"waiting_approval", "pending"},
+		{"waiting_approval", "waiting_approval"}, {"blocked", "blocked"}, // Q131
+
 		{"failed", "working"}, // Fail closed when the latest Execution disagrees.
 	} {
 		t.Run(state.task+"_"+state.execution, func(t *testing.T) {

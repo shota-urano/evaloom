@@ -19,20 +19,26 @@ var executionStates = []model.ExecutionStatus{
 }
 
 func TestTaskTransitionsMatchSpec04Section32(t *testing.T) {
-	// Every cell, including reserved states and self-transitions, is checked
+	// Every cell, including obsolete states and self-transitions, is checked
 	// against the specification, independently of the production table.
-	// waiting_approval follows spec 17 3.3, 3.5.2 and 3.6 (Q57, Q58).
 	allowed := map[model.TaskStatus][]model.TaskStatus{
-		"received":         {"queued"},
-		"queued":           {"running", "waiting_approval", "cancelled"},
-		"running":          {"failed", "timed_out", "cancelled", "blocked", "completed", "waiting_approval"},
-		"routing":          {"queued", "cancelled"},
-		"waiting_approval": {"queued", "completed", "failed", "cancelled"},
-		"blocked":          {"queued", "cancelled"},
-		"failed":           {"queued"},
-		"timed_out":        {"queued"},
-		"cancelled":        {"queued"},
-		"completed":        {"queued"},
+		// 3.1/15 queued, 15/3.7 routing, intake hold, cancel (3.8).
+		"received": {"queued", "routing", "blocked", "cancelled"},
+		// 3.7 approve or label, reject, cancel.
+		"routing": {"queued", "cancelled"},
+		// claim, cancel; claim-time config_error / workspace_missing (04 3.3)
+		// and approval expiry (17 Q166, 3.6).
+		"queued": {"running", "cancelled", "failed", "blocked", "waiting_approval"},
+		// 02 5.2 mapping of stage reports, including publishing -> pending
+		// (every approval waived) which maps to queued.
+		"running": {"waiting_approval", "blocked", "completed", "failed", "timed_out", "cancelled", "queued"},
+		// resume, end by decision, cancel.
+		"waiting_approval": {"queued", "failed", "cancelled"},
+		// Intake hold release (queued / routing); decision resume, end, cancel;
+		// 02 5.2 blocked -> waiting_approval (check_blocked continue).
+		"blocked": {"queued", "routing", "waiting_approval", "failed", "cancelled"},
+		// Retry (Q131).
+		"failed": {"queued"}, "timed_out": {"queued"}, "cancelled": {"queued"}, "completed": {"queued"},
 	}
 	for _, from := range taskStates {
 		for _, to := range taskStates {
@@ -74,36 +80,75 @@ func TestExecutionTaskMappingMatchesSpec02Section52(t *testing.T) {
 	}
 }
 
-func TestExecutionTransitionTable(t *testing.T) {
+func TestExecutionTransitionsMatchSpec02Section52(t *testing.T) {
+	active := []model.ExecutionStatus{"failed", "timed_out", "cancelled", "interrupted"}
 	allowed := map[model.ExecutionStatus][]model.ExecutionStatus{
-		"pending":    {"claimed", "waiting_approval", "cancelled"},
-		"claimed":    {"preparing", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
-		"preparing":  {"working", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
-		"working":    {"checking", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
-		"checking":   {"publishing", "failed", "interrupted", "timed_out", "cancelled", "blocked"},
-		"publishing": {"succeeded", "failed", "interrupted", "timed_out", "cancelled", "blocked", "waiting_approval"},
-		"blocked":    {"pending", "cancelled"},
-		// Spec 17: approval starts the merge (3.5.1); merged, rejected (Q57),
-		// merged or closed on GitHub (Q58) and cancelled end the wait (3.6).
-		"waiting_approval": {"pending", "succeeded", "failed", "cancelled"},
-		// Merged or failed (3.5.2, 3.5.3), cancelled, or back to the wait when
-		// consume is refused (expired, head or target changed).
+		// claim; cancellation of a queued task (04 3.2, 3.8); claim-time
+		// config_error / workspace_missing (04 3.3); approval expiry (17 3.6).
+		"pending": {"claimed", "cancelled", "failed", "blocked", "waiting_approval"},
+		// prepare, work, or the resume_stage.
+		"claimed":   append([]model.ExecutionStatus{"preparing", "working", "publishing"}, active...),
+		"preparing": append([]model.ExecutionStatus{"working"}, active...),
+		// check, or a question.
+		"working": append([]model.ExecutionStatus{"checking", "blocked"}, active...),
+		// publish, approval wait, check_blocked.
+		"checking": append([]model.ExecutionStatus{"publishing", "waiting_approval", "blocked"}, active...),
+		// approval wait, every approval waived (resume publish), unknown, succeeded.
+		"publishing": append([]model.ExecutionStatus{"waiting_approval", "pending", "blocked", "succeeded"}, active...),
+		// all approved, one rejected, abort.
+		"waiting_approval": {"pending", "failed", "cancelled"},
+		// continue with approvals, continue/answer, abort, publish_unknown abort.
+		"blocked": {"waiting_approval", "pending", "cancelled", "failed"},
 	}
-	for _, resume := range []string{""} {
-		for _, from := range executionStates {
-			for _, to := range executionStates {
-				t.Run(resume+"/"+string(from)+"->"+string(to), func(t *testing.T) {
-					want := contains(allowed[from], to)
-					err := task.ValidateExecutionTransition(from, to)
-					if want {
-						if err != nil {
-							t.Fatal(err)
-						}
-					} else {
-						assertConflict(t, err)
+	for _, from := range executionStates {
+		for _, to := range executionStates {
+			t.Run(string(from)+"->"+string(to), func(t *testing.T) {
+				err := task.ValidateExecutionTransition(from, to)
+				if contains(allowed[from], to) {
+					if err != nil {
+						t.Fatal(err)
 					}
-				})
-			}
+				} else {
+					assertConflict(t, err)
+				}
+			})
+		}
+	}
+}
+
+func TestResumeStagesMatchSpec02(t *testing.T) {
+	allowed := map[model.ExecutionStatus][]model.Stage{
+		"publishing": {"publish"}, "waiting_approval": {"publish"}, "blocked": {"work", "publish"},
+	}
+	for _, from := range executionStates {
+		for _, stage := range []model.Stage{"", "prepare", "work", "check", "publish", "unknown"} {
+			t.Run(string(from)+"/"+string(stage), func(t *testing.T) {
+				err := task.ValidateResume(from, stage)
+				if contains(allowed[from], stage) {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertConflict(t, err)
+				}
+			})
+		}
+	}
+	starts := map[model.Stage][]model.ExecutionStatus{
+		"": {"preparing", "working"}, "work": {"working"}, "publish": {"publishing"},
+	}
+	for _, resume := range []model.Stage{"", "work", "publish", "prepare", "check"} {
+		for _, to := range executionStates {
+			t.Run("start/"+string(resume)+"->"+string(to), func(t *testing.T) {
+				err := task.ValidateStageStart(resume, to)
+				if contains(starts[resume], to) {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertConflict(t, err)
+				}
+			})
 		}
 	}
 }

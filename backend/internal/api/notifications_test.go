@@ -188,10 +188,15 @@ func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
 	d.DB = f.db
 	resume := func() {
 		t.Helper()
-		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "preparing"}, {"preparing", "working"}} {
+		// Spec 02 5.2: an answered question resumes at work.
+		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "working"}} {
 			fromTask, _ := task.TaskStatusForExecution(edge[0])
+			var stage model.Stage
+			if edge[1] == model.ExecutionPending {
+				stage = model.StageWork
+			}
 			if err := task.TransitionExecution(context.Background(), f.db, task.Transition{TaskID: executionTaskID(t, f, id),
-				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1]}); err != nil {
+				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1], ResumeStage: stage}); err != nil {
 				t.Fatal(err)
 			}
 		}

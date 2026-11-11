@@ -66,7 +66,8 @@ func queueTaskRetry(ctx context.Context, db *sql.DB, id, mode string) error {
 		return err
 	}
 	switch status {
-	case model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskCompleted, model.TaskBlocked:
+	case model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskCompleted:
+		// Spec 04 3.10 (Q131): terminal tasks only.
 	default:
 		return &Error{Code: Conflict, Message: "Task state does not allow retry"}
 	}

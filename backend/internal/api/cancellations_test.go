@@ -331,7 +331,9 @@ func TestCancelRollsBackRequestTransitionAndRecordsOnFailure(t *testing.T) {
 	for _, from := range []string{"claimed", "blocked"} {
 		f, _, id, _ := resultFixture(t, "claimed")
 		if from == "blocked" {
-			blockExecution(t, f, id, "claimed")
+			// Spec 02 5.2: a claimed Execution cannot block before a stage.
+			f, _, id, _ = resultFixture(t, "working")
+			blockExecution(t, f, id, "working")
 		}
 		triggers := []string{`BEFORE INSERT ON audit_logs WHEN NEW.action = 'task.cancel'`}
 		if from == "claimed" {

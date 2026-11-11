@@ -105,7 +105,6 @@ func TestStateTransitionMapping(t *testing.T) {
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval", "PR Review"},
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
-		{model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed, "", ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionInterrupted, "", ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionTimedOut, "", ""},
@@ -238,7 +237,9 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 	if err := db.QueryRow(`SELECT status FROM linear_outbox WHERE kind = 'waiting_approval' AND action = 'set_state'`).Scan(&status); err != nil || status != "pending" {
 		t.Fatalf("PR Review = %q, err=%v", status, err)
 	}
-	transition(t, db, "linear-1", model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionSucceeded)
+	// Spec 02 5.2: approval resumes publish, which then succeeds.
+	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded)
 	for _, r := range stateRows(t, db) {
 		want := "skipped"
 		if r.kind == "completed" || r.taskID == "manual-1" {
