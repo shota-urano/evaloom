@@ -1,42 +1,31 @@
 # Runnerの結果報告API
 
-正本は`docs/specs/04-task-lifecycle.md`の3.2・3.4・6節、
-`02-data-model.md`のexecutions・5.2〜5.5節、`05-runner.md`、`12-notification.md`の3.1・3.4節。
+正本は`docs/specs/04-task-lifecycle.md`の3.4・3.4.1・3.5、`02-data-model.md`の
+stage_runs・check_results・owner_decisions・approvals・5.2・5.3・5.6、
+`17-approval.md`の3.3・3.4、契約`harness-contract-v1.md`の6.5・8章・9章。
 
 `POST /api/executions/{id}/result`を既存の`protectRunner`で保護する。
 本人のCookieでは呼べない。保存するトランザクション内で、認証したRunnerと
 Executionの`runner_id`を照合する。不一致と未claimは403にし、既存の
 `auth.reject`経路で監査記録を残す。存在しないExecutionは404にする。
 
-worktree、Gate 2・3、Git Publisher、setup と基準値の測定、承認待ちとマージの報告は
-software-engineer へ移したため受け付けない（`docs/specs/19-routing-and-stages.md` 3.11）。
-それらの項目（`worktreeId`、`baseSha`、`verifiedSha`、`pushedSha`、`prNumber`、`prUrl`、
-`gateResults`、`block`、`baseline`、`testRuns`、`setupStatus`、`worktree`、`audit`、`mergeCommitSha` など）は
-未知の項目として400になる。
+- 送れるのは`type`が`stage_started`と`stage_finished`の2種類だけ。ほかの`type`、
+  未知の項目（旧来の`fromStatus`や開発の項目を含む）は400。
+- `stage_started`は`{"attempt": n}`を200で返す。同じ`requestArtifactId`の再送は保存済みの
+  attemptを返し、何も書かない。始めてよい段は、claimedならresume_stage、無ければ
+  Profileにprepareがあればprepare、無ければwork。段の途中なら前の段が終わった後の次の段だけ。
+  それ以外は409。`requestArtifactId`は同じExecution・同じ段の`request_json`の成果物でなければ400。
+- `stage_finished`は`{"next": ...}`を200で返す。`next`が`publish`のときは
+  `checkedContentId`と`approvals`（省いた操作だけ）を添える。表の各行の処理は
+  `internal/store/stage_reports.go`。全項目を必須とし、nullableな項目もnullで送らせる。
+- 結果JSONが契約に合わない（未知の項目、段で書けないstatus、スペシャルハーネスが書けない
+  errorClass、宣言していない操作の承認要求、必須のcontentIdの欠け、question.jsonの形）ときは
+  `contract_error`でExecutionを失敗にし、200（`next: stop`）を返す。
+- 同じ内容の再送（キーの順と空白は問わない）は、監査記録に残した応答をそのまま返し、
+  行もイベントも増やさない。同じ(stage, attempt)への違う内容は409。
+- 通知要求とLinearへの書き込みは`task.TransitionExecutionTx`の遷移が行う。
+- 監査記録は`runner:<id>/execution.result/execution/<Execution ID>`。detailに
+  type、stage、attempt、遷移前後、報告の内容のSHA-256、応答を残す。
 
-- 要求には`fromStatus`と`status`を指定する。成功は本文なしの204を返す。
-  `fromStatus`が現在値と違う報告、同じ状態への再送、過去のExecutionへの報告、
-  未知の状態、既存の遷移表にない報告は409にする。状態遷移の再送を成功扱いにはしない。
-- Runnerが報告できるのは、claim済みの最新Executionの工程進行と停止
-  （`preparing`・`running`・`verifying`・`publishing`・`succeeded`・`failed`・`cancelled`・`timed_out`）だけとする。
-  `blocked`の原因は開発の工程（Gate・Context・Git）だけだったため、Runnerからは409にする。
-  `pending`への復帰と`blocked`からの操作は本人用API、`interrupted`は
-  Control Planeの回収処理に属する。
-- 任意の結果メタデータは`harnessSessionId`、`errorClass`、`errorMessage`とする。
-  省略またはnullの任意文字列は既存値を保持する。
-- `failed`には既定の分類を創作せず、`errorClass`を必須にする。
-  `timed_out`と`cancelled`には仕様05の`timeout`と`cancelled`を保存する。
-  それらと異なる分類が指定された場合や、進行・成功へのエラー分類は400にする。
-- `succeeded`には`usage.wallTimeMs`を必須にし、`usage_records`に保存する。
-- 通知要求は`notification_requests`に保存する。列は`execution_id`、`status`、`created_at`。
-  `(execution_id, status)`を主キーにする。
-  通知対象は仕様12を採用し、`cancelled`では要求しない。
-- 通知要求、開始・終了時刻は既存の遷移関数内で保存する。
-  `running`で初回の`started_at`、終端状態で`finished_at`を記録する。
-- `status_changed`イベントの`reason`は`runner_result`とする。
-  監査記録は`runner:<id>/execution.result/execution/<Execution ID>`とし、
-  Task IDと遷移前後を保存する。自由文や認証情報を監査記録に複製しない。
-
-要求の検証、メタデータ保存、既存の状態遷移関数、通知要求、
-イベント・監査記録を、claimと同じ`BEGIN IMMEDIATE`トランザクションに含める。
-どれかの保存に失敗した場合は全体をロールバックする。
+要求の検証の後、すべての書き込みを1つの`BEGIN IMMEDIATE`トランザクションで行い、
+どれかが失敗したら全体をロールバックする。
