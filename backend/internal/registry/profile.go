@@ -6,18 +6,33 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
 var profileVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$`)
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+const profileDefinitionPath = "evaloom/profile.yaml"
+
+// Git tree modes (contract 4.1): only regular files and directories can be
+// referenced. Symbolic links (120000) and submodules (160000) cannot.
+const (
+	modeFile       = "100644"
+	modeExecutable = "100755"
+	modeTree       = "040000"
+	modeSymlink    = "120000"
+	modeSubmodule  = "160000"
+)
 
 func ValidProfileVersion(version string) bool {
 	if !profileVersionPattern.MatchString(version) {
@@ -33,12 +48,14 @@ func ValidProfileVersion(version string) bool {
 	return true
 }
 
-// ReadProfile resolves only the exact tag and reads the committed blob, never
-// the working tree. The entire operation shares the existing Git deadline.
-// After successful tag resolution, CommitSHA is returned even on definition
-// errors so the caller can give an existing immutable registration precedence.
-// The caller must perform all Git work before opening a DB transaction.
-func ReadProfile(parent context.Context, repo, version, adapter string) (model.HarnessProfile, error) {
+// ReadProfile resolves the exact tag profile/v<version>, reads
+// evaloom/profile.yaml from that commit (never the working tree) and checks it
+// against spec 03 3.4. Every failed rule is returned in one
+// PreconditionError. After the tag resolves, CommitSHA is set even on
+// definition errors, so the caller can give an existing registration
+// precedence. The entire operation shares the repository Git deadline, and the
+// caller must perform it before opening a DB transaction.
+func ReadProfile(parent context.Context, repo, version string, environment contract.ProfileEnvironment) (model.HarnessProfile, error) {
 	p := model.HarnessProfile{Version: version, TagName: "profile/v" + version}
 	if !ValidProfileVersion(version) {
 		return p, rejected("version", "invalid_format")
@@ -54,124 +71,160 @@ func ReadProfile(parent context.Context, repo, version, adapter string) (model.H
 		return p, rejected("commitSha", "invalid_format")
 	}
 	p.CommitSHA = sha
-	definition, err := repositoryGit(ctx, repo, "cat-file", "blob", sha+":evaloom/profile.yaml")
+	tree, err := commitTree(ctx, repo, sha)
+	if err != nil {
+		return p, gitError(parent, "commitSha", "not_found")
+	}
+	if mode := tree[profileDefinitionPath]; mode != modeFile && mode != modeExecutable {
+		return p, rejected("definition", "not_found")
+	}
+	data, err := repositoryGit(ctx, repo, "cat-file", "blob", sha+":"+profileDefinitionPath)
 	if err != nil {
 		return p, gitError(parent, "definition", "not_found")
 	}
-	p.Definition, p.ModelID, err = validateProfileDefinition([]byte(definition), version, adapter)
+	encoded, err := profileJSON([]byte(data))
 	if err != nil {
+		return p, rejected("definition", "invalid_format")
+	}
+	def, found := contract.DecodeProfile(encoded)
+	found = append(found, def.EnvironmentIssues(version, environment)...)
+	found = append(found, referenceIssues(tree, def)...)
+	if schema := schemaPath(def, found); schema != "" {
+		if issue, err := schemaIssue(ctx, repo, sha, schema); err != nil {
+			if ctxErr := parent.Err(); ctxErr != nil {
+				return p, ctxErr
+			}
+			return p, err
+		} else if issue != "" {
+			found = append(found, contract.Issue{Path: "params.schema", Reason: issue})
+		}
+	}
+	if err := parent.Err(); err != nil {
 		return p, err
 	}
-	hash := sha256.Sum256(p.Definition)
-	p.DefinitionHash = hex.EncodeToString(hash[:])
-	p.ContractVersion = "1"
+	if len(found) > 0 {
+		return p, profileRejected(found)
+	}
+	hash := sha256.Sum256(encoded)
+	p.Definition, p.DefinitionHash = encoded, hex.EncodeToString(hash[:])
+	p.ContractVersion, p.ModelID = def.ContractVersion, def.Stages.Work.Model
 	return p, nil
 }
 
-func validateProfileDefinition(data []byte, version, adapter string) (json.RawMessage, string, error) {
-	// Decode through YAML's generic representation before the typed JSON schema:
-	// YAML's permissive string coercions must not turn numbers into valid strings.
+// profileJSON converts exactly one YAML document to key-sorted JSON. YAML
+// comments and formatting are not part of the stored definition.
+func profileJSON(data []byte) ([]byte, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	var document map[string]any
 	if err := decoder.Decode(&document); err != nil || document == nil {
-		return nil, "", rejected("definition", "invalid_format")
+		return nil, fmt.Errorf("profile: not a YAML mapping")
 	}
 	var extra any
 	if decoder.Decode(&extra) != io.EOF {
-		return nil, "", rejected("definition", "invalid_format")
+		return nil, fmt.Errorf("profile: multiple YAML documents")
 	}
-	// encoding/json matches struct fields case-insensitively, even with
-	// DisallowUnknownFields. Reject aliases at every object level before decoding
-	// so the values we validate cannot differ from the definition we store.
-	if !validProfileDefinitionKeys(document) {
-		return nil, "", rejected("definition", "invalid_format")
-	}
-	encoded, err := json.Marshal(document)
+	return json.Marshal(document)
+}
+
+// commitTree lists every entry of the commit with its Git mode.
+func commitTree(ctx context.Context, repo, sha string) (map[string]string, error) {
+	out, err := repositoryGit(ctx, repo, "ls-tree", "-r", "-t", "-z", "--full-tree", "--end-of-options", sha)
 	if err != nil {
-		return nil, "", rejected("definition", "invalid_format")
+		return nil, err
 	}
-	var def model.ProfileDefinition
-	jsonDecoder := json.NewDecoder(bytes.NewReader(encoded))
-	jsonDecoder.DisallowUnknownFields()
-	if err := jsonDecoder.Decode(&def); err != nil {
-		return nil, "", rejected("definition", "invalid_format")
+	tree := map[string]string{}
+	for _, entry := range strings.Split(out, "\x00") {
+		meta, name, ok := strings.Cut(entry, "\t")
+		if !ok {
+			continue
+		}
+		mode, _, _ := strings.Cut(meta, " ")
+		tree[name] = mode
 	}
-	for _, value := range []string{def.ProfileVersion, def.HarnessVersion, def.ModelID, def.PromptVersion,
-		def.ContextPolicyVersion, def.ExecutionConfiguration.Adapter} {
-		if strings.TrimSpace(value) == "" {
-			return nil, "", rejected("definition", "invalid_format")
+	return tree, nil
+}
+
+// referenceIssues checks that each referenced path exists in the commit and is
+// neither a symbolic link nor a submodule (spec 03 3.4 参照するパス). Commands
+// and params.schema must be files; work files may also be directories whose
+// contents contain no symbolic links or submodules.
+func referenceIssues(tree map[string]string, def contract.ProfileDefinition) []contract.Issue {
+	var found []contract.Issue
+	for _, ref := range def.ReferencedPaths() {
+		if ref.Value == "" || path.IsAbs(ref.Value) || strings.ContainsAny(ref.Value, "\\\x00") ||
+			slices.Contains(strings.Split(ref.Value, "/"), "..") {
+			continue // already reported as outside_repository
+		}
+		name := path.Clean(ref.Value)
+		directoryAllowed := strings.HasPrefix(ref.Path, "stages.work.")
+		switch mode, ok := tree[name]; {
+		case !ok:
+			found = append(found, contract.Issue{Path: ref.Path, Reason: "not_found"})
+		case mode == modeSymlink:
+			found = append(found, contract.Issue{Path: ref.Path, Reason: "symlink"})
+		case mode == modeSubmodule:
+			found = append(found, contract.Issue{Path: ref.Path, Reason: "submodule"})
+		case mode == modeTree && !directoryAllowed:
+			found = append(found, contract.Issue{Path: ref.Path, Reason: "not_a_file"})
+		case mode == modeTree:
+			for entry, entryMode := range tree {
+				if strings.HasPrefix(entry, name+"/") && (entryMode == modeSymlink || entryMode == modeSubmodule) {
+					reason := "contains_symlink"
+					if entryMode == modeSubmodule {
+						reason = "contains_submodule"
+					}
+					found = append(found, contract.Issue{Path: ref.Path, Reason: reason})
+					break
+				}
+			}
+		case mode != modeFile && mode != modeExecutable:
+			found = append(found, contract.Issue{Path: ref.Path, Reason: "not_a_file"})
 		}
 	}
-	for _, skill := range def.SkillVersions {
-		if strings.TrimSpace(skill.Name) == "" || strings.TrimSpace(skill.Version) == "" {
-			return nil, "", rejected("definition", "invalid_format")
+	return found
+}
+
+// schemaPath returns params.schema when it is a valid committed file.
+func schemaPath(def contract.ProfileDefinition, found []contract.Issue) string {
+	if def.Params == nil || def.Params.Schema == "" {
+		return ""
+	}
+	for _, issue := range found {
+		if issue.Path == "params.schema" {
+			return ""
 		}
 	}
-	for _, tool := range def.ToolConfiguration.AllowedTools {
-		if strings.TrimSpace(tool) == "" {
-			return nil, "", rejected("definition", "invalid_format")
+	return path.Clean(def.Params.Schema)
+}
+
+// schemaIssue compiles params.schema as JSON Schema draft 2020-12 from the
+// commit. References can only reach files of the same commit.
+func schemaIssue(ctx context.Context, repo, sha, schema string) (string, error) {
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.UseLoader(commitLoader{ctx: ctx, repo: repo, commit: sha})
+	if _, err := compiler.Compile(schemaScheme + ":///" + schema); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
 		}
+		return "invalid_schema", nil
 	}
-	_, evaluationPresent := document["evaluationPolicyVersion"]
-	if def.SkillVersions == nil || def.ToolConfiguration.AllowedTools == nil || def.ExecutionConfiguration.Args == nil ||
-		def.CollaborationPolicy != "solo" || !evaluationPresent || def.EvaluationPolicyVersion != nil {
-		return nil, "", rejected("definition", "invalid_format")
-	}
-	if def.ProfileVersion != version {
-		return nil, "", rejected("profileVersion", "invalid")
-	}
-	if (adapter != "" && def.ExecutionConfiguration.Adapter != adapter) ||
-		(adapter == "" && def.ExecutionConfiguration.Adapter != "codex" && def.ExecutionConfiguration.Adapter != "claude_code") {
-		return nil, "", rejected("executionConfiguration.adapter", "invalid")
-	}
-	if raw, present := document["contextFiles"]; present {
-		if _, ok := raw.([]any); !ok {
-			return nil, "", rejected("contextFiles", "invalid_format")
-		}
-	}
+	return "", nil
+}
+
+func profileRejected(found []contract.Issue) error {
+	details := make([]Detail, 0, len(found))
 	seen := map[string]bool{}
-	for _, name := range def.ContextFiles {
-		if name == "" || name == "." || name == ".." || path.IsAbs(name) || path.Clean(name) != name ||
-			strings.HasPrefix(name, "../") || strings.ContainsAny(name, "\x00\\") || seen[name] {
-			return nil, "", rejected("contextFiles", "invalid_format")
+	for _, issue := range found {
+		if seen[issue.Path] {
+			continue
 		}
-		seen[name] = true
+		seen[issue.Path] = true
+		details = append(details, Detail{Field: issue.Path, Reason: issue.Reason})
 	}
-	return encoded, def.ModelID, nil
-}
-
-func validProfileDefinitionKeys(document map[string]any) bool {
-	if !onlyProfileKeys(document,
-		"profileVersion", "harnessVersion", "modelId", "promptVersion", "skillVersions",
-		"toolConfiguration", "contextPolicyVersion", "executionConfiguration",
-		"collaborationPolicy", "evaluationPolicyVersion", "contextFiles") {
-		return false
+	return &PreconditionError{
+		Code:    "precondition_failed",
+		Message: fmt.Sprintf("Profile definition does not satisfy the harness contract (%d issues)", len(details)),
+		Details: details,
 	}
-	if !onlyProfileKeys(document["toolConfiguration"], "allowedTools") ||
-		!onlyProfileKeys(document["executionConfiguration"], "adapter", "args") {
-		return false
-	}
-	skills, ok := document["skillVersions"].([]any)
-	if !ok {
-		return false
-	}
-	for _, skill := range skills {
-		if !onlyProfileKeys(skill, "name", "version") {
-			return false
-		}
-	}
-	return true
-}
-
-func onlyProfileKeys(value any, allowed ...string) bool {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	for key := range object {
-		if !slices.Contains(allowed, key) {
-			return false
-		}
-	}
-	return true
 }
