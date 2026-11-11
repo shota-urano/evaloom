@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -40,7 +41,18 @@ func decide(t *testing.T, f *authFixture, id string, body map[string]any) (int, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return approvalRequest(t, f, "POST", "/api/approvals/"+id+"/decision", string(encoded))
+	var decisionID string
+	if err := f.db.QueryRow(`SELECT decision_id FROM approvals WHERE id=?`, id).Scan(&decisionID); err != nil {
+		if err != sql.ErrNoRows {
+			t.Fatal(err)
+		}
+		decisionID = id
+	}
+	status, out := approvalRequest(t, f, "POST", "/api/decisions/"+decisionID+"/answer", string(encoded))
+	if status != 200 {
+		return status, out
+	}
+	return approvalRequest(t, f, "GET", "/api/approvals/"+id, "")
 }
 
 func decodeApproval(t *testing.T, status int, body []byte, want int) approvalDetailView {
@@ -93,7 +105,7 @@ func decisionAudits(t *testing.T, f *authFixture, approvalID string) []decisionA
 func TestApprovalDecisionWithStaleContentVersionIs422(t *testing.T) {
 	f, _, id, taskID, approval := waitingApprovalFixture(t)
 	for _, decision := range []string{"approve", "reject"} {
-		status, body := decide(t, f, approval.ID, map[string]any{"decision": decision, "contentVersion": strings.Repeat("c", 40)})
+		status, body := decide(t, f, approval.ID, map[string]any{"action": decision, "contentId": strings.Repeat("c", 40)})
 		assertAuthError(t, status, body, 422, PreconditionFailed)
 	}
 	if got := approvalsOf(t, f, taskID); len(got) != 1 || got[0] != approval {
@@ -113,7 +125,7 @@ func TestApprovalDecisionWithStaleContentVersionIs422(t *testing.T) {
 func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 	f, _, id, taskID, approval := waitingApprovalFixture(t)
 	before := time.Now().UTC()
-	status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion, "ttlSec": 3600})
+	status, body := decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion, "ttlSec": 3600})
 	view := decodeApproval(t, status, body, 200)
 	after := time.Now().UTC()
 	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions d JOIN approvals a ON a.decision_id=d.id
@@ -121,8 +133,7 @@ func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 		AND json_extract(d.answer,'$.contentId')=a.content_id AND d.answered_at=a.decided_at`, approval.ID); n != 1 {
 		t.Fatalf("answered decisions = %d; want 1", n)
 	}
-	if view.ID != approval.ID || view.Status != "approved" || view.DecidedBy == nil || *view.DecidedBy != "owner" ||
-		view.DecidedAt == nil || view.ExpiresAt == nil || view.ContentVersion != approval.ContentVersion || view.UseCount != 0 {
+	if view.ID != approval.ID || view.Status != "approved" || view.DecidedAt == nil || view.ExpiresAt == nil || view.ContentVersion != approval.ContentVersion || view.UseCount != 0 {
 		t.Fatalf("approval = %+v; want approved by owner", view)
 	}
 	if exp := view.ExpiresAt.Time; exp.Before(before.Add(time.Hour)) || exp.After(after.Add(time.Hour)) {
@@ -144,7 +155,7 @@ func TestApproveRecordsDecisionAndRejectsSecondDecision(t *testing.T) {
 
 	stored := approvalsOf(t, f, taskID)
 	for _, decision := range []string{"approve", "reject"} {
-		status, body = decide(t, f, approval.ID, map[string]any{"decision": decision, "contentVersion": approval.ContentVersion})
+		status, body = decide(t, f, approval.ID, map[string]any{"action": decision, "contentId": approval.ContentVersion})
 		assertAuthError(t, status, body, 409, Conflict)
 	}
 	if got := approvalsOf(t, f, taskID); len(got) != 1 || got[0] != stored[0] {
@@ -171,7 +182,7 @@ func approvalsExpiresAt(t *testing.T, f *authFixture, id string) *string {
 func TestApproveDefaultsToTwentyFourHours(t *testing.T) {
 	f, _, _, _, approval := waitingApprovalFixture(t)
 	before := time.Now().UTC()
-	status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+	status, body := decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 	view := decodeApproval(t, status, body, 200)
 	after := time.Now().UTC()
 	if view.ExpiresAt == nil || view.ExpiresAt.Before(before.Add(24*time.Hour)) || view.ExpiresAt.After(after.Add(24*time.Hour)) {
@@ -188,7 +199,7 @@ func TestDecisionOnInvalidatedOrExpiredApprovalIs409(t *testing.T) {
 	} {
 		f, _, _, _, approval := waitingApprovalFixture(t)
 		stageExec(t, f, update, approval.ID)
-		status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+		status, body := decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 		assertAuthError(t, status, body, 409, Conflict)
 		if audits := decisionAudits(t, f, approval.ID); len(audits) != 0 {
 			t.Fatalf("audits = %+v; want none", audits)
@@ -200,9 +211,9 @@ func TestDecisionOnInvalidatedOrExpiredApprovalIs409(t *testing.T) {
 // audits the decision, and the owner can continue the task.
 func TestRejectFailsTaskWithApprovalRejected(t *testing.T) {
 	f, _, id, taskID, approval := waitingApprovalFixture(t)
-	status, body := decide(t, f, approval.ID, map[string]any{"decision": "reject", "contentVersion": approval.ContentVersion})
+	status, body := decide(t, f, approval.ID, map[string]any{"action": "reject", "contentId": approval.ContentVersion})
 	view := decodeApproval(t, status, body, 200)
-	if view.Status != "rejected" || view.DecidedBy == nil || *view.DecidedBy != "owner" || view.DecidedAt == nil || view.ExpiresAt != nil {
+	if view.Status != "rejected" || view.DecidedAt == nil || view.ExpiresAt != nil {
 		t.Fatalf("approval = %+v; want rejected by owner without expiry", view)
 	}
 	execution, taskStatus, message := executionAndTask(t, f, id)
@@ -221,7 +232,7 @@ func TestRejectFailsTaskWithApprovalRejected(t *testing.T) {
 	if len(audits) != 1 || audits[0] != (decisionAudit{Actor: "owner", Decision: "reject", ContentVersion: approval.ContentVersion, ExecutionID: id}) {
 		t.Fatalf("audits = %+v; want one owner reject", audits)
 	}
-	status, body = decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+	status, body = decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 	assertAuthError(t, status, body, 409, Conflict)
 
 	status, body = requestRetry(t, f, taskID, `{"mode":"continue"}`, nil)
@@ -234,18 +245,22 @@ func TestApprovalDecisionValidation(t *testing.T) {
 	f, _, _, taskID, approval := waitingApprovalFixture(t)
 	sha := approval.ContentVersion
 	for _, body := range []string{
-		`{"decision":"maybe","contentVersion":"` + sha + `"}`,
-		`{"contentVersion":"` + sha + `"}`,
-		`{"decision":"approve"}`,
-		`{"decision":"approve","contentVersion":"abc"}`,
-		`{"decision":"approve","contentVersion":"` + sha + `","ttlSec":0}`,
-		`{"decision":"reject","contentVersion":"` + sha + `","ttlSec":60}`,
-		`{"decision":"approve","contentVersion":"` + sha + `","extra":1}`,
+		`{"action":"maybe","contentId":"` + sha + `"}`,
+		`{"contentId":"` + sha + `"}`,
+		`{"action":"approve"}`,
+		`{"action":"approve","contentId":""}`,
+		`{"action":"approve","contentId":"` + sha + `","ttlSec":0}`,
+		`{"action":"reject","contentId":"` + sha + `","ttlSec":60}`,
+		`{"action":"approve","contentId":"` + sha + `","extra":1}`,
 	} {
-		status, out := approvalRequest(t, f, "POST", "/api/approvals/"+approval.ID+"/decision", body)
+		var decisionID string
+		if err := f.db.QueryRow(`SELECT decision_id FROM approvals WHERE id=?`, approval.ID).Scan(&decisionID); err != nil {
+			t.Fatal(err)
+		}
+		status, out := approvalRequest(t, f, "POST", "/api/decisions/"+decisionID+"/answer", body)
 		assertAuthError(t, status, out, 400, ValidationFailed)
 	}
-	status, out := decide(t, f, "01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"decision": "approve", "contentVersion": sha})
+	status, out := decide(t, f, "01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{"action": "approve", "contentId": sha})
 	assertAuthError(t, status, out, 404, NotFound)
 	if got := approvalsOf(t, f, taskID); len(got) != 1 || got[0] != approval {
 		t.Fatalf("approvals changed: %+v", got)
@@ -255,11 +270,15 @@ func TestApprovalDecisionValidation(t *testing.T) {
 // 6章: a Runner token cannot decide; the request is 403 and audited.
 func TestRunnerTokenCannotDecideApproval(t *testing.T) {
 	f, token, _, taskID, approval := waitingApprovalFixture(t)
-	path := "/api/approvals/" + approval.ID + "/decision"
+	var decisionID string
+	if err := f.db.QueryRow(`SELECT decision_id FROM approvals WHERE id=?`, approval.ID).Scan(&decisionID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/decisions/" + decisionID + "/answer"
 	status, body := f.request(t, "POST", path, false, "", func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
 		r.Header.Set("Content-Type", "application/json")
-		r.Body = io.NopCloser(strings.NewReader(`{"decision":"approve","contentVersion":"` + approval.ContentVersion + `"}`))
+		r.Body = io.NopCloser(strings.NewReader(`{"action":"approve","contentId":"` + approval.ContentVersion + `"}`))
 	})
 	assertAuthError(t, status, body, 403, Forbidden)
 	if n := stageCount(t, f, `SELECT count(*) FROM audit_logs WHERE action='auth.reject' AND target_id=?
@@ -285,7 +304,7 @@ func TestRenewExpiredApprovalCreatesPending(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, _, id, taskID, approval := waitingApprovalFixture(t)
 			if tc.executionStatus == "pending" {
-				status, body := decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+				status, body := decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 				decodeApproval(t, status, body, 200)
 			}
 			stageExec(t, f, tc.approvalUpdate, approval.ID)
@@ -328,7 +347,7 @@ func TestRenewExpiredApprovalCreatesPending(t *testing.T) {
 			// The new pending approval can be decided; the expired one cannot be renewed twice.
 			status, body = approvalRequest(t, f, "POST", "/api/approvals/"+approval.ID+"/renew", "")
 			assertAuthError(t, status, body, 409, Conflict)
-			status, body = decide(t, f, view.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+			status, body = decide(t, f, view.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 			if got := decodeApproval(t, status, body, 200); got.Status != "approved" {
 				t.Fatalf("renewed approval decision = %+v", got)
 			}
@@ -342,7 +361,7 @@ func TestRenewNonExpiredApprovalIs409(t *testing.T) {
 	f, _, _, taskID, approval := waitingApprovalFixture(t)
 	status, body := approvalRequest(t, f, "POST", "/api/approvals/"+approval.ID+"/renew", "")
 	assertAuthError(t, status, body, 409, Conflict)
-	status, body = decide(t, f, approval.ID, map[string]any{"decision": "approve", "contentVersion": approval.ContentVersion})
+	status, body = decide(t, f, approval.ID, map[string]any{"action": "approve", "contentId": approval.ContentVersion})
 	decodeApproval(t, status, body, 200)
 	status, body = approvalRequest(t, f, "POST", "/api/approvals/"+approval.ID+"/renew", "")
 	assertAuthError(t, status, body, 409, Conflict)

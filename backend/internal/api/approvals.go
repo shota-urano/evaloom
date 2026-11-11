@@ -3,15 +3,12 @@ package api
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -23,9 +20,7 @@ import (
 // changeable by the owner per approval with ttlSec (spec 17 3.4, 5章).
 const defaultApprovalTTL = 24 * time.Hour
 
-// approvalRejectedReason is the Q57 failure reason of a rejected approval.
-// executions.error_class has no value for it (spec 02 5.4), so it is kept
-// in error_message and in the status_changed event reason.
+// approvalRejectedReason is the failure reason of a rejected approval.
 const approvalRejectedReason = "approval_rejected"
 
 var approvalStatuses = map[string]bool{
@@ -33,22 +28,23 @@ var approvalStatuses = map[string]bool{
 }
 
 type approvalView struct {
+	DecisionID        string          `json:"decisionId"`
+	RequestedStage    string          `json:"requestedStage"`
+	Summary           *string         `json:"summary"`
 	ID                string          `json:"id"`
 	TaskID            string          `json:"taskId"`
 	ExecutionID       string          `json:"executionId"`
 	Operation         string          `json:"operation"`
 	Target            json.RawMessage `json:"target"`
-	ContentVersion    string          `json:"contentVersion"`
+	ContentVersion    string          `json:"contentId"`
 	ParamsHash        string          `json:"paramsHash"`
 	Status            string          `json:"status"`
 	InvalidatedReason *string         `json:"invalidatedReason"`
-	DecidedBy         *string         `json:"decidedBy"`
 	DecidedAt         *Timestamp      `json:"decidedAt"`
 	ExpiresAt         *Timestamp      `json:"expiresAt"`
 	MaxUses           int             `json:"maxUses"`
 	UseCount          int             `json:"useCount"`
 	ConsumedAt        *Timestamp      `json:"consumedAt"`
-	Result            json.RawMessage `json:"result"`
 	CreatedAt         Timestamp       `json:"createdAt"`
 }
 
@@ -58,13 +54,10 @@ type approvalDetailView struct {
 
 func newApprovalView(a store.Approval) (approvalView, error) {
 	view := approvalView{
+		DecisionID: a.DecisionID, RequestedStage: a.RequestedStage, Summary: a.Summary,
 		ID: a.ID, TaskID: a.TaskID, ExecutionID: a.ExecutionID, Operation: a.Operation, Target: a.Target,
 		ContentVersion: a.ContentVersion, ParamsHash: a.ParamsHash, Status: a.Status,
-		InvalidatedReason: a.InvalidatedReason, DecidedBy: a.DecidedBy, MaxUses: a.MaxUses, UseCount: a.UseCount,
-		Result: a.Result,
-	}
-	if view.Result == nil {
-		view.Result = json.RawMessage("null")
+		InvalidatedReason: a.InvalidatedReason, MaxUses: a.MaxUses, UseCount: a.UseCount,
 	}
 	created, err := ParseTimestamp(a.CreatedAt)
 	if err != nil {
@@ -163,57 +156,8 @@ func approvalDetail(ctx context.Context, db *sql.DB, id string) (approvalDetailV
 
 type approvalDecisionInput struct {
 	Decision       string `json:"decision"`
-	ContentVersion string `json:"contentVersion"`
+	ContentVersion string `json:"contentId"`
 	TTLSec         *int64 `json:"ttlSec"`
-}
-
-// maxApprovalTTLSec keeps now + ttlSec representable as a time.Duration. It
-// is a technical bound, not a policy value (Q55 leaves the range open).
-const maxApprovalTTLSec = math.MaxInt64 / int64(time.Second)
-
-func decideApproval(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
-		err := ValidateID("id", id, ULID)
-		var input approvalDecisionInput
-		if err == nil {
-			err = DecodeJSON(r, &input)
-		}
-		if err == nil {
-			switch input.Decision {
-			case "approve", "reject":
-			case "":
-				err = invalid("decision", "required")
-			default:
-				err = invalid("decision", "invalid")
-			}
-		}
-		if err == nil && input.ContentVersion == "" {
-			err = invalid("contentVersion", "required")
-		}
-		if err == nil && !fullCommitSHA(input.ContentVersion) {
-			err = invalid("contentVersion", "invalid_format")
-		}
-		if err == nil && input.TTLSec != nil {
-			if input.Decision != "approve" {
-				err = invalid("ttlSec", "not_allowed")
-			} else if *input.TTLSec < 1 || *input.TTLSec > maxApprovalTTLSec {
-				err = invalid("ttlSec", "out_of_range")
-			}
-		}
-		if err == nil {
-			err = saveApprovalDecision(r.Context(), db, id, input)
-		}
-		if err == nil {
-			var view approvalDetailView
-			view, err = approvalDetail(r.Context(), db, id)
-			if err == nil {
-				writeJSON(w, http.StatusOK, view)
-				return
-			}
-		}
-		WriteError(w, logger, approvalError(err))
-	}
 }
 
 func approvalError(err error) error {
@@ -237,14 +181,9 @@ func readApprovalForUpdate(ctx context.Context, tx *sql.Tx, id string) (store.Ap
 	return approval, execution, err
 }
 
-// saveApprovalDecision records approve or reject (spec 17 3.4, 3.5.1, 3.6)
-// with its state transition, event and audit record in one transaction.
-func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input approvalDecisionInput) error {
-	tx, err := db.BeginTx(ctx, nil) // BEGIN IMMEDIATE serializes decisions with consume, cancel and results.
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+// saveApprovalDecisionTx adapts the existing single-operation approval flow
+// to the decision API transaction. General lifecycle handling belongs to spec 04.
+func saveApprovalDecisionTx(ctx context.Context, tx *sql.Tx, id string, input approvalDecisionInput, now time.Time) error {
 	approval, execution, err := readApprovalForUpdate(ctx, tx, id)
 	if err != nil {
 		return err
@@ -256,18 +195,31 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 		return &Error{Code: Conflict, Message: "Decision requires the latest Execution waiting for approval"}
 	}
 	if input.ContentVersion != approval.ContentVersion {
-		return &Error{Code: PreconditionFailed, Message: "contentVersion must equal the approval's content version"}
+		return &Error{Code: PreconditionFailed, Message: "contentId must equal the approval content ID"}
 	}
-	now := time.Now().UTC()
 	stamp := now.Format(time.RFC3339Nano)
 	status, to, reason := "approved", model.ExecutionPending, "approval_approved"
 	var expiresAt *string
 	if input.Decision == "approve" {
-		ttl := defaultApprovalTTL
-		if input.TTLSec != nil {
-			ttl = time.Duration(*input.TTLSec) * time.Second
+		ttl := int64(defaultApprovalTTL / time.Second)
+		settings, err := store.ReadSettings(ctx, tx)
+		if err != nil {
+			return err
 		}
-		value := now.Add(ttl).Format(time.RFC3339Nano)
+		if raw, ok := settings["approval.ttlSec"]; ok {
+			if err := json.Unmarshal([]byte(raw), &ttl); err != nil {
+				return err
+			}
+		}
+		if input.TTLSec != nil {
+			ttl = *input.TTLSec
+		}
+		// RFC 3339 has four-digit years. This checks representability rather
+		// than imposing a policy limit on the requested validity.
+		if ttl < 60 || ttl > 253402300799-now.Unix() {
+			return invalid("ttlSec", "out_of_range")
+		}
+		value := time.Unix(now.Unix()+ttl, int64(now.Nanosecond())).UTC().Format(time.RFC3339Nano)
 		expiresAt = &value
 	} else {
 		status, to, reason = "rejected", model.ExecutionFailed, approvalRejectedReason
@@ -307,7 +259,7 @@ func saveApprovalDecision(ctx context.Context, db *sql.DB, id string, input appr
 	}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func renewApproval(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
@@ -387,10 +339,4 @@ func saveApprovalRenewal(ctx context.Context, db *sql.DB, id string) (string, er
 		return "", err
 	}
 	return renewed, tx.Commit()
-}
-
-// fullCommitSHA accepts a lowercase, full SHA-1 or SHA-256 commit ID.
-func fullCommitSHA(value string) bool {
-	_, err := hex.DecodeString(value)
-	return err == nil && (len(value) == 40 || len(value) == 64) && value == strings.ToLower(value)
 }
