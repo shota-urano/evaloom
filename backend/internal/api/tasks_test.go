@@ -133,8 +133,26 @@ func TestManualTaskCreatesQueuedTaskAndInitialPendingExecution(t *testing.T) {
 	}
 }
 
-func TestManualTaskRejectsEmptyAcceptanceCriteriaWithoutRows(t *testing.T) {
-	f := taskFixture(t)
+// requiredCriteriaFixture assigns project-a a Profile declaring
+// acceptanceCriteria: required and leaves project-b on the optional 1.2.0.
+func requiredCriteriaFixture(t *testing.T) *authFixture {
+	t.Helper()
+	f, repo, _ := assignmentFixture(t)
+	required := strings.ReplaceAll(strings.ReplaceAll(validProfileYAML, "1.2.0", "3.0.0"),
+		"acceptanceCriteria: optional", "acceptanceCriteria: required")
+	commitProfile(t, repo, "3.0.0", required, false)
+	status, body := postProfile(t, f, "3.0.0")
+	requireProfile(t, status, body, 201)
+	status, body = postAssignment(t, f, "project-a", "developer", "harness-a", "3.0.0")
+	requireAssignment(t, status, body, 200)
+	status, body = postAssignment(t, f, "project-b", "developer", "harness-a", "1.2.0")
+	requireAssignment(t, status, body, 200)
+	return f
+}
+
+// spec 04 3.1: blank criteria are 400 only for a required Profile.
+func TestManualTaskAcceptanceCriteriaFollowsProfile(t *testing.T) {
+	f := requiredCriteriaFixture(t)
 	for _, value := range []any{nil, "", " \t\n\u3000"} {
 		input := manualTaskInput()
 		if value == nil {
@@ -146,6 +164,77 @@ func TestManualTaskRejectsEmptyAcceptanceCriteriaWithoutRows(t *testing.T) {
 		requireProjectError(t, status, body, 400, ValidationFailed, "acceptanceCriteria", "required")
 		requireTaskCounts(t, f, 0)
 	}
+	for i, value := range []any{nil, ""} {
+		input := manualTaskInput()
+		input["projectId"] = "project-b"
+		if value == nil {
+			delete(input, "acceptanceCriteria")
+		} else {
+			input["acceptanceCriteria"] = value
+		}
+		status, body := taskRequest(t, f, fmt.Sprintf("optional-%d", i), input, nil)
+		if got := requireTask(t, status, body, 201); got.AcceptanceCriteria != "" || got.Status != model.TaskQueued {
+			t.Fatalf("optional profile task=%+v", got)
+		}
+	}
+	requireTaskCounts(t, f, 2)
+}
+
+// spec 04 3.1, 6章: direct routing to a special harness uses
+// harnesses.default_profile_id; without it, or for an unknown target, 422.
+func TestManualTaskDirectHarnessRouting(t *testing.T) {
+	f, _, profiles := assignmentFixture(t)
+	input := func(harness string) map[string]any {
+		in := manualTaskInput()
+		delete(in, "projectId")
+		in["harnessId"] = harness
+		return in
+	}
+	status, body := taskRequest(t, f, "no-default", input("harness-a"), nil)
+	requireProjectError(t, status, body, 422, PreconditionFailed, "harnessId", "default_profile_missing")
+	status, body = taskRequest(t, f, "unknown-harness", input("missing"), nil)
+	requireProjectError(t, status, body, 422, PreconditionFailed, "harnessId", "not_found")
+	requireTaskCounts(t, f, 0)
+
+	status, body = projectRequest(t, f, "PATCH", "/api/harnesses/harness-a", map[string]any{"defaultProfileId": profiles[0].ID})
+	requireHarness(t, status, body, 200)
+	status, body = taskRequest(t, f, "direct", input("harness-a"), nil)
+	created := requireTask(t, status, body, 201)
+	if created.HarnessID != "harness-a" || created.ProjectID != "" || created.Status != model.TaskQueued {
+		t.Fatalf("direct task=%+v", created)
+	}
+	var projectNull, harness, executionStatus string
+	var seq int
+	err := f.db.QueryRow(`SELECT coalesce(t.project_id, 'null'), t.harness_id, e.seq, e.status FROM tasks t
+		JOIN executions e ON e.task_id = t.id WHERE t.id = ?`, created.ID).Scan(&projectNull, &harness, &seq, &executionStatus)
+	if err != nil || projectNull != "null" || harness != "harness-a" || seq != 1 || executionStatus != "pending" {
+		t.Fatalf("stored project=%s harness=%s seq=%d status=%s err=%v", projectNull, harness, seq, executionStatus, err)
+	}
+	var detail string
+	if err := f.db.QueryRow(`SELECT detail FROM audit_logs WHERE action = 'task.create'`).Scan(&detail); err != nil || !strings.Contains(detail, `"harnessId":"harness-a"`) {
+		t.Fatalf("audit detail=%s err=%v", detail, err)
+	}
+	status, body = taskRequest(t, f, "direct", input("harness-a"), nil)
+	if got := requireTask(t, status, body, 200); got != created {
+		t.Fatalf("replay=%+v original=%+v", got, created)
+	}
+	requireTaskCounts(t, f, 1)
+}
+
+// spec 04 3.1: neither or both routing targets is 400.
+func TestManualTaskRequiresExactlyOneRoutingTarget(t *testing.T) {
+	f := taskFixture(t)
+	none := manualTaskInput()
+	delete(none, "projectId")
+	both := manualTaskInput()
+	both["harnessId"] = "harness-a"
+	emptyBoth := manualTaskInput()
+	emptyBoth["projectId"], emptyBoth["harnessId"] = "", ""
+	for _, input := range []map[string]any{none, both, emptyBoth} {
+		status, body := taskRequest(t, f, "targets", input, nil)
+		requireProjectError(t, status, body, 400, ValidationFailed, "body", "exactly_one_destination")
+	}
+	requireTaskCounts(t, f, 0)
 }
 
 func TestManualTaskIdempotencyReturnsOriginalAcrossChangedInputAndAssignment(t *testing.T) {
@@ -242,13 +331,16 @@ func TestManualTaskInputValidation(t *testing.T) {
 		value  any
 		reason string
 	}{
-		{"projectId", "", "required"}, {"projectId", "INVALID", "invalid_format"},
-		{"projectId", "missing", "not_found"}, {"title", " \t", "required"}, {"body", "", "required"},
+		{"projectId", "INVALID", "invalid_format"}, {"harnessId", "INVALID", "invalid_format"},
+		{"title", " \t", "required"}, {"body", "", "required"},
 		{"shortName", "", "invalid_format"}, {"shortName", "Upper", "invalid_format"},
 		{"shortName", "a_b", "invalid_format"}, {"shortName", strings.Repeat("a", 41), "invalid_format"},
 		{"taskType", "development", "invalid_json"}, {"collaborationMode", "solo", "invalid_json"},
 	} {
 		input := manualTaskInput()
+		if tc.field == "harnessId" {
+			delete(input, "projectId")
+		}
 		input[tc.field] = tc.value
 		status, body := taskRequest(t, f, "validation", input, nil)
 		field := tc.field
@@ -267,6 +359,10 @@ func TestManualTaskInputValidation(t *testing.T) {
 	}
 	status, body := taskRequest(t, f, "null-json", nil, nil)
 	requireProjectError(t, status, body, 400, ValidationFailed, "body", "invalid_json")
+	unknown := manualTaskInput()
+	unknown["projectId"] = "missing"
+	status, body = taskRequest(t, f, "unknown-project", unknown, nil)
+	requireProjectError(t, status, body, 422, PreconditionFailed, "projectId", "not_found")
 	requireTaskCounts(t, f, 0)
 	for _, shortName := range []string{strings.Repeat("a", 40), "a-1"} {
 		input := manualTaskInput()

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -30,6 +31,7 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		var input struct {
 			ProjectID          string  `json:"projectId"`
+			HarnessID          string  `json:"harnessId"`
 			Title              string  `json:"title"`
 			Body               string  `json:"body"`
 			AcceptanceCriteria string  `json:"acceptanceCriteria"`
@@ -37,11 +39,20 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		err := DecodeJSON(r, &input)
 		if err == nil {
-			err = ValidateID("projectId", input.ProjectID, SlugID)
+			// Exactly one routing target (spec 04 3.1); absent and "" are the
+			// same. The reason matches the routes API's one-destination rule.
+			switch {
+			case (input.ProjectID == "") == (input.HarnessID == ""):
+				err = invalid("body", "exactly_one_destination")
+			case input.ProjectID != "":
+				err = ValidateID("projectId", input.ProjectID, SlugID)
+			default:
+				err = ValidateID("harnessId", input.HarnessID, SlugID)
+			}
 		}
 		if err == nil {
 			for _, field := range []struct{ name, value string }{
-				{"title", input.Title}, {"body", input.Body}, {"acceptanceCriteria", input.AcceptanceCriteria},
+				{"title", input.Title}, {"body", input.Body},
 			} {
 				if strings.TrimSpace(field.value) == "" {
 					err = invalid(field.name, "required")
@@ -78,16 +89,9 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			WriteError(w, logger, err)
 			return
 		}
-		project, err := store.GetProject(ctx, tx, input.ProjectID)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = invalid("projectId", "not_found")
-		}
+		profileID, err := manualTaskProfileID(ctx, tx, input.ProjectID, input.HarnessID)
 		if err == nil {
-			_, err = store.GetProjectHarness(ctx, tx, project.ID, "")
-			if errors.Is(err, sql.ErrNoRows) {
-				err = &Error{Code: PreconditionFailed, Message: "Project has no Default Harness assignment",
-					Details: []Detail{{Field: "projectId", Reason: "default_harness_missing"}}}
-			}
+			err = checkManualAcceptanceCriteria(ctx, tx, profileID, input.AcceptanceCriteria)
 		}
 		if err != nil {
 			WriteError(w, logger, err)
@@ -100,7 +104,7 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 		created := model.Task{
-			ProjectID: input.ProjectID, Title: input.Title, Body: input.Body,
+			ProjectID: input.ProjectID, HarnessID: input.HarnessID, Title: input.Title, Body: input.Body,
 			AcceptanceCriteria: input.AcceptanceCriteria, ShortName: shortName,
 			TaskType: "development", CollaborationMode: "solo", Status: model.TaskReceived,
 			IdempotencyKey: keys[0], CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339),
@@ -119,8 +123,7 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		if err == nil {
 			_, err = store.RecordAuditLog(ctx, tx, store.AuditLog{
 				Actor: "owner", Action: "task.create", TargetType: "task", TargetID: created.ID,
-				Detail: map[string]any{"projectId": created.ProjectID, "executionId": executionID.String(),
-					"from": model.TaskReceived, "to": model.TaskQueued},
+				Detail: manualTaskAuditDetail(created, executionID.String()),
 			})
 		}
 		if err == nil {
@@ -136,6 +139,66 @@ func createTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusCreated, created)
 	}
+}
+
+// manualTaskProfileID resolves the routing target's Profile (spec 04 3.1):
+// projects.profile_id, or harnesses.default_profile_id for a direct routing.
+// An unregistered target or a harness without a default version is 422.
+func manualTaskProfileID(ctx context.Context, tx *sql.Tx, projectID, harnessID string) (string, error) {
+	if projectID != "" {
+		project, err := store.GetProject(ctx, tx, projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", routePrecondition("projectId", "not_found", "Project is not registered")
+		}
+		return project.ProfileID, err
+	}
+	harness, err := store.GetHarness(ctx, tx, harnessID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", routePrecondition("harnessId", "not_found", "Harness is not registered")
+	}
+	if err != nil {
+		return "", err
+	}
+	if harness.DefaultProfileID == nil || *harness.DefaultProfileID == "" {
+		return "", routePrecondition("harnessId", "default_profile_missing", "Harness has no default Profile version")
+	}
+	return *harness.DefaultProfileID, nil
+}
+
+func routePrecondition(field, reason, message string) error {
+	return &Error{Code: PreconditionFailed, Message: message, Details: []Detail{{Field: field, Reason: reason}}}
+}
+
+// checkManualAcceptanceCriteria rejects blank acceptance criteria only when
+// the Profile declares acceptanceCriteria: required (spec 04 3.1, contract 5.2).
+func checkManualAcceptanceCriteria(ctx context.Context, tx *sql.Tx, profileID, criteria string) error {
+	if strings.TrimSpace(criteria) != "" {
+		return nil
+	}
+	profile, err := store.GetHarnessProfileByID(ctx, tx, profileID)
+	if err != nil {
+		return err
+	}
+	var definition struct {
+		AcceptanceCriteria string `json:"acceptanceCriteria"`
+	}
+	if err := json.Unmarshal(profile.Definition, &definition); err != nil {
+		return err
+	}
+	if definition.AcceptanceCriteria == "required" {
+		return invalid("acceptanceCriteria", "required")
+	}
+	return nil
+}
+
+func manualTaskAuditDetail(t model.Task, executionID string) map[string]any {
+	detail := map[string]any{"executionId": executionID, "from": model.TaskReceived, "to": model.TaskQueued}
+	if t.ProjectID != "" {
+		detail["projectId"] = t.ProjectID
+	} else {
+		detail["harnessId"] = t.HarnessID
+	}
+	return detail
 }
 
 type executionSummaryView struct {
