@@ -18,37 +18,63 @@ var ErrHeartbeatExecutionOwner = errors.New("heartbeat execution does not belong
 // Unknown IDs are also denied;
 // terminal reports can race a heartbeat and are harmless, but are not renewed.
 func Heartbeat(ctx context.Context, db *sql.DB, runnerID, bootID string, runningIDs []string) ([]string, error) {
+	reply, err := HeartbeatWithProposals(ctx, db, runnerID, bootID, runningIDs, nil)
+	return reply.CancelExecutionIDs, err
+}
+
+// HeartbeatReply is the heartbeat response of spec 05 5 (cleanWorkspaceIds,
+// Q137, is not part of it yet).
+type HeartbeatReply struct {
+	CancelExecutionIDs     []string
+	CancelRouteProposalIDs []string
+}
+
+// HeartbeatWithProposals is Heartbeat with the route proposals the Runner
+// reports as running (spec 05 5). Each must belong to the Runner. The reply
+// also lists the Runner's running proposals whose task was cancelled (spec 04
+// 3.8, Q133), repeated until the Runner reports their result.
+func HeartbeatWithProposals(ctx context.Context, db *sql.DB, runnerID, bootID string, runningIDs, runningProposalIDs []string) (HeartbeatReply, error) {
+	var reply HeartbeatReply
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return reply, err
 	}
 	defer tx.Rollback()
+	for _, id := range runningProposalIDs {
+		var own bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM route_proposals WHERE id = ? AND runner_id = ?)`, id, runnerID).Scan(&own); err != nil {
+			return reply, err
+		}
+		if !own {
+			return reply, ErrHeartbeatExecutionOwner
+		}
+	}
 	for _, id := range runningIDs {
 		var own bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM executions WHERE id = ? AND runner_id = ?)`, id, runnerID).Scan(&own); err != nil {
-			return nil, err
+			return reply, err
 		}
 		if !own {
-			return nil, ErrHeartbeatExecutionOwner
+			return reply, ErrHeartbeatExecutionOwner
 		}
 	}
 	var previous sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT boot_id FROM runners WHERE id = ?`, runnerID).Scan(&previous); err != nil {
-		return nil, err
+		return reply, err
 	}
 	if previous.Valid && previous.String != bootID {
 		if err := interruptRunnerTx(ctx, tx, runnerID, "runner_boot_changed"); err != nil {
-			return nil, err
+			return reply, err
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `UPDATE runners SET status = 'online', last_heartbeat_at = ?, boot_id = ? WHERE id = ?`, now, bootID, runnerID); err != nil {
-		return nil, err
+		return reply, err
 	}
 	for _, id := range runningIDs {
 		if _, err := tx.ExecContext(ctx, `UPDATE executions SET last_heartbeat_at = ?
 			WHERE id = ? AND runner_id = ? AND status IN `+activeExecutionStatuses, now, id, runnerID); err != nil {
-			return nil, err
+			return reply, err
 		}
 	}
 	// Read all active owned Executions, including a just-claimed one that the
@@ -57,26 +83,45 @@ func Heartbeat(ctx context.Context, db *sql.DB, runnerID, bootID string, running
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM executions WHERE runner_id = ?
 		AND status IN `+activeExecutionStatuses+` AND cancel_requested_at IS NOT NULL ORDER BY id`, runnerID)
 	if err != nil {
-		return nil, err
+		return reply, err
 	}
 	ids := []string{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return nil, err
+			return reply, err
 		}
 		ids = append(ids, id)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, err
+		return reply, err
+	}
+	proposals, err := tx.QueryContext(ctx, `SELECT rp.id FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id
+		WHERE rp.runner_id = ? AND rp.status = 'running' AND t.status = 'cancelled' ORDER BY rp.id`, runnerID)
+	if err != nil {
+		return reply, err
+	}
+	proposalIDs := []string{}
+	for proposals.Next() {
+		var id string
+		if err := proposals.Scan(&id); err != nil {
+			proposals.Close()
+			return reply, err
+		}
+		proposalIDs = append(proposalIDs, id)
+	}
+	err = proposals.Err()
+	proposals.Close()
+	if err != nil {
+		return reply, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return reply, err
 	}
-	return ids, nil
+	return HeartbeatReply{CancelExecutionIDs: ids, CancelRouteProposalIDs: proposalIDs}, nil
 }
 
 // RegisterRunner inserts a new offline Runner. Never replace an existing token.
