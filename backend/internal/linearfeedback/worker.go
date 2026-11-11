@@ -239,7 +239,9 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 	var r outboxRow
 	var executionID sql.NullString
 	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, coalesce(body, ''), attempts,
-		outcome_unknown != 0, execution_id, action, coalesce(state_name, '') FROM linear_outbox WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+		outcome_unknown != 0, execution_id, action, coalesce(state_name, '') FROM linear_outbox
+		WHERE status = 'pending' AND action IN ('comment', 'set_state')
+		AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY created_at, id LIMIT 1`, w.now().Format(timeLayout)).Scan(
 		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID, &r.action, &r.stateName)
 	if errors.Is(err, sql.ErrNoRows) {

@@ -132,7 +132,9 @@ func TestLinearStateNotFoundMigrationPreservesAllColumns(t *testing.T) {
 			3, ?, ?, ?, 'execution-1', 'auth', ?)`, "state-"+status, "state-"+status, status,
 			registryTime, registryTime, registryTime, registryTime)
 	}
-	const query = `SELECT * FROM linear_outbox ORDER BY id`
+	const query = `SELECT id, task_id, linear_issue_id, kind, action, state_name, dedupe_key, body,
+		status, attempts, next_attempt_at, linear_comment_id, created_at, sent_at, outcome_unknown,
+		execution_id, failure_reason, failed_at FROM linear_outbox ORDER BY id`
 	before := migrationRows(t, db, query)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)

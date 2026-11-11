@@ -31,7 +31,7 @@ func TestLabelSettingsWithoutRowsUseDefaults(t *testing.T) {
 
 // Rows that are empty, blank or not a JSON string, and an unreadable table,
 // fall back to the defaults key by key and are logged (spec 15 6章, Q76).
-// Unknown keys are ignored (spec 02 3.4).
+// Other allowed settings are ignored by the label reader (spec 02 3.8).
 func TestLabelSettingsUnusableRowsUseDefaultsAndLog(t *testing.T) {
 	for _, test := range []struct{ name, trigger, prefix string }{
 		{"empty string", `""`, `"to:"`},
@@ -43,7 +43,7 @@ func TestLabelSettingsUnusableRowsUseDefaultsAndLog(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			db := openDB(t)
 			exec(t, db, `INSERT INTO settings (key, value, updated_at) VALUES
-				('linear.triggerLabel', ?, 't'), ('linear.routingLabelPrefix', ?, 't'), ('linear.unknown', '""', 't')`,
+				('linear.triggerLabel', ?, 't'), ('linear.routingLabelPrefix', ?, 't'), ('approval.ttlSec', '86400', 't')`,
 				test.trigger, test.prefix)
 			var logs bytes.Buffer
 			settings := NewLabelSettings(db, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -51,7 +51,7 @@ func TestLabelSettingsUnusableRowsUseDefaultsAndLog(t *testing.T) {
 				t.Fatalf("labels = %+v", got)
 			}
 			if !strings.Contains(logs.String(), "key=linear.triggerLabel") || strings.Contains(logs.String(), "linear.routingLabelPrefix") ||
-				strings.Contains(logs.String(), "linear.unknown") {
+				strings.Contains(logs.String(), "approval.ttlSec") {
 				t.Fatalf("logs = %s", logs.String())
 			}
 		})
