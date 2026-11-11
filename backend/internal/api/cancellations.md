@@ -30,6 +30,18 @@ queued・blockedの即時中止には既存の遷移関数と結果メタデー�
   claimの候補から外す。claimが先なら、中止は読み取り時点のrunningに従って要求時刻を保存する。
   古い状態を前提とした更新は、既存の状態条件と最新seq条件で拒否する。
 
+3.8の各経路は次のように実装した。
+
+- queued（再開待ちを含む）とwaiting_approvalは、未使用（pending・approved）の承認を
+  `invalidated`（`cancelled`）にし、開いている判断待ちを`withdrawn`（`cancelled`）にする。
+- blocked（判断待ち）は判断待ちを`withdrawn`（`cancelled`）にする。開いている判断待ちが
+  `blocked`/`publish_unknown`のときだけ、Executionとタスクを`failed`（`publish_unknown`）にする。
+  監査記録とイベントの`to`は`failed`になる。
+- routingは、route の判断待ちを`withdrawn`（`cancelled`）にし、`queued`の提案を`cancelled`にする。
+  `running`の提案は枠を早く空けないよう`running`のまま残し、heartbeatの`cancelRouteProposalIds`で
+  Runnerに止めさせる。止めた後の結果報告で提案を`cancelled`にし、結果は記録だけ残す。
+- どの経路でも作業領域（task_workspaces）は変更しない。
+
 heartbeatは既存のRunner認証と`store/runners.go`で処理する。
 
 - 要求は仕様05の`{bootId, runningExecutionIds}`とする。
@@ -44,6 +56,9 @@ heartbeatは既存のRunner認証と`store/runners.go`で処理する。
 - 所有権の検証後、Runnerをonlineにし、Runnerと報告されたアクティブExecutionの
   `last_heartbeat_at`を同じUTC時刻で保存する。
   終端状態のIDは、resultとの競合を考慮して受け付けるが時刻を更新しない。
+- 任意の`runningRouteProposalIds`（ULIDの配列）を受け付け、そのRunnerのclaimに属さない提案は403にする。
+  応答の`cancelRouteProposalIds`には、そのRunnerの`running`の提案のうちタスクが`cancelled`のものを
+  ID順で入れ、結果報告まで繰り返し返す。空の場合も配列にする。
 - 応答は200で`{cancelExecutionIds: [...]}`を返す。空の場合も配列にする。
   対象は認証したRunnerが持つアクティブExecutionのうち、中止要求時刻があるものとする。
   claim直後に報告一覧へ反映されていない場合も渡せるよう、要求配列には限定しない。

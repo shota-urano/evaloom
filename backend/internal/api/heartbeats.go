@@ -15,6 +15,8 @@ func runnerHeartbeat(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 		var input struct {
 			BootID              string   `json:"bootId"`
 			RunningExecutionIDs []string `json:"runningExecutionIds"`
+			// Optional: the current Runner does not run proposals yet.
+			RunningRouteProposalIDs []string `json:"runningRouteProposalIds"`
 		}
 		err := DecodeJSON(r, &input)
 		if err == nil && strings.TrimSpace(input.BootID) == "" {
@@ -29,12 +31,18 @@ func runnerHeartbeat(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			}
 			err = ValidateID("runningExecutionIds", id, ULID)
 		}
+		for _, id := range input.RunningRouteProposalIDs {
+			if err != nil {
+				break
+			}
+			err = ValidateID("runningRouteProposalIds", id, ULID)
+		}
 		if err != nil {
 			WriteError(w, logger, err)
 			return
 		}
 		runner, _ := r.Context().Value(runnerIdentityKey{}).(string)
-		ids, err := store.Heartbeat(r.Context(), db, runner, input.BootID, input.RunningExecutionIDs)
+		reply, err := store.HeartbeatWithProposals(r.Context(), db, runner, input.BootID, input.RunningExecutionIDs, input.RunningRouteProposalIDs)
 		if errors.Is(err, store.ErrHeartbeatExecutionOwner) {
 			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
 			return
@@ -44,7 +52,8 @@ func runnerHeartbeat(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			return
 		}
 		writeJSON(w, http.StatusOK, struct {
-			CancelExecutionIDs []string `json:"cancelExecutionIds"`
-		}{ids})
+			CancelExecutionIDs     []string `json:"cancelExecutionIds"`
+			CancelRouteProposalIDs []string `json:"cancelRouteProposalIds"`
+		}{reply.CancelExecutionIDs, reply.CancelRouteProposalIDs})
 	}
 }

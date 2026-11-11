@@ -108,13 +108,19 @@ func ReportRouteProposalResultTx(ctx context.Context, tx *sql.Tx, in RoutePropos
 	default:
 		return conflictf("Route proposal is not running")
 	}
+	var taskStatus model.TaskStatus
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, p.taskID).Scan(&taskStatus); err != nil {
+		return err
+	}
+	if taskStatus == model.TaskCancelled {
+		// Spec 04 3.7/3.8 (Q133): the task was cancelled while the Runner
+		// ran the proposal; the Runner stopped it, so it ends cancelled and
+		// its result is only recorded.
+		status = model.ProposalCancelled
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE route_proposals SET status = ?, proposed_label = ?, reason = ?, error_class = ?, finished_at = ?
 		WHERE id = ? AND status = 'running'`, status, label, reason, errorClass, now, in.ProposalID)
 	if err := expectOneRow(result, err); err != nil {
-		return err
-	}
-	var taskStatus model.TaskStatus
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, p.taskID).Scan(&taskStatus); err != nil {
 		return err
 	}
 	if taskStatus != model.TaskRouting {

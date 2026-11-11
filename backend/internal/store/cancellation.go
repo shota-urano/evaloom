@@ -26,14 +26,19 @@ type TaskCancellation struct {
 	Reason string
 }
 
-// CancelTaskTx applies spec 04 3.5 inside tx: a queued, blocked or
-// waiting_approval (spec 17 3.6) task and its latest Execution become
-// cancelled; for a running or verifying task, or a merging Execution, the
-// Execution's cancel_requested_at is recorded and the Runner stops it on its
-// next heartbeat (a merging one at consume, spec 17 3.5.2). A task held at Linear intake (blocked without an
-// Execution, spec 15 3.6.3) becomes cancelled directly. Any other state is a
-// task.ErrConflict. A repeated request for a running task keeps the first
-// timestamp and writes nothing. The caller must roll back on any error.
+// CancelTaskTx applies spec 04 3.8 inside tx: a queued, blocked or
+// waiting_approval task and its latest Execution become cancelled, with its
+// unused approvals invalidated (cancelled) and open decisions withdrawn
+// (cancelled); a blocked publish_unknown decision ends failed
+// (publish_unknown) instead. For a running or verifying task, or a merging
+// Execution, the Execution's cancel_requested_at is recorded and the Runner
+// stops it on its next heartbeat (a merging one at consume, spec 17 3.5.2).
+// A routing task withdraws its route decision and cancels a queued proposal;
+// a running proposal is stopped through heartbeat. A task held at Linear
+// intake (blocked without an Execution, spec 15 3.6.3) becomes cancelled
+// directly. Any other state is a task.ErrConflict. A repeated request for a
+// running task keeps the first timestamp and writes nothing. The workspace is
+// never touched. The caller must roll back on any error.
 func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 	var status model.TaskStatus
 	var executionID, heldCause sql.NullString
@@ -61,6 +66,20 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 	if !executionID.Valid {
 		if status != model.TaskRouting && (status != model.TaskBlocked || !heldCause.Valid) {
 			return &task.ConflictError{Code: "conflict", Message: "Task has no latest Execution"}
+		}
+		if status == model.TaskRouting {
+			// Spec 04 3.8 routing row and 3.7 (Q133): the route decision is
+			// withdrawn and a queued proposal is cancelled. A running proposal
+			// stays running until its Runner stops it (heartbeat
+			// cancelRouteProposalIds) so the concurrency slot is not released
+			// early; its result then makes it cancelled.
+			if err := withdrawOpenDecisionsTx(ctx, tx, `task_id = ? AND execution_id IS NULL`, c.TaskID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE route_proposals SET status = 'cancelled', finished_at = ?
+				WHERE task_id = ? AND status = 'queued'`, time.Now().UTC().Format(time.RFC3339Nano), c.TaskID); err != nil {
+				return err
+			}
 		}
 		// Held at intake: there is no Execution or worktree to stop.
 		result, err := tx.ExecContext(ctx, `UPDATE tasks SET status = ?, updated_at = ?
@@ -129,38 +148,67 @@ func CancelTaskTx(ctx context.Context, tx *sql.Tx, c TaskCancellation) error {
 		}
 		return nil
 	}
-	// Spec 17 3.6: cancelling a task waiting for approval invalidates its
-	// unused approvals in the same transaction.
-	if execution.Status == model.ExecutionWaitingApproval {
-		if err := invalidateOpenApprovalsTx(ctx, tx, execution.ID, "cancelled"); err != nil {
+	// Spec 04 3.8 and 17 3.6: cancelling a task waiting for approval, or a
+	// queued one resuming with approved but unused approvals, invalidates
+	// them (cancelled) and withdraws their open decisions.
+	if err := invalidateOpenApprovalsTx(ctx, tx, execution.ID, "cancelled"); err != nil {
+		return err
+	}
+	// A blocked Execution's open decision is withdrawn (cancelled). Only a
+	// publish whose outcome is unknown ends failed (publish_unknown, spec 02
+	// 5.2); every other path ends cancelled.
+	to, class := model.ExecutionCancelled, model.ErrorCancelled
+	if execution.Status == model.ExecutionBlocked {
+		var unknown bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM owner_decisions
+			WHERE execution_id = ? AND status = 'open' AND kind = ? AND cause = ?)`,
+			execution.ID, model.DecisionBlocked, model.CausePublishUnknown).Scan(&unknown); err != nil {
 			return err
 		}
+		if unknown {
+			to, class = model.ExecutionFailed, model.ErrorPublishUnknown
+		}
+	}
+	if err := withdrawOpenDecisionsTx(ctx, tx, `execution_id = ?`, execution.ID); err != nil {
+		return err
+	}
+	toTask, err := task.TaskStatusForExecution(to)
+	if err != nil {
+		return err
 	}
 	// Same result metadata and transition effects as a reported cancellation:
 	// error classification, finish time, retained worktree and cancellation's
 	// notification exclusion.
 	if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = ? WHERE id = ?`,
-		model.ErrorCancelled, execution.ID); err != nil {
+		class, execution.ID); err != nil {
 		return err
 	}
 	// Record the requester before the shared transition writes its Linear
 	// state row. Both the audit and transition roll back together on error.
-	if err := audit(map[string]any{"executionId": execution.ID, "from": status, "to": model.TaskCancelled, "cancelRequested": false}); err != nil {
+	if err := audit(map[string]any{"executionId": execution.ID, "from": status, "to": toTask, "cancelRequested": false}); err != nil {
 		return err
 	}
 	if err := task.TransitionExecutionTx(ctx, tx, task.Transition{
 		TaskID: c.TaskID, ExecutionID: execution.ID, FromTask: status,
-		FromExecution: execution.Status, ToExecution: model.ExecutionCancelled,
+		FromExecution: execution.Status, ToExecution: to,
 	}); err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(map[string]string{
-		"from": string(execution.Status), "to": "cancelled", "reason": "task_cancelled",
+		"from": string(execution.Status), "to": string(to), "reason": "task_cancelled",
 	})
 	if _, err := AppendExecutionEvent(ctx, tx, execution.ID, model.EventStatusChanged, payload); err != nil {
 		return err
 	}
 	return nil
+}
+
+// withdrawOpenDecisionsTx withdraws (cancelled) the open owner decisions
+// matching where, a fixed SQL fragment whose values stay parameters.
+func withdrawOpenDecisionsTx(ctx context.Context, tx *sql.Tx, where string, args ...any) error {
+	_, err := tx.ExecContext(ctx, `UPDATE owner_decisions SET status = 'withdrawn', withdrawn_reason = 'cancelled'
+		WHERE status = 'open' AND `+where, args...)
+	return err
 }
 
 func expectOneRow(result sql.Result, err error) error {
