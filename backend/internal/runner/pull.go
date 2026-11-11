@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,36 +9,49 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
 const maxConcurrentExecutions = 2
 
-// Claim is the HTTP execution input. The Runner never opens the management DB.
+// Claim is the execution job of the claim response (spec 04 3.3.1). The Runner
+// never opens the management DB.
 type Claim struct {
+	Kind      string `json:"kind"`
 	Execution struct {
-		ID     string `json:"id"`
-		TaskID string `json:"taskId"`
-		Seq    int    `json:"seq"`
-		Mode   string `json:"mode"`
+		ID          string  `json:"id"`
+		TaskID      string  `json:"taskId"`
+		Seq         int     `json:"seq"`
+		Mode        string  `json:"mode"`
+		ResumeStage *string `json:"resumeStage"`
 	} `json:"execution"`
 	Task struct {
-		Title              string `json:"title"`
-		Body               string `json:"body"`
-		AcceptanceCriteria string `json:"acceptanceCriteria"`
-		ShortName          string `json:"shortName"`
+		ID                 string          `json:"id"`
+		Title              string          `json:"title"`
+		Body               string          `json:"body"`
+		AcceptanceCriteria string          `json:"acceptanceCriteria"`
+		Source             json.RawMessage `json:"source"`
 	} `json:"task"`
-	Project model.Project `json:"project"`
+	Route   json.RawMessage `json:"route"`
+	Params  json.RawMessage `json:"params"`
 	Profile struct {
-		HarnessID       string          `json:"harnessId"`
-		Adapter         string          `json:"adapter"`
-		Version         string          `json:"version"`
-		CommitSHA       string          `json:"commitSha"`
-		Definition      json.RawMessage `json:"definition"`
-		HarnessRepoPath string          `json:"harnessRepoPath"`
-		ToolPermissions json.RawMessage `json:"toolPermissions"`
+		ID         string          `json:"id"`
+		HarnessID  string          `json:"harnessId"`
+		Version    string          `json:"version"`
+		CommitSHA  string          `json:"commitSha"`
+		TagName    string          `json:"tagName"`
+		RepoPath   string          `json:"repoPath"`
+		Definition json.RawMessage `json:"definition"`
 	} `json:"profile"`
+	Workspace struct {
+		ID      string `json:"id"`
+		Path    string `json:"path"`
+		Created bool   `json:"created"`
+	} `json:"workspace"`
+	Limits struct {
+		TimeoutSec map[string]int `json:"timeoutSec"`
+	} `json:"limits"`
+	Previous json.RawMessage `json:"previous"`
+	Resume   json.RawMessage `json:"resume"`
 }
 
 // Run heartbeats immediately, then claims at most one job per poll when there
@@ -131,10 +145,15 @@ func (runner *Runner) claimAndStart(ctx context.Context, execute func(context.Co
 	return nil
 }
 
-// A 204 creates no local execution. Failed/ambiguous claims are not replayed
-// as executions; later polls ask the Control Plane for the next eligible work.
+// {"job":null} (or a 204) creates no local execution. Failed/ambiguous claims
+// are not replayed as executions; later polls ask the Control Plane for the
+// next eligible work. The request carries workspaceRoot (spec 04 3.3, Q134).
 func (runner *Runner) claim(ctx context.Context) (*Claim, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, runner.claimURL, nil)
+	body, err := json.Marshal(map[string]string{"workspaceRoot": runner.workspaceRoot})
+	if err != nil {
+		return nil, fmt.Errorf("runner: create claim request")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, runner.claimURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("runner: create claim request")
 	}
@@ -151,15 +170,31 @@ func (runner *Runner) claim(ctx context.Context) (*Claim, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("runner: claim returned HTTP %d", response.StatusCode)
 	}
-	// Claims now carry the full saved test ID list. Artifact sizes are governed
-	// by the Control Plane's configured upload limit, not a separate fixed
-	// response cap that could reject an otherwise valid baseline.
 	decoder := json.NewDecoder(response.Body)
-	var reply Claim
-	if err := decoder.Decode(&reply); err != nil || reply.Execution.ID == "" || reply.Execution.TaskID == "" {
+	var envelope map[string]json.RawMessage
+	if err := decoder.Decode(&envelope); err != nil || len(envelope) != 1 {
 		return nil, fmt.Errorf("runner: invalid claim response")
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("runner: invalid claim response")
+	}
+	job, ok := envelope["job"]
+	if !ok {
+		return nil, fmt.Errorf("runner: invalid claim response")
+	}
+	if string(job) == "null" {
+		return nil, nil
+	}
+	var reply Claim
+	if err := json.Unmarshal(job, &reply); err != nil {
+		return nil, fmt.Errorf("runner: invalid claim response")
+	}
+	// Route proposals need the Proposal Sandbox (spec 05 3.13), which this
+	// Runner does not have yet.
+	if reply.Kind != "execution" {
+		return nil, fmt.Errorf("runner: unsupported claim job kind %q", reply.Kind)
+	}
+	if reply.Execution.ID == "" || reply.Execution.TaskID == "" {
 		return nil, fmt.Errorf("runner: invalid claim response")
 	}
 	return &reply, nil

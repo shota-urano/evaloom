@@ -115,7 +115,7 @@ func TestRetryFailedCreatesNextPendingExecutionAndRecordsMode(t *testing.T) {
 				if seq == 2 {
 					status, body = requestClaim(t, f, token)
 					claim := requireClaim(t, status, body)
-					if claim.Execution.ID != id || claim.Execution.Seq != seq || claim.Execution.Mode != mode {
+					if claim.Execution.ID != id || claim.Execution.Seq != seq || string(claim.Execution.Mode) != mode {
 						t.Fatalf("retry not delivered by claim: %+v", claim.Execution)
 					}
 					status, body = postResult(t, f, token, id, resultBody("claimed", "failed"))
