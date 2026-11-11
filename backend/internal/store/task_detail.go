@@ -25,7 +25,7 @@ type TaskExecution struct {
 // snapshot, so a concurrent retry cannot mix task state with older history.
 func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, error) {
 	result := TaskDetail{Executions: []TaskExecution{}}
-	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
+	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), coalesce(t.harness_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class, e.profile_version, e.profile_commit_sha,
@@ -40,7 +40,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 		var e TaskExecution
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
-		if err := rows.Scan(&result.ID, &result.ProjectID, &result.Title, &result.Body, &result.AcceptanceCriteria,
+		if err := rows.Scan(&result.ID, &result.ProjectID, &result.HarnessID, &result.Title, &result.Body, &result.AcceptanceCriteria,
 			&result.CollaborationMode, &result.Status, &result.CreatedAt, &result.UpdatedAt,
 			&result.Source, &result.IntakeBlockCause, &result.LinearIdentifier, &result.LinearURL,
 			&executionID, &seq, &mode, &status, &e.ErrorClass, &e.ProfileVersion, &e.ProfileCommitSHA,

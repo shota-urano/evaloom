@@ -11,9 +11,9 @@ import (
 func GetTaskByIdempotencyKey(ctx context.Context, reader projectReader, key string) (model.Task, error) {
 	var t model.Task
 	// A held Linear task has no Project (spec 15 3.6); it reads as "".
-	err := reader.QueryRowContext(ctx, `SELECT id, coalesce(project_id, ''), title, body, acceptance_criteria,
+	err := reader.QueryRowContext(ctx, `SELECT id, coalesce(project_id, ''), coalesce(harness_id, ''), title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at
-		FROM tasks WHERE idempotency_key = ?`, key).Scan(&t.ID, &t.ProjectID, &t.Title, &t.Body,
+		FROM tasks WHERE idempotency_key = ?`, key).Scan(&t.ID, &t.ProjectID, &t.HarnessID, &t.Title, &t.Body,
 		&t.AcceptanceCriteria, &t.CollaborationMode, &t.Status,
 		&t.IdempotencyKey, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
@@ -26,9 +26,9 @@ func InsertTask(ctx context.Context, tx *sql.Tx, t *model.Task) error {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria,
+		(id, project_id, harness_id, title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at)
-		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.ProjectID, t.Title, t.Body,
+		VALUES (?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`, t.ID, t.ProjectID, t.HarnessID, t.Title, t.Body,
 		t.AcceptanceCriteria, t.CollaborationMode, t.Status,
 		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt)
 	return err
@@ -119,7 +119,7 @@ type TaskFilter struct {
 // minimum of three digits, so ordering and the exclusive cursor boundary use
 // the numeric part (task-1000 follows task-999). before <= 0 starts at the top.
 func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64, limit int) ([]TaskSummary, error) {
-	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), t.title, t.body, t.acceptance_criteria,
+	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), coalesce(t.harness_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class
@@ -139,7 +139,7 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
 		var errorClass sql.NullString
-		if err := rows.Scan(&s.ID, &s.ProjectID, &s.Title, &s.Body, &s.AcceptanceCriteria,
+		if err := rows.Scan(&s.ID, &s.ProjectID, &s.HarnessID, &s.Title, &s.Body, &s.AcceptanceCriteria,
 			&s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
 			&s.Source, &s.IntakeBlockCause, &s.LinearIdentifier, &s.LinearURL,
 			&executionID, &seq, &mode, &status, &errorClass); err != nil {
