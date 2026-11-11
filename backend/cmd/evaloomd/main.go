@@ -197,7 +197,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		}
 		defer func() { err = errors.Join(err, files.Close()) }()
 		artifacts = api.ArtifactConfig{Store: files, MaxBytes: *artifactMaxBytes}
-		// Linear comment bodies read 作業概要 from harness_output (spec 16 3.3).
+		// Linear comment bodies read 作業概要 from work_summary (spec 16 3.3).
 		defer linearoutbox.SetSummarySource(files.HarnessSummaryTx)()
 	}
 

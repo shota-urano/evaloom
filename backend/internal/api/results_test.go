@@ -59,6 +59,7 @@ func postResult(t *testing.T, f *authFixture, token, id string, input any) (int,
 func resultBody(from, to string) map[string]any {
 	input := map[string]any{"fromStatus": from, "status": to}
 	if to == "succeeded" {
+		input["stage"] = "publish"
 		input["usage"] = map[string]any{"wallTimeMs": 0}
 	}
 	if to == "failed" {

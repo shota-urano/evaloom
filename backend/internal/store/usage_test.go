@@ -16,7 +16,7 @@ func TestRecordUsageParticipatesInResultTransaction(t *testing.T) {
 		}
 		defer tx.Rollback()
 		if err := RecordUsage(ctx, tx, UsageRecord{
-			ID: "usage-1", ExecutionID: "execution-1", WallTimeMS: 1234,
+			ID: "usage-1", ExecutionID: "execution-1", Stage: "work", WallTimeMS: 1234,
 			InputTokens: new(int64(0)), OutputTokens: new(int64(9007199254740993)),
 		}); err != nil {
 			t.Fatal(err)

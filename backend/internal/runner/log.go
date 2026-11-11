@@ -24,8 +24,8 @@ import (
 // the file and registering its metadata; it must make retries with the same ID
 // idempotent. Runner implements this through the artifact registration API.
 type LogArtifact struct {
-	ID, ExecutionID, Kind, Path string
-	Redacted                    bool
+	ID, ExecutionID, Stage, Kind, Name, Path string
+	Redacted                                 bool
 }
 
 type ArtifactRegistrar interface {
@@ -213,7 +213,7 @@ func (log *Log) Deliver(ctx context.Context) error {
 				return writeErr
 			}
 			err := log.registrar.RegisterLogArtifact(ctx, LogArtifact{
-				ID: log.id, ExecutionID: log.executionID, Kind: log.stream + "_log",
+				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[log.stream], Name: filepath.Base(log.path),
 				Path: log.path, Redacted: redacted,
 			})
 			if err == nil {

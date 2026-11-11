@@ -7,10 +7,10 @@
 以下は仕様に応答形式の記載がない部分の実装判断。
 
 - 本人用の `GET /api/executions/{id}/logs` は
-  `{"harness":"...","setup":"...","test":"...","runner":"..."}` を返す。
+  `{"harness":"...","setup":"...","test":"...","publish":"...","runner":"..."}` を返す。
   各値はログ本文で、未保存のstreamは空文字列。
-- harness・setup・testは、それぞれ `harness_log`・`setup_log`・`test_log` の
-  成果物ファイルを読む。同じstreamのファイルが複数ある場合は
+- harness・setup・test・publishは、kind=`log` で、stageがそれぞれ
+  `work`・`prepare`・`check`・`publish` の成果物ファイルを読む。同じstreamのファイルが複数ある場合は
   `created_at`、`id` の昇順で連結する。区切り文字の追加や改行変換はしない。
   対応するlogイベントは重ねて返さない。
 - runnerに対応する成果物kindは仕様にない。新しいkindを作らず、既存の

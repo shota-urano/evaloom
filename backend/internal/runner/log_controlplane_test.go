@@ -257,7 +257,7 @@ func assertLogArtifact(t *testing.T, registrar *recordingArtifactRegistrar, log 
 	registrar.mu.Lock()
 	defer registrar.mu.Unlock()
 	artifact := registrar.artifact
-	if registrar.calls != 1 || artifact.ID != log.id || artifact.ExecutionID != logExecution || artifact.Kind != log.stream+"_log" || artifact.Path != log.Path() || artifact.Redacted || registrar.content != want {
+	if registrar.calls != 1 || artifact.ID != log.id || artifact.ExecutionID != logExecution || artifact.Kind != "log" || artifact.Stage != map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[log.stream] || artifact.Path != log.Path() || artifact.Redacted || registrar.content != want {
 		t.Fatalf("registration calls=%d artifact=%+v content=%q", registrar.calls, artifact, registrar.content)
 	}
 	local, err := os.ReadFile(log.Path())

@@ -5,10 +5,10 @@ import (
 	"database/sql"
 )
 
-// UsageRecord mirrors the existing usage_records columns (spec 02, section 3.2).
+// UsageRecord mirrors the usage_records columns (spec 02, section 3.5).
 // Unknown tokens and cost are nil; zero is an available measurement.
 type UsageRecord struct {
-	ID, ExecutionID           string
+	ID, ExecutionID, Stage    string
 	InputTokens, OutputTokens *int64
 	WallTimeMS                int64
 	CostAmount                *float64
@@ -21,8 +21,8 @@ func RecordUsage(ctx context.Context, db interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, record UsageRecord) error {
 	_, err := db.ExecContext(ctx, `INSERT INTO usage_records
-		(id, execution_id, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, record.ID, record.ExecutionID,
+		(id, execution_id, stage, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, record.ID, record.ExecutionID, record.Stage,
 		record.InputTokens, record.OutputTokens, record.WallTimeMS, record.CostAmount, recordTime())
 	return err
 }

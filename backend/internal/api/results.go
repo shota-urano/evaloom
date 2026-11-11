@@ -17,6 +17,7 @@ import (
 // Status strings are validated as transitions, including unknown values (409).
 // Other enum values are input validation errors (400).
 type resultInput struct {
+	Stage            string           `json:"stage"`
 	FromStatus       string           `json:"fromStatus"`
 	Status           string           `json:"status"`
 	HarnessSessionID *string          `json:"harnessSessionId"`
@@ -25,18 +26,12 @@ type resultInput struct {
 	Usage            *resultUsage     `json:"usage"`
 }
 
-// The result body is not specified in specs 01/04/05. These fields carry step
-// 14's existing measurements without adding an endpoint or schema columns.
+// Usage measurements belong to the explicitly reported stage (spec 04, 3.4.1).
 type resultUsage struct {
-	WallTimeMS        *int64              `json:"wallTimeMs"`
-	HarnessWallTimeMS *int64              `json:"harnessWallTimeMs"`
-	HarnessUsage      *resultHarnessUsage `json:"harnessUsage"`
-}
-
-type resultHarnessUsage struct {
-	InputTokens  *int64 `json:"inputTokens"`
-	OutputTokens *int64 `json:"outputTokens"`
-	WallTimeMS   int64  `json:"wallTimeMs"`
+	WallTimeMS   *int64   `json:"wallTimeMs"`
+	InputTokens  *int64   `json:"inputTokens"`
+	OutputTokens *int64   `json:"outputTokens"`
+	CostAmount   *float64 `json:"costAmount"`
 }
 
 func reportExecutionResult(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.HandlerFunc {
@@ -141,18 +136,20 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 		return invalid("usage", "only_for_succeeded")
 	}
 	if usage := input.Usage; usage != nil {
-		for _, value := range []*int64{usage.WallTimeMS, usage.HarnessWallTimeMS} {
+		stage := map[model.ExecutionStatus]string{
+			model.ExecutionPreparing: "prepare", model.ExecutionRunning: "work",
+			model.ExecutionVerifying: "check", model.ExecutionPublishing: "publish",
+		}[execution.Status]
+		if input.Stage == "" || input.Stage != stage {
+			return invalid("stage", "status_mismatch")
+		}
+		for _, value := range []*int64{usage.WallTimeMS, usage.InputTokens, usage.OutputTokens} {
 			if value != nil && *value < 0 {
 				return invalid("usage", "out_of_range")
 			}
 		}
-		if harness := usage.HarnessUsage; harness != nil {
-			if harness.WallTimeMS < 0 || harness.InputTokens != nil && *harness.InputTokens < 0 ||
-				harness.OutputTokens != nil && *harness.OutputTokens < 0 {
-				return invalid("usage.harnessUsage", "out_of_range")
-			}
-		}
 	}
+
 	if input.Status == "failed" && input.ErrorClass == "" {
 		return invalid("errorClass", "required")
 	}
@@ -169,15 +166,10 @@ func validateResult(r *http.Request, tx *sql.Tx, execution store.ContextExecutio
 func saveResult(r *http.Request, tx *sql.Tx, execution store.ContextExecution, input resultInput) error {
 	if usage := input.Usage; usage != nil {
 		record := store.UsageRecord{
-			ID: ulid.Make().String(), ExecutionID: execution.ID, WallTimeMS: *usage.WallTimeMS,
+			ID: ulid.Make().String(), ExecutionID: execution.ID, Stage: input.Stage,
+			WallTimeMS: *usage.WallTimeMS, InputTokens: usage.InputTokens,
+			OutputTokens: usage.OutputTokens, CostAmount: usage.CostAmount,
 		}
-		if usage.HarnessUsage != nil {
-			record.InputTokens = usage.HarnessUsage.InputTokens
-			record.OutputTokens = usage.HarnessUsage.OutputTokens
-		}
-		// The existing schema has a single unlabelled duration column. Store
-		// total Execution time; retain both harness measurements at the input
-		// boundary until specs define how to distinguish them in usage_records.
 		if err := store.RecordUsage(r.Context(), tx, record); err != nil {
 			return err
 		}

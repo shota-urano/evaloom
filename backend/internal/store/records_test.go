@@ -39,14 +39,14 @@ func TestVerificationMigrationUpgradesAndRoundTripsAllTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	db = openRegistry(t, path)
-	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28})
+	assertVersions(t, db, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29})
 	for _, test := range []struct {
 		table string
 		want  []any
 	}{
-		{"artifacts", []any{"artifact-1", "execution-1", "test_ids", "artifacts/test-ids.json", strings.Repeat("b", 64), int64(12), int64(1), registryTime}},
+		{"artifacts", []any{"artifact-1", "execution-1", nil, "check", "out_file", "test-ids.json", "artifacts/test-ids.json", strings.Repeat("b", 64), int64(12), int64(1), registryTime}},
 		{"audit_logs", []any{int64(1), "owner", "project.update", "project", "project-a", `{"before":"main","after":"develop"}`, registryTime}},
-		{"usage_records", []any{"usage-1", "execution-1", int64(100), int64(20), int64(1500), float64(0.125), registryTime}},
+		{"usage_records", []any{"usage-1", "execution-1", "check", int64(100), int64(20), int64(1500), float64(0.125), registryTime}},
 	} {
 		t.Run(test.table, func(t *testing.T) {
 			got := make([]any, len(test.want))
@@ -70,8 +70,8 @@ func TestVerificationMigrationUpgradesAndRoundTripsAllTables(t *testing.T) {
 
 func TestVerificationRecordsPreserveUnknownMeasurementsAsNull(t *testing.T) {
 	db := openTaskTables(t)
-	mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, wall_time_ms, created_at)
-		VALUES ('usage-1', 'execution-1', 1500, ?)`, registryTime)
+	mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, stage, wall_time_ms, created_at)
+		VALUES ('usage-1', 'execution-1', 'check', 1500, ?)`, registryTime)
 	var input, output sql.NullInt64
 	var cost sql.NullFloat64
 	if err := db.QueryRow("SELECT input_tokens, output_tokens, cost_amount FROM usage_records").Scan(&input, &output, &cost); err != nil {
@@ -107,7 +107,7 @@ func TestVerificationRecordEnums(t *testing.T) {
 		allowed       []any
 		invalid       []any
 	}{
-		{"artifacts", "kind", []any{"harness_log", "test_log", "setup_log", "diff", "test_report", "test_ids", "harness_output"}, []any{"unknown", ""}},
+		{"artifacts", "kind", []any{"log", "out_file", "request_json", "result_json", "work_summary", "question", "proposal_result"}, []any{"unknown", ""}},
 		{"artifacts", "redacted", []any{0, 1}, []any{-1, 2}},
 		{"audit_logs", "actor", []any{"owner", "system", "runner:mac-mini"}, []any{"unknown", "runner:", ""}},
 	} {
@@ -159,8 +159,13 @@ func TestRecordWritersSerializeJSONBeforeInserting(t *testing.T) {
 func seedVerificationRecords(t *testing.T, db *sql.DB) {
 	t.Helper()
 	sha := strings.Repeat("a", 40)
-	mustTaskExec(t, db, `INSERT INTO artifacts (id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
-		VALUES ('artifact-1', 'execution-1', 'test_ids', 'artifacts/test-ids.json', ?, 12, 1, ?)`, strings.Repeat("b", 64), registryTime)
+	if len(migrationRows(t, db, `SELECT name FROM pragma_table_info('artifacts') WHERE name='stage'`)) == 0 {
+		mustTaskExec(t, db, `INSERT INTO artifacts (id, execution_id, kind, storage_path, sha256, size_bytes, redacted, created_at)
+			VALUES ('artifact-1', 'execution-1', 'test_ids', 'artifacts/test-ids.json', ?, 12, 1, ?)`, strings.Repeat("b", 64), registryTime)
+	} else {
+		mustTaskExec(t, db, `INSERT INTO artifacts (id, execution_id, stage, kind, name, storage_path, sha256, size_bytes, redacted, created_at)
+			VALUES ('artifact-1', 'execution-1', 'check', 'out_file', 'test-ids.json', 'artifacts/test-ids.json', ?, 12, 1, ?)`, strings.Repeat("b", 64), registryTime)
+	}
 	// Migration 0025 removed the development tables. Seed them only in
 	// databases migrated partway, for the upgrade tests.
 	if tableExists(t, db, "test_runs") {
@@ -175,6 +180,11 @@ func seedVerificationRecords(t *testing.T, db *sql.DB) {
 	}
 	mustTaskExec(t, db, `INSERT INTO audit_logs (actor, action, target_type, target_id, detail, created_at)
 		VALUES ('owner', 'project.update', 'project', 'project-a', '{"before":"main","after":"develop"}', ?)`, registryTime)
-	mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)
-		VALUES ('usage-1', 'execution-1', 100, 20, 1500, 0.125, ?)`, registryTime)
+	if len(migrationRows(t, db, `SELECT name FROM pragma_table_info('usage_records') WHERE name='stage'`)) == 0 {
+		mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)
+			VALUES ('usage-1', 'execution-1', 100, 20, 1500, 0.125, ?)`, registryTime)
+	} else {
+		mustTaskExec(t, db, `INSERT INTO usage_records (id, execution_id, stage, input_tokens, output_tokens, wall_time_ms, cost_amount, created_at)
+			VALUES ('usage-1', 'execution-1', 'check', 100, 20, 1500, 0.125, ?)`, registryTime)
+	}
 }

@@ -13,8 +13,8 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
-// SummarySource reads HarnessResult.summary (spec 02 5.8) of one Execution
-// inside tx, from the harness_output artifact. ok=false means the summary is
+// SummarySource reads out/summary.md (spec 16 3.3) of one Execution inside tx,
+// from the work_summary artifact. ok=false means the summary is
 // unavailable; it never fails the state transition that writes the row.
 type SummarySource func(ctx context.Context, tx *sql.Tx, executionID string) (summary string, ok bool)
 
