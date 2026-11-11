@@ -32,6 +32,7 @@ type Runner struct {
 	mu                          sync.Mutex
 	heartbeatMu                 sync.Mutex
 	executions                  map[string]context.CancelFunc
+	proposals                   map[string]context.CancelFunc
 	cleanedWorkspaces           map[string]struct{}
 	claimPending                bool
 	loopRunning                 bool
@@ -74,6 +75,7 @@ func New(config Config) (*Runner, error) {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		executions:        make(map[string]context.CancelFunc),
+		proposals:         make(map[string]context.CancelFunc),
 		cleanedWorkspaces: make(map[string]struct{}),
 	}, nil
 }
@@ -119,12 +121,17 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 	for id := range runner.executions {
 		ids = append(ids, id)
 	}
+	proposalIDs := make([]string, 0, len(runner.proposals))
+	for id := range runner.proposals {
+		proposalIDs = append(proposalIDs, id)
+	}
 	cleaned := make([]string, 0, len(runner.cleanedWorkspaces))
 	for id := range runner.cleanedWorkspaces {
 		cleaned = append(cleaned, id)
 	}
 	runner.mu.Unlock()
 	sort.Strings(ids)
+	sort.Strings(proposalIDs)
 	sort.Strings(cleaned)
 	body, err := json.Marshal(struct {
 		BootID                  string   `json:"bootId"`
@@ -132,7 +139,7 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 		RunningRouteProposalIDs []string `json:"runningRouteProposalIds"`
 		// Older Control Planes reject this field, so omit an empty report.
 		CleanedWorkspaceIDs []string `json:"cleanedWorkspaceIds,omitempty"`
-	}{runner.bootID, ids, []string{}, cleaned})
+	}{runner.bootID, ids, proposalIDs, cleaned})
 	if err != nil {
 		return fmt.Errorf("runner: encode heartbeat: %w", err)
 	}
@@ -152,8 +159,9 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 		return fmt.Errorf("runner: heartbeat returned HTTP %d", response.StatusCode)
 	}
 	var reply struct {
-		CancelExecutionIDs []string `json:"cancelExecutionIds"`
-		CleanWorkspaceIDs  []string `json:"cleanWorkspaceIds"`
+		CancelExecutionIDs     []string `json:"cancelExecutionIds"`
+		CancelRouteProposalIDs []string `json:"cancelRouteProposalIds"`
+		CleanWorkspaceIDs      []string `json:"cleanWorkspaceIds"`
 	}
 	const maxResponseBytes = 1 << 20
 	content, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
@@ -174,6 +182,14 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 		runner.mu.Unlock()
 		if cancel != nil {
 			// Invoke outside the lock so cancellation may finish an execution.
+			cancel()
+		}
+	}
+	for _, id := range reply.CancelRouteProposalIDs {
+		runner.mu.Lock()
+		cancel := runner.proposals[id]
+		runner.mu.Unlock()
+		if cancel != nil {
 			cancel()
 		}
 	}

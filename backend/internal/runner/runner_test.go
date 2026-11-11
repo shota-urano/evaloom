@@ -145,6 +145,7 @@ func TestHeartbeatFailuresLeaveExecutionRunningAndCanResend(t *testing.T) {
 		{"null array", 200, `{"cancelExecutionIds":null}`},
 		{"partial", 200, `{"cancelExecutionIds":["active"],`},
 		{"invalid cleanup array", 200, `{"cancelExecutionIds":["active"],"cleanWorkspaceIds":[123]}`},
+		{"invalid proposal cancellation array", 200, `{"cancelExecutionIds":["active"],"cancelRouteProposalIds":[123]}`},
 		{"trailing JSON", 200, `{"cancelExecutionIds":["active"]} {}`},
 		{"oversized", 200, `{"cancelExecutionIds":["active"]}` + strings.Repeat(" ", 1<<20)},
 	} {

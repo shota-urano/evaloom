@@ -40,9 +40,19 @@ func newPullRunner(t *testing.T, handler http.HandlerFunc) *Runner {
 
 func startPull(t *testing.T, process *Runner, execute func(context.Context, Claim), onError func(error)) context.Context {
 	t.Helper()
+	return startJobs(t, process, JobHandlers{
+		Execution: execute,
+		RouteProposal: func(context.Context, ProposalClaim) {
+			t.Error("unexpected route proposal")
+		},
+	}, onError)
+}
+
+func startJobs(t *testing.T, process *Runner, handlers JobHandlers, onError func(error)) context.Context {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- process.Run(ctx, execute, onError) }()
+	go func() { done <- process.RunJobs(ctx, handlers, onError) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := await(t, done); err != nil {
@@ -50,8 +60,8 @@ func startPull(t *testing.T, process *Runner, execute func(context.Context, Clai
 		}
 		process.mu.Lock()
 		defer process.mu.Unlock()
-		if len(process.executions) != 0 || process.claimPending || process.loopRunning {
-			t.Error("shutdown left executions, a claim reservation or a running loop")
+		if len(process.executions)+len(process.proposals) != 0 || process.claimPending || process.loopRunning {
+			t.Error("shutdown left jobs, a claim reservation or a running loop")
 		}
 	})
 	return ctx
@@ -259,7 +269,10 @@ func TestClaimRejectsInvalidResponsesAndRedirects(t *testing.T) {
 		{"empty", 200, `{}`},
 		{"missing job", 200, `{"execution":{"id":"e","taskId":"t"}}`},
 		{"extra key", 200, `{"job":null,"worktree":{}}`},
-		{"route proposal", 200, `{"job":{"kind":"route_proposal","proposal":{"id":"p"}}}`},
+		{"proposal missing task", 200, `{"job":{"kind":"route_proposal","proposal":{"id":"p"}}}`},
+		{"proposal missing id", 200, `{"job":{"kind":"route_proposal","proposal":{"taskId":"t"}}}`},
+		{"proposal malformed", 200, `{"job":{"kind":"route_proposal","proposal":[]}}`},
+		{"unknown kind", 200, `{"job":{"kind":"unknown","execution":{"id":"e","taskId":"t"}}}`},
 		{"missing task", 200, `{"job":{"kind":"execution","execution":{"id":"e"}}}`},
 		{"trailing value", 200, `{"job":{"kind":"execution","execution":{"id":"e","taskId":"t"}}} {}`},
 		{"oversize", 200, strings.Repeat(" ", 1<<20+1)},
@@ -313,16 +326,17 @@ func TestPullReservesCapacityWhileClaimIsInFlight(t *testing.T) {
 		close(claimStarted)
 		select {
 		case <-reply:
-			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"second","taskId":"task"}}}`)
+			io.WriteString(w, `{"job":{"kind":"route_proposal","proposal":{"id":"second","taskId":"task"}}}`)
 		case <-r.Context().Done():
 		}
 	})
 	started := make(chan struct{}, 1)
-	startPull(t, process, func(ctx context.Context, claim Claim) {
-		if claim.Execution.ID == "second" {
+	startJobs(t, process, JobHandlers{
+		Execution: func(ctx context.Context, _ Claim) { <-ctx.Done() },
+		RouteProposal: func(ctx context.Context, _ ProposalClaim) {
 			started <- struct{}{}
-		}
-		<-ctx.Done()
+			<-ctx.Done()
+		},
 	}, func(err error) { t.Error(err) })
 	await(t, claimStarted)
 	if err := process.RegisterExecution("third", func() {}); err == nil {
@@ -334,7 +348,7 @@ func TestPullReservesCapacityWhileClaimIsInFlight(t *testing.T) {
 	close(reply)
 	await(t, started)
 	if err := process.RegisterExecution("third", func() {}); err == nil {
-		t.Fatal("third registration exceeded the execution limit")
+		t.Fatal("third registration exceeded the shared job limit")
 	}
 }
 
