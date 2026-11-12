@@ -147,6 +147,9 @@ func (in StageInvocation) WaitWork(ctx context.Context, harness adapter.Adapter,
 		cancelErr = harness.Cancel(id)
 		finished = <-done
 	}
+	if in.measurement != nil {
+		in.measurement.work = &finished.result.Usage
+	}
 	if finished.err != nil {
 		return finished.result, errors.Join(finished.err, cancelErr)
 	}
