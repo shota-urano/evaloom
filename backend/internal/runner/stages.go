@@ -74,6 +74,8 @@ type StageInvocation struct {
 }
 
 type StageExecutor interface {
+	// RunStage owns interruption reporting at the execution boundary. Cleanup
+	// and credential recovery may outlast ctx without changing that result.
 	RunStage(context.Context, StageInvocation) StageOutcome
 }
 
@@ -197,13 +199,10 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			}
 			stageCtx, cancel := context.WithTimeout(ctx, invocation.timeout)
 			outcome = runner.runStageWithSecrets(stageCtx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
-			if stageCtx.Err() != nil {
-				if cooperativeCancellation(stageCtx, stage, outcome) {
-					outcome.RunnerError = nil
-				} else {
-					code := stageInterruption(stageCtx.Err())
-					outcome.RunnerError = &code
-				}
+			// The executor has already observed execution termination. A deadline
+			// reached during credential recovery/collection cannot replace it.
+			if cooperativeCancellation(stageCtx, stage, outcome) {
+				outcome.RunnerError = nil
 			}
 			cancel()
 		}

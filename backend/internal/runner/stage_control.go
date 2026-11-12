@@ -123,7 +123,9 @@ func waitProgram(ctx context.Context, process sandbox.Process) error {
 
 // WaitWork cancels through the selected Adapter and waits for its final result,
 // including Sandbox termination and authentication writeback. Work wiring must
-// use StageCancelGrace for the Adapter's TERM/KILL policy.
+// use StageCancelGrace for the Adapter's TERM/KILL policy and map returned
+// interruption errors to StageOutcome.RunnerError. The Adapter's execution
+// result, not the context after writeback, determines whether work was stopped.
 func (in StageInvocation) WaitWork(ctx context.Context, harness adapter.Adapter, id adapter.SessionID) (adapter.HarnessResult, error) {
 	if in.Stage != model.StageWork || harness == nil || id == "" {
 		return adapter.HarnessResult{}, fmt.Errorf("runner: work session is required")
@@ -137,12 +139,26 @@ func (in StageInvocation) WaitWork(ctx context.Context, harness adapter.Adapter,
 		result, err := harness.Result(id)
 		done <- reply{result, err}
 	}()
+	var finished reply
+	var cancelErr error
 	select {
-	case reply := <-done:
-		return reply.result, reply.err
+	case finished = <-done:
 	case <-ctx.Done():
-		cancelErr := harness.Cancel(id)
-		reply := <-done
-		return reply.result, errors.Join(ctx.Err(), cancelErr, reply.err)
+		cancelErr = harness.Cancel(id)
+		finished = <-done
 	}
+	if finished.err != nil {
+		return finished.result, errors.Join(finished.err, cancelErr)
+	}
+	// Cancel can race an already-finished CLI whose credential recovery is
+	// still pending. A retrieved result remains authoritative even then.
+	if finished.result.ErrorClass != nil {
+		switch *finished.result.ErrorClass {
+		case adapter.ErrorTimeout:
+			return finished.result, context.DeadlineExceeded
+		case adapter.ErrorCancelled:
+			return finished.result, context.Canceled
+		}
+	}
+	return finished.result, nil
 }
