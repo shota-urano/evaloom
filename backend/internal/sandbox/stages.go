@@ -60,6 +60,13 @@ func (c *Container) safeStageSource(source string) bool {
 			return false
 		}
 	}
+	keys, err := resolve(filepath.Join(c.data, "secrets"))
+	if err != nil {
+		return false
+	}
+	if overlap, err := overlapsOnDisk(source, keys); err != nil || overlap {
+		return false
+	}
 	return true
 }
 
@@ -87,9 +94,9 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	if len(c.stageRoots) == 0 || spec.Worktree != "" || spec.GitDir != "" {
 		return nil, &Error{Op: "explicit stage mount wiring required"}
 	}
-	// These are later-task boundaries. Never silently ignore requested authority.
-	if len(spec.Secrets) != 0 || spec.ChannelPath != "" {
-		return nil, &Error{Op: "stage secrets and channel wiring unavailable"}
+	// Channel transport belongs to the following task.
+	if spec.ChannelPath != "" {
+		return nil, &Error{Op: "stage channel wiring unavailable"}
 	}
 	if (spec.ConfigDir != "" || spec.ConfigWritable) && spec.Kind != Work && spec.Kind != Proposal {
 		return nil, &Error{Op: "configuration is only available to work and proposal"}
@@ -160,6 +167,14 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	}
 	// env -i strips host and image ENV. The contract allowlist is enforced
 	// even if the trusted legacy AllowEnv contains additional variable names.
+	secrets, err := stageSecretEnvironment(spec)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range secrets {
+		key, _, _ := strings.Cut(entry, "=")
+		args = append(args, "--env", key)
+	}
 	args = append(args, c.config.Image, "-i", "HOME="+home, "TZ=UTC")
 	var env []string
 	for key, value := range spec.Env {

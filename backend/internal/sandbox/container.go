@@ -201,6 +201,9 @@ func overlapsOnDisk(a, b string) (bool, error) {
 }
 
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string, configVolume ...string) ([]string, error) {
+	if _, err := stageSecretEnvironment(spec); err != nil {
+		return nil, err
+	}
 	if err := c.validateNetwork(spec); err != nil {
 		return nil, err
 	}
@@ -316,7 +319,10 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 }
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
-	var err error
+	secretEnv, err := stageSecretEnvironment(spec)
+	if err != nil {
+		return nil, err
+	}
 	spec, err = c.networkSpec(spec)
 	if err != nil {
 		return nil, err
@@ -363,10 +369,22 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	image, err := c.output(ctx, "image", "inspect", "--format", "{{json .}}", c.config.Image)
 	var metadata struct {
 		OS     string `json:"Os"`
-		Config *struct{ Volumes map[string]json.RawMessage }
+		Config *struct {
+			Volumes map[string]json.RawMessage
+			Env     []string
+		}
 	}
 	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
 		return fail("Linux image without implicit volumes required")
+	}
+	if len(secretEnv) != 0 {
+		entrypoint, err := secretEntrypoint(metadata.Config.Env, spec)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		index := slices.Index(args, "-i")
+		args = slices.Replace(args, index, index+1, entrypoint...)
 	}
 	if len(spec.AllowedDestinations) != 0 {
 		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
@@ -387,7 +405,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			return nil, err
 		}
 	}
-	if _, err = c.output(ctx, args...); err != nil {
+	if _, err = c.createWithSecrets(ctx, secretEnv, args); err != nil {
 		// create cannot run a workload. Remove any partially created container
 		// by its preassigned name, even if its response was lost or timed out.
 		_ = c.remove(name)
