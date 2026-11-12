@@ -57,17 +57,25 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 	fmt.Fprintln(output, "evaloom-runner: started")
 	// Result delivery must remain alive after an execution is cancelled.
 	reportCtx := context.WithoutCancel(ctx)
-	return process.Run(ctx, func(ctx context.Context, claim runner.Claim) {
-		// The development stages (worktree, Gate 2/3, Git Publisher) moved to
-		// the special harness software-engineer (docs/specs/19-routing-and-stages.md
-		// 3.11). No stage can run a claimed Execution until the stage framework
-		// exists, so report it failed instead of leaving it claimed.
-		if err := process.ReportResult(reportCtx, claim.Execution.ID, runner.ExecutionResult{
-			FromStatus: model.ExecutionClaimed, Status: model.ExecutionFailed, ErrorClass: model.ErrorConfig,
-			ErrorMessage: "段を動かす仕組みがまだ無いため実行できない",
-		}); err != nil {
-			fmt.Fprintln(output, err)
-		}
+	services := runner.ProposalServicesFromConfig(config)
+	return process.RunJobs(ctx, runner.JobHandlers{
+		Execution: func(ctx context.Context, claim runner.Claim) {
+			// The development stages (worktree, Gate 2/3, Git Publisher) moved to
+			// the special harness software-engineer (docs/specs/19-routing-and-stages.md
+			// 3.11). No stage can run a claimed Execution until the stage framework
+			// exists, so report it failed instead of leaving it claimed.
+			if err := process.ReportResult(reportCtx, claim.Execution.ID, runner.ExecutionResult{
+				FromStatus: model.ExecutionClaimed, Status: model.ExecutionFailed, ErrorClass: model.ErrorConfig,
+				ErrorMessage: "段を動かす仕組みがまだ無いため実行できない",
+			}); err != nil {
+				fmt.Fprintln(output, err)
+			}
+		},
+		RouteProposal: func(ctx context.Context, claim runner.ProposalClaim) {
+			if err := process.ExecuteProposal(ctx, claim, services); err != nil {
+				fmt.Fprintln(output, err)
+			}
+		},
 	}, func(err error) {
 		fmt.Fprintln(output, err)
 	})
