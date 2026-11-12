@@ -15,7 +15,7 @@ func TestLookupByName(t *testing.T) {
 	first := &stubAdapter{capabilities: adapter.Capabilities{
 		Streaming: true, TokenUsage: true, NativeInstructionFiles: []string{"AGENTS.md"},
 	}}
-	second := &stubAdapter{capabilities: adapter.Capabilities{Resume: true}}
+	second := &resumableStubAdapter{stubAdapter: stubAdapter{capabilities: adapter.Capabilities{Resume: true}}}
 	for name, implementation := range map[string]adapter.Adapter{
 		"codex": first, "claude_code": second, "new_harness": &stubAdapter{},
 	} {
@@ -32,6 +32,20 @@ func TestLookupByName(t *testing.T) {
 		if !reflect.DeepEqual(got.Capabilities(), implementation.Capabilities()) {
 			t.Fatalf("Lookup(%q) returned different capabilities", name)
 		}
+	}
+	implementation, err := registry.Lookup("claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumable, ok := implementation.(adapter.ResumableAdapter)
+	if !ok || !implementation.Capabilities().Resume {
+		t.Fatal("registered continuation capability is unavailable")
+	}
+	if err := resumable.Resume(context.Background(), "question-session", adapter.HarnessRequest{}, adapter.SandboxEnv{}); err != nil {
+		t.Fatal(err)
+	}
+	if second.resumed != "question-session" {
+		t.Fatalf("resumed %q; want the same question session", second.resumed)
 	}
 }
 
@@ -139,3 +153,18 @@ func (*stubAdapter) Result(id adapter.SessionID) (adapter.HarnessResult, error) 
 }
 
 func (s *stubAdapter) Capabilities() adapter.Capabilities { return s.capabilities }
+
+type resumableStubAdapter struct {
+	stubAdapter
+	resumed adapter.SessionID
+}
+
+var _ adapter.ResumableAdapter = (*resumableStubAdapter)(nil)
+
+func (s *resumableStubAdapter) Resume(ctx context.Context, id adapter.SessionID, _ adapter.HarnessRequest, _ adapter.SandboxEnv) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.resumed = id
+	return nil
+}

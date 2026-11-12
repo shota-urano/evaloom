@@ -36,7 +36,7 @@ func newProfileFixture(t *testing.T) *profileFixture {
 		Params: &contract.ProfileParams{Schema: "schema.json"},
 		Stages: contract.ProfileStages{
 			Prepare: &contract.ProgramStage{Command: []string{"bin/prepare"}, TimeoutSec: 1},
-			Work: contract.WorkStage{MicroHarness: model.AdapterCodex, Model: "test", TimeoutSec: 1,
+			Work: contract.WorkStage{MicroHarness: string(model.AdapterCodex), Model: "test", TimeoutSec: 1,
 				Instructions: []string{"work/instructions.md"}, Skills: []string{"work/skills/"}, Settings: []string{"work/settings.json"}},
 			Check:   contract.ProgramStage{Command: []string{"bin/check"}, TimeoutSec: 1},
 			Publish: contract.ProgramStage{Command: []string{"bin/publish"}, TimeoutSec: 1},
