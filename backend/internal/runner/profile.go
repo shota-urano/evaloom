@@ -279,8 +279,18 @@ func validateExtractedProfile(profiles *os.Root, name string, def contract.Profi
 	defer root.Close()
 	// Reject a writable cache instead of changing content already in use.
 	if err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.Type()&os.ModeSymlink != 0 {
+		if err != nil {
 			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			// Program stages see the entire tree, including unreferenced links.
+			// Resolve through os.Root so absolute paths, parent escapes and
+			// chains cannot reach outside the fixed commit. Dangling/cyclic
+			// links also fail closed. Never stat through a host absolute path.
+			if _, err := root.Stat(name); err != nil {
+				return &ProfileConfigError{}
+			}
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {

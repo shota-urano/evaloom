@@ -403,24 +403,19 @@ func TestProfileCachedReferencesAreRevalidatedWithoutFollowingLinks(t *testing.T
 	}
 }
 
-func TestProfileUnreferencedSymlinkDoesNotRedirectExtraction(t *testing.T) {
+func TestProfileUnreferencedSymlinkWithinCommitIsPreserved(t *testing.T) {
 	f, runner := newProfileFixture(t), newProfileRunner(t)
-	outside := t.TempDir()
-	before, err := os.Stat(outside)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(f.repo, "unreferenced")); err != nil {
+	if err := os.Symlink("bin/check", filepath.Join(f.repo, "unreferenced")); err != nil {
 		t.Fatal(err)
 	}
 	f.commit()
 	f.git("tag", "-f", f.claim.Profile.TagName)
 	loaded := loadTestProfile(t, runner, f.claim)
-	if target, err := os.Readlink(filepath.Join(loaded.Path, "unreferenced")); err != nil || target != outside {
+	if target, err := os.Readlink(filepath.Join(loaded.Path, "unreferenced")); err != nil || target != "bin/check" {
 		t.Fatalf("unreferenced symlink changed: %q, %v", target, err)
 	}
-	if info, err := os.Stat(outside); err != nil || info.Mode() != before.Mode() {
-		t.Fatalf("extraction changed the symlink target: %v", err)
+	if content, err := os.ReadFile(filepath.Join(loaded.Path, "unreferenced")); err != nil || string(content) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("link does not resolve to committed program: %q, %v", content, err)
 	}
 }
 
