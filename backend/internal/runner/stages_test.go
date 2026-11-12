@@ -74,6 +74,7 @@ func stageFixture(t *testing.T, prepare bool) (*Runner, Claim, *stageReportStub,
 	f.def.Stages.Publish.Secrets = []contract.Secret{{Slot: "delivery", Access: "write"}}
 	f.definition()
 	r := newProfileRunner(t)
+	r.dataDir = channelDirectory(t)
 	r.token = "runner-private-token"
 	c := f.claim
 	c.Execution.ID, c.Execution.TaskID, c.Execution.Seq, c.Execution.Mode = ulid.Make().String(), "task-1", 2, "continue"

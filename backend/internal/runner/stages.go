@@ -62,6 +62,10 @@ type StageInvocation struct {
 	Workspace     string
 	Directory     string
 	WorkSessionID *string
+	// Host socket source. The executor supplies its own sandbox-visible
+	// EVALOOM_CHANNEL path and copies this into SandboxSpec.ChannelPath.
+	// The context carries the matching, stage-scoped socket capability.
+	ChannelPath string
 }
 
 type StageExecutor interface {
@@ -183,7 +187,7 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			if stage == model.StageWork {
 				invocation.WorkSessionID = resume.WorkSessionID
 			}
-			outcome = services.Executor.RunStage(ctx, invocation)
+			outcome = runner.runStageWithChannel(ctx, claim.Execution.ID, invocation, services.Executor)
 		}
 		next, err := services.Reporter.FinishStage(ctx, claim.Execution.ID, stage, attempt, outcome)
 		if err != nil {

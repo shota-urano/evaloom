@@ -185,6 +185,9 @@ func (runner *Runner) claimAndStart(ctx context.Context, handlers JobHandlers, w
 		return fmt.Errorf("runner: claimed %s is already registered", claim.Kind)
 	}
 	registered[id] = cancel
+	if claim.Kind == "execution" {
+		delete(runner.cancelledExecutions, id)
+	}
 	runner.claimPending = false
 	runner.mu.Unlock()
 	workers.Add(1)
@@ -193,6 +196,9 @@ func (runner *Runner) claimAndStart(ctx context.Context, handlers JobHandlers, w
 		defer func() {
 			runner.mu.Lock()
 			delete(registered, id)
+			if claim.Kind == "execution" {
+				delete(runner.cancelledExecutions, id)
+			}
 			runner.mu.Unlock()
 		}()
 		defer cancel()

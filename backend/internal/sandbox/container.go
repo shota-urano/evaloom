@@ -319,6 +319,9 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 }
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
+	if err := validateStageChannel(ctx, spec); err != nil {
+		return nil, err
+	}
 	secretEnv, err := stageSecretEnvironment(spec)
 	if err != nil {
 		return nil, err
@@ -404,6 +407,10 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			cancel()
 			return nil, err
 		}
+	}
+	if err := validateStageChannel(ctx, spec); err != nil {
+		cancel()
+		return nil, err
 	}
 	if _, err = c.createWithSecrets(ctx, secretEnv, args); err != nil {
 		// create cannot run a workload. Remove any partially created container
