@@ -131,7 +131,7 @@ func (s containerState) stopped() bool {
 	return !s.Running && (s.Status == "exited" || s.Status == "dead")
 }
 
-func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelFunc, attach *exec.Cmd, stopAttach context.CancelFunc) {
+func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelFunc, attach *exec.Cmd, stopAttach context.CancelFunc, controlled bool) {
 	defer close(p.done)
 	if p.network != nil {
 		defer p.network.cleanup()
@@ -142,8 +142,10 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 	go func() { cliDone <- attach.Wait() }()
 	var cliErr error
 	var interrupted bool
+	var cliFinished bool
 	select {
 	case cliErr = <-cliDone:
+		cliFinished = true
 	case <-ctx.Done():
 		interrupted = true
 	case <-p.removed:
@@ -171,6 +173,35 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 			}
 		}
 	}
+	if controlled && ctx.Err() != nil {
+		// The independent time limit must not force-remove the container at
+		// the same instant its owner sends TERM. Honor the same fixed grace
+		// even if the owner has not yet reached its supervision loop.
+		deadline, _ := ctx.Deadline()
+		graceCtx, finishGrace := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(TerminationGrace))
+		defer finishGrace()
+		stopped := make(chan struct{})
+		go func() { defer close(stopped); _ = p.Stop() }()
+		defer func() { <-stopped }()
+		if !cliFinished {
+			select {
+			case cliErr = <-cliDone:
+				cliFinished = true
+			case <-graceCtx.Done():
+			case <-p.removed:
+			}
+		}
+		if cliFinished {
+			state, err := p.state(graceCtx)
+			if err != nil || !state.stopped() {
+				select {
+				case <-graceCtx.Done():
+				case <-p.removed:
+				}
+			}
+		}
+		interrupted = true
+	}
 	// Even an exited CLI may leave the container running. Never release Runner
 	// capacity based only on the client's exit. Removal, or inspected stopped
 	// state, is the confirmation boundary. If the daemon cannot be reached and
@@ -193,7 +224,9 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 	// Only after stopping the container do we terminate a stuck attach client.
 	if interrupted {
 		stopAttach()
-		<-cliDone
+		if !cliFinished {
+			<-cliDone
+		}
 		p.err = &Error{Op: "container interrupted", Cause: ctx.Err()}
 	} else if ctx.Err() != nil {
 		p.err = &Error{Op: "container interrupted", Cause: ctx.Err()}
