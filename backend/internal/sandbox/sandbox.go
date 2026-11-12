@@ -14,7 +14,13 @@ import (
 type SandboxKind string
 
 const (
-	Harness SandboxKind = "harness"
+	// Harness is retained for the existing Adapter boundary.
+	Harness  SandboxKind = "harness"
+	Prepare  SandboxKind = "prepare"
+	Work     SandboxKind = "work"
+	Check    SandboxKind = "check"
+	Publish  SandboxKind = "publish"
+	Proposal SandboxKind = "proposal"
 )
 
 // NetworkPolicy's zero value denies all networking, for every Kind.
@@ -34,11 +40,21 @@ type ResourceLimits struct {
 	Time        time.Duration
 }
 
+// Mount describes a stage's visibility, using the trusted Runner's request paths.
+type Mount struct {
+	HostPath  string
+	GuestPath string
+	Writable  bool
+}
+
 type SandboxSpec struct {
-	Kind      SandboxKind
-	Worktree  string
-	GitDir    string
-	ConfigDir string
+	Mounts      []Mount
+	Secrets     map[string]string
+	ChannelPath string
+	Kind        SandboxKind
+	Worktree    string
+	GitDir      string
+	ConfigDir   string
 	// True only for an execution's disposable harness configuration copy.
 	ConfigWritable bool
 	Env            map[string]string

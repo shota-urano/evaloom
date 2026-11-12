@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
@@ -37,9 +38,14 @@ type ContainerConfig struct {
 	// must resolve within these roots; a path supplied in SandboxSpec cannot
 	// authorize its own mount. Roots are canonicalized once at construction.
 	WorktreeRoot, GitDirRoot, ConfigDirRoot string
+	// StagePaths names the six contract 6.1 locations. StageMountRoots grants
+	// each guest path a dedicated host source root. These are internal wiring,
+	// not Runner configuration keys. A spec cannot authorize its own source.
+	StagePaths      contract.RequestPaths
+	StageMountRoots map[string]string
 	// These paths must be supplied so an erroneous broad mount fails closed.
 	HostHome, DataDir, RunnerTokenFile string
-	// Until Q1's macOS VM option is decided, such Projects must be rejected.
+	// macos_vm remains unsupported, as required by Q147 until its implementation.
 	RequiresMacOS bool
 	// Bounds each runtime control command, including Stop/Kill. This is not
 	// the workload deadline and is also supplied explicitly by the caller.
@@ -50,13 +56,14 @@ type ContainerConfig struct {
 }
 
 type Container struct {
-	config ContainerConfig
-	allow  map[string]bool
-	env    []string
-	home   string
-	data   string
-	token  string
-	roots  [3]string
+	config     ContainerConfig
+	allow      map[string]bool
+	env        []string
+	home       string
+	data       string
+	token      string
+	roots      [3]string
+	stageRoots map[string]string
 }
 
 var _ Sandbox = (*Container)(nil)
@@ -78,7 +85,13 @@ func NewContainer(config ContainerConfig) (*Container, error) {
 	if c.token, err = resolve(config.RunnerTokenFile); err != nil {
 		return nil, &Error{Op: "invalid Runner token protection"}
 	}
+	if err := c.configureStageMounts(); err != nil {
+		return nil, err
+	}
 	for i, root := range []string{config.WorktreeRoot, config.GitDirRoot, config.ConfigDirRoot} {
+		if root == "" && len(c.stageRoots) != 0 {
+			continue
+		}
 		real, err := resolve(root)
 		info, statErr := os.Stat(real)
 		if err != nil || statErr != nil || !info.IsDir() {
@@ -183,9 +196,6 @@ func overlapsOnDisk(a, b string) (bool, error) {
 }
 
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string, configVolume ...string) ([]string, error) {
-	if spec.Kind != Harness {
-		return nil, &Error{Op: "unsupported sandbox kind"}
-	}
 	if err := c.validateNetwork(spec); err != nil {
 		return nil, err
 	}
@@ -200,6 +210,12 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 		if strings.ContainsRune(arg, 0) {
 			return nil, &Error{Op: "invalid command argument"}
 		}
+	}
+	if spec.Kind != Harness {
+		return c.stageArgs(spec, command, name, configVolume...)
+	}
+	if len(spec.Mounts) != 0 || len(spec.Secrets) != 0 || spec.ChannelPath != "" {
+		return nil, &Error{Op: "stage fields cannot be used by legacy harness"}
 	}
 	if spec.Worktree == "" || spec.GitDir == "" || spec.ConfigDir == "" {
 		return nil, &Error{Op: "missing or inappropriate sandbox directories"}
