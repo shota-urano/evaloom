@@ -136,15 +136,15 @@ Git Publisher・setup・テストとともに software-engineer へ移したた�
 
 ## Runnerのログ収集と再送
 
-正本は`docs/specs/05-runner.md`の3.4・6・9節、イベント形式は
+正本は`docs/specs/05-runner.md`の3.8・6・9節、イベント形式は
 `02-data-model.md`の5.3節。以下はログ収集の実装上の選択である。
 
-- 工程は`Runner.NewLog(executionID, stream, registrar)`でログを作る。streamは`harness`・`setup`・`test`（setupとtestは旧工程の値で、今は使う工程が無い）。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。工程のcontextが中止されても、送信用contextを別に保持すればログを送れる。段の枠の実行器ができるまで、CLIからは呼ばない。
+- 段の実行器は`StageInvocation.NewLog(registrar)`で、その段の鍵の除外を設定したログを作る。streamは`prepare`・`work`・`check`・`publish`で、Runner自身の出力は`Runner.NewLog(executionID, "runner", registrar)`を使う。stdoutとstderrをそれぞれ`Log.Read`へ渡して並行に読める。別のgoroutineで`Log.Deliver(ctx)`を動かし、全readerの終了後に`Log.Finish(redacted)`を呼ぶ。送信が終了するまでDeliverを待つ。段のcontextが中止されても、送信用contextを別に保持すればログを送れる。CLIから段の枠への接続は別の実装単位で行う。
 - Runnerは`dataDir/logs/<ULID>.log`を新規作成する。既存ファイルを上書きしない。親ディレクトリは0700、ファイルは0600。書き込みはバッファせず、終了時にSyncして閉じる。LF・CRLFをLFへ統一し、末尾に改行のない行にもLFを付ける。空行と64KiBを超える行も収集する。同じstream内ではファイルへの書き込み順に送る。stdoutとstderrの間の順序はreaderが行を書き込んだ順になる。
 - Deliverはファイルを読み、最大100行、通常256KiBまでを1バッチで送る。1行が256KiBを超える場合は、その行を分割せずに送る。全履歴をメモリに積まない。新着確認と送信失敗後の再試行は1秒間隔。HTTP要求全体の上限は既存の5秒で、Bearer認証とリダイレクト禁止も共通とする。送信処理が待機・失敗してもreaderはファイルへの書き込みを続ける。書き込み・読み取り・Syncの失敗は呼び出し元へ返す。
-- `POST /api/executions/{id}/events`は`{"events":[{"id":"<log ULID>:<行先頭のbyte offset>","stream":"harness","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadは`sourceId`・`stream`・`text`とし、sourceIdには要求のidを保存する。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。
+- `POST /api/executions/{id}/events`は`{"events":[{"sourceId":"<log ULID>:<行先頭のbyte offset>","stream":"work","text":"出力行"}]}`を受け、204を返す。1要求は1〜100行。textは改行を含めず、SSEのpayloadも`sourceId`・`stream`・`text`とする。SSEのevent idは従来どおりDBの連番を使う。RunnerにControl PlaneのDB接続を持たせない。
 - Control Planeは既存の`execution_events.payload`のsourceIdをExecution内で照合し、重複を排除する。新しいテーブルや列は追加しない。同じExecutionで同じID・payloadの再送は204、同じIDで内容を変えた要求は409。バッチの一部だけは保存しない。認証したRunnerの所有権を同じトランザクションで確認する。終了済み・過去のExecutionにも所有するRunnerの未送信ログを受け付ける。別Runnerの報告は403と監査記録を返す。
-- 全行の送信とFinishの完了後、Deliverは`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。registrarにnilを渡すとRunner自身のHTTP登録を使う。Runnerは`POST /api/executions/{id}/artifacts`へ`application/octet-stream`でファイルの内容を送り、クエリに`artifactId`・`kind`・`redacted=0/1`を付ける。Control Planeは保存した内容からSHA-256とサイズを計算する。同じExecution・ID・SHA-256の再送は204、異なる内容は409、別Runnerは403と監査記録になる。
+- 全行の送信とFinishの完了後、Deliverは`ArtifactRegistrar.RegisterLogArtifact`を呼ぶ。registrarにnilを渡すとRunner自身のHTTP登録を使う。Runnerは`POST /api/executions/{id}/artifacts`へ`application/octet-stream`でファイルの内容を送り、クエリに`artifactId`・`stage`・`kind`・`name`・`redacted=0/1`を付ける。Control Planeは保存した内容からSHA-256とサイズを計算する。同じExecution・ID・SHA-256の再送は204、異なる内容は409、別Runnerは403と監査記録になる。
 - Control Planeの保存先と本文上限は`evaloomd -data-dir <保存先> -artifact-max-bytes <正のバイト数>`で明示する。保存先はGit管理外に置く。両方とも未指定の場合、既存APIは起動するが成果物登録は500で拒否する。既定値が仕様で未確定のため、保存先と上限を暗黙に選ばない。片方だけの指定や負の上限は起動時に拒否する。
 - イベント・Artifactの送信失敗は終了後も再試行する。Deliverのcontextを中止すると送信を止め、ローカルファイルを保持する。同じLogでDeliverを再度呼ぶと先頭から読み直し、保存済みイベントのsourceIdで重複を排除する。Runnerプロセス自体の再起動時にログを自動回収する処理は含めない。既存仕様どおり最初のheartbeatで前回のExecutionをinterruptedにする。
 - 機密情報の除外はRead内で行う。置換後の内容だけをファイルへ書き、Deliverもそのファイルからeventsを作る。置換があればArtifactのredactedをtrueにし、Finish(false)でも取り消さない。Finish(true)は呼び出し元で除外処理を通した場合の情報を引き継ぐ。

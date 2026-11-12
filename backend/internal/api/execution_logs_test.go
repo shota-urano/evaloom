@@ -41,12 +41,12 @@ func TestExecutionLogsFinishedStreamsMatchUploadedArtifacts(t *testing.T) {
 				}
 			}
 			status, body := postLogReport(t, f, token, `{"events":[
-				{"id":"r1","stream":"runner","text":"runner first"},
-				{"id":"r2","stream":"runner","text":""},
-				{"id":"h1","stream":"harness","text":"do not duplicate artifact"},
-				{"id":"s1","stream":"setup","text":"do not duplicate artifact"},
-				{"id":"t1","stream":"test","text":"do not duplicate artifact"},
-				{"id":"r3","stream":"runner","text":"runner last"}]}`)
+				{"sourceId":"r1","stream":"runner","text":"runner first"},
+				{"sourceId":"r2","stream":"runner","text":""},
+				{"sourceId":"h1","stream":"harness","text":"do not duplicate artifact"},
+				{"sourceId":"s1","stream":"setup","text":"do not duplicate artifact"},
+				{"sourceId":"t1","stream":"test","text":"do not duplicate artifact"},
+				{"sourceId":"r3","stream":"runner","text":"runner last"}]}`)
 			if status != http.StatusNoContent {
 				t.Fatalf("events status=%d body=%s", status, body)
 			}
@@ -72,7 +72,7 @@ func TestExecutionLogsExcludeOtherExecutionsAndNonLogArtifacts(t *testing.T) {
 	}
 	status, body = f.request(t, "POST", otherPath+"/events", false, "", func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
-		r.Body = io.NopCloser(strings.NewReader(`{"events":[{"id":"other","stream":"runner","text":"other runner"}]}`))
+		r.Body = io.NopCloser(strings.NewReader(`{"events":[{"sourceId":"other","stream":"runner","text":"other runner"}]}`))
 	})
 	if status != http.StatusNoContent {
 		t.Fatalf("other events status=%d body=%s", status, body)

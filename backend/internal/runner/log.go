@@ -151,9 +151,9 @@ func (log *Log) Finish(redacted bool) error {
 }
 
 type logEvent struct {
-	ID     string `json:"id"`
-	Stream string `json:"stream"`
-	Text   string `json:"text"`
+	SourceID string `json:"sourceId"`
+	Stream   string `json:"stream"`
+	Text     string `json:"text"`
 }
 
 // Deliver tails the file in bounded batches and retries failed HTTP requests

@@ -40,8 +40,14 @@ func executionLogs(db *sql.DB, logger *slog.Logger, config ArtifactConfig) http.
 			WriteError(w, logger, err)
 			return
 		}
-		var harness, setup, test, publish, runnerFiles strings.Builder
+		var harness, setup, test, publish strings.Builder
 		for _, artifact := range artifacts {
+			// Runner log delivery persists every event before registering the
+			// file. Read that stream below, including not-yet-registered lines,
+			// rather than duplicating the same lines from its log artifacts.
+			if artifact.Stage == "runner" {
+				continue
+			}
 			if config.Store == nil {
 				WriteError(w, logger, fmt.Errorf("artifact storage must be configured"))
 				return
@@ -52,7 +58,7 @@ func executionLogs(db *sql.DB, logger *slog.Logger, config ArtifactConfig) http.
 				return
 			}
 			destination := map[string]*strings.Builder{
-				"work": &harness, "prepare": &setup, "check": &test, "publish": &publish, "runner": &runnerFiles,
+				"work": &harness, "prepare": &setup, "check": &test, "publish": &publish,
 			}[artifact.Stage]
 			if destination == nil {
 				file.Close()
@@ -72,7 +78,7 @@ func executionLogs(db *sql.DB, logger *slog.Logger, config ArtifactConfig) http.
 		// Commit the response only after all files and events were read, so a
 		// storage failure uses the common JSON error rather than partial logs.
 		writeJSON(w, http.StatusOK, executionLogsView{
-			Harness: harness.String(), Setup: setup.String(), Test: test.String(), Publish: publish.String(), Runner: runnerFiles.String() + runner,
+			Harness: harness.String(), Setup: setup.String(), Test: test.String(), Publish: publish.String(), Runner: runner,
 		})
 	}
 }
