@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -178,8 +178,76 @@ func secretLiterals(values []string) []string {
 	for _, value := range values {
 		encoded, _ := json.Marshal(value)
 		literals = append(literals, string(encoded[1:len(encoded)-1]))
+		var plain bytes.Buffer
+		encoder := json.NewEncoder(&plain)
+		encoder.SetEscapeHTML(false)
+		_ = encoder.Encode(value) // Encoding a string into a bytes.Buffer cannot fail.
+		encoded = bytes.TrimSuffix(plain.Bytes(), []byte("\n"))
+		literals = append(literals, string(encoded[1:len(encoded)-1]))
 	}
 	return literals
+}
+
+// Inputs come from UseNumber decoders of valid JSON. Compare decimal values
+// exactly, without float rounding or expanding potentially enormous exponents.
+func canonicalJSONNumber(number json.Number) string {
+	digits := string(number)
+	negative := strings.HasPrefix(digits, "-")
+	digits = strings.TrimPrefix(digits, "-")
+	var exponent big.Int
+	if i := strings.IndexAny(digits, "eE"); i >= 0 {
+		exponent.SetString(digits[i+1:], 10)
+		digits = digits[:i]
+	}
+	fraction := 0
+	if i := strings.IndexByte(digits, '.'); i >= 0 {
+		fraction = len(digits) - i - 1
+		digits = digits[:i] + digits[i+1:]
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return "0"
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	shift := int64(len(digits) - len(trimmed) - fraction)
+	exponent.Add(&exponent, big.NewInt(shift))
+	if negative {
+		trimmed = "-" + trimmed
+	}
+	return trimmed + "e" + exponent.String()
+}
+
+func equalJSONValues(left, right any) bool {
+	switch left := left.(type) {
+	case json.Number:
+		right, ok := right.(json.Number)
+		return ok && canonicalJSONNumber(left) == canonicalJSONNumber(right)
+	case map[string]any:
+		right, ok := right.(map[string]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for key, value := range left {
+			other, ok := right[key]
+			if !ok || !equalJSONValues(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		right, ok := right.([]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for i, value := range left {
+			if !equalJSONValues(value, right[i]) {
+				return false
+			}
+		}
+		return true
+	default: // JSON's remaining scalar types are comparable: string, bool, nil.
+		return left == right
+	}
 }
 
 func redactStageBytes(raw []byte, values []string) []byte {
@@ -268,7 +336,7 @@ func redactStageBytes(raw []byte, values []string) []byte {
 			}
 		}
 		for _, secret := range structured {
-			if reflect.DeepEqual(original, secret) {
+			if equalJSONValues(original, secret) {
 				replacements = append(replacements[:before], replacement{start, int(decoder.InputOffset()), []byte(`"[REDACTED]"`)})
 				break
 			}

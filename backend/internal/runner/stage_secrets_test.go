@@ -115,6 +115,14 @@ func TestSecretRuntimeHelper(t *testing.T) {
 			encoded, _ := json.Marshal(value)
 			fmt.Fprintln(os.Stdout, "escaped="+string(encoded))
 			fmt.Fprintln(os.Stderr, "escaped="+string(encoded))
+			var plain bytes.Buffer
+			encoder := json.NewEncoder(&plain)
+			encoder.SetEscapeHTML(false)
+			if encoder.Encode(value) != nil {
+				os.Exit(96)
+			}
+			fmt.Fprint(os.Stdout, "unescaped-html="+plain.String())
+			fmt.Fprint(os.Stderr, "unescaped-html="+plain.String())
 		}
 	case "inspect":
 		fmt.Print(`{"Status":"exited","Running":false,"ExitCode":0}`)
@@ -161,6 +169,7 @@ func TestExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T) 
 		{"text", "read-value-with-$(literal)=日本語"},
 		{"JSON object", `{"client_id":"client","client_secret":"private-value"}`},
 		{"escaped JSON string", "quoted\"key\n秘密"},
+		{"JSON string with HTML characters", `private<"token>&`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t, test.key)
@@ -257,7 +266,14 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 			key = writeKey
 		}
 		if key != "" {
-			if err := os.WriteFile(filepath.Join(in.Directory, "out", "leak"), []byte("out="+key), 0600); err != nil {
+			var encoded bytes.Buffer
+			encoder := json.NewEncoder(&encoded)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(key); err != nil {
+				t.Fatal(err)
+			}
+			leak := []byte("out=" + key + "\nescaped=" + encoded.String())
+			if err := os.WriteFile(filepath.Join(in.Directory, "out", "leak"), leak, 0600); err != nil {
 				t.Fatal(err)
 			}
 			outcome.Result, _ = json.Marshal(map[string]string{"stage": string(in.Stage), "message": key})
@@ -267,7 +283,7 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 			for _, output := range []struct {
 				kind, name string
 				data       []byte
-			}{{"out_file", "leak", []byte("out=" + key)}, {"result_json", "result.json", outcome.Result}} {
+			}{{"out_file", "leak", leak}, {"result_json", "result.json", outcome.Result}} {
 				artifact, err := in.CollectArtifact(output.kind, output.name, bytes.NewReader(output.data))
 				if err != nil {
 					t.Fatal(err)
@@ -342,6 +358,21 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 				t.Fatal(err)
 			}
 			assertNoStageKeys(t, data, readKey, writeKey)
+			if in.Stage == model.StagePrepare || in.Stage == model.StagePublish {
+				switch path {
+				case localLogs[i]:
+					lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+					slices.Sort(lines)
+					want := []string{`escaped="[REDACTED]"`, `escaped="[REDACTED]"`, "stderr=[REDACTED]", "stdout=[REDACTED]", `unescaped-html="[REDACTED]"`, `unescaped-html="[REDACTED]"`}
+					if !slices.Equal(lines, want) {
+						t.Errorf("saved log=%q, want %q", lines, want)
+					}
+				case filepath.Join(in.Directory, "out", "leak"):
+					if string(data) != "out=[REDACTED]\nescaped=\"[REDACTED]\"\n" {
+						t.Errorf("saved output=%q", data)
+					}
+				}
+			}
 			if (in.Stage == model.StagePrepare || in.Stage == model.StagePublish) && !bytes.Contains(data, []byte("[REDACTED]")) {
 				t.Fatalf("missing replacement in %s", path)
 			}
@@ -358,6 +389,15 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 			t.Fatal(err)
 		}
 		assertNoStageKeys(t, payload, readKey, writeKey)
+		var event struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains([]string{"stdout=[REDACTED]", "stderr=[REDACTED]", `escaped="[REDACTED]"`, `unescaped-html="[REDACTED]"`}, event.Text) {
+			t.Errorf("stored event text=%q", event.Text)
+		}
 		if !bytes.Contains(payload, []byte("[REDACTED]")) {
 			t.Fatal("event missing replacement")
 		}
@@ -367,18 +407,18 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 		t.Fatal(err)
 	}
 	_ = rows.Close()
-	if events != 8 {
+	if events != 12 {
 		t.Fatalf("stdout/stderr event count=%d", events)
 	}
-	rows, err = f.db.Query(`SELECT storage_path, redacted, stage FROM artifacts`)
+	rows, err = f.db.Query(`SELECT storage_path, redacted, stage, name FROM artifacts`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	artifacts := 0
 	for rows.Next() {
-		var path, stage string
+		var path, stage, name string
 		var redacted int
-		if err := rows.Scan(&path, &redacted, &stage); err != nil {
+		if err := rows.Scan(&path, &redacted, &stage, &name); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(f.dataDir, path))
@@ -386,6 +426,9 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 			t.Fatal(err)
 		}
 		assertNoStageKeys(t, data, readKey, writeKey)
+		if name == "leak" && string(data) != "out=[REDACTED]\nescaped=\"[REDACTED]\"\n" {
+			t.Errorf("stored output=%q", data)
+		}
 		if (stage == "prepare" || stage == "publish") && (redacted != 1 || !bytes.Contains(data, []byte("[REDACTED]"))) {
 			t.Fatal("stored artifact not redacted")
 		}
@@ -406,7 +449,18 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 func assertNoStageKeys(t *testing.T, data []byte, values ...string) {
 	t.Helper()
 	for _, value := range values {
-		for _, literal := range secretLiterals([]string{value}) {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var plain bytes.Buffer
+		encoder := json.NewEncoder(&plain)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(value); err != nil {
+			t.Fatal(err)
+		}
+		withoutHTML := strings.TrimSuffix(plain.String(), "\n")
+		for _, literal := range []string{value, string(encoded[1 : len(encoded)-1]), withoutHTML[1 : len(withoutHTML)-1]} {
 			if bytes.Contains(data, []byte(literal)) {
 				t.Fatal("stage key persisted")
 			}
@@ -457,6 +511,22 @@ func TestArtifactSecretRepresentations(t *testing.T) {
 	}
 }
 
+func TestArtifactSecretJSONEscapingWithoutHTML(t *testing.T) {
+	// Fixed representations and expectations must not depend on secretLiterals.
+	const key = `private<"token>&`
+	for _, test := range []struct{ raw, want string }{
+		{`credential=private<\"token>&`, `credential=[REDACTED]`},
+		{`credential=private\u003c\"token\u003e\u0026`, `credential=[REDACTED]`},
+		{`"private<\"token>&"`, `"[REDACTED]"`},
+		{`"private<\\\"token>&"`, `"[REDACTED]"`},
+		{`{"private<\\\"token>&":"keep"}`, `{"[REDACTED]":"keep"}`},
+	} {
+		if got := string(redactStageBytes([]byte(test.raw), []string{key})); got != test.want {
+			t.Errorf("input=%s got=%s want=%s", test.raw, got, test.want)
+		}
+	}
+}
+
 func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 	const key = `{"client_id":"client","client_secret":"private-value"}`
 	objectString, err := json.Marshal(key)
@@ -485,6 +555,14 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 		{"nested array credential", `["private",123]`, `{"credentials":[["private",123],["private",123]],"keep":true}`, `{"credentials":["[REDACTED]","[REDACTED]"],"keep":true}`},
 		{"number credential", "123456", `{"value":123456,"keep":123457}`, `{"value":"[REDACTED]","keep":123457}`},
 		{"root number credential", "123456", `123456`, `"[REDACTED]"`},
+		{"decimal spelling", "123456", `{"credential":123456.0}`, `{"credential":"[REDACTED]"}`},
+		{"exponent spelling in object", `{"token":123456}`, `{"credential":{"token":1.23456e5}}`, `{"credential":"[REDACTED]"}`},
+		{"decimal and exponent array", `[1.25,-0.5]`, `{"credential":[125e-2,-5e-1],"keep":[1.2501,-0.5]}`, `{"credential":"[REDACTED]","keep":[1.2501,-0.5]}`},
+		{"large integer spelling", "9007199254740993", `[9007199254740993.0,9007199254740992.0,9.007199254740993e15]`, `["[REDACTED]",9007199254740992.0,"[REDACTED]"]`},
+		{"large fractional precision", "0.123456789012345678901", `[1.23456789012345678901e-1,0.123456789012345678902]`, `["[REDACTED]",0.123456789012345678902]`},
+		{"signed zero", "0", `[-0.0,0e999999999999999999999,1]`, `["[REDACTED]","[REDACTED]",1]`},
+		{"unbounded positive exponent", "1e999999999999999999999", `[10e999999999999999999998,1e999999999999999999998]`, `["[REDACTED]",1e999999999999999999998]`},
+		{"unbounded negative exponent", "1e-999999999999999999999", `[0.1e-999999999999999999998,1e-999999999999999999998]`, `["[REDACTED]",1e-999999999999999999998]`},
 		{"number credential in array", "9007199254740993", `[9007199254740993,9007199254740992,1e400]`, `["[REDACTED]",9007199254740992,1e400]`},
 		{"object credential in root string", key, string(objectString), `"[REDACTED]"`},
 		{"object credential in object string", key, `{"credentials":` + string(objectString) + `,"keep":9007199254740993}`, `{"credentials":"[REDACTED]","keep":9007199254740993}`},
