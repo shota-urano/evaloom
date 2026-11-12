@@ -18,6 +18,14 @@ const (
 	openAIAPIDestination  = "api.openai.com:443"
 )
 
+func (*harness) ModelAPIDestinations() []string {
+	return modelAPIDestinations()
+}
+
+func modelAPIDestinations() []string {
+	return []string{chatGPTDestination, openAIAuthDestination, openAIAPIDestination}
+}
+
 // ContainerLaunch binds the existing container implementation to an execution's
 // trusted GitDir, network policy and resource limits. The adapter owns
 // the exact model/auth destinations; caller-supplied destinations are replaced.
@@ -54,7 +62,7 @@ func containerLaunch(config sandbox.ContainerConfig, resolve func(adapter.Sandbo
 		}
 		spec.AllowedDestinations = nil
 		if spec.Network == sandbox.NetworkHarness {
-			spec.AllowedDestinations = []string{chatGPTDestination, openAIAuthDestination, openAIAPIDestination}
+			spec.AllowedDestinations = modelAPIDestinations()
 		}
 		// Use the verified private configuration volume from ctx.
 		spec.ConfigWritable = true

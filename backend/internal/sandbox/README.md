@@ -28,8 +28,8 @@ WorkとProposalの専用設定は`ConfigDirRoot`内に限定し、ほかの段�
 CPU・メモリ・実行時間とコンテナ全体の停止確認には、既存の実行・監視処理を使う。
 
 段の組み立てとRunner設定からの接続は後続の`internal/stage`の範囲。
-段別のネットワーク、鍵、通話口は各担当タスクで接続する。この実装ではネットワークなしで
-実行し、未対応の宛先指定・`Secrets`・`ChannelPath`を受け取ったら起動せずに拒否する。
+段別のネットワークは下記の境界で指定する。鍵と通話口は各担当タスクで接続し、
+未対応の`Secrets`・`ChannelPath`を受け取ったら起動せずに拒否する。
 macOS VMもQ147のとおり未対応として拒否する。実コンテナ・実VMでの検証は行っていない。
 Proposalの作業ディレクトリは仕様で未定義なので、`--workdir`を指定しない。
 必要な作業ディレクトリの指定方法は、提案を実行する呼び出し側との未確定の境界として残す。
@@ -85,8 +85,17 @@ Dockerソケット等を追加する任意のマウント指定は提供しな�
 HOMEの上書きは許可しない。シェルによるコマンド文字列の展開は行わない。
 
 ネットワークはゼロ値と`NetworkNone`のどちらも`--network none`になる。
-`NetworkHarness`は`Kind=Harness`に限り、
-`SandboxSpec.AllowedDestinations`の宛先だけを許可する。
+`NetworkHarness`はWorkとProposalで、`ContainerConfig.ModelAPI`に渡した
+選択済みAdapterの`ModelAPIDestinations()`だけを許可する。呼び出し側の
+`AllowedDestinations`はAdapterの宣言で置き換え、Profileから宛先を足せない。
+既存のHarnessでは、従来どおりAdapter launcherの`AllowedDestinations`を使う。
+PrepareとPublishは`NetworkDeclared`を使い、claimで固定したProfileの
+`network.allow`を`AllowedDestinations`として渡す。空ならネットワークなしで動く。
+宛先がある場合は`ContainerConfig.NetworkEnvironment`の
+`ValidateNetworkDestination`で、登録済みの全AdapterのモデルAPI一覧と照合する。
+既存の`registry.Environment`がこの境界を満たす。モデルAPIがあれば起動前に
+`config_error`とし、検査元がなければ起動を拒否する。両項目は内部の構築引数であり、
+Runner設定ファイルのキーではない。Checkはネットワークなしだけを受け付け、DNSも使えない。
 setup とテストの Sandbox（`TestSetup`・`TestRun`・`NetworkSetup`）は software-engineer へ移したため無い
 （`docs/specs/19-routing-and-stages.md` 3.11）。宛先は小文字のDNSホスト名と
 ポートの完全一致（例は`model.example:443`）。ワイルドカード・IPリテラル・ローカル名を
@@ -113,7 +122,7 @@ Sandbox内のループバックはホストのループバックとは別であ�
 Unixソケットのvolumeとプロキシ実行ファイルはSandboxにマウントしない。
 プロキシ側にはworktree・GitDir・ConfigDir・認証情報を渡さない。
 `ContainerConfig.ProxyImage / ProxyBinary`は呼び出し側の明示指定が必須で、
-イメージの自動取得や既定値はない。`ProxyBinary`は3つのマウント許可ルートの外にある、
+イメージの自動取得や既定値はない。`ProxyBinary`は従来の3つと段別の全マウント許可ルートの外にある、
 信頼するLinux向け静的実行ファイルを渡す。Dockerデーモンのアーキテクチャに合わせて、
 backendで次のようにビルドする（出力先も明示する）。
 
@@ -128,6 +137,8 @@ HTTP forward proxyとHTTPS CONNECTに対応する。プロキシに対応しな�
 
 egressは接続のたびにDNSを引き、返された全アドレスが公開IPであることを確かめる。
 ループバック・プライベート・リンクローカル・特殊用途・IPv6移行用アドレスを拒否する。
+RunnerのインターフェースにあるIPも起動時に列挙してegressへ渡し、公開IPを持つホストへの
+接続を拒否する。この列挙が失敗した場合も段を始めない。
 確認後はIPを指定して接続し、DNSの再解決によるホストへの迂回を防ぐ。
 許可外へのリダイレクトも、次のリクエストで拒否する。
 
@@ -169,8 +180,9 @@ runtimeの診断文はエラーに含めない。
 マウント・環境変数・資源制限の引数と、別プロセス群で動く偽workloadの停止で検証する。
 プロキシの通常テストでは、実HTTPパーサとUnixソケットを通し、末端のDNS・接続だけを
 ローカルfixtureに置き換える。許可先へのHTTP・CONNECT、許可外の拒否、DNS rebindingを
-検証する。偽runtimeでは3種別のネットワーク構成、名前空間共有、ファイルの分離、
+検証する。偽runtimeでは5種類の段と従来のHarnessのネットワーク構成、名前空間共有、ファイルの分離、
 起動確認の失敗時の拒否と後始末を検証する。Dockerデーモンは不要。
+PrepareとPublishのモデルAPI拒否と、WorkとProposalの宛先追加の防止も起動引数で検証する。
 
 実Dockerによる試験は明示的に有効化したときだけ実行する。
 
@@ -207,5 +219,6 @@ EVALOOM_SECURITY_TEST_IMAGE=evaloom-security-boundary:local \
 イメージには`/usr/bin/env`が必要で、Linux用かつVolume宣言がないことを検査する。
 専用設定の作成・ハッシュ記録、実Adapterの接続は各担当タスクの範囲。
 公開HTTP API・テーブル・列と、確定済みの仕様書は変更していない。
-モデルAPIの接続先とProjectごとのレジストリ一覧の保存先は仕様に列がないため、
-この実装では保存せず内部の`AllowedDestinations`で受け取る。Registryとの接続は未定。
+モデルAPIの接続先は既存Adapter内の定数を使い、公開APIや保存列を足さない。
+選択済みAdapterと登録済み全Adapterの一覧をSandboxへ渡す方法は、上記の内部インターフェースで
+境界を切っている。claimで固定したProfileの宛先と合わせて渡す接続は段の組み立て側に残る。

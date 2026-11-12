@@ -82,17 +82,24 @@ func PublicIP(ip netip.Addr) bool {
 
 type Proxy struct {
 	allowed map[string]bool
+	blocked map[netip.Addr]bool
 	timeout time.Duration
 	lookup  func(context.Context, string) ([]netip.Addr, error)
 	dial    func(context.Context, string, string) (net.Conn, error)
 }
 
-func New(destinations []string, timeout time.Duration) (*Proxy, error) {
+func New(destinations []string, timeout time.Duration, blockedIPs ...netip.Addr) (*Proxy, error) {
 	if timeout <= 0 || len(destinations) == 0 {
 		return nil, errors.New("explicit destinations and timeout required")
 	}
-	p := &Proxy{allowed: make(map[string]bool), timeout: timeout,
+	p := &Proxy{allowed: make(map[string]bool), blocked: make(map[netip.Addr]bool), timeout: timeout,
 		dial: (&net.Dialer{Timeout: timeout}).DialContext}
+	for _, ip := range blockedIPs {
+		if !ip.IsValid() {
+			return nil, errors.New("invalid blocked address")
+		}
+		p.blocked[ip.Unmap()] = true
+	}
 	// LookupNetIP also takes a network argument.
 	p.lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
 		return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
@@ -116,7 +123,7 @@ func (p *Proxy) connect(ctx context.Context, address string) (net.Conn, error) {
 		return nil, errors.New("DNS unavailable")
 	}
 	for _, ip := range ips {
-		if !PublicIP(ip) {
+		if !PublicIP(ip) || p.blocked[ip.Unmap()] {
 			return nil, errors.New("nonpublic destination denied")
 		}
 	}

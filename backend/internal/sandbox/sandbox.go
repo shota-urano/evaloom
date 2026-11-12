@@ -27,8 +27,12 @@ const (
 type NetworkPolicy string
 
 const (
-	NetworkNone    NetworkPolicy = "none"
+	NetworkNone NetworkPolicy = "none"
+	// NetworkHarness uses the selected Adapter declaration for Work/Proposal.
+	// Legacy Harness receives the same declaration from its Adapter launcher.
 	NetworkHarness NetworkPolicy = "harness"
+	// NetworkDeclared uses pinned Profile destinations for Prepare/Publish.
+	NetworkDeclared NetworkPolicy = "declared"
 )
 
 // ResourceLimits are supplied by the trusted caller. There are no Q15 defaults.
@@ -59,8 +63,9 @@ type SandboxSpec struct {
 	ConfigWritable bool
 	Env            map[string]string
 	Network        NetworkPolicy
-	// Exact DNS host:port destinations, supplied by trusted Runner wiring.
-	// This is not a Project Registry or public HTTP API field.
+	// Exact DNS host:port destinations from the pinned Profile (Prepare/Publish)
+	// or legacy Harness launcher. Work/Proposal replace this with ModelAPI's
+	// declaration. This is not a Project Registry or public HTTP API field.
 	AllowedDestinations []string
 	Limits              ResourceLimits
 }

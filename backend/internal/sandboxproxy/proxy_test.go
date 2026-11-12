@@ -197,3 +197,25 @@ func TestProxyResolvesAgainAndPinsValidatedIP(t *testing.T) {
 		t.Fatalf("lookups=%d dials=%d", lookups, dials)
 	}
 }
+
+func TestProxyDeniesGloballyRoutableHostAddresses(t *testing.T) {
+	for _, hostIP := range []string{"8.8.4.4", "2606:4700:4700::1111", "::ffff:8.8.4.4"} {
+		t.Run(hostIP, func(t *testing.T) {
+			ip := netip.MustParseAddr(hostIP)
+			p, err := New([]string{"allowed.example:443"}, time.Second, ip)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.lookup = func(context.Context, string) ([]netip.Addr, error) {
+				return []netip.Addr{netip.MustParseAddr("1.1.1.1"), ip.Unmap()}, nil
+			}
+			p.dial = func(context.Context, string, string) (net.Conn, error) {
+				t.Fatal("host address reached dial")
+				return nil, nil
+			}
+			if _, err := p.connect(context.Background(), "allowed.example:443"); err == nil {
+				t.Fatal("allowed DNS name bypassed host address denial")
+			}
+		})
+	}
+}

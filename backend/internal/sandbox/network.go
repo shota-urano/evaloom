@@ -4,15 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
 const proxyExecutable = "/evaloom-proxy"
+
+// The selected Adapter owns Work/Proposal destinations; Profile/caller entries
+// cannot extend them. Program-stage entries are pinned Profile values supplied
+// by stage wiring, checked again against the registered Adapter union at Run.
+func (c *Container) networkSpec(spec SandboxSpec) (SandboxSpec, error) {
+	if spec.Network == NetworkHarness && (spec.Kind == Work || spec.Kind == Proposal) {
+		if c.config.ModelAPI == nil {
+			return spec, &Error{Op: "selected Adapter network declaration required"}
+		}
+		spec.AllowedDestinations = append([]string(nil), c.config.ModelAPI.ModelAPIDestinations()...)
+	}
+	if spec.Network == NetworkDeclared && (spec.Kind == Prepare || spec.Kind == Publish) && len(spec.AllowedDestinations) != 0 {
+		if c.config.NetworkEnvironment == nil {
+			return spec, &Error{Op: "registered Adapter network declarations required"}
+		}
+		for _, destination := range spec.AllowedDestinations {
+			if c.config.NetworkEnvironment.ValidateNetworkDestination(destination) != nil {
+				return spec, &networkConfigError{}
+			}
+		}
+	}
+	return spec, nil
+}
+
+type networkConfigError struct{}
+
+func (*networkConfigError) Error() string                 { return "sandbox: model API forbidden in program stage" }
+func (*networkConfigError) Status() model.ExecutionStatus { return model.ExecutionFailed }
+func (*networkConfigError) ErrorClass() model.ErrorClass  { return model.ErrorConfig }
 
 func (c *Container) validateNetwork(spec SandboxSpec) error {
 	deny := func() error { return &Error{Op: "invalid network policy or explicit proxy configuration"} }
@@ -23,8 +54,15 @@ func (c *Container) validateNetwork(spec SandboxSpec) error {
 		}
 		return nil
 	case NetworkHarness:
-		if spec.Kind != Harness {
+		if spec.Kind != Harness && spec.Kind != Work && spec.Kind != Proposal {
 			return deny()
+		}
+	case NetworkDeclared:
+		if spec.Kind != Prepare && spec.Kind != Publish {
+			return deny()
+		}
+		if len(spec.AllowedDestinations) == 0 {
+			return nil
 		}
 	default:
 		return deny()
@@ -39,7 +77,14 @@ func (c *Container) validateNetwork(spec SandboxSpec) error {
 		return deny()
 	}
 	// Neither a workload nor an earlier harness may replace the trusted helper.
-	for _, root := range c.roots {
+	roots := append([]string(nil), c.roots[:]...)
+	for _, root := range c.stageRoots {
+		roots = append(roots, root)
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
 		inside, err := containsOnDisk(root, path)
 		if err != nil || inside {
 			return deny()
@@ -64,6 +109,20 @@ type networkResources struct {
 
 func (n *networkResources) prepare(ctx context.Context, spec SandboxSpec) error {
 	c := n.container
+	// A host can have a globally routable address too. PublicIP alone does not
+	// exclude it, so pin all Runner interface addresses into the egress denylist.
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return &Error{Op: "host network addresses unconfirmed"}
+	}
+	var denied []string
+	for _, address := range addresses {
+		prefix, err := netip.ParsePrefix(address.String())
+		if err != nil {
+			return &Error{Op: "host network addresses unconfirmed"}
+		}
+		denied = append(denied, "--deny-ip="+prefix.Addr().String())
+	}
 	image, err := c.output(ctx, "image", "inspect", "--format", "{{json .}}", c.config.ProxyImage)
 	var metadata struct {
 		OS     string `json:"Os"`
@@ -92,6 +151,7 @@ func (n *networkResources) prepare(ctx context.Context, spec SandboxSpec) error 
 			"--entrypoint", proxyExecutable, c.config.ProxyImage, helper.mode, spec.Limits.Time.String()}
 		if helper.mode == "egress" {
 			args = append(args, spec.AllowedDestinations...)
+			args = append(args, denied...)
 		}
 		if _, err := c.output(ctx, args...); err != nil {
 			return err
