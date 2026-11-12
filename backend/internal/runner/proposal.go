@@ -66,7 +66,7 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 		return reportProposalFailure(reportCtx, runner, claim.ID, strPtr("contract_error"))
 	}
 	var proposer proposerSettings
-	if err := json.Unmarshal(claim.Proposer, &proposer); err != nil || proposer.MicroHarness == "" {
+	if err := json.Unmarshal(claim.Proposer, &proposer); err != nil || proposer.MicroHarness == "" || proposer.Model == "" {
 		return reportProposalFailure(reportCtx, runner, claim.ID, strPtr("contract_error"))
 	}
 	if services.Resolve == nil {
@@ -82,14 +82,14 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 	var label, reason string
 	var readOK bool
 	runErr := runner.WithStageSecrets(ctx, "", stage, nil, func(ctx context.Context, _ secretstore.Resolved) error {
-		directory, input, err := prepareProposalWorkspace(runner.dataDir, claim)
+		directory, input, roots, err := prepareProposalWorkspace(runner.dataDir, claim, services.Paths, proposer.Model)
 		if err != nil {
 			outcome.ErrorClass = strPtr("sandbox_error")
 			return nil
 		}
 		defer os.RemoveAll(directory)
 		limits := services.ResourceCaps.ResourceLimits(time.Duration(claim.TimeoutSec) * time.Second)
-		launch, err := runner.proposalLaunch(services, harness, limits.Time)
+		launch, err := runner.proposalLaunch(services, harness, limits.Time, roots)
 		if err != nil {
 			outcome.ErrorClass = strPtr("sandbox_error")
 			return nil
@@ -143,7 +143,7 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 	})
 }
 
-func (runner *Runner) proposalLaunch(services ProposalServices, harness ProposalHarness, timeout time.Duration) (ProposalLaunch, error) {
+func (runner *Runner) proposalLaunch(services ProposalServices, harness ProposalHarness, timeout time.Duration, roots map[string]string) (ProposalLaunch, error) {
 	if services.Launch != nil {
 		return services.Launch, nil
 	}
@@ -153,12 +153,14 @@ func (runner *Runner) proposalLaunch(services ProposalServices, harness Proposal
 		container.ControlTimeout = time.Second
 	}
 	container.ModelAPI = proposalDestinations{hosts: harness.ModelAPIDestinations()}
-	container.HostHome = filepath.Join(runner.dataDir, ".sandbox-home")
-	container.DataDir = runner.dataDir
-	container.RunnerTokenFile = filepath.Join(runner.dataDir, ".runner-token")
-	if err := os.WriteFile(container.RunnerTokenFile, []byte(runner.token), 0600); err != nil {
+	home, err := os.UserHomeDir()
+	if err != nil {
 		return nil, err
 	}
+	container.HostHome = home
+	container.DataDir = runner.dataDir
+	container.RunnerTokenFile = runner.tokenFile
+	container.StageMountRoots = roots
 	box, err := sandbox.NewContainer(container)
 	if err != nil {
 		return nil, err
@@ -174,15 +176,23 @@ func (d proposalDestinations) ModelAPIDestinations() []string {
 	return append([]string(nil), d.hosts...)
 }
 
-func prepareProposalWorkspace(dataDir string, claim ProposalClaim) (directory, inputs string, err error) {
+func prepareProposalWorkspace(dataDir string, claim ProposalClaim, paths contract.RequestPaths, model string) (directory, inputs string, roots map[string]string, err error) {
 	if _, err := ulid.ParseStrict(claim.ID); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	directory = filepath.Join(dataDir, "proposals", claim.ID)
-	for _, name := range []string{"out", "scratch", "config", "inputs"} {
+	for _, name := range []string{"profile", "workspace", "out", "inputs", "records", "scratch", "config"} {
 		if err := os.MkdirAll(filepath.Join(directory, name), 0700); err != nil {
-			return "", "", err
+			return "", "", nil, err
 		}
+	}
+	roots = map[string]string{
+		paths.Profile:   filepath.Join(directory, "profile"),
+		paths.Workspace: filepath.Join(directory, "workspace"),
+		paths.Out:       filepath.Join(directory, "out"),
+		paths.Inputs:    filepath.Join(directory, "inputs"),
+		paths.Records:   filepath.Join(directory, "records"),
+		paths.Scratch:   filepath.Join(directory, "scratch"),
 	}
 	payload := struct {
 		TaskTitle  string          `json:"taskTitle"`
@@ -192,17 +202,17 @@ func prepareProposalWorkspace(dataDir string, claim ProposalClaim) (directory, i
 		Model      string          `json:"model"`
 	}{
 		TaskTitle: claim.Task.Title, TaskBody: claim.Task.Body,
-		Candidates: claim.Candidates, Trigger: claim.Trigger,
+		Candidates: claim.Candidates, Trigger: claim.Trigger, Model: model,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	inputs = filepath.Join(directory, "inputs")
 	if err := os.WriteFile(filepath.Join(inputs, "proposal-input.json"), body, 0600); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
-	return directory, inputs, nil
+	return directory, inputs, roots, nil
 }
 
 func readProposalOutcome(path string) (label, reason string, err error) {

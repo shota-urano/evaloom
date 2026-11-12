@@ -24,21 +24,21 @@ const heartbeatTimeout = 5 * time.Second
 // Runner keeps one boot identity for its lifetime. Its only listeners are
 // stage-scoped channels; it never opens the Control Plane database.
 type Runner struct {
-	bootID, token, heartbeatURL string
-	claimURL                    string
-	controlPlaneURL, dataDir    string
-	workspaceRoot               string
-	client                      *http.Client
-	mu                          sync.Mutex
-	heartbeatMu                 sync.Mutex
-	profileMu                   sync.Mutex
-	executions                  map[string]context.CancelFunc
-	cancelledExecutions         map[string]bool
-	proposals                   map[string]context.CancelFunc
-	cleanedWorkspaces           map[string]struct{}
-	claimPending                bool
-	loopRunning                 bool
-	pollInterval                time.Duration
+	bootID, token, tokenFile, heartbeatURL string
+	claimURL                               string
+	controlPlaneURL, dataDir               string
+	workspaceRoot                          string
+	client                                 *http.Client
+	mu                                     sync.Mutex
+	heartbeatMu                            sync.Mutex
+	profileMu                              sync.Mutex
+	executions                             map[string]context.CancelFunc
+	cancelledExecutions                    map[string]bool
+	proposals                              map[string]context.CancelFunc
+	cleanedWorkspaces                      map[string]struct{}
+	claimPending                           bool
+	loopRunning                            bool
+	pollInterval                           time.Duration
 }
 
 func New(config Config) (*Runner, error) {
@@ -67,7 +67,7 @@ func New(config Config) (*Runner, error) {
 		return nil, fmt.Errorf("runner: invalid claim URL")
 	}
 	return &Runner{
-		bootID: hex.EncodeToString(boot[:]), token: token, heartbeatURL: endpoint,
+		bootID: hex.EncodeToString(boot[:]), token: token, tokenFile: config.TokenFile, heartbeatURL: endpoint,
 		claimURL: claimURL, pollInterval: 5 * time.Second,
 		controlPlaneURL: config.ControlPlaneURL, dataDir: config.DataDir,
 		workspaceRoot: config.WorkspaceRoot,
