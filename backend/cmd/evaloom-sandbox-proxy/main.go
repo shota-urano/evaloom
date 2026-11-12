@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
@@ -45,7 +47,20 @@ func run(args []string) error {
 	var handler http.Handler
 	switch args[0] {
 	case "egress":
-		handler, err = sandboxproxy.New(args[2:], timeout)
+		var destinations []string
+		var blocked []netip.Addr
+		for _, arg := range args[2:] {
+			if value, ok := strings.CutPrefix(arg, "--deny-ip="); ok {
+				ip, parseErr := netip.ParseAddr(value)
+				if parseErr != nil {
+					return fmt.Errorf("invalid blocked address")
+				}
+				blocked = append(blocked, ip)
+			} else {
+				destinations = append(destinations, arg)
+			}
+		}
+		handler, err = sandboxproxy.New(destinations, timeout, blocked...)
 		if err != nil {
 			return err
 		}

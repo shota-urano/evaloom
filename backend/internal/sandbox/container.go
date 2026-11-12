@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
@@ -29,6 +30,11 @@ type ContainerConfig struct {
 	// Explicit trusted Linux helper binary and sidecar image, both prebuilt.
 	// Unused for NetworkNone. The binary is mounted into sidecars only.
 	ProxyImage, ProxyBinary string
+	// ModelAPI is the selected Work/Proposal Adapter. NetworkEnvironment checks
+	// against ALL registered Adapters for Prepare/Publish (spec 09, Q146).
+	// These are internal wiring boundaries, never Runner JSON settings.
+	ModelAPI           interface{ ModelAPIDestinations() []string }
+	NetworkEnvironment interface{ ValidateNetworkDestination(string) error }
 	// RuntimeEnv configures the host CLI only (e.g. an explicit DOCKER_HOST).
 	// It is never forwarded to the container; os.Environ is never inherited.
 	RuntimeEnv map[string]string
@@ -37,9 +43,14 @@ type ContainerConfig struct {
 	// must resolve within these roots; a path supplied in SandboxSpec cannot
 	// authorize its own mount. Roots are canonicalized once at construction.
 	WorktreeRoot, GitDirRoot, ConfigDirRoot string
+	// StagePaths names the six contract 6.1 locations. StageMountRoots grants
+	// each guest path a dedicated host source root. These are internal wiring,
+	// not Runner configuration keys. A spec cannot authorize its own source.
+	StagePaths      contract.RequestPaths
+	StageMountRoots map[string]string
 	// These paths must be supplied so an erroneous broad mount fails closed.
 	HostHome, DataDir, RunnerTokenFile string
-	// Until Q1's macOS VM option is decided, such Projects must be rejected.
+	// macos_vm remains unsupported, as required by Q147 until its implementation.
 	RequiresMacOS bool
 	// Bounds each runtime control command, including Stop/Kill. This is not
 	// the workload deadline and is also supplied explicitly by the caller.
@@ -50,13 +61,14 @@ type ContainerConfig struct {
 }
 
 type Container struct {
-	config ContainerConfig
-	allow  map[string]bool
-	env    []string
-	home   string
-	data   string
-	token  string
-	roots  [3]string
+	config     ContainerConfig
+	allow      map[string]bool
+	env        []string
+	home       string
+	data       string
+	token      string
+	roots      [3]string
+	stageRoots map[string]string
 }
 
 var _ Sandbox = (*Container)(nil)
@@ -78,7 +90,13 @@ func NewContainer(config ContainerConfig) (*Container, error) {
 	if c.token, err = resolve(config.RunnerTokenFile); err != nil {
 		return nil, &Error{Op: "invalid Runner token protection"}
 	}
+	if err := c.configureStageMounts(); err != nil {
+		return nil, err
+	}
 	for i, root := range []string{config.WorktreeRoot, config.GitDirRoot, config.ConfigDirRoot} {
+		if root == "" && len(c.stageRoots) != 0 {
+			continue
+		}
 		real, err := resolve(root)
 		info, statErr := os.Stat(real)
 		if err != nil || statErr != nil || !info.IsDir() {
@@ -183,8 +201,8 @@ func overlapsOnDisk(a, b string) (bool, error) {
 }
 
 func (c *Container) createArgs(spec SandboxSpec, command []string, name string, configVolume ...string) ([]string, error) {
-	if spec.Kind != Harness {
-		return nil, &Error{Op: "unsupported sandbox kind"}
+	if _, err := stageSecretEnvironment(spec); err != nil {
+		return nil, err
 	}
 	if err := c.validateNetwork(spec); err != nil {
 		return nil, err
@@ -200,6 +218,12 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 		if strings.ContainsRune(arg, 0) {
 			return nil, &Error{Op: "invalid command argument"}
 		}
+	}
+	if spec.Kind != Harness {
+		return c.stageArgs(spec, command, name, configVolume...)
+	}
+	if len(spec.Mounts) != 0 || len(spec.Secrets) != 0 || spec.ChannelPath != "" {
+		return nil, &Error{Op: "stage fields cannot be used by legacy harness"}
 	}
 	if spec.Worktree == "" || spec.GitDir == "" || spec.ConfigDir == "" {
 		return nil, &Error{Op: "missing or inappropriate sandbox directories"}
@@ -295,6 +319,14 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 }
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
+	secretEnv, err := stageSecretEnvironment(spec)
+	if err != nil {
+		return nil, err
+	}
+	spec, err = c.networkSpec(spec)
+	if err != nil {
+		return nil, err
+	}
 	name := "evaloom-" + strings.ToLower(ulid.Make().String())
 	var volumes []string
 	var working *workingConfiguration
@@ -337,12 +369,24 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	image, err := c.output(ctx, "image", "inspect", "--format", "{{json .}}", c.config.Image)
 	var metadata struct {
 		OS     string `json:"Os"`
-		Config *struct{ Volumes map[string]json.RawMessage }
+		Config *struct {
+			Volumes map[string]json.RawMessage
+			Env     []string
+		}
 	}
 	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
 		return fail("Linux image without implicit volumes required")
 	}
-	if spec.Network == NetworkHarness {
+	if len(secretEnv) != 0 {
+		entrypoint, err := secretEntrypoint(metadata.Config.Env, spec)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		index := slices.Index(args, "-i")
+		args = slices.Replace(args, index, index+1, entrypoint...)
+	}
+	if len(spec.AllowedDestinations) != 0 {
 		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
 		if err := network.prepare(ctx, spec); err != nil {
 			return fail("network isolation unconfirmed")
@@ -361,7 +405,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			return nil, err
 		}
 	}
-	if _, err = c.output(ctx, args...); err != nil {
+	if _, err = c.createWithSecrets(ctx, secretEnv, args); err != nil {
 		// create cannot run a workload. Remove any partially created container
 		// by its preassigned name, even if its response was lost or timed out.
 		_ = c.remove(name)
