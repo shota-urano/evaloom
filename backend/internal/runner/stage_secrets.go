@@ -65,13 +65,16 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 			}
 			security.logs = nil
 		}()
-		outcome = runner.runStageWithChannel(ctx, id, in, executor)
+		outcome = runner.runStageWithChannel(ctx, id, in, usageExecutor{executor})
 		// Collectors use CollectArtifact before persistence/registration. Also
 		// exclude from retained Sandbox output before it can become later inputs.
 		if err := in.redactStageFiles(); err != nil {
 			return err
 		}
 		outcome.Result = in.redactBytes(outcome.Result)
+		if in.Stage != model.StageWork {
+			outcome.Usage = programStageUsage(outcome.Result, outcome.Usage.WallTimeMS)
+		}
 		if outcome.Work != nil {
 			work := *outcome.Work
 			work.Question = in.redactBytes(work.Question)
@@ -84,7 +87,7 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 		if ctx.Err() != nil {
 			code = stageInterruption(ctx.Err())
 		}
-		return StageOutcome{RunnerError: &code}
+		return StageOutcome{RunnerError: &code, Usage: outcome.Usage}
 	}
 	return outcome
 }
