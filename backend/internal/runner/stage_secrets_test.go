@@ -112,6 +112,9 @@ func TestSecretRuntimeHelper(t *testing.T) {
 		for _, value := range values {
 			fmt.Fprintln(os.Stdout, "stdout="+value)
 			fmt.Fprintln(os.Stderr, "stderr="+value)
+			encoded, _ := json.Marshal(value)
+			fmt.Fprintln(os.Stdout, "escaped="+string(encoded))
+			fmt.Fprintln(os.Stderr, "escaped="+string(encoded))
 		}
 	case "inspect":
 		fmt.Print(`{"Status":"exited","Running":false,"ExitCode":0}`)
@@ -157,6 +160,7 @@ func TestExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T) 
 	for _, test := range []struct{ name, key string }{
 		{"text", "read-value-with-$(literal)=日本語"},
 		{"JSON object", `{"client_id":"client","client_secret":"private-value"}`},
+		{"escaped JSON string", "quoted\"key\n秘密"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t, test.key)
@@ -363,7 +367,7 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 		t.Fatal(err)
 	}
 	_ = rows.Close()
-	if events != 4 {
+	if events != 8 {
 		t.Fatalf("stdout/stderr event count=%d", events)
 	}
 	rows, err = f.db.Query(`SELECT storage_path, redacted, stage FROM artifacts`)
@@ -402,8 +406,10 @@ func testExecutionKeysRedactedAcrossRuntimeLogsEventsAndArtifacts(t *testing.T, 
 func assertNoStageKeys(t *testing.T, data []byte, values ...string) {
 	t.Helper()
 	for _, value := range values {
-		if bytes.Contains(data, []byte(value)) {
-			t.Fatal("stage key persisted")
+		for _, literal := range secretLiterals([]string{value}) {
+			if bytes.Contains(data, []byte(literal)) {
+				t.Fatal("stage key persisted")
+			}
 		}
 	}
 }
@@ -419,14 +425,13 @@ func TestArtifactJSONRedactionPreservesStructure(t *testing.T) {
 	for _, test := range []struct{ raw, want, key string }{
 		{`{"message":"secret","message":"keep"}`, `{"message":"[REDACTED]","message":"keep"}`, "secret"},
 		{" {\r\n\"message\" : \"secret\" } ", " {\r\n\"message\" : \"[REDACTED]\" } ", "secret"},
-		// Only string tokens are candidates; matching serialized containers
-		// or primitive values must not change the JSON's types or structure.
-		{`{"value":123456}`, `{"value":123456}`, "123456"},
+		// Q203 replaces matching objects, arrays and numbers as whole values.
+		{`{"value":123456}`, `{"value":"[REDACTED]"}`, "123456"},
 		{`{"value":true}`, `{"value":true}`, "true"},
-		{`123456`, `123456`, "123456"},
-		{`{"key":{}}`, `{"key":{}}`, `{}`},
-		{`{"key":["private",123]}`, `{"key":["private",123]}`, `["private",123]`},
-		{" \n{\"private\":123}\r\n", " \n{\"private\":123}\r\n", " \n{\"private\":123}\r\n"},
+		{`123456`, `"[REDACTED]"`, "123456"},
+		{`{"key":{}}`, `{"key":"[REDACTED]"}`, `{}`},
+		{`{"key":["private",123]}`, `{"key":"[REDACTED]"}`, `["private",123]`},
+		{" \n{\"private\":123}\r\n", " \n\"[REDACTED]\"\r\n", " \n{\"private\":123}\r\n"},
 	} {
 		if got := string(redactStageBytes([]byte(test.raw), []string{test.key})); got != test.want {
 			t.Fatalf("JSON exclusion got=%s want=%s", got, test.want)
@@ -472,6 +477,15 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct{ name, key, raw, want string }{
+		{"object credential", key, key, `"[REDACTED]"`},
+		{"nested object credential", key, `{"credentials":` + key + `,"keep":9007199254740993}`, `{"credentials":"[REDACTED]","keep":9007199254740993}`},
+		{"object credential in array", key, `{"credentials":[` + key + `,` + key + `],"keep":true}`, `{"credentials":["[REDACTED]","[REDACTED]"],"keep":true}`},
+		{"reordered and escaped object credential", key, `{"credentials":{"client_secret":"private\u002dvalue", "client_id":"client"},"keep":true}`, `{"credentials":"[REDACTED]","keep":true}`},
+		{"array credential", `["private",123]`, `["private",123]`, `"[REDACTED]"`},
+		{"nested array credential", `["private",123]`, `{"credentials":[["private",123],["private",123]],"keep":true}`, `{"credentials":["[REDACTED]","[REDACTED]"],"keep":true}`},
+		{"number credential", "123456", `{"value":123456,"keep":123457}`, `{"value":"[REDACTED]","keep":123457}`},
+		{"root number credential", "123456", `123456`, `"[REDACTED]"`},
+		{"number credential in array", "9007199254740993", `[9007199254740993,9007199254740992,1e400]`, `["[REDACTED]",9007199254740992,1e400]`},
 		{"object credential in root string", key, string(objectString), `"[REDACTED]"`},
 		{"object credential in object string", key, `{"credentials":` + string(objectString) + `,"keep":9007199254740993}`, `{"credentials":"[REDACTED]","keep":9007199254740993}`},
 		{"object credential in array strings", key, `{"credentials":[` + string(objectString) + `,` + string(objectString) + `],"keep":true}`, `{"credentials":["[REDACTED]","[REDACTED]"],"keep":true}`},
@@ -497,7 +511,14 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 		{"duplicate object keys", "private-token", `{"message":"private-token","message":"Authorization: Bearer unknown-token","after":123}`, `{"message":"[REDACTED]","message":"Authorization: [REDACTED]","after":123}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			f := newLogControlPlane(t)
+			live, err := New(f.config)
+			if err != nil {
+				t.Fatal(err)
+			}
 			r, claim, reporter, services := stageFixture(t, true)
+			r.token, r.controlPlaneURL, r.client = live.token, f.server.URL, f.server.Client()
+			claim.Execution.ID = logExecution
 			var def contract.ProfileDefinition
 			if err := json.Unmarshal(claim.Profile.Definition, &def); err != nil {
 				t.Fatal(err)
@@ -510,7 +531,7 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 			reporter.next = func(model.Stage, StageOutcome) StageNext { return StageNext{Next: "stop"} }
 			var directory string
 			var artifacts []LogArtifact
-			services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
+			services.Executor = stageExecutorFunc(func(ctx context.Context, in StageInvocation) StageOutcome {
 				directory = in.Directory
 				for _, output := range []struct{ kind, name, path string }{
 					{"out_file", "credentials.json", filepath.Join(in.Directory, "out", "credentials.json")},
@@ -524,6 +545,9 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 						t.Fatal(err)
 					}
 					artifacts = append(artifacts, artifact)
+					if err := r.registerArtifact(ctx, artifact); err != nil {
+						t.Fatal(err)
+					}
 				}
 				outcome := successfulStage(in.Stage)
 				outcome.Result = json.RawMessage(test.raw)
@@ -583,6 +607,19 @@ func TestExecutionJSONKeysRedactedFromArtifactsAndResults(t *testing.T) {
 				check(artifact.Name, data)
 				if !artifact.Redacted {
 					t.Errorf("%s: missing redacted metadata", artifact.Name)
+				}
+				var path string
+				var redacted int
+				if err := f.db.QueryRow(`SELECT storage_path, redacted FROM artifacts WHERE id=?`, artifact.ID).Scan(&path, &redacted); err != nil {
+					t.Fatal(err)
+				}
+				stored, err := os.ReadFile(filepath.Join(f.dataDir, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				check("stored "+artifact.Name, stored)
+				if redacted != 1 {
+					t.Errorf("%s: persisted redacted metadata=%d", artifact.Name, redacted)
 				}
 			}
 			for _, name := range []string{filepath.Join("out", "credentials.json"), "result.json"} {

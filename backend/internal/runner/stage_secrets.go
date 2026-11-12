@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,62 +171,119 @@ func (in StageInvocation) redactBytes(raw []byte) []byte {
 	return redactStageBytes(raw, append([]string{in.security.runner.token}, in.security.resolved.RedactionValues()...))
 }
 
-func redactStageBytes(raw []byte, values []string) []byte {
-	if len(raw) == 0 {
-		return raw
-	}
+func secretLiterals(values []string) []string {
 	// Match both a credential's original bytes and its JSON string spelling.
 	// The latter can occur in non-JSON text or inside another JSON string.
-	// Decode JSON tokens below as well, so alternate escapes (such as \uXXXX)
-	// cannot bypass matching in any string position, including the root.
 	literals := append([]string(nil), values...)
 	for _, value := range values {
 		encoded, _ := json.Marshal(value)
 		literals = append(literals, string(encoded[1:len(encoded)-1]))
 	}
+	return literals
+}
+
+func redactStageBytes(raw []byte, values []string) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	literals := secretLiterals(values)
 	redact := func(raw []byte) []byte {
 		return logredact.Bytes(raw, literals)
 	}
 	if !json.Valid(raw) {
 		return redact(raw)
 	}
-	// Visit tokens rather than a decoded map. This excludes escaped values and
-	// duplicate object keys, while preserving all unrelated bytes and numbers.
-	// Apply patterns only to decoded strings (including object keys and a root
-	// string). Matching serialized JSON could consume its quotes or delimiters,
-	// or replace whole containers and change the result contract's structure.
+	// Q203 also matches credentials that are themselves JSON objects, arrays or
+	// numbers. Decode without float64 so adjacent large numbers stay distinct.
+	var structured []any
+	for _, value := range values {
+		var decoded any
+		decoder := json.NewDecoder(strings.NewReader(value))
+		decoder.UseNumber()
+		if json.Valid([]byte(value)) && decoder.Decode(&decoded) == nil {
+			switch decoded.(type) {
+			case map[string]any, []any, json.Number:
+				structured = append(structured, decoded)
+			}
+		}
+	}
+	// Record token spans rather than serializing a decoded map: unrelated
+	// formatting, number spellings and duplicate object keys must survive.
+	// Patterns apply only to decoded strings, never to JSON syntax. Match whole
+	// values against the original tree before any child replacement takes effect.
+	type replacement struct {
+		start, end int
+		data       []byte
+	}
+	var replacements []replacement
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	var output []byte
-	last := 0
-	for {
+	var visit func() (any, error)
+	visit = func() (any, error) {
 		start := int(decoder.InputOffset())
 		token, err := decoder.Token()
-		if err == io.EOF {
-			break
-		}
 		if err != nil {
-			return raw
-		} // json.Valid above normally excludes this.
-		end := int(decoder.InputOffset())
-		for start < end && strings.ContainsRune(" \t\r\n,:", rune(raw[start])) {
+			return nil, err
+		}
+		for strings.ContainsRune(" \t\r\n,:", rune(raw[start])) {
 			start++
 		}
-		text, ok := token.(string)
-		if !ok {
-			continue
+		before := len(replacements)
+		var original any = token
+		switch token := token.(type) {
+		case string:
+			clean := redact([]byte(token))
+			if !bytes.Equal(clean, []byte(token)) {
+				encoded, _ := json.Marshal(string(clean))
+				replacements = append(replacements, replacement{start, int(decoder.InputOffset()), encoded})
+			}
+		case json.Delim:
+			if token == '{' {
+				object := make(map[string]any)
+				for decoder.More() {
+					key, err := visit()
+					if err != nil {
+						return nil, err
+					}
+					value, err := visit()
+					if err != nil {
+						return nil, err
+					}
+					object[key.(string)] = value
+				}
+				original = object
+			} else {
+				array := make([]any, 0)
+				for decoder.More() {
+					value, err := visit()
+					if err != nil {
+						return nil, err
+					}
+					array = append(array, value)
+				}
+				original = array
+			}
+			if _, err := decoder.Token(); err != nil {
+				return nil, err
+			}
 		}
-		clean := redact([]byte(text))
-		if bytes.Equal(clean, []byte(text)) {
-			continue
+		for _, secret := range structured {
+			if reflect.DeepEqual(original, secret) {
+				replacements = append(replacements[:before], replacement{start, int(decoder.InputOffset()), []byte(`"[REDACTED]"`)})
+				break
+			}
 		}
-		encoded, _ := json.Marshal(string(clean))
-		output = append(output, raw[last:start]...)
-		output = append(output, encoded...)
-		last = end
+		return original, nil
 	}
-	if output == nil {
+	if _, err := visit(); err != nil || len(replacements) == 0 {
 		return raw
+	}
+	var output []byte
+	last := 0
+	for _, replacement := range replacements {
+		output = append(output, raw[last:replacement.start]...)
+		output = append(output, replacement.data...)
+		last = replacement.end
 	}
 	return append(output, raw[last:]...)
 }

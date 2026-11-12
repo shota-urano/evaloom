@@ -75,7 +75,7 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 	}
 	return &Log{runner: runner, registrar: registrar, id: id, executionID: executionID, stream: stream,
 		path: path, file: file, retryInterval: time.Second,
-		secrets: append([]string{runner.token}, secrets...)}, nil
+		secrets: secretLiterals(append([]string{runner.token}, secrets...))}, nil
 }
 
 // Path is the Runner-local log, retained even after successful delivery.
