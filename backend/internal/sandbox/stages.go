@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
 // Stage paths are caller-supplied: the paths in contract 6.1 are examples,
@@ -175,6 +177,12 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 		env = append(env, key+"="+value)
 	}
 	sort.Strings(env)
+	if len(spec.AllowedDestinations) != 0 {
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			env = append(env, key+"="+sandboxproxy.URL)
+		}
+		env = append(env, "NO_PROXY=", "no_proxy=")
+	}
 	return append(append(args, env...), command...), nil
 }
 

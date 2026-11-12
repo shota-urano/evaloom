@@ -30,6 +30,11 @@ type ContainerConfig struct {
 	// Explicit trusted Linux helper binary and sidecar image, both prebuilt.
 	// Unused for NetworkNone. The binary is mounted into sidecars only.
 	ProxyImage, ProxyBinary string
+	// ModelAPI is the selected Work/Proposal Adapter. NetworkEnvironment checks
+	// against ALL registered Adapters for Prepare/Publish (spec 09, Q146).
+	// These are internal wiring boundaries, never Runner JSON settings.
+	ModelAPI           interface{ ModelAPIDestinations() []string }
+	NetworkEnvironment interface{ ValidateNetworkDestination(string) error }
 	// RuntimeEnv configures the host CLI only (e.g. an explicit DOCKER_HOST).
 	// It is never forwarded to the container; os.Environ is never inherited.
 	RuntimeEnv map[string]string
@@ -311,6 +316,11 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 }
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
+	var err error
+	spec, err = c.networkSpec(spec)
+	if err != nil {
+		return nil, err
+	}
 	name := "evaloom-" + strings.ToLower(ulid.Make().String())
 	var volumes []string
 	var working *workingConfiguration
@@ -358,7 +368,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
 		return fail("Linux image without implicit volumes required")
 	}
-	if spec.Network == NetworkHarness {
+	if len(spec.AllowedDestinations) != 0 {
 		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
 		if err := network.prepare(ctx, spec); err != nil {
 			return fail("network isolation unconfirmed")
