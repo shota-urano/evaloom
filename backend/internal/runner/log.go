@@ -59,7 +59,7 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 	if id, err := ulid.ParseStrict(executionID); err != nil || id.String() != executionID {
 		return nil, fmt.Errorf("runner: invalid log execution ID")
 	}
-	if stream != "harness" && stream != "setup" && stream != "test" {
+	if stream != "harness" && stream != "setup" && stream != "test" && stream != "runner" {
 		return nil, fmt.Errorf("runner: invalid artifact log stream")
 	}
 	dir := filepath.Join(runner.dataDir, "logs")
@@ -213,7 +213,7 @@ func (log *Log) Deliver(ctx context.Context) error {
 				return writeErr
 			}
 			err := log.registrar.RegisterLogArtifact(ctx, LogArtifact{
-				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[log.stream], Name: filepath.Base(log.path),
+				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: map[string]string{"harness": "work", "setup": "prepare", "test": "check", "runner": "runner"}[log.stream], Name: filepath.Base(log.path),
 				Path: log.path, Redacted: redacted,
 			})
 			if err == nil {

@@ -94,9 +94,9 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	if len(c.stageRoots) == 0 || spec.Worktree != "" || spec.GitDir != "" {
 		return nil, &Error{Op: "explicit stage mount wiring required"}
 	}
-	// Channel transport belongs to the following task.
-	if spec.ChannelPath != "" {
-		return nil, &Error{Op: "stage channel wiring unavailable"}
+	channelMount, err := c.channelMount(spec)
+	if err != nil {
+		return nil, err
 	}
 	if (spec.ConfigDir != "" || spec.ConfigWritable) && spec.Kind != Work && spec.Kind != Proposal {
 		return nil, &Error{Op: "configuration is only available to work and proposal"}
@@ -165,6 +165,9 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 		}
 		args = append(args, "--mount", mount)
 	}
+	if channelMount != "" {
+		args = append(args, "--mount", channelMount)
+	}
 	// env -i strips host and image ENV. The contract allowlist is enforced
 	// even if the trusted legacy AllowEnv contains additional variable names.
 	secrets, err := stageSecretEnvironment(spec)
@@ -180,6 +183,9 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	for key, value := range spec.Env {
 		if !stageEnvAllowed(spec.Kind, key) {
 			continue
+		}
+		if key == "EVALOOM_CHANNEL" && spec.ChannelPath == "" {
+			continue // Never advertise an absent or caller-injected channel.
 		}
 		if strings.ContainsRune(value, 0) {
 			return nil, &Error{Op: "invalid sandbox environment"}
