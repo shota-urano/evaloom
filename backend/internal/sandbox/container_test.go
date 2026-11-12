@@ -87,7 +87,7 @@ func TestRuntimeHelper(t *testing.T) {
 		case "image-darwin":
 			fmt.Print(`{"Os":"darwin","Config":{}}`)
 		default:
-			fmt.Print(`{"Os":"linux","Config":{"Env":["IMAGE_SECRET=secret"]}}`)
+			fmt.Print(`{"Os":"linux","Config":{"Env":["IMAGE_SECRET=secret","EVALOOM_SECRET_UNDECLARED=image-key","EVALOOM_SECRET_SOURCE=image-source","PATH=/image/bin","TZ=image-tz"]}}`)
 		}
 		os.Exit(0)
 	}
@@ -142,6 +142,20 @@ func TestRuntimeHelper(t *testing.T) {
 			fail()
 		}
 		write("created", strings.Join(args, "\n"))
+		if mode == "env-probe" {
+			// Model Docker's environment import separately from argv. Test-only
+			// runtime state stays outside every guest mount.
+			env := []string{"IMAGE_SECRET=secret", "EVALOOM_SECRET_UNDECLARED=image-key", "EVALOOM_SECRET_SOURCE=image-source", "PATH=/image/bin", "TZ=image-tz", "HOME=/root", "HOSTNAME=container", "TERM=xterm"}
+			image := slices.Index(args, "test-image:explicit")
+			for i := 0; i < image; i++ {
+				if args[i] == "--env" {
+					i++
+					env = append(env, args[i]+"="+os.Getenv(args[i]))
+				}
+			}
+			data, _ := json.Marshal(invocation{args[image+1:], env})
+			write("probe.json", string(data))
+		}
 		if mode == "slow-create" {
 			time.Sleep(time.Hour)
 		}
@@ -167,11 +181,13 @@ func TestRuntimeHelper(t *testing.T) {
 			write("exited", "yes")
 		} else {
 			if mode == "env-probe" {
-				created, _ := os.ReadFile(filepath.Join(root, "created"))
-				createArgs := strings.Split(string(created), "\n")
-				index := slices.Index(createArgs, "-i")
-				probe := exec.Command("/usr/bin/env", createArgs[index:]...)
-				probe.Env = []string{"IMAGE_SECRET=secret"}
+				data, _ := os.ReadFile(filepath.Join(root, "probe.json"))
+				var call invocation
+				if json.Unmarshal(data, &call) != nil {
+					os.Exit(95)
+				}
+				probe := exec.Command("/usr/bin/env", call.Args...)
+				probe.Env = call.Env
 				probe.Stdout, probe.Stderr = os.Stdout, os.Stderr
 				if err := probe.Run(); err != nil {
 					os.Exit(95)

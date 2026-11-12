@@ -330,9 +330,12 @@ func TestStageInvalidSpecsFailBeforeRuntime(t *testing.T) {
 	for _, kind := range stageKinds {
 		t.Run(string(kind)+" rejects unwired authority", func(t *testing.T) {
 			for _, authority := range []string{"secrets", "channel"} {
+				if authority == "secrets" && (kind == Prepare || kind == Publish) {
+					continue // Supported by the stage key transport.
+				}
 				f := stageFixture(t, "normal", kind)
 				if authority == "secrets" {
-					f.spec.Secrets = map[string]string{"SLOT": "value"}
+					f.spec.Secrets = map[string]string{"slot": "value"}
 				} else {
 					f.spec.ChannelPath = "/socket"
 				}

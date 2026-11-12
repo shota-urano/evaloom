@@ -28,11 +28,28 @@ WorkとProposalの専用設定は`ConfigDirRoot`内に限定し、ほかの段�
 CPU・メモリ・実行時間とコンテナ全体の停止確認には、既存の実行・監視処理を使う。
 
 段の組み立てとRunner設定からの接続は後続の`internal/stage`の範囲。
-段別のネットワークは下記の境界で指定する。鍵と通話口は各担当タスクで接続し、
-未対応の`Secrets`・`ChannelPath`を受け取ったら起動せずに拒否する。
+段別のネットワークは下記の境界で指定する。通話口は後続タスクで接続し、
+未対応の`ChannelPath`を受け取ったら起動せずに拒否する。
 macOS VMもQ147のとおり未対応として拒否する。実コンテナ・実VMでの検証は行っていない。
 Proposalの作業ディレクトリは仕様で未定義なので、`--workdir`を指定しない。
 必要な作業ディレクトリの指定方法は、提案を実行する呼び出し側との未確定の境界として残す。
+
+### 鍵の受け渡し
+
+Runnerは既存の`WithStageSecrets` / `secretstore.Store.ForStage`で、その段の
+宣言と登録済みのaccessを照合する。段の組み立て側は、取り出した値を
+`SandboxSpec.Secrets`にslot名で入れる。`Env`に入れた鍵の変数は許可しない。
+Prepareでは宣言と登録の両方がreadの鍵だけを選び、Publishでは宣言した鍵だけを選ぶ。
+鍵の欠落と使い方の不一致は、Sandboxを作る前に`config_error`にする。
+Sandbox側でも、Work・Check・Proposalと従来のHarnessに`Secrets`があれば、
+ランタイムを呼ばずに拒否する。
+
+値はコンテナ作成CLIの環境にだけ追加し、引数は`--env EVALOOM_SECRET_<SLOT>`にする。
+作成後のCLIとネットワークのサイドカーには値を渡さない。鍵がある段では、
+`env -i`の代わりに、inspectで得たイメージの環境変数とDockerの既定変数を
+`env -u`で除外し、明示した鍵と段の変数だけを残す。値の改行や記号は展開せずに渡す。
+鍵をファイルに書かず、`dataDir/secrets`と重なる段のマウント元も拒否する。
+ログと成果物の機密情報の除外には、呼び出し側が既存の`RedactionValues()`を使う。
 
 以下の`Harness`・`Worktree`・`GitDir`の説明は、既存Adapter用に残した従来の境界を指す。
 
