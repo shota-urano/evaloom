@@ -82,7 +82,7 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 	if err != nil {
 		code := "config_error"
 		if ctx.Err() != nil {
-			code = "cancelled"
+			code = stageInterruption(ctx.Err())
 		}
 		return StageOutcome{RunnerError: &code}
 	}

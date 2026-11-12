@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -69,6 +70,7 @@ type StageInvocation struct {
 	// The context carries the matching, stage-scoped socket capability.
 	ChannelPath string
 	security    *stageSecurity
+	timeout     time.Duration
 }
 
 type StageExecutor interface {
@@ -124,6 +126,8 @@ func (runner *Runner) ExecuteStages(ctx context.Context, claim Claim, services S
 }
 
 func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile LoadedProfile, services StageServices) error {
+	// Heartbeat cancellation stops the job, not delivery of its final report.
+	reportCtx := context.WithoutCancel(ctx)
 	stage := model.StageWork
 	if profile.Definition.Stages.Prepare != nil {
 		stage = model.StagePrepare
@@ -158,7 +162,7 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 		if err != nil {
 			return err
 		}
-		attempt, err := services.Reporter.StartStage(ctx, claim.Execution.ID, stage, request)
+		attempt, err := services.Reporter.StartStage(reportCtx, claim.Execution.ID, stage, request)
 		if err != nil {
 			return err
 		}
@@ -182,17 +186,28 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			}
 			outcome.RunnerError = &code
 		} else if err := ctx.Err(); err != nil {
-			code := "cancelled"
+			code := stageInterruption(err)
 			outcome.RunnerError = &code
 		} else {
 			invocation := StageInvocation{Stage: stage, Attempt: attempt, Profile: profile,
-				Workspace: claim.Workspace.Path, Directory: directory}
+				Workspace: claim.Workspace.Path, Directory: directory,
+				timeout: time.Duration(claim.Limits.TimeoutSec[string(stage)]) * time.Second}
 			if stage == model.StageWork {
 				invocation.WorkSessionID = resume.WorkSessionID
 			}
-			outcome = runner.runStageWithSecrets(ctx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
+			stageCtx, cancel := context.WithTimeout(ctx, invocation.timeout)
+			outcome = runner.runStageWithSecrets(stageCtx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
+			if stageCtx.Err() != nil {
+				if cooperativeCancellation(stageCtx, stage, outcome) {
+					outcome.RunnerError = nil
+				} else {
+					code := stageInterruption(stageCtx.Err())
+					outcome.RunnerError = &code
+				}
+			}
+			cancel()
 		}
-		next, err := services.Reporter.FinishStage(ctx, claim.Execution.ID, stage, attempt, outcome)
+		next, err := services.Reporter.FinishStage(reportCtx, claim.Execution.ID, stage, attempt, outcome)
 		if err != nil {
 			return err
 		}
@@ -214,6 +229,9 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 }
 
 func stageRequest(claim Claim, stage model.Stage, paths contract.RequestPaths, resume stageResume) ([]byte, error) {
+	if claim.Limits.TimeoutSec[string(stage)] > int(time.Duration(1<<63-1)/time.Second) {
+		return nil, fmt.Errorf("runner: stage timeout exceeds duration range")
+	}
 	r := contract.Request{
 		ContractVersion: contract.Version, Stage: stage,
 		Execution: contract.RequestExecution{ID: claim.Execution.ID, Seq: claim.Execution.Seq, Mode: model.ExecutionMode(claim.Execution.Mode)},

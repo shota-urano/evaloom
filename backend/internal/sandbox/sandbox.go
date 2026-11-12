@@ -13,6 +13,9 @@ import (
 
 type SandboxKind string
 
+// TerminationGrace is the fixed TERM-to-forced-removal interval (spec 05 3.10).
+const TerminationGrace = 10 * time.Second
+
 const (
 	// Harness is retained for the existing Adapter boundary.
 	Harness  SandboxKind = "harness"
