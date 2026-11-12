@@ -31,6 +31,20 @@ work・check・proposalは鍵なしだけを受け付ける。宣言していな
 
 開始関数が受け取る`Resolved.Environment()`は段専用の環境変数、
 `RedactionValues()`はログと成果物の除外処理へ渡す値である。
-Runnerの段の実行器はまだ無いため、このタスクでは開始前の照合境界までを実装する。
-Sandboxへの実際の受け渡しと、段のログ・成果物への除外処理の接続は
-鍵の受け渡しの後続タスクで行う。
+`Runner.ExecuteStages`は、この照合を段の実行器とSandboxの起動前に行う。
+`StageInvocation.SandboxSpec`で、照合した鍵を`SandboxSpec.Secrets`のslotと値へ
+変換する。SandboxはランタイムのCLI環境へ値を置き、引数には変数名だけを渡す。
+work・check・proposalの鍵なし検査はSandbox側でも行う。
+
+段の実行器は`StageInvocation.NewLog`で作ったログへ標準出力・標準エラーを渡す。
+このログはRunnerトークンと渡した鍵を除外してから、ローカル保存・events送信・
+ログ成果物の登録を行う。モデルの認証値は`NewLog`の追加引数に渡せる。
+`StageInvocation.CollectArtifact`は、readerから受け取った内容をメモリ内で除外処理し、
+処理後のファイルと`Redacted`付きの登録情報を返す。既存の成果物登録処理は
+このファイルを送信する。JSONのエスケープされた文字列も除外対象にする。
+
+段が終わると、Runnerは保持する`out/`と`result.json`、終了報告の結果JSONと
+質問を除外処理する。後続の段は処理後の`out`を入力として受け取る。
+段の実行器は全プロセスと収集処理が止まってから戻る。Runnerはその後、
+段専用の鍵・Sandbox設定・ログが参照する値を解放する。
+コンテナとAdapterの組み立て、成果物登録の呼び出しは既存の段実行器の境界に残る。

@@ -55,6 +55,8 @@ type StageUsage struct {
 // Implementations must mount request and inputs read-only, apply contract 6.2
 // visibility, and return only after the whole stage has stopped. WorkSessionID
 // is Adapter metadata, never an extra field in the harness request JSON.
+// Executors use SandboxSpec, NewLog and CollectArtifact to connect stage keys
+// to transport and exclusion. All processes and readers must stop before return.
 type StageInvocation struct {
 	Stage         model.Stage
 	Attempt       int
@@ -66,6 +68,7 @@ type StageInvocation struct {
 	// EVALOOM_CHANNEL path and copies this into SandboxSpec.ChannelPath.
 	// The context carries the matching, stage-scoped socket capability.
 	ChannelPath string
+	security    *stageSecurity
 }
 
 type StageExecutor interface {
@@ -101,8 +104,8 @@ func stageIndex(stage model.Stage) int {
 }
 
 // ExecuteStages runs the frame of spec 05 3.3 and prepares and checks the
-// workspace (3.5). Secret preflight and Sandbox/Adapter implementation remain
-// caller boundaries. Workspace contents are retained on failure or stop.
+// workspace (3.5) and stage keys (3.6). Sandbox/Adapter implementation remains
+// a caller boundary. Workspace contents are retained on failure or stop.
 // Profile preflight errors are returned before any stage starts, as WithProfile
 // requires. Job wiring owns reporting those preflight failures.
 func (runner *Runner) ExecuteStages(ctx context.Context, claim Claim, services StageServices) error {
@@ -187,7 +190,7 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			if stage == model.StageWork {
 				invocation.WorkSessionID = resume.WorkSessionID
 			}
-			outcome = runner.runStageWithChannel(ctx, claim.Execution.ID, invocation, services.Executor)
+			outcome = runner.runStageWithSecrets(ctx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
 		}
 		next, err := services.Reporter.FinishStage(ctx, claim.Execution.ID, stage, attempt, outcome)
 		if err != nil {

@@ -19,7 +19,8 @@ type runnerLogEvent struct {
 }
 
 func logStream(stream string) bool {
-	return stream == "harness" || stream == "setup" || stream == "test" || stream == "runner"
+	return stream == "harness" || stream == "setup" || stream == "test" || stream == "runner" ||
+		stream == "prepare" || stream == "work" || stream == "check" || stream == "publish"
 }
 
 // Check ownership under the same transaction that will persist the report.

@@ -75,6 +75,16 @@ func TestLogReportValidationAndDatabaseFailure(t *testing.T) {
 	}
 }
 
+func TestLogReportsAcceptContractStageNames(t *testing.T) {
+	f, token := logReportFixture(t)
+	for _, stage := range []string{"prepare", "work", "check", "publish"} {
+		status, body := postLogReport(t, f, token, `{"events":[{"id":"`+stage+`","stream":"`+stage+`","text":"[REDACTED]"}]}`)
+		if status != http.StatusNoContent {
+			t.Fatalf("stage=%s status=%d body=%s", stage, status, body)
+		}
+	}
+}
+
 // Upload uses the collection endpoint with query metadata, never an ID suffix.
 func TestLogArtifactUploadRouteIsNotAvailable(t *testing.T) {
 	f, _ := logReportFixture(t)
