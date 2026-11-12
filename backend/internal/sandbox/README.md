@@ -5,6 +5,37 @@
 `Run`は作成までを同期で行い、実行は非同期で監視する。呼び出し側は必ず`Wait`する。
 標準出力・標準エラーは構築時のwriterへ流す。Runner側で機密情報を除外して保存する。
 
+## 段ごとの実行
+
+`Prepare / Work / Check / Publish / Proposal`では、仕様09の`Mounts`を使う。
+Runner側から`ContainerConfig.StagePaths`に契約の6つのゲストパスを渡し、
+`StageMountRoots`に各ゲストパスの専用ホストルートを渡す。仕様のパスは例なので固定しない。
+この2項目は内部の構築引数であり、Runner設定ファイルのキーではない。
+許可ルートの構築方法は仕様に定義がないため、この境界で呼び出し側に委ねる。
+
+契約6.2の表と一致しないマウントは起動前に拒否する。Workにはprofileを渡せず、
+CheckとPublishのworkspaceは読み取り専用になる。Proposalはinputs・out・scratchだけを使う。
+マウント元の実パスが対応するルート内にあることと、各領域が重複しないことを確かめる。
+ホスト側の子マウントは共有しない。Runnerの既存実装はprofileや段のファイルをdataDir配下に
+保存するため、それぞれの専用ルートの共有は許す。dataDir全体やその祖先、本人のHOME全体、
+Runnerトークンを含む領域は拒否する。呼び出し側は、そのExecution・段のファイルだけを
+各ルートに置き、マウントが完了するまでルートを差し替えない。
+
+環境変数は仕様09の段別の許可リストを使う。既存の`AllowEnv`では拡張できない。
+HOMEにはscratch内の新しいtmpfsを使い、TZはUTCに固定する。
+WorkとProposalの専用設定は`ConfigDirRoot`内に限定し、ほかの段の領域との別名共有も拒否する。
+書き込みには既存の`WithWorkingConfiguration`による検証済みvolumeを使う。
+CPU・メモリ・実行時間とコンテナ全体の停止確認には、既存の実行・監視処理を使う。
+
+段の組み立てとRunner設定からの接続は後続の`internal/stage`の範囲。
+段別のネットワーク、鍵、通話口は各担当タスクで接続する。この実装ではネットワークなしで
+実行し、未対応の宛先指定・`Secrets`・`ChannelPath`を受け取ったら起動せずに拒否する。
+macOS VMもQ147のとおり未対応として拒否する。実コンテナ・実VMでの検証は行っていない。
+Proposalの作業ディレクトリは仕様で未定義なので、`--workdir`を指定しない。
+必要な作業ディレクトリの指定方法は、提案を実行する呼び出し側との未確定の境界として残す。
+
+以下の`Harness`・`Worktree`・`GitDir`の説明は、既存Adapter用に残した従来の境界を指す。
+
 ## コンテナ方式
 
 `NewContainer(ContainerConfig)`には次の値を呼び出し側から渡す。

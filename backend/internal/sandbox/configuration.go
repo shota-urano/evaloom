@@ -88,7 +88,8 @@ type workingConfiguration struct {
 }
 
 func (w *workingConfiguration) verify(ctx context.Context, spec SandboxSpec) error {
-	if w.closed || w.env.ConfigDir() != spec.ConfigDir || spec.Kind != Harness || !spec.ConfigWritable {
+	if w.closed || w.env.ConfigDir() != spec.ConfigDir ||
+		(spec.Kind != Harness && spec.Kind != Work && spec.Kind != Proposal) || !spec.ConfigWritable {
 		return &harnesscontext.ConfigError{Err: fmt.Errorf("configuration capability mismatch")}
 	}
 	_, err := w.env.Files(ctx)
