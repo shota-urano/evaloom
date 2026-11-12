@@ -166,7 +166,7 @@ func TestStageEnvironmentIsContractAllowlist(t *testing.T) {
 				want["EVALOOM_REQUEST"] = "/job/request.json"
 			}
 			if kind == Prepare || kind == Check || kind == Publish {
-				want["EVALOOM_RESULT"], want["EVALOOM_CHANNEL"] = "/job/out/result.json", "/job/channel.sock"
+				want["EVALOOM_RESULT"] = "/job/out/result.json"
 			} else {
 				want["CODEX_HOME"], want["CLAUDE_CONFIG_DIR"] = f.spec.ConfigDir, f.spec.ConfigDir
 			}

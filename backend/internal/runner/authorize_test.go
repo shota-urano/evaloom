@@ -117,8 +117,9 @@ func TestAuthorizeUnreachableTimeoutAndRedirectReturnUnavailable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		process.client.Timeout = 50 * time.Millisecond
-		got := process.Authorize(context.Background(), ulid.Make().String(), contract.AuthorizeRequest{Operation: "publish", ContentID: "r1"})
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		got := process.Authorize(ctx, ulid.Make().String(), contract.AuthorizeRequest{Operation: "publish", ContentID: "r1"})
 		if got.Allowed || got.Reason != "unavailable" || calls.Load() != 1 {
 			t.Fatalf("reply=%+v calls=%d", got, calls.Load())
 		}
@@ -160,5 +161,29 @@ func TestAuthorizeRejectsInvalidLocalInputWithoutHTTP(t *testing.T) {
 	got := process.Authorize(context.Background(), ulid.Make().String(), contract.AuthorizeRequest{Operation: "bad-operation", ContentID: "r1"})
 	if got.Allowed || got.Reason != "unavailable" || calls.Load() != 0 {
 		t.Fatalf("reply=%+v calls=%d", got, calls.Load())
+	}
+}
+
+type authorizeTransport func(*http.Request) (*http.Response, error)
+
+func (f authorizeTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAuthorizeUsesIndependentTenSecondDeadline(t *testing.T) {
+	runner, err := New(testConfig(t, "http://control.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	runner.client.Transport = authorizeTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		deadline, ok := r.Context().Deadline()
+		if remaining := time.Until(deadline); !ok || remaining > 10*time.Second || remaining < 9*time.Second {
+			t.Errorf("authorize deadline=%v present=%v", remaining, ok)
+		}
+		return nil, context.DeadlineExceeded
+	})
+	reply := runner.Authorize(context.Background(), ulid.Make().String(), contract.AuthorizeRequest{Operation: "publish", ContentID: "r1"})
+	if reply.Allowed || reply.Reason != "unavailable" || calls != 1 || runner.client.Timeout != heartbeatTimeout {
+		t.Fatalf("reply=%+v calls=%d shared timeout=%v", reply, calls, runner.client.Timeout)
 	}
 }

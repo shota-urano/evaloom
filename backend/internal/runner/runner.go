@@ -21,8 +21,8 @@ import (
 
 const heartbeatTimeout = 5 * time.Second
 
-// Runner keeps one boot identity for its lifetime. It neither listens for
-// connections nor opens the Control Plane database.
+// Runner keeps one boot identity for its lifetime. Its only listeners are
+// stage-scoped channels; it never opens the Control Plane database.
 type Runner struct {
 	bootID, token, heartbeatURL string
 	claimURL                    string
@@ -33,6 +33,7 @@ type Runner struct {
 	heartbeatMu                 sync.Mutex
 	profileMu                   sync.Mutex
 	executions                  map[string]context.CancelFunc
+	cancelledExecutions         map[string]bool
 	proposals                   map[string]context.CancelFunc
 	cleanedWorkspaces           map[string]struct{}
 	claimPending                bool
@@ -75,9 +76,10 @@ func New(config Config) (*Runner, error) {
 			// Redirects must not forward credentials or change POST semantics.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		executions:        make(map[string]context.CancelFunc),
-		proposals:         make(map[string]context.CancelFunc),
-		cleanedWorkspaces: make(map[string]struct{}),
+		executions:          make(map[string]context.CancelFunc),
+		cancelledExecutions: make(map[string]bool),
+		proposals:           make(map[string]context.CancelFunc),
+		cleanedWorkspaces:   make(map[string]struct{}),
 	}, nil
 }
 
@@ -97,6 +99,7 @@ func (runner *Runner) RegisterExecution(id string, cancel context.CancelFunc) er
 		return fmt.Errorf("runner: execution limit reached")
 	}
 	runner.executions[id] = cancel
+	delete(runner.cancelledExecutions, id)
 	return nil
 }
 
@@ -106,6 +109,7 @@ func (runner *Runner) ForgetExecution(id string) {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	delete(runner.executions, id)
+	delete(runner.cancelledExecutions, id)
 }
 
 // Heartbeat sends the current state once and dispatches cancellation and cleanup.
@@ -180,6 +184,12 @@ func (runner *Runner) Heartbeat(ctx context.Context) error {
 	for _, id := range reply.CancelExecutionIDs {
 		runner.mu.Lock()
 		cancel := runner.executions[id]
+		if cancel != nil {
+			if runner.cancelledExecutions == nil {
+				runner.cancelledExecutions = make(map[string]bool)
+			}
+			runner.cancelledExecutions[id] = true
+		}
 		runner.mu.Unlock()
 		if cancel != nil {
 			// Invoke outside the lock so cancellation may finish an execution.
