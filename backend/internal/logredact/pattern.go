@@ -21,11 +21,12 @@ var (
 // A missing END marker suppresses the remainder of that source, including on
 // read errors. Raw bytes are only held in memory, never spooled to disk.
 type PatternReader struct {
-	source     *bufio.Reader
-	pending    string
-	err        error
-	privateEnd string
-	changed    bool
+	source       *bufio.Reader
+	pending      string
+	err          error
+	privateEnd   string
+	changed      bool
+	preserveCRLF bool
 }
 
 // NewPatternReader wraps one source. Use one reader per source.
@@ -45,7 +46,10 @@ func (r *PatternReader) Read(p []byte) (int, error) {
 		r.err = err
 		// Match the bytes that will actually be persisted. Otherwise CRLF
 		// normalization could reconstitute a multiline secret after matching.
-		r.pending = r.redactLine(strings.ReplaceAll(line, "\r\n", "\n"))
+		if !r.preserveCRLF {
+			line = strings.ReplaceAll(line, "\r\n", "\n")
+		}
+		r.pending = r.redactLine(line)
 	}
 	if r.pending != "" {
 		n := copy(p, r.pending)

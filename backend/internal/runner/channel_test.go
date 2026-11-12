@@ -19,6 +19,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/secretstore"
 )
 
 func channelDirectory(t *testing.T) string {
@@ -369,6 +370,9 @@ func TestExecuteStagesLongDataDirChannelRelay(t *testing.T) {
 	// Exceed both macOS and Linux sockaddr_un limits, including spaces as in
 	// ~/Library/Application Support/Evaloom/runner. Keep the specified layout.
 	runner.dataDir = filepath.Join(runner.dataDir, "Application Support", strings.Repeat("runner-data-", 12))
+	if err := secretstore.New(runner.dataDir).Set(claim.Profile.HarnessID, "delivery", "write", []byte("delivery-private-value")); err != nil {
+		t.Fatal(err)
+	}
 	id, approval := claim.Execution.ID, ulid.Make().String()
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
