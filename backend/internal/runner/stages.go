@@ -71,6 +71,7 @@ type StageInvocation struct {
 	ChannelPath string
 	security    *stageSecurity
 	timeout     time.Duration
+	measurement *stageMeasurement
 }
 
 type StageExecutor interface {

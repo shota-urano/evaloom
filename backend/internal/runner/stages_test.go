@@ -343,6 +343,8 @@ func TestExecuteStagesFailuresKeepWorkspaceAndOut(t *testing.T) {
 			if err := r.ExecuteStages(context.Background(), claim, services); err != nil {
 				t.Fatal(err)
 			}
+			// Duration belongs to Runner rather than the executor's fixture.
+			failure.Usage.WallTimeMS = reporter.outcomes[index].Usage.WallTimeMS
 			if !slices.Equal(called, executionStageOrder[:index+1]) || !reflect.DeepEqual(reporter.outcomes[index], failure) {
 				t.Fatalf("failure was retried, not forwarded, or followed by a stage: %v, %+v", called, reporter.outcomes)
 			}
