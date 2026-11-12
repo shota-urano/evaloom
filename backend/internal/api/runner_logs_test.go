@@ -28,7 +28,7 @@ func postLogReport(t *testing.T, f *authFixture, token, body string) (int, []byt
 
 func TestLogReportsAreAtomicAndCheckOwnership(t *testing.T) {
 	f, token := logReportFixture(t)
-	first := `{"events":[{"id":"one","stream":"harness","text":"first"}]}`
+	first := `{"events":[{"sourceId":"one","stream":"harness","text":"first"}]}`
 	for range 2 {
 		status, body := postLogReport(t, f, token, first)
 		if status != 204 {
@@ -36,7 +36,7 @@ func TestLogReportsAreAtomicAndCheckOwnership(t *testing.T) {
 		}
 	}
 	// A conflict in the second item must roll back the new first item too.
-	status, body := postLogReport(t, f, token, `{"events":[{"id":"two","stream":"test","text":"new"},{"id":"one","stream":"harness","text":"different"}]}`)
+	status, body := postLogReport(t, f, token, `{"events":[{"sourceId":"two","stream":"test","text":"new"},{"sourceId":"one","stream":"harness","text":"different"}]}`)
 	assertAuthError(t, status, body, 409, Conflict)
 	for _, table := range []string{"execution_events"} {
 		var count int
@@ -56,10 +56,12 @@ func TestLogReportValidationAndDatabaseFailure(t *testing.T) {
 	f, token := logReportFixture(t)
 	for _, body := range []string{
 		`{}`, `{"events":[]}`, `{"events":null}`,
-		`{"events":[{"id":"x","stream":"unknown","text":"value"}]}`,
-		`{"events":[{"id":"x","stream":"test","text":"two\nlines"}]}`,
+		`{"events":[{"id":"legacy","stream":"work","text":"value"}]}`,
+		`{"events":[{"sourceId":"","stream":"work","text":"value"}]}`,
+		`{"events":[{"sourceId":"x","stream":"unknown","text":"value"}]}`,
+		`{"events":[{"sourceId":"x","stream":"test","text":"two\nlines"}]}`,
 		`{"events":[{"stream":"test","text":"value"}]}`,
-		`{"events":[{"id":"x","stream":"test","text":"value","type":"status_changed"}]}`,
+		`{"events":[{"sourceId":"x","stream":"test","text":"value","type":"status_changed"}]}`,
 	} {
 		status, response := postLogReport(t, f, token, body)
 		assertAuthError(t, status, response, 400, ValidationFailed)
@@ -67,7 +69,7 @@ func TestLogReportValidationAndDatabaseFailure(t *testing.T) {
 	if _, err := f.db.Exec(`CREATE TRIGGER fail_event BEFORE INSERT ON execution_events WHEN json_extract(NEW.payload, '$.sourceId') = 'fail' BEGIN SELECT RAISE(FAIL, 'event failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	status, body := postLogReport(t, f, token, `{"events":[{"id":"x","stream":"runner","text":"value"},{"id":"fail","stream":"runner","text":"value"}]}`)
+	status, body := postLogReport(t, f, token, `{"events":[{"sourceId":"x","stream":"runner","text":"value"},{"sourceId":"fail","stream":"runner","text":"value"}]}`)
 	assertAuthError(t, status, body, 500, Internal)
 	var count int
 	if err := f.db.QueryRow(`SELECT count(*) FROM execution_events`).Scan(&count); err != nil || count != 0 {
@@ -78,10 +80,33 @@ func TestLogReportValidationAndDatabaseFailure(t *testing.T) {
 func TestLogReportsAcceptContractStageNames(t *testing.T) {
 	f, token := logReportFixture(t)
 	for _, stage := range []string{"prepare", "work", "check", "publish"} {
-		status, body := postLogReport(t, f, token, `{"events":[{"id":"`+stage+`","stream":"`+stage+`","text":"[REDACTED]"}]}`)
+		status, body := postLogReport(t, f, token, `{"events":[{"sourceId":"`+stage+`","stream":"`+stage+`","text":"[REDACTED]"}]}`)
 		if status != http.StatusNoContent {
 			t.Fatalf("stage=%s status=%d body=%s", stage, status, body)
 		}
+	}
+}
+
+func TestLogSourceIDRetryChecksStreamAndText(t *testing.T) {
+	f, token := logReportFixture(t)
+	first := `{"events":[{"sourceId":"stage:0","stream":"work","text":"first"}]}`
+	for range 2 {
+		status, body := postLogReport(t, f, token, first)
+		if status != http.StatusNoContent {
+			t.Fatalf("retry status=%d body=%s", status, body)
+		}
+	}
+	for _, body := range []string{
+		`{"events":[{"sourceId":"stage:0","stream":"check","text":"first"}]}`,
+		`{"events":[{"sourceId":"stage:0","stream":"work","text":"changed"}]}`,
+	} {
+		status, response := postLogReport(t, f, token, body)
+		assertAuthError(t, status, response, http.StatusConflict, Conflict)
+	}
+	var count int
+	var payload string
+	if err := f.db.QueryRow(`SELECT count(*), min(payload) FROM execution_events WHERE type='log'`).Scan(&count, &payload); err != nil || count != 1 || payload != `{"sourceId":"stage:0","stream":"work","text":"first"}` {
+		t.Fatalf("events=%d payload=%s err=%v", count, payload, err)
 	}
 }
 

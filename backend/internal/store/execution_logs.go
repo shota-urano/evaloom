@@ -27,8 +27,9 @@ func ListLogArtifacts(ctx context.Context, db *sql.DB, executionID string) ([]Ar
 	return artifacts, rows.Err()
 }
 
-// RunnerLog reads the already-redacted runner stream in event order. There is
-// no runner_log artifact kind in the data model; other streams use their files.
+// RunnerLog reads the already-redacted runner stream in event order. Runner
+// persists these events before registering log artifacts; reading both would
+// duplicate lines. Other streams use their files.
 func RunnerLog(ctx context.Context, db *sql.DB, executionID string) (string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT json_extract(payload, '$.text') FROM execution_events
 		WHERE execution_id = ? AND type = 'log' AND json_extract(payload, '$.stream') = 'runner'
