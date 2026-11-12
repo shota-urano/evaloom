@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ import (
 
 func channelDirectory(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ec-") // below macOS's Unix socket path limit
+	dir, err := os.MkdirTemp(t.TempDir(), "channel-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func channelDirectory(t *testing.T) string {
 
 func channelConnection(t *testing.T, path string) net.Conn {
 	t.Helper()
-	conn, err := net.Dial("unix", path)
+	conn, err := dialTestChannel(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +52,18 @@ func channelConnection(t *testing.T, path string) net.Conn {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+// A sandbox connects through its short guest mount path. In host-side tests,
+// use the same inode through a short address without shortening the dataDir.
+func dialTestChannel(path string) (net.Conn, error) {
+	var conn net.Conn
+	err := withChannelAddress(path, func(address string) error {
+		var err error
+		conn, err = net.Dial("unix", address)
+		return err
+	})
+	return conn, err
 }
 
 func channelReply(t *testing.T, conn net.Conn, line string) string {
@@ -71,6 +84,34 @@ func requireChannelEOF(t *testing.T, conn net.Conn) {
 	n, err := conn.Read(data)
 	if n != 0 || err != io.EOF {
 		t.Fatalf("channel responded or remained open: n=%d err=%v", n, err)
+	}
+}
+
+func TestChannelBindingDoesNotChangeProcessDirectory(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(channelDirectory(t), "channel.sock")
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error)
+	go func() {
+		done <- withChannelAddress(path, func(string) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("cannot enter bind directory: %v", err)
+	}
+	// Observe cwd while the binding operation is still in its stage directory,
+	// as another stage or any concurrent relative file access would do.
+	got, cwdErr := os.Getwd()
+	close(release)
+	if err := <-done; err != nil || cwdErr != nil || got != cwd {
+		t.Fatalf("process cwd changed: got=%q want=%q cwdErr=%v bindErr=%v", got, cwd, cwdErr, err)
 	}
 }
 
@@ -290,7 +331,7 @@ func TestStageChannelLifetimeInFramework(t *testing.T) {
 	var previous string
 	services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
 		if previous != "" {
-			if conn, err := net.Dial("unix", previous); err == nil {
+			if conn, err := dialTestChannel(previous); err == nil {
 				conn.Close()
 				t.Fatal("previous stage channel is still listening")
 			}
@@ -319,6 +360,102 @@ func TestStageChannelLifetimeInFramework(t *testing.T) {
 		if c, err := runner.openStageChannel(context.Background(), claim.Execution.ID, kind, filepath.Join(channelDirectory(t), "s")); err == nil {
 			c.close()
 			t.Fatalf("%s received a channel", kind)
+		}
+	}
+}
+
+func TestExecuteStagesLongDataDirChannelRelay(t *testing.T) {
+	runner, claim, reporter, services := stageFixture(t, true)
+	// Exceed both macOS and Linux sockaddr_un limits, including spaces as in
+	// ~/Library/Application Support/Evaloom/runner. Keep the specified layout.
+	runner.dataDir = filepath.Join(runner.dataDir, "Application Support", strings.Repeat("runner-data-", 12))
+	id, approval := claim.Execution.ID, ulid.Make().String()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Rejected prepare/check requests produce Runner log reports, not
+		// authorization calls. Acknowledge those through their existing APIs.
+		if r.URL.Path == "/api/executions/"+id+"/events" || r.URL.Path == "/api/executions/"+id+"/artifacts" {
+			io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		calls.Add(1)
+		if r.URL.Path != "/api/executions/"+id+"/authorize" || r.Method != http.MethodPost ||
+			r.Header.Get("Authorization") != "Bearer "+runner.token {
+			t.Error("incorrect relay path, method or Runner credentials")
+		}
+		var input contract.AuthorizeRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Operation != "merge_pull_request" ||
+			input.ContentID != "opaque:revision-1" || input.ApprovalID == nil || *input.ApprovalID != approval {
+			t.Errorf("incorrect relay payload: %+v err=%v", input, err)
+		}
+		io.WriteString(w, `{"allowed":true}`)
+	}))
+	defer server.Close()
+	runner.controlPlaneURL, runner.client = server.URL, server.Client()
+	var stages []model.Stage
+	var paths []string
+	var connections []net.Conn
+	services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
+		stages = append(stages, in.Stage)
+		for _, path := range paths {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("previous stage socket remains: %s err=%v", path, err)
+			}
+		}
+		if in.Stage == model.StageWork {
+			if in.ChannelPath != "" {
+				t.Fatal("work received a channel")
+			}
+		} else {
+			want := filepath.Join(runner.dataDir, "executions", id, string(in.Stage)+"-1", "channel.sock")
+			if in.ChannelPath != want || len(in.ChannelPath) <= 108 {
+				t.Fatalf("wrong or insufficiently long socket path: %q want=%q", in.ChannelPath, want)
+			}
+			info, err := os.Lstat(want)
+			if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
+				t.Fatalf("missing or unprotected stage socket: %v err=%v", info, err)
+			}
+			conn := channelConnection(t, want)
+			paths, connections = append(paths, want), append(connections, conn)
+			if got := channelReply(t, conn, `{"op":"cancel_check"}`); got != `{"cancelRequested":false}` {
+				t.Fatalf("cancel_check reply=%s", got)
+			}
+			request := `{"op":"authorize","operation":"merge_pull_request","approvalId":"` + approval + `","contentId":"opaque:revision-1"}`
+			if in.Stage == model.StagePublish {
+				if got := channelReply(t, conn, request); got != `{"allowed":true}` {
+					t.Fatalf("authorize reply=%s", got)
+				}
+			} else {
+				if _, err := io.WriteString(conn, request+"\n"); err != nil {
+					t.Fatal(err)
+				}
+				requireChannelEOF(t, conn)
+				if calls.Load() != 0 {
+					t.Fatalf("%s authorize reached Control Plane", in.Stage)
+				}
+			}
+		}
+		writeStageOutput(t, in)
+		return successfulStage(in.Stage)
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := runner.ExecuteStages(ctx, claim, services); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stages, executionStageOrder) || calls.Load() != 1 {
+		t.Fatalf("stages=%v relay calls=%d outcomes=%+v", stages, calls.Load(), reporter.outcomes)
+	}
+	for _, outcome := range reporter.outcomes {
+		if outcome.RunnerError != nil {
+			t.Fatalf("stage failed: %+v", outcome)
+		}
+	}
+	for i, path := range paths {
+		requireChannelEOF(t, connections[i])
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("finished socket remains: %s err=%v", path, err)
 		}
 	}
 }

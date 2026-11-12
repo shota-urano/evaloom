@@ -5,13 +5,19 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 type channelKey struct{}
 
+type channelListener interface {
+	net.Listener
+	SyscallConn() (syscall.RawConn, error)
+}
+
 type stageChannelBinding struct {
 	kind     SandboxKind
-	listener *net.UnixListener
+	listener channelListener
 	path     string
 	identity os.FileInfo
 }
@@ -20,7 +26,7 @@ type stageChannelBinding struct {
 // SandboxSpec path alone cannot grant access to arbitrary host/control sockets.
 // The caller keeps the listener alive until every stage process has stopped.
 // This is internal Runner wiring, not an API or a Runner configuration key.
-func WithStageChannel(ctx context.Context, kind SandboxKind, listener *net.UnixListener) context.Context {
+func WithStageChannel(ctx context.Context, kind SandboxKind, listener channelListener) context.Context {
 	if listener == nil {
 		return ctx
 	}

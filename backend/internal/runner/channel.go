@@ -23,7 +23,7 @@ type stageChannel struct {
 	runner      *Runner
 	executionID string
 	stage       model.Stage
-	listener    *net.UnixListener
+	listener    *channelListener
 	log         *Log
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -67,7 +67,7 @@ func (runner *Runner) openStageChannel(ctx context.Context, id string, stage mod
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	listener, err := listenStageChannel(path)
 	if err != nil {
 		_ = log.Finish(false)
 		return nil, fmt.Errorf("runner: cannot create stage channel")
@@ -165,7 +165,7 @@ func (c *stageChannel) reject(reason string) {
 func (c *stageChannel) close() {
 	c.mu.Lock()
 	c.closed = true
-	c.listener.Close() // also unlinks only this listener's socket
+	c.listener.Close()
 	for conn := range c.connections {
 		conn.Close()
 	}
