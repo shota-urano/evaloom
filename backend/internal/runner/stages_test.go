@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/secretstore"
 )
 
 type stageExecutorFunc func(context.Context, StageInvocation) StageOutcome
@@ -83,6 +84,9 @@ func stageFixture(t *testing.T, prepare bool) (*Runner, Claim, *stageReportStub,
 	c.Route = json.RawMessage(`{"kind":"project","projectId":"project-1","projectName":"Project"}`)
 	c.Params = json.RawMessage(`{"opaque":{"command":"do not execute","path":"../not-a-path"}}`)
 	c.Profile.HarnessID = "test-harness"
+	if err := secretstore.New(r.dataDir).Set(c.Profile.HarnessID, "delivery", "write", []byte("delivery-private-value")); err != nil {
+		t.Fatal(err)
+	}
 	r.workspaceRoot = t.TempDir()
 	c.Workspace.ID = ulid.Make().String()
 	c.Workspace.Path = filepath.Join(r.workspaceRoot, c.Workspace.ID)

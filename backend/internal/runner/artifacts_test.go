@@ -10,6 +10,36 @@ import (
 	"testing"
 )
 
+func assertUploadedLogArtifact(t *testing.T, f *logControlPlane, log *Log, want string) {
+	t.Helper()
+	var path, hash, stage, kind string
+	var size int64
+	var redacted bool
+	err := f.db.QueryRow(`SELECT storage_path,sha256,size_bytes,stage,kind,redacted FROM artifacts WHERE execution_id=? AND id=?`, logExecution, log.id).
+		Scan(&path, &hash, &size, &stage, &kind, &redacted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(want))
+	if hash != hex.EncodeToString(sum[:]) || size != int64(len(want)) || stage != log.stream || kind != "log" || redacted {
+		t.Fatalf("sha256=%s size=%d stage=%s kind=%s redacted=%v", hash, size, stage, kind, redacted)
+	}
+	for _, filename := range []string{log.Path(), filepath.Join(f.dataDir, path)} {
+		content, err := os.ReadFile(filename)
+		if err != nil || string(content) != want {
+			t.Fatalf("file=%s content length=%d want length=%d err=%v", filename, len(content), len(want), err)
+		}
+	}
+	var count int
+	if err := f.db.QueryRow(`SELECT count(*) FROM artifacts WHERE execution_id=?`, logExecution).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("artifacts=%d err=%v", count, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(f.dataDir, "artifacts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("artifact files=%d err=%v", len(entries), err)
+	}
+}
+
 func TestFinishedRunnerLogsRegisterMatchingContentAndSHA256(t *testing.T) {
 	for _, stream := range []string{"harness", "setup", "test"} {
 		t.Run(stream, func(t *testing.T) {

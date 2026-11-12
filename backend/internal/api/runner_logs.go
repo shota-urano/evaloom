@@ -13,13 +13,14 @@ import (
 )
 
 type runnerLogEvent struct {
-	ID     string `json:"id"`
-	Stream string `json:"stream"`
-	Text   string `json:"text"`
+	SourceID string `json:"sourceId"`
+	Stream   string `json:"stream"`
+	Text     string `json:"text"`
 }
 
 func logStream(stream string) bool {
-	return stream == "harness" || stream == "setup" || stream == "test" || stream == "runner"
+	return stream == "harness" || stream == "setup" || stream == "test" || stream == "runner" ||
+		stream == "prepare" || stream == "work" || stream == "check" || stream == "publish"
 }
 
 // Check ownership under the same transaction that will persist the report.
@@ -67,7 +68,7 @@ func reportLogEvents(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 			return
 		}
 		for _, event := range input.Events {
-			if event.ID == "" || len(event.ID) > 100 || !logStream(event.Stream) || strings.Contains(event.Text, "\n") {
+			if event.SourceID == "" || len(event.SourceID) > 100 || !logStream(event.Stream) || strings.Contains(event.Text, "\n") {
 				WriteError(w, logger, invalid("events", "invalid"))
 				return
 			}
@@ -85,11 +86,11 @@ func reportLogEvents(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.Hand
 				SourceID string `json:"sourceId"`
 				Stream   string `json:"stream"`
 				Text     string `json:"text"`
-			}{event.ID, event.Stream, event.Text})
+			}{event.SourceID, event.Stream, event.Text})
 			var previous string
 			err := tx.QueryRowContext(r.Context(), `SELECT payload FROM execution_events
 				WHERE execution_id = ? AND type = 'log' AND json_extract(payload, '$.sourceId') = ?`,
-				executionID, event.ID).Scan(&previous)
+				executionID, event.SourceID).Scan(&previous)
 			if err == nil {
 				if previous != string(payload) {
 					WriteError(w, logger, &Error{Code: Conflict, Message: "Event ID already used for another payload"})

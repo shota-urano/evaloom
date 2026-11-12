@@ -451,7 +451,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		cancel()
 		ctx, cancel = processCtx, processCancel
 	}
-	go p.supervise(ctx, cancel, attach, stopAttach)
+	go p.supervise(ctx, cancel, attach, stopAttach, controlled)
 	started = true
 	return p, nil
 }

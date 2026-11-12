@@ -25,10 +25,16 @@ type LiteralReader struct {
 }
 
 func NewLiteralReader(source io.Reader, secrets []string) *LiteralReader {
+	return newLiteralReader(source, secrets, true)
+}
+
+func newLiteralReader(source io.Reader, secrets []string, normalize bool) *LiteralReader {
 	r := &LiteralReader{}
 	maxSize := 1
 	for _, secret := range secrets {
-		secret = strings.ReplaceAll(secret, "\r\n", "\n")
+		if normalize {
+			secret = strings.ReplaceAll(secret, "\r\n", "\n")
+		}
 		if secret == "" {
 			continue
 		}

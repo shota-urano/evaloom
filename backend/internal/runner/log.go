@@ -59,7 +59,8 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 	if id, err := ulid.ParseStrict(executionID); err != nil || id.String() != executionID {
 		return nil, fmt.Errorf("runner: invalid log execution ID")
 	}
-	if stream != "harness" && stream != "setup" && stream != "test" && stream != "runner" {
+	if stream != "harness" && stream != "setup" && stream != "test" && stream != "runner" &&
+		stream != "prepare" && stream != "work" && stream != "check" && stream != "publish" {
 		return nil, fmt.Errorf("runner: invalid artifact log stream")
 	}
 	dir := filepath.Join(runner.dataDir, "logs")
@@ -74,7 +75,7 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 	}
 	return &Log{runner: runner, registrar: registrar, id: id, executionID: executionID, stream: stream,
 		path: path, file: file, retryInterval: time.Second,
-		secrets: append([]string{runner.token}, secrets...)}, nil
+		secrets: secretLiterals(append([]string{runner.token}, secrets...))}, nil
 }
 
 // Path is the Runner-local log, retained even after successful delivery.
@@ -143,14 +144,16 @@ func (log *Log) Finish(redacted bool) error {
 		return log.writeErr
 	}
 	log.finished, log.redacted = true, log.redacted || redacted
+	clear(log.secrets)
+	log.secrets = nil
 	log.writeErr = errors.Join(log.writeErr, log.file.Sync(), log.file.Close())
 	return log.writeErr
 }
 
 type logEvent struct {
-	ID     string `json:"id"`
-	Stream string `json:"stream"`
-	Text   string `json:"text"`
+	SourceID string `json:"sourceId"`
+	Stream   string `json:"stream"`
+	Text     string `json:"text"`
 }
 
 // Deliver tails the file in bounded batches and retries failed HTTP requests
@@ -212,8 +215,12 @@ func (log *Log) Deliver(ctx context.Context) error {
 			if writeErr != nil {
 				return writeErr
 			}
+			stage := log.stream
+			if legacy := map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[stage]; legacy != "" {
+				stage = legacy
+			}
 			err := log.registrar.RegisterLogArtifact(ctx, LogArtifact{
-				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: map[string]string{"harness": "work", "setup": "prepare", "test": "check", "runner": "runner"}[log.stream], Name: filepath.Base(log.path),
+				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: stage, Name: filepath.Base(log.path),
 				Path: log.path, Redacted: redacted,
 			})
 			if err == nil {

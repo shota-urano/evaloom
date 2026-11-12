@@ -186,8 +186,9 @@ func readLogFrame(t *testing.T, reader *bufio.Reader, stream, text string) {
 	t.Helper()
 	var id, event string
 	var payload struct {
-		Stream string `json:"stream"`
-		Text   string `json:"text"`
+		SourceID string `json:"sourceId"`
+		Stream   string `json:"stream"`
+		Text     string `json:"text"`
 	}
 	for {
 		line, err := reader.ReadString('\n')
@@ -208,7 +209,7 @@ func readLogFrame(t *testing.T, reader *bufio.Reader, stream, text string) {
 			}
 		}
 	}
-	if id == "" || event != "log" || payload.Stream != stream || payload.Text != text {
+	if id == "" || event != "log" || payload.SourceID == "" || payload.Stream != stream || payload.Text != text {
 		t.Fatalf("unexpected SSE log: id=%q event=%q payload=%+v; want %s %q", id, event, payload, stream, text)
 	}
 }
@@ -270,14 +271,20 @@ func assertLogArtifact(t *testing.T, registrar *recordingArtifactRegistrar, log 
 	}
 }
 
-func TestHarnessLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
+func TestStageLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
+	for _, stream := range []string{"prepare", "work", "check", "publish", "runner"} {
+		t.Run(stream, func(t *testing.T) { testStageLogReachesControlPlaneSSE(t, stream) })
+	}
+}
+
+func testStageLogReachesControlPlaneSSE(t *testing.T, stream string) {
+	t.Helper()
 	f := newLogControlPlane(t)
 	process, err := New(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrar := &recordingArtifactRegistrar{}
-	log, err := process.NewLog(logExecution, "harness", registrar)
+	log, err := process.NewLog(logExecution, stream, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,12 +301,12 @@ func TestHarnessLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
 	if _, err := io.WriteString(write, "first\r\n\n"); err != nil {
 		t.Fatal(err)
 	}
-	readLogFrame(t, reader, "harness", "first") // EOF has not occurred yet.
-	readLogFrame(t, reader, "harness", "")
+	readLogFrame(t, reader, stream, "first") // EOF has not occurred yet.
+	readLogFrame(t, reader, stream, "")
 	if err := log.Read(strings.NewReader("stderr line\n")); err != nil {
 		t.Fatal(err)
 	}
-	readLogFrame(t, reader, "harness", "stderr line")
+	readLogFrame(t, reader, stream, "stderr line")
 	if _, err := io.WriteString(write, "last without newline"); err != nil {
 		t.Fatal(err)
 	}
@@ -310,11 +317,30 @@ func TestHarnessLogReachesControlPlaneSSEWhileOutputIsRunning(t *testing.T) {
 	if err := log.Finish(false); err != nil {
 		t.Fatal(err)
 	}
-	readLogFrame(t, reader, "harness", "last without newline")
+	readLogFrame(t, reader, stream, "last without newline")
 	if err := await(t, done); err != nil {
 		t.Fatal(err)
 	}
-	assertLogArtifact(t, registrar, log, "first\n\nstderr line\nlast without newline\n")
+	want := "first\n\nstderr line\nlast without newline\n"
+	assertUploadedLogArtifact(t, f, log, want)
+	request, err := http.NewRequestWithContext(ctx, "GET", f.server.URL+"/api/executions/"+logExecution+"/logs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(f.cookie)
+	response, err := f.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var saved map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&saved); err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("saved logs status=%d err=%v", response.StatusCode, err)
+	}
+	key := map[string]string{"prepare": "setup", "work": "harness", "check": "test", "publish": "publish", "runner": "runner"}[stream]
+	if saved[key] != want {
+		t.Fatalf("saved %s log=%q want=%q", stream, saved[key], want)
+	}
 }
 
 func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
@@ -323,8 +349,7 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrar := &recordingArtifactRegistrar{}
-	log, err := process.NewLog(logExecution, "setup", registrar)
+	log, err := process.NewLog(logExecution, "prepare", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +361,7 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	if err := log.Read(strings.NewReader("before stop\n")); err != nil {
 		t.Fatal(err)
 	}
-	readLogFrame(t, reader, "setup", "before stop")
+	readLogFrame(t, reader, "prepare", "before stop")
 	response.Body.Close()
 	f.stop() // Stop HTTP and close SQLite, not a mocked 503.
 	longLine := strings.Repeat("x", 128<<10)
@@ -359,12 +384,12 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 	f.start() // Reopen the same DB at the same URL, with fresh owner credentials.
 	_, reader = f.stream(ctx)
 	for _, text := range []string{"before stop", "while offline", longLine, "after EOF"} {
-		readLogFrame(t, reader, "setup", text)
+		readLogFrame(t, reader, "prepare", text)
 	}
 	if err := await(t, done); err != nil {
 		t.Fatal(err)
 	}
-	assertLogArtifact(t, registrar, log, want)
+	assertUploadedLogArtifact(t, f, log, want)
 	var count int
 	if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log'`).Scan(&count); err != nil || count != 4 {
 		t.Fatalf("events=%d err=%v", count, err)
@@ -374,12 +399,12 @@ func TestLogsPersistDuringControlPlaneStopAndResendAfterRestart(t *testing.T) {
 func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 	f := newLogControlPlane(t)
 	f.loseEventAck.Store(true)
+	f.loseArtifactAck.Store(true)
 	process, err := New(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrar := &recordingArtifactRegistrar{}
-	log, err := process.NewLog(logExecution, "test", registrar)
+	log, err := process.NewLog(logExecution, "check", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,13 +417,13 @@ func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 	if err := await(t, startLogDelivery(t, log)); err != nil {
 		t.Fatal(err)
 	}
-	for table, want := range map[string]int{"execution_events": 2, "artifacts": 0} {
+	for table, want := range map[string]int{"execution_events": 2, "artifacts": 1} {
 		var got int
 		if err := f.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&got); err != nil || got != want {
 			t.Fatalf("%s=%d want=%d err=%v", table, got, want, err)
 		}
 	}
-	assertLogArtifact(t, registrar, log, "one\ntwo\n")
+	assertUploadedLogArtifact(t, f, log, "one\ntwo\n")
 	rows, err := f.db.Query(`SELECT payload FROM execution_events ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
@@ -413,8 +438,8 @@ func TestLogRetryAfterLostAcknowledgementsIsIdempotent(t *testing.T) {
 		got = append(got, payload)
 	}
 	want := []string{
-		fmt.Sprintf(`{"sourceId":"%s:0","stream":"test","text":"one"}`, log.id),
-		fmt.Sprintf(`{"sourceId":"%s:4","stream":"test","text":"two"}`, log.id),
+		fmt.Sprintf(`{"sourceId":"%s:0","stream":"check","text":"one"}`, log.id),
+		fmt.Sprintf(`{"sourceId":"%s:4","stream":"check","text":"two"}`, log.id),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatal(fmt.Sprintf("log events=%v want=%v", got, want))
