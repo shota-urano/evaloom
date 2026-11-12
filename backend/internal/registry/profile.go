@@ -186,11 +186,18 @@ func referenceIssues(tree map[string]string, def contract.ProfileDefinition) []c
 
 // ValidateProfileReferences reuses registration's commit-tree checks for Runner
 // preflight. In particular, git archive represents submodules as empty directories,
-// so checking only the extracted filesystem would miss them.
+// so checking only the extracted filesystem would miss them. The entire Profile
+// is mounted in program stages, so even unreferenced submodules are rejected
+// (spec 09 3.7).
 func ValidateProfileReferences(ctx context.Context, repo, sha string, def contract.ProfileDefinition) error {
 	tree, err := commitTree(ctx, repo, sha)
 	if err != nil {
 		return err
+	}
+	for _, mode := range tree {
+		if mode == modeSubmodule {
+			return fmt.Errorf("profile: fixed tree contains a submodule")
+		}
 	}
 	if found := referenceIssues(tree, def); len(found) > 0 {
 		return profileRejected(found)
