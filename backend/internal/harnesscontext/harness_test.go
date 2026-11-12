@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/registry"
@@ -72,7 +74,11 @@ func TestReadUsesRegisteredSHAAfterTagHeadIndexAndWorkingTreeChange(t *testing.T
 				tagArgs = append(tagArgs, "-a", "-m", "test profile")
 			}
 			git(t, repo, append(tagArgs, "profile/v1.2.0")...)
-			profile, err := registry.ReadProfile(context.Background(), repo, "1.2.0", registry.Environment{StageTimeoutMaxSecs: registry.DefaultStageTimeoutMaxSec})
+			adapters := &adapter.Registry{}
+			if err := adapters.Register("codex", dummy.New()); err != nil {
+				t.Fatal(err)
+			}
+			profile, err := registry.ReadProfile(context.Background(), repo, "1.2.0", registry.Environment{StageTimeoutMaxSecs: registry.DefaultStageTimeoutMaxSec, AdapterNames: adapters.Names()})
 			if err != nil || profile.CommitSHA != baseSHA {
 				t.Fatalf("ReadProfile = (%+v, %v), want pin %s", profile, err, baseSHA)
 			}

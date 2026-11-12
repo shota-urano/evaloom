@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/secretstore"
@@ -103,6 +105,10 @@ func stageFixture(t *testing.T, prepare bool) (*Runner, Claim, *stageReportStub,
 		Profile: "/sandbox/profile", Workspace: "/sandbox/workspace", Out: "/sandbox/out",
 		Inputs: "/sandbox/inputs", Records: "/sandbox/records", Scratch: "/sandbox/scratch",
 	}}
+	services.Adapters = &adapter.Registry{}
+	if err := services.Adapters.Register("codex", dummy.New()); err != nil {
+		t.Fatal(err)
+	}
 	services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
 		writeStageOutput(t, in)
 		return successfulStage(in.Stage)
