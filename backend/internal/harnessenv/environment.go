@@ -49,6 +49,10 @@ func configError(err error) error { return &harnesscontext.ConfigError{Err: err}
 // Create never reads the user's HOME, a harness working tree, or ambient env.
 // It writes only to its newly created directory and returns no partial result.
 func Create(ctx context.Context, config Config) (_ *Environment, err error) {
+	return create(ctx, config, false)
+}
+
+func create(ctx context.Context, config Config, working bool) (_ *Environment, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, configError(err)
 	}
@@ -97,7 +101,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		parent.Close()
 		return nil, configError(err)
 	}
-	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session}
+	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session, working: working}
 	defer func() {
 		if err != nil {
 			err = configError(fmt.Errorf("prepare configuration: %w", err))
@@ -132,6 +136,23 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	}
 	if _, err = e.Files(ctx); err != nil {
 		return nil, err
+	}
+	if !working {
+		// Keep the pinned source read-only on disk as well as outside writable
+		// Sandbox mounts. WorkingCopy creates new inodes with private write access.
+		err = fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			mode := fs.FileMode(0400)
+			if entry.IsDir() {
+				mode = 0500
+			}
+			return e.root.Chmod(name, mode)
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return e, nil
 }
@@ -204,10 +225,9 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 	if err != nil {
 		return nil, err
 	}
-	copy, err := Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
-		ConfigVariable: e.variable, Files: files})
+	copy, err := create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
+		ConfigVariable: e.variable, Files: files}, true)
 	if err == nil {
-		copy.working = true
 		copy.session = e.session
 		if e.session != nil {
 			err = e.session.install(ctx, copy)
@@ -310,6 +330,16 @@ func (e *Environment) Close() error {
 	if e.root != nil {
 		identity, err := e.root.Stat(".")
 		cleanup = errors.Join(cleanup, err)
+		if !e.working {
+			// Removal needs write access to directories, not files. Use the retained
+			// root so a replaced published path cannot redirect permission changes.
+			cleanup = errors.Join(cleanup, fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+				if err != nil || !entry.IsDir() {
+					return err
+				}
+				return e.root.Chmod(name, 0700)
+			}))
+		}
 		// Clear through the retained handle, even if the directory was moved.
 		entries, err := fs.ReadDir(e.root.FS(), ".")
 		cleanup = errors.Join(cleanup, err)
