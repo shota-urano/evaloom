@@ -60,7 +60,7 @@ func TestDedicatedConfigurationsAreIsolatedAndExact(t *testing.T) {
 	}
 	for _, f := range files {
 		info, err := os.Stat(filepath.Join(first.ConfigDir(), filepath.FromSlash(f.Path)))
-		if err != nil || info.Mode().Perm() != 0600 {
+		if err != nil || info.Mode().Perm() != 0400 {
 			t.Fatalf("file permissions: %v %v", info, err)
 		}
 	}
@@ -261,6 +261,13 @@ func TestManifestRejectsUnrecordedChanges(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = env.Close() })
 			name := filepath.Join(env.ConfigDir(), "config.toml")
+			// Model tampering by a trusted host writer that can change permissions.
+			if err := os.Chmod(env.ConfigDir(), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(name, 0600); err != nil {
+				t.Fatal(err)
+			}
 			switch mode {
 			case "added":
 				err = os.WriteFile(filepath.Join(env.ConfigDir(), "unrecorded"), []byte("extra"), 0600)
@@ -337,13 +344,27 @@ func TestWorkingCopyIsIndependentAndUsesRecordedManifest(t *testing.T) {
 	}
 	for _, file := range want {
 		source, err := os.Stat(filepath.Join(original.ConfigDir(), file.Path))
-		if err != nil {
+		if err != nil || source.Mode().Perm() != 0400 {
 			t.Fatal(err)
 		}
 		copy, err := os.Stat(filepath.Join(first.ConfigDir(), file.Path))
 		if err != nil || os.SameFile(source, copy) || copy.Mode().Perm() != 0600 {
 			t.Fatalf("copy shares inode or has unsafe permissions: %v %v", copy, err)
 		}
+	}
+	if err := filepath.WalkDir(original.ConfigDir(), func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil || info.Mode().Perm() != 0500 {
+				t.Errorf("source directory is writable: %s %v", name, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(first.ConfigDir(), "config.toml"), []byte("CLI state"), 0600); err != nil {
 		t.Fatal(err)
@@ -375,6 +396,9 @@ func TestWorkingCopyRejectsChangedSourceWithoutLeavingCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = original.Close() })
+	if err := os.Chmod(filepath.Join(original.ConfigDir(), "config.toml"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(original.ConfigDir(), "config.toml"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
