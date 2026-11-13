@@ -32,6 +32,7 @@ type stageSecurity struct {
 	active       bool
 	environments []map[string]string
 	logs         []*Log
+	credentials  []string
 }
 
 func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness string, in StageInvocation, executor StageExecutor) StageOutcome {
@@ -53,6 +54,8 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 			defer security.mu.Unlock()
 			security.active = false
 			security.resolved = secretstore.Resolved{}
+			clear(security.credentials)
+			security.credentials = nil
 			for _, environment := range security.environments {
 				clear(environment)
 			}
@@ -126,7 +129,8 @@ func (in StageInvocation) NewLog(registrar ArtifactRegistrar, credentials ...str
 	if !s.active {
 		return nil, fmt.Errorf("runner: stage security is unavailable")
 	}
-	log, err := s.runner.NewLog(s.id, string(in.Stage), registrar, append(s.resolved.RedactionValues(), credentials...)...)
+	values := append(s.resolved.RedactionValues(), s.credentials...)
+	log, err := s.runner.NewLog(s.id, string(in.Stage), registrar, append(values, credentials...)...)
 	if err == nil {
 		s.logs = append(s.logs, log)
 	}
@@ -150,7 +154,8 @@ func (in StageInvocation) CollectArtifact(kind, name string, source io.Reader) (
 	if err != nil {
 		return LogArtifact{}, fmt.Errorf("runner: read stage artifact failed")
 	}
-	data := redactStageBytes(raw, append([]string{s.runner.token}, s.resolved.RedactionValues()...))
+	values := append([]string{s.runner.token}, s.resolved.RedactionValues()...)
+	data := redactStageBytes(raw, append(values, s.credentials...))
 	dir := filepath.Join(s.runner.dataDir, "artifacts")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return LogArtifact{}, fmt.Errorf("runner: create stage artifact directory failed")
@@ -171,7 +176,8 @@ func (in StageInvocation) CollectArtifact(kind, name string, source io.Reader) (
 }
 
 func (in StageInvocation) redactBytes(raw []byte) []byte {
-	return redactStageBytes(raw, append([]string{in.security.runner.token}, in.security.resolved.RedactionValues()...))
+	values := append([]string{in.security.runner.token}, in.security.resolved.RedactionValues()...)
+	return redactStageBytes(raw, append(values, in.security.credentials...))
 }
 
 func secretLiterals(values []string) []string {

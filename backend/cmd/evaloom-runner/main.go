@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 )
 
@@ -28,6 +28,12 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 }
 
 func runWithInput(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
+	return runWithAdapters(ctx, args, input, output, nil)
+}
+
+// Only the Adapter registry is replaceable; startup, pull and stage execution
+// are identical in the command integration tests and the installed binary.
+func runWithAdapters(ctx context.Context, args []string, input io.Reader, output io.Writer, adapters *adapter.Registry) error {
 	flags := flag.NewFlagSet("evaloom-runner", flag.ContinueOnError)
 	flags.SetOutput(output)
 	configPath := flags.String("config", "", "Runner JSON configuration file path (required)")
@@ -55,18 +61,14 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 		return err
 	}
 	fmt.Fprintln(output, "evaloom-runner: started")
-	// Result delivery must remain alive after an execution is cancelled.
-	reportCtx := context.WithoutCancel(ctx)
 	services := runner.ProposalServicesFromConfig(config)
 	return process.RunJobs(ctx, runner.JobHandlers{
 		Execution: func(ctx context.Context, claim runner.Claim) {
-			// The development stages (worktree, Gate 2/3, Git Publisher) moved to
-			// the special harness software-engineer (docs/specs/19-routing-and-stages.md
-			// 3.11). No stage can run a claimed Execution until the stage framework
-			// exists, so report it failed instead of leaving it claimed.
-			if err := process.ReportResult(reportCtx, claim.Execution.ID, runner.ExecutionResult{
-				FromStatus: model.ExecutionClaimed, Status: model.ExecutionFailed, ErrorClass: model.ErrorConfig,
-				ErrorMessage: "段を動かす仕組みがまだ無いため実行できない",
+			if err := process.ExecuteClaim(ctx, config, claim, func(wiring runner.WorkAdapterConfig) *adapter.Registry {
+				if adapters != nil {
+					return adapters
+				}
+				return productionAdapters(wiring)
 			}); err != nil {
 				fmt.Fprintln(output, err)
 			}
