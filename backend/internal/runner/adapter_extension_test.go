@@ -56,7 +56,7 @@ func TestDummyAdapterExtensionExecution(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			services.Reporter = workspaceHTTPReporter{t: t, r: r}
+			services.Reporter = r
 			var stages []model.Stage
 			var sessionID adapter.SessionID
 			services.Executor = stageExecutorFunc(func(ctx context.Context, in StageInvocation) StageOutcome {
