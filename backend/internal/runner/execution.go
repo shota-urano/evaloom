@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,7 +114,9 @@ func (e *executionExecutor) workAdapterConfig() WorkAdapterConfig {
 	}
 	launch := func(ctx context.Context, env adapter.SandboxEnv, command []string, stdout, stderr io.Writer) (sandbox.Process, error) {
 		spec := e.workSpec
-		spec.ConfigDir, spec.ConfigWritable, spec.Env = env.ConfigDir, true, env.Env
+		spec.ConfigDir, spec.ConfigWritable = env.ConfigDir, true
+		spec.Env = maps.Clone(e.workSpec.Env)
+		maps.Copy(spec.Env, env.Env)
 		spec.Env["EVALOOM_REQUEST"] = "/evaloom/request.json"
 		config := e.container
 		config.Stdout, config.Stderr = stdout, stderr
