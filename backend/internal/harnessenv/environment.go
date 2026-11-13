@@ -22,10 +22,13 @@ import (
 // Config is trusted Runner wiring, not a Profile or public API extension. Root
 // must be a dedicated existing directory allowed by ContainerConfig.ConfigDirRoot.
 // ConfigVariable is explicitly selected by the caller for its adopted CLI version.
-// File paths are preserved: no CLI-specific relocation is inferred from versions.
+// Source paths are preserved except when the CLI's user-instruction path is
+// itself an instruction source: that path receives the Q142 concatenation.
+// Files remains the caller's original snapshot for context revision reporting.
 type Config struct {
 	Root, CommitSHA, ConfigVariable string
 	Files                           []gitcontext.File
+	Instructions                    []string
 }
 
 type Environment struct {
@@ -63,6 +66,24 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		}
 		expected[file.Path] = file.ContentHash
 	}
+	installed := append([]gitcontext.File{}, config.Files...)
+	if len(config.Instructions) > 0 {
+		instruction, err := composeInstructions(config)
+		if err != nil {
+			return nil, configError(err)
+		}
+		if _, found := expected[instruction.Path]; found {
+			for i := range installed {
+				if installed[i].Path == instruction.Path {
+					installed[i] = instruction
+					break
+				}
+			}
+		} else {
+			installed = append(installed, instruction)
+		}
+		expected[instruction.Path] = instruction.ContentHash
+	}
 	parent, err := os.OpenRoot(config.Root)
 	if err != nil {
 		return nil, configError(err)
@@ -84,7 +105,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	if e.root, err = os.OpenRoot(directory); err != nil {
 		return nil, err
 	}
-	for _, file := range config.Files {
+	for _, file := range installed {
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -111,6 +132,48 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	return e, nil
 }
 
+func composeInstructions(config Config) (gitcontext.File, error) {
+	files := append([]gitcontext.File{}, config.Files...)
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	seen := map[string]bool{}
+	var content strings.Builder
+	for _, declaration := range config.Instructions {
+		name := path.Clean(declaration)
+		if !fs.ValidPath(name) || name == "." || strings.ContainsAny(declaration, "\x00\\") {
+			return gitcontext.File{}, fmt.Errorf("invalid instruction declaration")
+		}
+		for _, part := range strings.Split(declaration, "/") {
+			if part == ".." {
+				return gitcontext.File{}, fmt.Errorf("invalid instruction declaration")
+			}
+		}
+		found := false
+		for _, file := range files {
+			if file.Path != name && !strings.HasPrefix(file.Path, name+"/") {
+				continue
+			}
+			found = true
+			if !seen[file.Path] {
+				seen[file.Path] = true
+				content.WriteString(file.Content)
+			}
+		}
+		if !found {
+			return gitcontext.File{}, fmt.Errorf("declared instruction is missing from selected configuration")
+		}
+	}
+	name := "AGENTS.md"
+	if config.ConfigVariable == "CLAUDE_CONFIG_DIR" {
+		name = "CLAUDE.md"
+	}
+	for _, file := range files {
+		if file.Path == name && !seen[name] && file.ContentHash != hash(content.String()) {
+			return gitcontext.File{}, fmt.Errorf("user instruction path conflicts with selected configuration")
+		}
+	}
+	return gitcontext.File{Path: name, Content: content.String(), ContentHash: hash(content.String()), SourceCommitSHA: config.CommitSHA}, nil
+}
+
 func commitSHA(s string) bool {
 	_, err := hex.DecodeString(s)
 	return err == nil && (len(s) == 40 || len(s) == 64) && strings.ToLower(s) == s
@@ -129,7 +192,8 @@ func (e *Environment) Env() map[string]string { return map[string]string{e.varia
 
 // WorkingCopy makes an independent, disposable sibling under the same trusted
 // configuration root. The expected paths/hashes come from this Environment,
-// whose Files were submitted for context_revisions, never from the copy itself.
+// including its Q142 concatenation, never from the copy itself. Runner submits
+// the source files to context_revisions before the Adapter requests a copy.
 // The caller owns Close, and must verify Files again before the first CLI starts.
 func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 	files, err := e.Files(ctx)
@@ -148,7 +212,8 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 // non-regular files. The installed authentication file is checked for presence
 // and type only; neither its path nor its content/hash enters the returned list.
 // Hashes cover configuration bytes on disk, not a caller's assertion.
-// The same repository-relative paths can be sent to the existing context API.
+// Runner reports only source paths to the context API (spec 07 section 5); a
+// Q142 concatenation is verified here but has no separate source revision row.
 func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	if e.root == nil {
 		return nil, configError(fmt.Errorf("configuration environment is closed"))

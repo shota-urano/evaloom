@@ -1,6 +1,6 @@
 # 専用設定環境
 
-正本は`docs/specs/08-harness-adapter.md`の3.4節、`07-context.md`の3.3節、
+正本は`docs/specs/08-harness-adapter.md`の3.5節・Q142、`07-context.md`の3.2節、
 `09-sandbox.md`の3.2・5節、`02-data-model.md`のcontext_revisions定義である。
 
 `harnessenv.Create`には、Executionに固定したProfileのcommit SHAと、
@@ -9,14 +9,22 @@
 本人のHOME、環境変数、ハーネスリポジトリの作業ツリーは読み込まない。
 パス・重複・SHA・内容のハッシュを検証し、失敗したら途中の設定を削除する。
 
+Runnerは`Config.Instructions`に`stages.work.instructions`を渡す。
+宣言順に元のバイト列を連結し、Codexでは設定ディレクトリ直下の`AGENTS.md`、
+Claude Codeでは`CLAUDE.md`へ置く。ディレクトリ宣言の中は相対パス順に並べ、
+重複する選択は一度だけ含める。元ファイルも相対パスを保って配置する。
+連結先自身を指示元に選んだ場合、その配置先には連結結果を置く。
+Runnerは記録用の元ファイルとハッシュを保持し、配置結果と区別する。
+指示元に含まれない選択ファイルと連結先の内容が衝突したら、`config_error`にする。
+
 `Environment.Files`は配置した全ファイルを列挙し、実際の内容からSHA-256を計算する。
 未選択ファイル、欠落、内容の変化、symlinkなどの通常ファイル以外を拒否する。
 設定不備は既存の`harnesscontext.ConfigError`で返す。
 中止は`errors.Is(err, context.Canceled)`で確認できる。
 
-Runner の旧工程（`Runner.PrepareHarnessEnvironment` と `POST /api/executions/{id}/context`）は、
-worktree と Project Context の固定とともに消した（`docs/specs/19-routing-and-stages.md` 3.11）。
-段の枠の実行器ができたら、そこから`Create`を呼ぶ。
+Runnerの`executionExecutor.runWork`が固定commitから宣言ファイルを読み、`Create`を呼ぶ。
+配置後の`Files`で内容を確認し、`pinWorkContext`が固定commitから読んだ元ファイルのパスとハッシュを
+`POST /api/executions/{id}/context`へ送り、Control Planeがcontext_revisionsへ保存する。
 HTTP・保存・応答の検証に失敗した場合も、作成したディレクトリを削除する。
 応答が失われた場合は同じ入力で再実行でき、既存APIの再送処理でrevision IDを保つ。
 
@@ -33,8 +41,8 @@ HTTP・保存・応答の検証に失敗した場合も、作成したディレ�
 - Sandboxが停止した後、失敗・中止の場合も`Environment.Close()`を呼ぶ。
 
 HOMEは既存のContainerが実行ごとに作る空の`/evaloom-home` tmpfsを使う。
-ホストからのマウントはworktree・Git領域・専用設定ディレクトリに限り、
-専用設定は既存の読み取り専用マウントを使う。環境変数は`env -i`で初期化する。
+Work Sandboxにはworkspace・out・inputs・records・scratchと専用設定環境を渡す。
+Profile全体や本人のHOMEはマウントしない。環境変数は`env -i`で初期化する。
 ホストのHOMEや秘密情報を環境変数だけで隠したと扱わない。
 
 両Adapterには`Config.ResolveConfig`で元の`Environment`を渡す。
@@ -99,26 +107,30 @@ Runnerと共通の`logredact`で除外する。除外値の更新とログ処理
 既知の秘密値の除外も行い、Adapterによる除外をartifactの`redacted`へ引き継ぐ。
 
 CLIがコマンド実行中に新しく発行し、Runnerがまだ読んでいない値は、
-その時点で配信した行からは除外できない。仕様3.4のとおり、CLI自身が
+その時点で配信した行からは除外できない。仕様3.5のとおり、CLI自身が
 認証値を出力しないことに頼る。ログ全体を終了まで保留することはしない。
 
 ## 仕様で未定義の部分と検証範囲
 
-仕様にはリポジトリのパスからCLI内の配置先への変換規則が無い。
-この実装は相対パスをそのまま保ち、`promptVersion`やSkillsの版から配置先を推測しない。
-Profile定義の選択には既存の`contextFiles`を使い、新しい設定項目は追加しない。
-Gitの作者情報やCLI固有の設定ファイルも生成しない。
+skills・settingsについては、リポジトリ内のパスからCLI固有の読み込み先への
+変換規則が仕様に無いため、元の相対パスを保つ。指示だけはQ142の配置先を使う。
+context APIはProfile内の元パスとハッシュだけを受け付けるため、連結後のファイルは
+`Files`と作業用コピーで照合するが、独立したcontext_revisionsの行にはしない。
+連結後の配置先とハッシュも永続化する方法は仕様で未定義である。
 
 実際のCLIで設定先の環境変数が有効か、選択したパスを読み込むかの確認は、
 各Adapterと仕様14の実CLIカナリア試験の範囲である。このタスクでは実行していない。
-Runner起動コマンドでの工程全体の接続も既存どおり別の作業とし、
-この処理は呼び出せるRunner内部メソッドとして提供する。
 
 受け入れテストは`TestDedicatedHarnessConfigurationSandboxBoundary`で実際の
 Container呼び出し引数・マウント元・有効な環境変数を検証する。隔離ランタイムは
 テスト用プロセスに置き換えるため、実コンテナでのアクセス拒否試験とは区別する。
-`TestHarnessEnvironmentPersistsEveryPlacedFile`は固定commitの読み取りから
-専用ディレクトリ、認証付きHTTP、SQLite保存まで通し、全ファイルと記録を照合する。
+`TestDockerDedicatedHarnessConfiguration`は実Work Sandboxで専用HOMEが毎回空であること、
+ホストHOMEとProfile全体が見えないこと、Q142のファイルが読めて設定に書けないことを検査する。
+実行には`EVALOOM_SANDBOX_DOCKER_TEST=1`と既存Linuxイメージの
+`EVALOOM_SANDBOX_TEST_IMAGE`が必要で、通常のverifyではスキップする。
+`runner.TestDeclaredWorkDirectoriesPinEachInstalledFile`は固定commitの読み取りから
+専用ディレクトリ、認証付きHTTP、SQLite保存まで通し、元ファイルの記録と
+Q142の連結結果を照合する。
 
 認証の検証は`authentication_test.go`と両Adapterの同名ファイルが担当する。
 `TestAuthenticationOSLockPrecedesReadAndIsCancellable`は別OSプロセスでロックを確認し、
