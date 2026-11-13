@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -93,31 +95,46 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 	if len(issues) > 0 {
 		return nil, fmt.Errorf("invalid pinned Profile")
 	}
-	expected := []contextFile{}
-	for _, group := range []struct {
+	groups := []struct {
 		kind  string
 		paths []string
-	}{{"instructions", def.Stages.Work.Instructions}, {"skill", def.Stages.Work.Skills}, {"settings", def.Stages.Work.Settings}} {
-		for _, path := range group.paths {
-			expected = append(expected, contextFile{Kind: group.kind, Path: path})
-		}
-	}
+	}{{"instructions", def.Stages.Work.Instructions}, {"skill", def.Stages.Work.Skills}, {"settings", def.Stages.Work.Settings}}
 	key := func(f contextFile) string { return f.Kind + "\x00" + f.Path }
-	sort.Slice(expected, func(i, j int) bool { return key(expected[i]) < key(expected[j]) })
 	sort.Slice(input.Files, func(i, j int) bool { return key(input.Files[i]) < key(input.Files[j]) })
-	if len(expected) != len(input.Files) {
-		return nil, invalid("files", "invalid")
-	}
-	for i := range expected {
+	covered := map[string]bool{}
+	for i, file := range input.Files {
 		// The trusted Runner reads the pinned files and reports their hashes
-		// (spec 07 3.2). Do not re-read a Harness's mutable repo_path here.
-		hash := input.Files[i].SHA256
+		// (spec 07 3.2), expanding declared directories into individual files.
+		// Do not re-read a Harness's mutable repo_path here.
+		hash := file.SHA256
 		if _, err := hex.DecodeString(hash); err != nil || len(hash) != 64 || strings.ToLower(hash) != hash {
 			return nil, invalid("files", "invalid")
 		}
-		expected[i].SHA256 = hash
-		if input.Files[i] != expected[i] {
+		if !fs.ValidPath(file.Path) || file.Path == "." || strings.ContainsAny(file.Path, "\x00\\") ||
+			(i > 0 && key(input.Files[i-1]) == key(file)) {
 			return nil, invalid("files", "invalid")
+		}
+		matched := false
+		for _, group := range groups {
+			if group.kind != file.Kind {
+				continue
+			}
+			for _, declaration := range group.paths {
+				name := path.Clean(declaration)
+				if file.Path == name || strings.HasPrefix(file.Path, name+"/") {
+					covered[group.kind+"\x00"+name], matched = true, true
+				}
+			}
+		}
+		if !matched {
+			return nil, invalid("files", "invalid")
+		}
+	}
+	for _, group := range groups {
+		for _, declaration := range group.paths {
+			if !covered[group.kind+"\x00"+path.Clean(declaration)] {
+				return nil, invalid("files", "invalid")
+			}
 		}
 	}
 	var pinned int
@@ -126,7 +143,7 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if pinned == 0 {
-		for _, file := range expected {
+		for _, file := range input.Files {
 			_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness',?,?,?,?,NULL,?)`, ulid.Make().String(), id, file.Kind, file.Path, input.Commit, file.SHA256, now)
 			if err != nil {
 				return nil, err

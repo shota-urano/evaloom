@@ -16,6 +16,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -137,7 +138,6 @@ func TestReadFailuresAreFailedConfigError(t *testing.T) {
 		{"nonexistent SHA", strings.Repeat("0", 40), []string{"a-prompt.md"}},
 		{"nonexistent SHA with empty selection", strings.Repeat("0", 40), nil},
 		{"missing file discards partial result", sha, []string{"a-prompt.md", "missing.md"}},
-		{"directory", sha, []string{"directory"}},
 		{"symlink", sha, []string{"a-prompt.md", "link.md"}},
 		{"submodule", gitlinkSHA, []string{"submodule"}},
 		{"submodule contents", gitlinkSHA, []string{"submodule/child.md"}},
@@ -171,9 +171,81 @@ func TestReadRejectsInvalidPaths(t *testing.T) {
 	repo := newRepository(t)
 	writeFile(t, repo, "prompt.md", "abc")
 	sha := commit(t, repo)
-	for _, name := range []string{"", ".", "..", "../prompt.md", "/prompt.md", "dir/../../prompt.md", "./prompt.md", "dir//prompt.md", "dir/../prompt.md", "dir/", "dir\\prompt.md", "prompt\x00.md"} {
+	for _, name := range []string{"", ".", "..", "../prompt.md", "/prompt.md", "dir/../../prompt.md", "dir/../prompt.md", "dir\\prompt.md", "prompt\x00.md"} {
 		t.Run(name, func(t *testing.T) {
 			files, err := harnesscontext.Read(context.Background(), repo, sha, []string{name})
+			assertConfigFailure(t, files, err)
+		})
+	}
+}
+
+func TestReadProjectsOnlyDeclaredFilesAndDirectoriesIntoConfiguration(t *testing.T) {
+	repo := newRepository(t)
+	want := map[string]string{
+		"work/instructions/first.md": "first\r\n",
+		"work/instructions/last.md":  "last\n",
+		"work/skills/test/SKILL.md":  "skill\n",
+		"work/skills/test/run":       "\x00\xffbinary\n",
+		"work/settings.json":         "{}",
+	}
+	for name, content := range want {
+		writeFile(t, repo, name, content)
+	}
+	for _, name := range []string{"check/run", "check/criteria.json", "work/skills-extra/private", "work/undeclared.md", "AGENTS.md"} {
+		writeFile(t, repo, name, "must not be passed")
+	}
+	sha := commit(t, repo)
+	git(t, repo, "tag", "profile/v1.2.0")
+	for name := range want {
+		writeFile(t, repo, name, "changed in later commit")
+	}
+	writeFile(t, repo, "work/skills/test/later", "not in pin")
+	replacement := commit(t, repo)
+	git(t, repo, "tag", "-f", "profile/v1.2.0", replacement)
+	writeFile(t, repo, "work/skills/test/untracked", "not committed")
+	// Exercise normalized declarations, trailing slash, directory selection
+	// without a trailing slash, and overlapping selections from the Profile.
+	files, err := harnesscontext.Read(t.Context(), repo, sha, []string{
+		"./work/instructions/", "work/skills", "work/skills/test/SKILL.md", "work//settings.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSnapshot(t, files, want, sha)
+	environment, err := harnessenv.Create(t.Context(), harnessenv.Config{
+		Root: t.TempDir(), CommitSHA: sha, ConfigVariable: "CODEX_HOME", Files: files,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer environment.Close()
+	installed, err := environment.Files(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSnapshot(t, installed, want, sha)
+}
+
+func TestReadDirectoryRejectsLinksAndSubmodulesWithoutPartialSnapshot(t *testing.T) {
+	for _, mode := range []string{"symlink", "submodule", "symlink ancestor"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := newRepository(t)
+			writeFile(t, repo, "work/ok.md", "ok")
+			writeFile(t, repo, "outside/file.md", "not selected")
+			if err := os.Symlink("../outside", filepath.Join(repo, "work/link")); err != nil {
+				t.Fatal(err)
+			}
+			sha := commit(t, repo)
+			paths := []string{"work/"}
+			if mode == "submodule" {
+				git(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+sha+",work/submodule")
+				git(t, repo, "commit", "--quiet", "-m", "gitlink")
+				sha = strings.TrimSpace(git(t, repo, "rev-parse", "HEAD"))
+				paths = []string{"work/ok.md", "work/submodule"}
+			} else if mode == "symlink ancestor" {
+				paths = []string{"work/ok.md", "work/link/file.md"}
+			}
+			files, err := harnesscontext.Read(t.Context(), repo, sha, paths)
 			assertConfigFailure(t, files, err)
 		})
 	}

@@ -28,30 +28,40 @@ func (*ConfigError) ErrorClass() model.ErrorClass  { return model.ErrorConfig }
 
 // Read reads exactly the repository-relative paths selected for the pinned
 // Profile. The caller supplies the Execution's saved commit SHA and an explicit
-// file list; this reader does not infer paths from version labels. Paths name
-// individual files, not directories or glob expressions. Duplicate paths yield
-// one snapshot, sorted by path. Empty selection still validates the commit.
+// file or directory list from stages.work; this reader does not infer paths
+// from version labels. Directories include all descendants, while globs are
+// literal names. Overlapping selections yield one snapshot per file, sorted by
+// path. Empty selection still validates the commit.
 // Missing files, invalid pins, non-regular files and Git failures return a
 // ConfigError and no partial snapshot. No checkout or file writes occur.
 func Read(ctx context.Context, repo, commitSHA string, paths []string) ([]File, error) {
 	selected := make(map[string]bool, len(paths))
 	for _, name := range paths {
-		if name == "" || name == "." || name == ".." || path.IsAbs(name) || path.Clean(name) != name ||
-			strings.HasPrefix(name, "../") || strings.ContainsAny(name, "\x00\\") {
+		if name == "" || path.Clean(name) == "." || path.IsAbs(name) ||
+			strings.ContainsAny(name, "\x00\\") {
 			return nil, &ConfigError{Err: fmt.Errorf("invalid repository-relative file path %q", name)}
 		}
-		selected[name] = true
+		for _, part := range strings.Split(name, "/") {
+			if part == ".." {
+				return nil, &ConfigError{Err: fmt.Errorf("invalid repository-relative file path %q", name)}
+			}
+		}
+		selected[path.Clean(name)] = false
 	}
-	files, err := gitcontext.Read(ctx, repo, commitSHA, func(name string) bool { return selected[name] })
+	files, err := gitcontext.Read(ctx, repo, commitSHA, func(name string) bool {
+		include := false
+		for selection := range selected {
+			if name == selection || strings.HasPrefix(name, selection+"/") {
+				selected[selection], include = true, true
+			}
+		}
+		return include
+	})
 	if err != nil {
 		return nil, &ConfigError{Err: err}
 	}
-	found := make(map[string]bool, len(files))
-	for _, file := range files {
-		found[file.Path] = true
-	}
-	for _, name := range paths {
-		if !found[name] {
+	for name, found := range selected {
+		if !found {
 			return nil, &ConfigError{Err: fmt.Errorf("file %q is missing from commit %s", name, commitSHA)}
 		}
 	}
