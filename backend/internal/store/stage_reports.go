@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -313,29 +312,6 @@ func (n StageNext) MarshalJSON() ([]byte, error) {
 	}{n.Next, n.CheckedContentID, nonNil(n.Approvals)})
 }
 
-// workQuestion is out/question.json (contract 8).
-type workQuestion struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
-}
-
-func validQuestion(raw json.RawMessage) bool {
-	var q workQuestion
-	if err := strictJSON(raw, &q); err != nil {
-		return false
-	}
-	if q.Question == "" || utf8.RuneCountInString(q.Question) > 4000 || len(q.Options) > 10 {
-		return false
-	}
-	return true
-}
-
-func strictJSON(raw json.RawMessage, dst any) error {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(dst)
-}
-
 // finishOutcome is the stage_runs row and the Execution's next step.
 type finishOutcome struct {
 	runStatus  model.StageStatus
@@ -533,21 +509,21 @@ func truncate(s string, limit int) string {
 }
 
 func finishWork(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFinish) (finishOutcome, error) {
+	if *in.ExitCode != 0 {
+		err := failExecution(ctx, tx, e, model.ErrorExecutionFailed, nil)
+		return finishOutcome{runStatus: model.StageFailed, errorClass: model.ErrorExecutionFailed, next: stop()}, err
+	}
 	if q := in.Work.Question; len(q) > 0 && string(q) != "null" {
-		if !validQuestion(q) {
+		if contract.ValidateWorkQuestion(q) != nil {
 			message := "out/question.json does not match the contract"
-			err := failExecution(ctx, tx, e, model.ErrorContract, &message)
-			return finishOutcome{runStatus: model.StageFailed, errorClass: model.ErrorContract, next: stop()}, err
+			err := failExecution(ctx, tx, e, model.ErrorExecutionFailed, &message)
+			return finishOutcome{runStatus: model.StageFailed, errorClass: model.ErrorExecutionFailed, next: stop()}, err
 		}
 		if err := e.move(ctx, tx, model.ExecutionBlocked, "", "question"); err != nil {
 			return finishOutcome{}, err
 		}
 		_, err := openDecision(ctx, tx, e, model.DecisionQuestion, model.CauseQuestion, nil, nil, q)
 		return finishOutcome{runStatus: model.StageQuestion, next: stop()}, err
-	}
-	if *in.ExitCode != 0 {
-		err := failExecution(ctx, tx, e, model.ErrorExecutionFailed, nil)
-		return finishOutcome{runStatus: model.StageFailed, errorClass: model.ErrorExecutionFailed, next: stop()}, err
 	}
 	return finishOutcome{runStatus: model.StageSucceeded, next: StageNext{Next: string(model.StageCheck)}}, nil
 }

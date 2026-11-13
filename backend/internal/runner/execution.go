@@ -213,7 +213,9 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 	if outcome.RunnerError != nil {
 		outcome.Result = nil
 		outcome.ResultArtifactID = nil
-		outcome.Work = nil
+		if outcome.Work != nil {
+			outcome.Work.Question = nil
+		}
 	}
 	return outcome
 }
@@ -325,9 +327,21 @@ func (e *executionExecutor) collect(ctx context.Context, in StageInvocation, kin
 }
 
 func (e *executionExecutor) collectOut(ctx context.Context, in StageInvocation, outcome *StageOutcome) error {
+	if in.Stage == model.StageWork {
+		if err := e.collectWorkOutputs(ctx, in, outcome); err != nil {
+			return err
+		}
+	}
 	return filepath.WalkDir(filepath.Join(in.Directory, "out"), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		name, _ := filepath.Rel(filepath.Join(in.Directory, "out"), path)
+		if in.Stage == model.StageWork && (name == "summary.md" || name == "question.json") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.IsDir() {
 			return nil
@@ -335,41 +349,28 @@ func (e *executionExecutor) collectOut(ctx context.Context, in StageInvocation, 
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("runner: unsafe output")
 		}
-		name, _ := filepath.Rel(filepath.Join(in.Directory, "out"), path)
 		data, err := readStageFile(in.Directory, filepath.Join("out", name))
 		if err != nil {
 			return err
 		}
-		kind := "out_file"
-		if in.Stage == model.StageWork {
-			if name == "summary.md" {
-				kind = "work_summary"
-			}
-			if name == "question.json" {
-				kind = "question"
-			}
-		}
-		artifact, err := e.collect(ctx, in, kind, filepath.ToSlash(name), data)
+		_, err = e.collect(ctx, in, "out_file", filepath.ToSlash(name), data)
 		if err != nil {
 			return err
-		}
-		if outcome.Work != nil {
-			if kind == "work_summary" {
-				outcome.Work.SummaryArtifactID = &artifact.ID
-			}
-			if kind == "question" {
-				if !json.Valid(data) {
-					return fmt.Errorf("runner: invalid question JSON")
-				}
-				outcome.Work.Question = in.redactBytes(data)
-			}
 		}
 		return nil
 	})
 }
 
 func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spec sandbox.SandboxSpec, config sandbox.ContainerConfig, log *Log) StageOutcome {
-	fail := func(code string) StageOutcome { return StageOutcome{RunnerError: &code} }
+	var id adapter.SessionID
+	fail := func(code string) StageOutcome {
+		out := StageOutcome{RunnerError: &code}
+		if id != "" {
+			session := string(id)
+			out.Work = &StageWork{SessionID: &session}
+		}
+		return out
+	}
 	work := in.Profile.Definition.Stages.Work
 	auth, ok := e.config.MicroHarnessAuthFiles[work.MicroHarness]
 	if !ok || auth == "" {
@@ -426,7 +427,6 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 		Profile: adapter.RequestProfile{HarnessID: e.claim.Profile.HarnessID, Version: e.claim.Profile.Version, CommitSHA: e.claim.Profile.CommitSHA, ModelID: work.Model, Definition: e.claim.Profile.Definition},
 		Context: adapter.RequestContext{Instructions: instructions, RevisionIDs: executionContext.RevisionIDs}, Limits: adapter.RequestLimits{TimeoutSec: int(in.timeout / time.Second)}}
 	env := adapter.SandboxEnv{Worktree: e.paths.Workspace, ConfigDir: environment.ConfigDir(), Env: environment.Env()}
-	var id adapter.SessionID
 	if in.WorkSessionID != nil && in.Adapter.Capabilities().Resume {
 		resumable, ok := in.Adapter.(adapter.ResumableAdapter)
 		if !ok {

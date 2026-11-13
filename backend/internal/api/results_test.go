@@ -580,8 +580,25 @@ func TestStageFinishedContractErrors(t *testing.T) {
 		input := finished("work", attempt, nil)
 		input["work"].(map[string]any)["question"] = map[string]any{"question": ""}
 		finishStage(t, f, token, id, input)
-		requireState(t, f, id, "failed", "failed", "contract_error")
+		requireState(t, f, id, "failed", "failed", "work_failed")
 	})
+}
+
+func TestWorkNonzeroExitTakesPrecedenceOverQuestion(t *testing.T) {
+	for _, question := range []any{map[string]any{"question": "Continue?"}, map[string]any{"question": ""}} {
+		f, token, id, _ := reportFixture(t)
+		attempt := startStage(t, f, token, id, "work")
+		input := finished("work", attempt, nil)
+		input["exitCode"] = 7
+		input["work"].(map[string]any)["question"] = question
+		if reply, _ := finishStage(t, f, token, id, input); reply.Next != "stop" {
+			t.Fatalf("next = %s", reply.Next)
+		}
+		requireState(t, f, id, "failed", "failed", "work_failed")
+		if n := count(t, f, `SELECT count(*) FROM owner_decisions WHERE execution_id = ?`, id); n != 0 {
+			t.Fatalf("failed work opened %d decisions", n)
+		}
+	}
 }
 
 type reportSnapshot struct {
