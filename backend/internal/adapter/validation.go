@@ -58,9 +58,8 @@ func (r HarnessRequest) Validate() error {
 	if r.ContractVersion != ContractVersion {
 		return fmt.Errorf("contractVersion: expected %q", ContractVersion)
 	}
-	if r.Task.AcceptanceCriteria == "" {
-		return fmt.Errorf("task.acceptanceCriteria: must not be empty")
-	}
+	// Required/optional acceptance criteria are enforced by the pinned Profile
+	// before dispatch. Contract 6.1 permits an empty string for optional Profiles.
 	var definition map[string]json.RawMessage
 	if err := json.Unmarshal(r.Profile.Definition, &definition); err != nil || definition == nil {
 		return fmt.Errorf("profile.definition: expected object")
