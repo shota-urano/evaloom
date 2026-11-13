@@ -55,8 +55,9 @@ func sessionFiles(ctx context.Context, source fs.FS) (map[string][]byte, error) 
 }
 
 // Restore reads a retained copy and verifies Profile files against the newly
-// prepared immutable environment. A missing/unreadable copy is unavailable;
-// a readable copy with changed pinned files is a configuration error.
+// prepared immutable environment. A missing/unreadable copy or missing pinned
+// file is unavailable; an existing pinned file with changed bytes is a
+// configuration error.
 func (s *Session) Restore(ctx context.Context, source fs.FS, original *Environment, manifest map[string]string) error {
 	files, err := sessionFiles(ctx, source)
 	if err != nil {
@@ -64,7 +65,10 @@ func (s *Session) Restore(ctx context.Context, source fs.FS, original *Environme
 	}
 	for name, want := range original.expected {
 		data, found := files[name]
-		if !found || hash(string(data)) != want {
+		if !found {
+			return fmt.Errorf("retained session files are incomplete")
+		}
+		if hash(string(data)) != want {
 			return configError(fmt.Errorf("retained configuration differs from pinned file"))
 		}
 	}

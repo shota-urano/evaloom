@@ -61,7 +61,7 @@ func (a *questionSessionAdapter) Result(id adapter.SessionID) (adapter.HarnessRe
 // validation, authenticated reporting, owner answers, claims and SQLite real.
 // Only the micro-harness and container runtime are deterministic substitutes.
 func TestQuestionSessionContinuation(t *testing.T) {
-	for _, scenario := range []string{"resume", "missing", "missing-file", "unsupported", "no-id", "required", "required-no-id", "tampered", "workspace-missing", "repeat"} {
+	for _, scenario := range []string{"resume", "missing", "missing-file", "missing-profile-file", "missing-composed-instructions", "unsupported", "no-id", "required", "required-no-id", "required-missing-profile-file", "required-missing-composed-instructions", "tampered", "workspace-missing", "repeat"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newLogControlPlane(t)
 			r, claim, _, _ := stageFixture(t, false)
@@ -227,6 +227,16 @@ esac
 			}
 			if scenario == "missing-file" {
 				if err := os.Remove(filepath.Join(retained, "configuration", "session-state")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.HasSuffix(scenario, "missing-profile-file") {
+				if err := os.Remove(filepath.Join(retained, "configuration", "work", "instructions.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.HasSuffix(scenario, "missing-composed-instructions") {
+				if err := os.Remove(filepath.Join(retained, "configuration", "AGENTS.md")); err != nil {
 					t.Fatal(err)
 				}
 			}
