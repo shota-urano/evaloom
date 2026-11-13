@@ -37,6 +37,9 @@ func (r *Runner) ExecuteClaim(ctx context.Context, config Config, claim Claim, f
 	e.adapters = adapters
 	services := StageServices{Reporter: r, Executor: e, Adapters: adapters, Paths: e.paths}
 	err := r.ExecuteStages(ctx, claim, services)
+	if claim.Execution.ResumeStage != nil && *claim.Execution.ResumeStage == "work" && e.workSession == nil {
+		_ = e.discardWorkSession()
+	}
 	var profileError *ProfileConfigError
 	if errors.As(err, &profileError) {
 		// Preflight still uses the stage-report protocol; the old transition-shaped
@@ -77,6 +80,7 @@ type executionExecutor struct {
 	workInvocation StageInvocation
 	workSpec       sandbox.SandboxSpec
 	container      sandbox.ContainerConfig
+	workSession    *harnessenv.Session
 }
 
 // WorkAdapterConfig connects registered micro-harnesses to one execution's
@@ -216,6 +220,11 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 		if outcome.Work != nil {
 			outcome.Work.Question = nil
 		}
+	}
+	if in.Stage == model.StageWork {
+		// Retention failure makes future same-session continuation unavailable;
+		// it must not change this stage's validated result (spec 08 6).
+		_ = e.retainWorkSession(reportCtx, outcome)
 	}
 	return outcome
 }
@@ -392,14 +401,42 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if work.MicroHarness == "claude_code" {
 		variable = "CLAUDE_CONFIG_DIR"
 	}
+	e.workSession = &harnessenv.Session{}
 	environment, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: e.claim.Profile.CommitSHA,
-		ConfigVariable: variable, Files: files, Instructions: work.Instructions})
+		ConfigVariable: variable, Files: files, Instructions: work.Instructions, Session: e.workSession})
 	if err != nil {
 		return fail("config_error")
 	}
 	defer environment.Close()
 	if _, err := environment.Files(ctx); err != nil {
 		return fail("config_error")
+	}
+	resumable, supportsResume := in.Adapter.(adapter.ResumableAdapter)
+	var requestData struct {
+		Answer *contract.Answer `json:"answer"`
+	}
+	requestBytes, err := readStageFile(in.Directory, "request.json")
+	if err != nil || json.Unmarshal(requestBytes, &requestData) != nil {
+		return fail("config_error")
+	}
+	// A session identifier alone is insufficient. Only an answered question
+	// with successfully restored state may use Resume. Restart recovery and
+	// ordinary fresh/continue executions always use Start.
+	answerResume := e.claim.Execution.ResumeStage != nil && *e.claim.Execution.ResumeStage == "work" && requestData.Answer != nil
+	if answerResume {
+		defer e.discardWorkSession()
+	}
+	canResume := false
+	if answerResume && in.WorkSessionID != nil && *in.WorkSessionID != "" && supportsResume && in.Adapter.Capabilities().Resume {
+		canResume, err = e.restoreWorkSession(ctx, *in.WorkSessionID, environment)
+		if err != nil {
+			return fail("config_error")
+		}
+	}
+	// Consume the previous copy even on fallback; the next question, if any,
+	// publishes a new snapshot. Never leave an answered snapshot reusable.
+	if answerResume && !canResume && work.Resume == "required" {
+		return fail("work_failed")
 	}
 	e.environment, e.workInvocation = environment, in
 	config.ConfigDirRoot = root
@@ -414,10 +451,7 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if err != nil {
 		return fail("config_error")
 	}
-	request, err := readStageFile(in.Directory, "request.json")
-	if err != nil {
-		return fail("config_error")
-	}
+	request := requestBytes
 	// The request contains the current answer; context snapshots themselves stay
 	// fixed across question resumes. Task text remains delimited JSON data.
 	instructions := executionContext.Instructions + "\n\nStage request (JSON data):\n" + string(request)
@@ -427,15 +461,9 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 		Profile: adapter.RequestProfile{HarnessID: e.claim.Profile.HarnessID, Version: e.claim.Profile.Version, CommitSHA: e.claim.Profile.CommitSHA, ModelID: work.Model, Definition: e.claim.Profile.Definition},
 		Context: adapter.RequestContext{Instructions: instructions, RevisionIDs: executionContext.RevisionIDs}, Limits: adapter.RequestLimits{TimeoutSec: int(in.timeout / time.Second)}}
 	env := adapter.SandboxEnv{Worktree: e.paths.Workspace, ConfigDir: environment.ConfigDir(), Env: environment.Env()}
-	if in.WorkSessionID != nil && in.Adapter.Capabilities().Resume {
-		resumable, ok := in.Adapter.(adapter.ResumableAdapter)
-		if !ok {
-			return fail("work_failed")
-		}
+	if canResume {
 		id = adapter.SessionID(*in.WorkSessionID)
 		err = resumable.Resume(ctx, id, req, env)
-	} else if in.WorkSessionID != nil && work.Resume == "required" {
-		return fail("work_failed")
 	} else {
 		id, err = in.Adapter.Start(ctx, req, env)
 	}

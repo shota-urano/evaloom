@@ -112,6 +112,33 @@ CLIがコマンド実行中に新しく発行し、Runnerがまだ読んでい�
 
 ## 仕様で未定義の部分と検証範囲
 
+質問への回答後は、Runnerが`work-sessions/<workspace ID>/<execution ID>/current/`の
+保持コピーを読み、`Environment.WorkingCopy`へ戻す。保存時のファイル一覧とハッシュで
+セッションの欠落を検出し、Profile由来のファイルは固定commitから作った構成と照合する。
+欠落・読めないコピー・未対応のAdapter・セッションIDが無い場合は、`resume: optional`なら
+回答付きのStart、`required`なら`work_failed`になる。Profile由来の構成の不一致は
+`config_error`になる。CLIが追加した状態はcontext_revisionsへ登録しない。
+
+Runnerは`harnessenv.Session`を実行単位で渡す。Sandboxは停止・認証書き戻し後に
+作業用volumeを読み取り専用の停止中コンテナから回収し、両CLIの認証ファイルを除外する。
+通常ファイル以外、範囲外のパス、重複したファイルは保持しない。
+Runnerは出力を検査して`question`になった場合だけ、0700の保持ディレクトリへ保存する。
+回答後のコピーはその作業の段で消費し、再質問なら新しいコピーを保存する。
+作業領域の削除指示では、対応する保持コピーも削除する。
+
+Q143は判断待ちの中止・取り下げでも即時削除を要求するが、既存のRunner向けAPIには
+停止中の判断待ちが閉じたことを知らせる項目が無い。公開APIを追加せず、Runner内の
+保持・復元・削除を独立した処理にしている。即時削除の通知方法は仕様の不足として残る。
+また契約8章の「元の質問と本人の回答をanswerで渡す」という記述に対し、answerの定義は
+decisionId・text・optionだけで、質問本文を含まない。新規セッションにも定義済みのanswerを
+渡し、質問本文を格納する公開フィールドは追加していない。
+
+`runner.TestQuestionSessionContinuation`は、本番のExecuteClaim・専用設定環境・Sandbox・
+HTTP・SQLite・本人の回答・次のclaimを通す。置き換えるのはAdapterとコンテナruntimeだけで、
+runtime内で変更した設定コピーの回収と次のSandboxへの復元も検査する。
+同じID、欠落時のStart、workspace_missing、別Sandbox、required、構成の変更、最新認証、
+固定文脈、再質問を検証する。実CLIのResume対応の宣言と実モデル試験は各Adapter側の範囲である。
+
 skills・settingsについては、リポジトリ内のパスからCLI固有の読み込み先への
 変換規則が仕様に無いため、元の相対パスを保つ。指示だけはQ142の配置先を使う。
 context APIはProfile内の元パスとハッシュだけを受け付けるため、連結後のファイルは
