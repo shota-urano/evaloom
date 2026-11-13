@@ -90,7 +90,10 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 		if ctx.Err() != nil {
 			code = stageInterruption(ctx.Err())
 		}
-		return StageOutcome{RunnerError: &code, Usage: outcome.Usage}
+		if outcome.Work != nil {
+			outcome.Work.Question = nil
+		}
+		return StageOutcome{RunnerError: &code, ExitCode: outcome.ExitCode, Work: outcome.Work, Usage: outcome.Usage}
 	}
 	return outcome
 }
@@ -421,8 +424,20 @@ func (in StageInvocation) redactStageFiles() error {
 		return root.Rename(tmp, name)
 	}
 	err = fs.WalkDir(root.FS(), "out", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
+		if err != nil {
 			return err
+		}
+		// Q144: never follow either optional work output's symlink. The
+		// question collector has already classified an unsafe question.
+		if in.Stage == model.StageWork && !entry.Type().IsRegular() &&
+			(name == "out/question.json" || name == "out/summary.md") {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
 		}
 		return clean(name)
 	})
