@@ -29,6 +29,9 @@ type Config struct {
 	Root, CommitSHA, ConfigVariable string
 	Files                           []gitcontext.File
 	Instructions                    []string
+	// Session is execution-owned state for question continuation, never a
+	// source of context revisions or authentication.
+	Session *Session
 }
 
 type Environment struct {
@@ -38,6 +41,7 @@ type Environment struct {
 	expected                    map[string]string
 	working                     bool
 	authentication              *Authentication
+	session                     *Session
 }
 
 func configError(err error) error { return &harnesscontext.ConfigError{Err: err} }
@@ -93,7 +97,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		parent.Close()
 		return nil, configError(err)
 	}
-	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected}
+	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session}
 	defer func() {
 		if err != nil {
 			err = configError(fmt.Errorf("prepare configuration: %w", err))
@@ -204,6 +208,14 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 		ConfigVariable: e.variable, Files: files})
 	if err == nil {
 		copy.working = true
+		copy.session = e.session
+		if e.session != nil {
+			err = e.session.install(ctx, copy)
+			if err != nil {
+				_ = copy.Close()
+				return nil, err
+			}
+		}
 	}
 	return copy, err
 }
