@@ -104,6 +104,30 @@ func TestClaudeCodeTerminalOutputValidation(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeNativeSessionID(t *testing.T) {
+	for _, tc := range []struct {
+		name, output, id string
+		invalid          bool
+	}{
+		{"init", `{"type":"system","subtype":"init","session_id":"native"}`, "native", false},
+		{"failed_result", `{"type":"result","session_id":"native","subtype":"error_during_execution","is_error":true}`, "native", false},
+		{"consistent", "{\"type\":\"system\",\"session_id\":\"native\"}\n{\"type\":\"result\",\"session_id\":\"native\",\"subtype\":\"success\",\"is_error\":false}", "native", false},
+		{"conflicting", "{\"type\":\"system\",\"session_id\":\"native\"}\n{\"type\":\"result\",\"session_id\":\"other\",\"subtype\":\"success\",\"is_error\":false}", "native", true},
+		{"no_session", `{"type":"result","subtype":"success","is_error":false}`, "", false},
+		{"invalid_type", `{"type":"result","session_id":123,"subtype":"success","is_error":false}`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &events{}
+			for _, line := range strings.Split(tc.output, "\n") {
+				e.read([]byte(line))
+			}
+			if e.sessionID != tc.id || e.invalid != tc.invalid {
+				t.Fatalf("session=%q invalid=%t; want %q/%t", e.sessionID, e.invalid, tc.id, tc.invalid)
+			}
+		})
+	}
+}
+
 func TestClaudeCodeMultipleResults(t *testing.T) {
 	result := func(index string) string {
 		return `{"type":"result","subtype":"success","is_error":false` + index + `}`
