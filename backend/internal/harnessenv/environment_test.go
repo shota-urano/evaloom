@@ -168,6 +168,61 @@ func TestNativeInstructionSourceNeedsNoAdditionalFile(t *testing.T) {
 	}
 }
 
+func TestNativeInstructionSourceConcatenatesWithoutChangingSnapshots(t *testing.T) {
+	for _, cli := range []struct{ variable, name string }{{"CODEX_HOME", "AGENTS.md"}, {"CLAUDE_CONFIG_DIR", "CLAUDE.md"}} {
+		for _, nativeFirst := range []bool{true, false} {
+			order := "native-first"
+			if !nativeFirst {
+				order = "native-last"
+			}
+			t.Run(cli.variable+"/"+order, func(t *testing.T) {
+				cfg := config(t)
+				cfg.ConfigVariable = cli.variable
+				cfg.Files = []gitcontext.File{file(cli.name, "A\n"), file("extra.md", "B\n")}
+				originals := append([]gitcontext.File{}, cfg.Files...)
+				cfg.Instructions = []string{cli.name, "extra.md"}
+				want := "A\nB\n"
+				if !nativeFirst {
+					cfg.Instructions = []string{"extra.md", cli.name}
+					want = "B\nA\n"
+				}
+				env, err := harnessenv.Create(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer env.Close()
+				if !reflect.DeepEqual(cfg.Files, originals) {
+					t.Fatal("creation changed the source snapshots or their hashes")
+				}
+				copy, err := env.WorkingCopy(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer copy.Close()
+				for _, installed := range []*harnessenv.Environment{env, copy} {
+					files, err := installed.Files(t.Context())
+					if err != nil || len(files) != len(originals) {
+						t.Fatalf("installed files = %v, %v", files, err)
+					}
+					for _, got := range files {
+						expected := file("extra.md", "B\n")
+						if got.Path == cli.name {
+							expected = file(cli.name, want)
+						}
+						if got != expected {
+							t.Errorf("installed file = %+v, want %+v", got, expected)
+						}
+					}
+					content, err := os.ReadFile(filepath.Join(installed.ConfigDir(), cli.name))
+					if err != nil || string(content) != want {
+						t.Fatalf("native instructions = %q, %v; want %q", content, err, want)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestRejectsInvalidPinsAndPathsWithoutPartialEnvironment(t *testing.T) {
 	for name, edit := range map[string]func(*harnessenv.Config){
 		"relative-root":      func(c *harnessenv.Config) { c.Root = "relative" },

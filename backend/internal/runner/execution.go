@@ -397,8 +397,7 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 		return fail("config_error")
 	}
 	defer environment.Close()
-	installed, err := environment.Files(ctx)
-	if err != nil {
+	if _, err := environment.Files(ctx); err != nil {
 		return fail("config_error")
 	}
 	e.environment, e.workInvocation = environment, in
@@ -408,7 +407,9 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 		spec.Network = sandbox.NetworkHarness
 	}
 	e.container, e.workSpec = config, spec
-	executionContext, err := e.pinWorkContext(ctx, in, installed)
+	// Context revisions describe the original Profile files. The CLI's Q142
+	// instruction file may replace a source path with concatenated contents.
+	executionContext, err := e.pinWorkContext(ctx, in, files)
 	if err != nil {
 		return fail("config_error")
 	}

@@ -22,8 +22,9 @@ import (
 // Config is trusted Runner wiring, not a Profile or public API extension. Root
 // must be a dedicated existing directory allowed by ContainerConfig.ConfigDirRoot.
 // ConfigVariable is explicitly selected by the caller for its adopted CLI version.
-// Source paths are preserved. Instructions optionally selects, in declaration
-// order, the files to concatenate at the CLI's user-instruction path (spec 08 Q142).
+// Source paths are preserved except when the CLI's user-instruction path is
+// itself an instruction source: that path receives the Q142 concatenation.
+// Files remains the caller's original snapshot for context revision reporting.
 type Config struct {
 	Root, CommitSHA, ConfigVariable string
 	Files                           []gitcontext.File
@@ -65,20 +66,23 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		}
 		expected[file.Path] = file.ContentHash
 	}
+	installed := append([]gitcontext.File{}, config.Files...)
 	if len(config.Instructions) > 0 {
 		instruction, err := composeInstructions(config)
 		if err != nil {
 			return nil, configError(err)
 		}
-		if existing, found := expected[instruction.Path]; found {
-			if existing != instruction.ContentHash {
-				return nil, configError(fmt.Errorf("user instruction path conflicts with selected configuration"))
+		if _, found := expected[instruction.Path]; found {
+			for i := range installed {
+				if installed[i].Path == instruction.Path {
+					installed[i] = instruction
+					break
+				}
 			}
 		} else {
-			// Own the slice before appending; the caller's snapshots stay intact.
-			config.Files = append(append([]gitcontext.File{}, config.Files...), instruction)
-			expected[instruction.Path] = instruction.ContentHash
+			installed = append(installed, instruction)
 		}
+		expected[instruction.Path] = instruction.ContentHash
 	}
 	parent, err := os.OpenRoot(config.Root)
 	if err != nil {
@@ -101,7 +105,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	if e.root, err = os.OpenRoot(directory); err != nil {
 		return nil, err
 	}
-	for _, file := range config.Files {
+	for _, file := range installed {
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -161,6 +165,11 @@ func composeInstructions(config Config) (gitcontext.File, error) {
 	name := "AGENTS.md"
 	if config.ConfigVariable == "CLAUDE_CONFIG_DIR" {
 		name = "CLAUDE.md"
+	}
+	for _, file := range files {
+		if file.Path == name && !seen[name] && file.ContentHash != hash(content.String()) {
+			return gitcontext.File{}, fmt.Errorf("user instruction path conflicts with selected configuration")
+		}
 	}
 	return gitcontext.File{Path: name, Content: content.String(), ContentHash: hash(content.String()), SourceCommitSHA: config.CommitSHA}, nil
 }

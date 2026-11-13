@@ -13,7 +13,9 @@ Runnerは`Config.Instructions`に`stages.work.instructions`を渡す。
 宣言順に元のバイト列を連結し、Codexでは設定ディレクトリ直下の`AGENTS.md`、
 Claude Codeでは`CLAUDE.md`へ置く。ディレクトリ宣言の中は相対パス順に並べ、
 重複する選択は一度だけ含める。元ファイルも相対パスを保って配置する。
-連結先に内容の異なる選択ファイルがあれば、上書きせず`config_error`にする。
+連結先自身を指示元に選んだ場合、その配置先には連結結果を置く。
+Runnerは記録用の元ファイルとハッシュを保持し、配置結果と区別する。
+指示元に含まれない選択ファイルと連結先の内容が衝突したら、`config_error`にする。
 
 `Environment.Files`は配置した全ファイルを列挙し、実際の内容からSHA-256を計算する。
 未選択ファイル、欠落、内容の変化、symlinkなどの通常ファイル以外を拒否する。
@@ -21,7 +23,7 @@ Claude Codeでは`CLAUDE.md`へ置く。ディレクトリ宣言の中は相対�
 中止は`errors.Is(err, context.Canceled)`で確認できる。
 
 Runnerの`executionExecutor.runWork`が固定commitから宣言ファイルを読み、`Create`を呼ぶ。
-配置後の`Files`で内容を確認し、`pinWorkContext`が元ファイルのパスとハッシュを
+配置後の`Files`で内容を確認し、`pinWorkContext`が固定commitから読んだ元ファイルのパスとハッシュを
 `POST /api/executions/{id}/context`へ送り、Control Planeがcontext_revisionsへ保存する。
 HTTP・保存・応答の検証に失敗した場合も、作成したディレクトリを削除する。
 応答が失われた場合は同じ入力で再実行でき、既存APIの再送処理でrevision IDを保つ。
