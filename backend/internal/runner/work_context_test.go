@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -56,12 +58,16 @@ func TestDeclaredWorkDirectoriesPinEachInstalledFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment, err := harnessenv.Create(t.Context(), harnessenv.Config{
-		Root: t.TempDir(), CommitSHA: pinnedSHA, ConfigVariable: "CODEX_HOME", Files: files,
+		Root: t.TempDir(), CommitSHA: pinnedSHA, ConfigVariable: "CODEX_HOME", Files: files, Instructions: work.Instructions,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer environment.Close()
+	instructions, err := os.ReadFile(filepath.Join(environment.ConfigDir(), "AGENTS.md"))
+	if err != nil || string(instructions) != "first\r\nlast\ncommitted instructions\n" {
+		t.Fatalf("Q142 instructions = %q, %v", instructions, err)
+	}
 	installed, err := environment.Files(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +111,22 @@ func TestDeclaredWorkDirectoriesPinEachInstalledFile(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if count != len(want) || len(installed) != len(want) {
-		t.Fatalf("pins=%d installed=%d, want exactly %d declared files", count, len(installed), len(want))
+	// Spec 07 records source paths, not a synthetic Profile path for the Q142
+	// concatenation. No check program, unselected file or later commit is placed.
+	if count != len(want) || len(installed) != len(want)+1 {
+		t.Fatalf("pins=%d installed=%d, want %d source pins and one Q142 concatenation", count, len(installed), len(want))
+	}
+	for _, file := range installed {
+		if file.Path == "AGENTS.md" {
+			continue
+		}
+		found := false
+		for key := range want {
+			found = found || strings.HasSuffix(key, ":"+file.Path)
+		}
+		if !found {
+			t.Errorf("undeclared file installed: %s", file.Path)
+		}
 	}
 }
 

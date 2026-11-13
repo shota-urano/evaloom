@@ -391,11 +391,16 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if work.MicroHarness == "claude_code" {
 		variable = "CLAUDE_CONFIG_DIR"
 	}
-	environment, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: e.claim.Profile.CommitSHA, ConfigVariable: variable, Files: files})
+	environment, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: e.claim.Profile.CommitSHA,
+		ConfigVariable: variable, Files: files, Instructions: work.Instructions})
 	if err != nil {
 		return fail("config_error")
 	}
 	defer environment.Close()
+	installed, err := environment.Files(ctx)
+	if err != nil {
+		return fail("config_error")
+	}
 	e.environment, e.workInvocation = environment, in
 	config.ConfigDirRoot = root
 	if declarer, ok := in.Adapter.(registry.ModelAPIDeclarer); ok {
@@ -403,7 +408,7 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 		spec.Network = sandbox.NetworkHarness
 	}
 	e.container, e.workSpec = config, spec
-	executionContext, err := e.pinWorkContext(ctx, in, files)
+	executionContext, err := e.pinWorkContext(ctx, in, installed)
 	if err != nil {
 		return fail("config_error")
 	}

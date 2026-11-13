@@ -78,6 +78,96 @@ func TestDedicatedConfigurationsAreIsolatedAndExact(t *testing.T) {
 	}
 }
 
+func TestUserInstructionsUseDeclarationOrderAndPinnedBytes(t *testing.T) {
+	for _, cli := range []struct{ variable, name string }{{"CODEX_HOME", "AGENTS.md"}, {"CLAUDE_CONFIG_DIR", "CLAUDE.md"}} {
+		t.Run(cli.variable, func(t *testing.T) {
+			cfg := config(t)
+			cfg.ConfigVariable = cli.variable
+			cfg.Files = append(cfg.Files, file("prompts/z.md", "last\n"), file("prompts/a.md", "first\r\n"), file("intro.md", "intro\n"))
+			cfg.Instructions = []string{"intro.md", "prompts/", "./prompts/a.md"}
+			env, err := harnessenv.Create(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer env.Close()
+			want := "intro\nfirst\r\nlast\n"
+			content, err := os.ReadFile(filepath.Join(env.ConfigDir(), cli.name))
+			if err != nil || string(content) != want {
+				t.Fatalf("user instructions = %q, %v; want %q", content, err, want)
+			}
+			files, err := env.Files(t.Context())
+			if err != nil || len(files) != len(cfg.Files)+1 {
+				t.Fatalf("installed files = %v, %v", files, err)
+			}
+			byPath := map[string]gitcontext.File{}
+			for _, f := range files {
+				byPath[f.Path] = f
+			}
+			for _, original := range append(cfg.Files, file(cli.name, want)) {
+				if byPath[original.Path] != original {
+					t.Errorf("installed file differs from expected pinned bytes: %s", original.Path)
+				}
+			}
+			copy, err := env.WorkingCopy(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer copy.Close()
+			copied, err := copy.Files(t.Context())
+			if err != nil || !reflect.DeepEqual(copied, files) {
+				t.Fatalf("working copy lost Q142 configuration: %v, %v", copied, err)
+			}
+			if err := os.WriteFile(filepath.Join(copy.ConfigDir(), cli.name), []byte("changed"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = copy.Files(t.Context())
+			requireConfigError(t, err)
+		})
+	}
+}
+
+func TestInstructionFailuresLeaveNoPartialConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		instructions []string
+		extra        []gitcontext.File
+	}{
+		{"missing", []string{"missing.md"}, nil},
+		{"traversal", []string{"skills/../config.toml"}, nil},
+		{"whole repository", []string{"."}, nil},
+		{"absolute", []string{"/config.toml"}, nil},
+		{"conflicting file", []string{"config.toml"}, []gitcontext.File{file("AGENTS.md", "different instructions")}},
+		{"conflicting directory", []string{"config.toml"}, []gitcontext.File{file("AGENTS.md/nested", "conflict")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config(t)
+			cfg.Instructions = test.instructions
+			cfg.Files = append(cfg.Files, test.extra...)
+			env, err := harnessenv.Create(t.Context(), cfg)
+			requireConfigError(t, err)
+			entries, readErr := os.ReadDir(cfg.Root)
+			if env != nil || readErr != nil || len(entries) != 0 {
+				t.Fatalf("partial environment = %v, %v, %v", env, entries, readErr)
+			}
+		})
+	}
+}
+
+func TestNativeInstructionSourceNeedsNoAdditionalFile(t *testing.T) {
+	cfg := config(t)
+	cfg.Files = []gitcontext.File{file("AGENTS.md", "native\n")}
+	cfg.Instructions = []string{"AGENTS.md"}
+	env, err := harnessenv.Create(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+	files, err := env.Files(t.Context())
+	if err != nil || !reflect.DeepEqual(files, cfg.Files) {
+		t.Fatalf("native instruction replaced or duplicated: %v, %v", files, err)
+	}
+}
+
 func TestRejectsInvalidPinsAndPathsWithoutPartialEnvironment(t *testing.T) {
 	for name, edit := range map[string]func(*harnessenv.Config){
 		"relative-root":      func(c *harnessenv.Config) { c.Root = "relative" },
