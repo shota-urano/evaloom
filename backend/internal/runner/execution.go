@@ -372,10 +372,11 @@ func (e *executionExecutor) collectOut(ctx context.Context, in StageInvocation, 
 
 func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spec sandbox.SandboxSpec, config sandbox.ContainerConfig, log *Log) StageOutcome {
 	var id adapter.SessionID
+	var nativeID adapter.SessionID
 	fail := func(code string) StageOutcome {
 		out := StageOutcome{RunnerError: &code}
-		if id != "" {
-			session := string(id)
+		if nativeID != "" {
+			session := string(nativeID)
 			out.Work = &StageWork{SessionID: &session}
 		}
 		return out
@@ -491,6 +492,9 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	}()
 	result, err := in.WaitWork(ctx, in.Adapter, id)
 	logErr := <-logsDone
+	// Start may return an asynchronous control handle. Only the CLI session in
+	// the result belongs in executions.work_session_id, including failed work.
+	nativeID = result.SessionID
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return fail(stageInterruption(err))

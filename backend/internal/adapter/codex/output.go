@@ -71,13 +71,15 @@ func (w *lineWriter) line(data []byte) {
 type events struct {
 	completed, failed, invalid bool
 	summary                    string
+	threadID                   string
 	input, output              *int64
 }
 
 func (e *events) read(line []byte) {
 	var event struct {
-		Type string `json:"type"`
-		Item struct {
+		Type     string `json:"type"`
+		ThreadID string `json:"thread_id"`
+		Item     struct {
 			Type string  `json:"type"`
 			Text *string `json:"text"`
 		} `json:"item"`
@@ -91,6 +93,12 @@ func (e *events) read(line []byte) {
 		return
 	}
 	switch event.Type {
+	case "thread.started":
+		if event.ThreadID == "" || (e.threadID != "" && e.threadID != event.ThreadID) {
+			e.invalid = true
+		} else {
+			e.threadID = event.ThreadID
+		}
 	case "item.completed":
 		if event.Item.Type == "agent_message" {
 			if event.Item.Text == nil {
