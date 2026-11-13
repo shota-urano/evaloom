@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
@@ -51,6 +53,9 @@ func ParseStageTimeoutMaxSec(raw string, present bool) map[model.Stage]int {
 // Environment is the deployment side of Profile registration (spec 03 3.4).
 type Environment struct {
 	StageTimeoutMaxSecs map[model.Stage]int
+	// AdapterNames is a registry snapshot taken with ToolPermissions and
+	// ModelAPIs. An empty snapshot accepts no micro-harness names.
+	AdapterNames []string
 	// ToolPermissions holds the conversion check of each registered Adapter.
 	// Without one, only empty Tool Permissions can be accepted.
 	ToolPermissions map[model.AdapterName]ToolPermissionsChecker
@@ -62,6 +67,13 @@ type Environment struct {
 var _ contract.ProfileEnvironment = Environment{}
 
 func (e Environment) StageTimeoutMaxSec(stage model.Stage) int { return e.StageTimeoutMaxSecs[stage] }
+
+func (e Environment) ValidateAdapter(name string) error {
+	if !slices.Contains(e.AdapterNames, name) {
+		return fmt.Errorf("%w: %q", adapter.ErrNotRegistered, name)
+	}
+	return nil
+}
 
 func (e Environment) ValidateToolPermissions(name model.AdapterName, raw json.RawMessage) error {
 	if checker := e.ToolPermissions[name]; checker != nil {

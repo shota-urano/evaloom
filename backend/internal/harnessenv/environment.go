@@ -22,10 +22,16 @@ import (
 // Config is trusted Runner wiring, not a Profile or public API extension. Root
 // must be a dedicated existing directory allowed by ContainerConfig.ConfigDirRoot.
 // ConfigVariable is explicitly selected by the caller for its adopted CLI version.
-// File paths are preserved: no CLI-specific relocation is inferred from versions.
+// Source paths are preserved except when the CLI's user-instruction path is
+// itself an instruction source: that path receives the Q142 concatenation.
+// Files remains the caller's original snapshot for context revision reporting.
 type Config struct {
 	Root, CommitSHA, ConfigVariable string
 	Files                           []gitcontext.File
+	Instructions                    []string
+	// Session is execution-owned state for question continuation, never a
+	// source of context revisions or authentication.
+	Session *Session
 }
 
 type Environment struct {
@@ -35,6 +41,7 @@ type Environment struct {
 	expected                    map[string]string
 	working                     bool
 	authentication              *Authentication
+	session                     *Session
 }
 
 func configError(err error) error { return &harnesscontext.ConfigError{Err: err} }
@@ -42,6 +49,10 @@ func configError(err error) error { return &harnesscontext.ConfigError{Err: err}
 // Create never reads the user's HOME, a harness working tree, or ambient env.
 // It writes only to its newly created directory and returns no partial result.
 func Create(ctx context.Context, config Config) (_ *Environment, err error) {
+	return create(ctx, config, false)
+}
+
+func create(ctx context.Context, config Config, working bool) (_ *Environment, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, configError(err)
 	}
@@ -63,6 +74,24 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		}
 		expected[file.Path] = file.ContentHash
 	}
+	installed := append([]gitcontext.File{}, config.Files...)
+	if len(config.Instructions) > 0 {
+		instruction, err := composeInstructions(config)
+		if err != nil {
+			return nil, configError(err)
+		}
+		if _, found := expected[instruction.Path]; found {
+			for i := range installed {
+				if installed[i].Path == instruction.Path {
+					installed[i] = instruction
+					break
+				}
+			}
+		} else {
+			installed = append(installed, instruction)
+		}
+		expected[instruction.Path] = instruction.ContentHash
+	}
 	parent, err := os.OpenRoot(config.Root)
 	if err != nil {
 		return nil, configError(err)
@@ -72,7 +101,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 		parent.Close()
 		return nil, configError(err)
 	}
-	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected}
+	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session, working: working}
 	defer func() {
 		if err != nil {
 			err = configError(fmt.Errorf("prepare configuration: %w", err))
@@ -84,7 +113,7 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	if e.root, err = os.OpenRoot(directory); err != nil {
 		return nil, err
 	}
-	for _, file := range config.Files {
+	for _, file := range installed {
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -108,7 +137,66 @@ func Create(ctx context.Context, config Config) (_ *Environment, err error) {
 	if _, err = e.Files(ctx); err != nil {
 		return nil, err
 	}
+	if !working {
+		// Keep the pinned source read-only on disk as well as outside writable
+		// Sandbox mounts. WorkingCopy creates new inodes with private write access.
+		err = fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			mode := fs.FileMode(0400)
+			if entry.IsDir() {
+				mode = 0500
+			}
+			return e.root.Chmod(name, mode)
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	return e, nil
+}
+
+func composeInstructions(config Config) (gitcontext.File, error) {
+	files := append([]gitcontext.File{}, config.Files...)
+	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	seen := map[string]bool{}
+	var content strings.Builder
+	for _, declaration := range config.Instructions {
+		name := path.Clean(declaration)
+		if !fs.ValidPath(name) || name == "." || strings.ContainsAny(declaration, "\x00\\") {
+			return gitcontext.File{}, fmt.Errorf("invalid instruction declaration")
+		}
+		for _, part := range strings.Split(declaration, "/") {
+			if part == ".." {
+				return gitcontext.File{}, fmt.Errorf("invalid instruction declaration")
+			}
+		}
+		found := false
+		for _, file := range files {
+			if file.Path != name && !strings.HasPrefix(file.Path, name+"/") {
+				continue
+			}
+			found = true
+			if !seen[file.Path] {
+				seen[file.Path] = true
+				content.WriteString(file.Content)
+			}
+		}
+		if !found {
+			return gitcontext.File{}, fmt.Errorf("declared instruction is missing from selected configuration")
+		}
+	}
+	name := "AGENTS.md"
+	if config.ConfigVariable == "CLAUDE_CONFIG_DIR" {
+		name = "CLAUDE.md"
+	}
+	for _, file := range files {
+		if file.Path == name && !seen[name] && file.ContentHash != hash(content.String()) {
+			return gitcontext.File{}, fmt.Errorf("user instruction path conflicts with selected configuration")
+		}
+	}
+	return gitcontext.File{Path: name, Content: content.String(), ContentHash: hash(content.String()), SourceCommitSHA: config.CommitSHA}, nil
 }
 
 func commitSHA(s string) bool {
@@ -129,17 +217,25 @@ func (e *Environment) Env() map[string]string { return map[string]string{e.varia
 
 // WorkingCopy makes an independent, disposable sibling under the same trusted
 // configuration root. The expected paths/hashes come from this Environment,
-// whose Files were submitted for context_revisions, never from the copy itself.
+// including its Q142 concatenation, never from the copy itself. Runner submits
+// the source files to context_revisions before the Adapter requests a copy.
 // The caller owns Close, and must verify Files again before the first CLI starts.
 func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 	files, err := e.Files(ctx)
 	if err != nil {
 		return nil, err
 	}
-	copy, err := Create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
-		ConfigVariable: e.variable, Files: files})
+	copy, err := create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
+		ConfigVariable: e.variable, Files: files}, true)
 	if err == nil {
-		copy.working = true
+		copy.session = e.session
+		if e.session != nil {
+			err = e.session.install(ctx, copy)
+			if err != nil {
+				_ = copy.Close()
+				return nil, err
+			}
+		}
 	}
 	return copy, err
 }
@@ -148,7 +244,8 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 // non-regular files. The installed authentication file is checked for presence
 // and type only; neither its path nor its content/hash enters the returned list.
 // Hashes cover configuration bytes on disk, not a caller's assertion.
-// The same repository-relative paths can be sent to the existing context API.
+// Runner reports only source paths to the context API (spec 07 section 5); a
+// Q142 concatenation is verified here but has no separate source revision row.
 func (e *Environment) Files(ctx context.Context) ([]gitcontext.File, error) {
 	if e.root == nil {
 		return nil, configError(fmt.Errorf("configuration environment is closed"))
@@ -233,6 +330,16 @@ func (e *Environment) Close() error {
 	if e.root != nil {
 		identity, err := e.root.Stat(".")
 		cleanup = errors.Join(cleanup, err)
+		if !e.working {
+			// Removal needs write access to directories, not files. Use the retained
+			// root so a replaced published path cannot redirect permission changes.
+			cleanup = errors.Join(cleanup, fs.WalkDir(e.root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+				if err != nil || !entry.IsDir() {
+					return err
+				}
+				return e.root.Chmod(name, 0700)
+			}))
+		}
 		// Clear through the retained handle, even if the directory was moved.
 		entries, err := fs.ReadDir(e.root.FS(), ".")
 		cleanup = errors.Join(cleanup, err)

@@ -48,6 +48,9 @@ type ContainerConfig struct {
 	// not Runner configuration keys. A spec cannot authorize its own source.
 	StagePaths      contract.RequestPaths
 	StageMountRoots map[string]string
+	// Runner-owned immutable request file, mounted separately from writable
+	// scratch/out. These are wiring paths, never Profile/configuration keys.
+	StageRequestFile, StageRequestPath string
 	// These paths must be supplied so an erroneous broad mount fails closed.
 	HostHome, DataDir, RunnerTokenFile string
 	// macos_vm remains unsupported, as required by Q147 until its implementation.

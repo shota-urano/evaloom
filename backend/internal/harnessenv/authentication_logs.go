@@ -3,6 +3,8 @@ package harnessenv
 import (
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -35,6 +37,23 @@ func authenticationSecrets(data []byte) []string {
 		}
 	}
 	return secrets
+}
+
+// ReadAuthenticationValues supplies Runner's file collectors with the same
+// exclusions as Adapter logs. Authentication writeback atomically replaces the
+// file, so this read cannot see a partial refresh and does not wait for another
+// execution's long-lived credential lock. Discard the values after the stage.
+func ReadAuthenticationValues(store string) ([]string, error) {
+	root, err := os.OpenRoot(filepath.Dir(store))
+	if err != nil {
+		return nil, authError("cannot open store")
+	}
+	defer root.Close()
+	data, err := readAuthentication(root, filepath.Base(store), true)
+	if err != nil {
+		return nil, err
+	}
+	return authenticationSecrets(data), nil
 }
 
 // FilterLog excludes all values observed so far before a line enters the log

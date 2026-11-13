@@ -216,8 +216,12 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	// The settings API and the Linear Poller share the label settings stored
 	// in the settings table, so they survive a restart (spec 15 5章, Q48, Q76).
 	linearSettings := linearintake.NewLabelSettings(db, logger)
+	adapters, err := controlPlaneAdapters()
+	if err != nil {
+		return err
+	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithSettings(db, logger, auth, web, artifacts, linearSettings),
+		Handler:           api.NewHandlerWithSettings(db, logger, auth, web, artifacts, linearSettings, adapters),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
@@ -65,6 +66,9 @@ type StageInvocation struct {
 	Workspace     string
 	Directory     string
 	WorkSessionID *string
+	// Adapter is selected solely by stages.work.microHarness. Program stages
+	// receive nil; CLI details remain in the registered implementation.
+	Adapter adapter.Adapter
 	// Host socket source. The executor supplies its own sandbox-visible
 	// EVALOOM_CHANNEL path and copies this into SandboxSpec.ChannelPath.
 	// The context carries the matching, stage-scoped socket capability.
@@ -83,6 +87,7 @@ type StageExecutor interface {
 type StageServices struct {
 	Reporter StageReporter
 	Executor StageExecutor
+	Adapters *adapter.Registry
 	// Paths are supplied by Sandbox wiring. The contract gives examples,
 	// not fixed mount paths; the framework must not choose its own defaults.
 	Paths contract.RequestPaths
@@ -197,15 +202,25 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 				timeout: time.Duration(claim.Limits.TimeoutSec[string(stage)]) * time.Second}
 			if stage == model.StageWork {
 				invocation.WorkSessionID = resume.WorkSessionID
+				if services.Adapters == nil {
+					err = adapter.ErrNotRegistered
+				} else {
+					invocation.Adapter, err = services.Adapters.Lookup(profile.Definition.Stages.Work.MicroHarness)
+				}
 			}
-			stageCtx, cancel := context.WithTimeout(ctx, invocation.timeout)
-			outcome = runner.runStageWithSecrets(stageCtx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
-			// The executor has already observed execution termination. A deadline
-			// reached during credential recovery/collection cannot replace it.
-			if cooperativeCancellation(stageCtx, stage, outcome) {
-				outcome.RunnerError = nil
+			if err != nil {
+				code := "config_error"
+				outcome.RunnerError = &code
+			} else {
+				stageCtx, cancel := context.WithTimeout(ctx, invocation.timeout)
+				outcome = runner.runStageWithSecrets(stageCtx, claim.Execution.ID, claim.Profile.HarnessID, invocation, services.Executor)
+				// The executor has already observed execution termination. A deadline
+				// reached during credential recovery/collection cannot replace it.
+				if cooperativeCancellation(stageCtx, stage, outcome) {
+					outcome.RunnerError = nil
+				}
+				cancel()
 			}
-			cancel()
 		}
 		next, err := services.Reporter.FinishStage(reportCtx, claim.Execution.ID, stage, attempt, outcome)
 		if err != nil {

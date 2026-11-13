@@ -253,6 +253,7 @@ func TestCodexRuntimeHelper(t *testing.T) {
 				// Leave time for a competing context-triggered rm to be observed.
 				time.Sleep(120 * time.Millisecond)
 			}
+			fmt.Println(`{"type":"thread.started","thread_id":"container-thread"}`)
 			fmt.Println(`{"type":"turn.completed"}`)
 		}
 		write(name+".exited", "yes")
@@ -621,7 +622,7 @@ case "$1:$2" in
   volume:create|volume:rm) exit 0 ;;
   container:create) exit 0 ;;
   container:cp) if [ "$3" = - ]; then cat > "$CAPTURE.tar"; else cat "$CAPTURE.tar"; fi ;;
-  container:start) printf '%s\n' '{"type":"turn.completed"}' ;;
+  container:start) printf '%s\n' '{"type":"thread.started","thread_id":"container-thread"}' '{"type":"turn.completed"}' ;;
   container:inspect) printf '%s\n' '{"Status":"exited","Running":false,"ExitCode":0}' ;;
   container:rm) exit 0 ;;
   *) exit 19 ;;
