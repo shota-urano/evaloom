@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
+	"strings"
 
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
 )
@@ -27,14 +29,18 @@ func (e *executionExecutor) pinWorkContext(ctx context.Context, in StageInvocati
 		SHA256 string `json:"sha256"`
 	}
 	selected := []contextFile{}
+	seen := map[string]bool{}
 	for _, group := range []struct {
 		kind  string
 		paths []string
 	}{{"instructions", in.Profile.Definition.Stages.Work.Instructions}, {"skill", in.Profile.Definition.Stages.Work.Skills}, {"settings", in.Profile.Definition.Stages.Work.Settings}} {
-		for _, path := range group.paths {
+		for _, declaration := range group.paths {
+			name := path.Clean(declaration)
 			for _, file := range files {
-				if file.Path == path {
-					selected = append(selected, contextFile{group.kind, path, file.ContentHash})
+				key := group.kind + "\x00" + file.Path
+				if (file.Path == name || strings.HasPrefix(file.Path, name+"/")) && !seen[key] {
+					seen[key] = true
+					selected = append(selected, contextFile{group.kind, file.Path, file.ContentHash})
 				}
 			}
 		}
