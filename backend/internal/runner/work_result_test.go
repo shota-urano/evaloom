@@ -11,6 +11,7 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -95,7 +96,31 @@ func TestWorkResultAssembly(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				selected := dummy.NewWithStart(func(_ adapter.HarnessRequest, _ adapter.SandboxEnv) error {
+				selected := dummy.NewWithStart(func(req adapter.HarnessRequest, env adapter.SandboxEnv) error {
+					// The synchronous test Adapter owns credential transfer just as
+					// real Adapters do. Runner must not read outside this lease.
+					wiring := e.workAdapterConfig()
+					original, err := wiring.ResolveConfig(env)
+					if err != nil {
+						return err
+					}
+					working, err := original.WorkingCopy(ctx)
+					if err != nil {
+						return err
+					}
+					defer working.Close()
+					store, err := wiring.ResolveAuthentication(req)
+					if err != nil {
+						return err
+					}
+					lease, err := harnessenv.AcquireAuthentication(ctx, store)
+					if err != nil {
+						return err
+					}
+					defer lease.Close()
+					if err := lease.Install(working); err != nil {
+						return err
+					}
 					write := func(name, text string) {
 						t.Helper()
 						if err := os.WriteFile(filepath.Join(directory, "out", name), []byte(text), 0600); err != nil {

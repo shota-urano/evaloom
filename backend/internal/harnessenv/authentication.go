@@ -162,6 +162,9 @@ func (a *Authentication) Install(e *Environment) error {
 		return configError(authError("copy placement failed"))
 	}
 	e.authentication = a
+	if e.observeAuthentication != nil {
+		e.observeAuthentication(append([]string(nil), a.logSecrets...))
+	}
 	return nil
 }
 
@@ -203,6 +206,9 @@ func (e *Environment) RefreshAuthentication(data []byte) error {
 	a.logMu.Lock()
 	a.logSecrets = append(a.logSecrets, secrets...)
 	a.logMu.Unlock()
+	if e.observeAuthentication != nil {
+		e.observeAuthentication(secrets)
+	}
 	return nil
 }
 

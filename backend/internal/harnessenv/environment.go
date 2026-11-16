@@ -32,6 +32,9 @@ type Config struct {
 	// Session is execution-owned state for question continuation, never a
 	// source of context revisions or authentication.
 	Session *Session
+	// ObserveAuthentication supplies invocation-local artifact exclusion with
+	// values read under the Adapter's credential lock. Never persist these values.
+	ObserveAuthentication func([]string)
 }
 
 type Environment struct {
@@ -42,6 +45,7 @@ type Environment struct {
 	working                     bool
 	authentication              *Authentication
 	session                     *Session
+	observeAuthentication       func([]string)
 }
 
 func configError(err error) error { return &harnesscontext.ConfigError{Err: err} }
@@ -101,7 +105,7 @@ func create(ctx context.Context, config Config, working bool) (_ *Environment, e
 		parent.Close()
 		return nil, configError(err)
 	}
-	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session, working: working}
+	e := &Environment{directory: directory, variable: config.ConfigVariable, commit: config.CommitSHA, parent: parent, expected: expected, session: config.Session, working: working, observeAuthentication: config.ObserveAuthentication}
 	defer func() {
 		if err != nil {
 			err = configError(fmt.Errorf("prepare configuration: %w", err))
@@ -226,7 +230,7 @@ func (e *Environment) WorkingCopy(ctx context.Context) (*Environment, error) {
 		return nil, err
 	}
 	copy, err := create(ctx, Config{Root: filepath.Dir(e.directory), CommitSHA: e.commit,
-		ConfigVariable: e.variable, Files: files}, true)
+		ConfigVariable: e.variable, Files: files, ObserveAuthentication: e.observeAuthentication}, true)
 	if err == nil {
 		copy.session = e.session
 		if e.session != nil {

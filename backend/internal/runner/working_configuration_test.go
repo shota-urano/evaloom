@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter/claudecode"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/codex"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -21,7 +24,7 @@ import (
 // deterministic; it updates the private volume rather than host staging files.
 func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 	for _, harness := range []string{"codex", "claude_code"} {
-		for _, mode := range []string{"success", "failure", "question", "invalid-question", "cancel", "mismatch"} {
+		for _, mode := range []string{"success", "failure", "question", "invalid-question", "cancel", "mismatch", "stream", "lock-refresh", "lock-cancel", "lock-timeout"} {
 			t.Run(harness+"/"+mode, func(t *testing.T) {
 				f := newLogControlPlane(t)
 				r, claim, _, _ := stageFixture(t, false)
@@ -55,6 +58,18 @@ func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 				store := filepath.Join(r.dataDir, authName)
 				if err := os.WriteFile(store, []byte(`{"token":"original-token"}`), 0600); err != nil {
 					t.Fatal(err)
+				}
+				var lease *harnessenv.Authentication
+				if strings.HasPrefix(mode, "lock-") {
+					lease, err = harnessenv.AcquireAuthentication(t.Context(), store)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer lease.Close()
+					// Any Runner read before the lock now fails JSON validation.
+					if err := os.WriteFile(store, []byte("invalid while another execution holds the lock"), 0600); err != nil {
+						t.Fatal(err)
+					}
 				}
 				config := f.config
 				config.MicroHarnessAuthFiles = map[string]string{harness: store}
@@ -112,7 +127,66 @@ func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 					}
 					in := StageInvocation{Stage: model.StageWork, Attempt: attempt, Profile: profile, Workspace: claim.Workspace.Path,
 						Directory: directory, Adapter: selected, timeout: time.Minute}
-					outcome := r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in, e)
+					if mode == "lock-timeout" {
+						in.timeout = time.Second
+					}
+					outcomes := make(chan StageOutcome, 1)
+					go func() { outcomes <- r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in, e) }()
+					if lease != nil {
+						// Wait until the Adapter has made its working copy. Earlier
+						// cancellation can interrupt context pinning instead of flock.
+						ready := time.NewTimer(5 * time.Second)
+						defer ready.Stop()
+						for {
+							copies, _ := filepath.Glob(filepath.Join(directory, "configuration", "harness-*"))
+							if len(copies) == 2 {
+								break
+							}
+							select {
+							case out := <-outcomes:
+								return fmt.Errorf("stage read locked credentials instead of waiting: %+v", out)
+							case <-ready.C:
+								cancel()
+								<-outcomes
+								return fmt.Errorf("Adapter did not reach credential lock")
+							case <-time.After(10 * time.Millisecond):
+							}
+						}
+						select {
+						case out := <-outcomes:
+							return fmt.Errorf("stage read locked credentials instead of waiting: %+v", out)
+						case <-time.After(100 * time.Millisecond):
+						}
+						if _, err := os.Stat(filepath.Join(state, "cli-started")); !os.IsNotExist(err) {
+							cancel()
+							<-outcomes
+							return fmt.Errorf("CLI started before credential lock release")
+						}
+						if mode == "lock-refresh" {
+							// This stands in for the preceding execution's atomic writeback.
+							if err := os.WriteFile(store, []byte(`{"token":"original-token"}`), 0600); err != nil {
+								cancel()
+								<-outcomes
+								return err
+							}
+							_ = lease.Close()
+						} else if mode == "lock-cancel" {
+							cancel()
+						}
+					}
+					if mode == "stream" {
+						// The runtime cannot exit until both persistence and delivery
+						// are observed through real Runner files and Control Plane DB.
+						if err := waitAuthenticationProgress(ctx, r.dataDir, f); err != nil {
+							cancel()
+							<-outcomes
+							return err
+						}
+						if err := os.WriteFile(filepath.Join(state, "release"), nil, 0600); err != nil {
+							return err
+						}
+					}
+					outcome := <-outcomes
 					next, err = r.FinishStage(context.WithoutCancel(ctx), logExecution, model.StageWork, attempt, outcome)
 					return err
 				})
@@ -121,12 +195,14 @@ func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 				}
 				wantRun, wantError, wantNext := "failed", "work_failed", "stop"
 				switch mode {
-				case "success":
+				case "success", "stream", "lock-refresh":
 					wantRun, wantError, wantNext = "succeeded", "", "check"
 				case "question":
 					wantRun, wantError = "question", ""
-				case "cancel":
+				case "cancel", "lock-cancel":
 					wantRun, wantError = "cancelled", "cancelled"
+				case "lock-timeout":
+					wantRun, wantError = "timed_out", "timeout"
 				case "mismatch":
 					wantError = "config_error"
 				}
@@ -140,6 +216,13 @@ func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 				entries, err := os.ReadDir(filepath.Join(directory, "configuration"))
 				if err != nil || len(entries) != 0 {
 					t.Fatalf("stage configuration survived: %v %v", entries, err)
+				}
+				assertAuthenticationContextExcluded(t, store, f)
+				if mode == "lock-cancel" || mode == "lock-timeout" {
+					if _, err := os.Stat(filepath.Join(state, "cli-started")); !os.IsNotExist(err) {
+						t.Fatal("CLI started while credential lock remained held")
+					}
+					return
 				}
 				copyDir, err := os.ReadFile(filepath.Join(state, "copy-dir"))
 				if err != nil || !strings.HasPrefix(string(copyDir), filepath.Join(directory, "configuration", "harness-")) {
@@ -179,12 +262,140 @@ func TestWorkingConfigurationStageLifecycle(t *testing.T) {
 				if err != nil || !strings.Contains(string(data), wantToken) {
 					t.Fatalf("authentication was not recovered: %v", err)
 				}
-				var runtimeRevisions int
-				if err := f.db.QueryRow(`SELECT count(*) FROM context_revisions WHERE execution_id=? AND (source_path IN ('auth.json','.credentials.json','session-state'))`, logExecution).Scan(&runtimeRevisions); err != nil || runtimeRevisions != 0 {
-					t.Fatalf("CLI state entered context revisions: %d %v", runtimeRevisions, err)
+				if mode != "mismatch" {
+					assertAuthenticationExcluded(t, r.dataDir, directory, f)
 				}
 			})
 		}
+	}
+}
+
+func assertAuthenticationContextExcluded(t *testing.T, store string, f *logControlPlane) {
+	t.Helper()
+	rows, err := f.db.Query(`SELECT source_path, content_hash, coalesce(content,'') FROM context_revisions WHERE execution_id=?`, logExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var path, hash, content string
+		if err := rows.Scan(&path, &hash, &content); err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{store, "auth.json", ".credentials.json", "session-state"} {
+			if strings.Contains(path, forbidden) || strings.Contains(content, forbidden) {
+				t.Fatal("CLI state entered context revisions")
+			}
+		}
+		for _, token := range []string{"original-token", "preflight-token", "refreshed-token"} {
+			digest := fmt.Sprintf("%x", sha256.Sum256([]byte(`{"token":"`+token+`"}`)))
+			if strings.Contains(content, token) || hash == digest {
+				t.Fatal("authentication content or hash entered context revisions")
+			}
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count == 0 {
+		t.Fatal("no pinned context revisions to verify")
+	}
+}
+
+func waitAuthenticationProgress(ctx context.Context, dataDir string, f *logControlPlane) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var delivered int
+		if err := f.db.QueryRow(`SELECT count(*) FROM execution_events WHERE type='log' AND payload LIKE '%ordinary progress%'`).Scan(&delivered); err != nil {
+			return err
+		}
+		logs, err := filepath.Glob(filepath.Join(dataDir, "logs", "*.log"))
+		if err != nil {
+			return err
+		}
+		for _, path := range logs {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if delivered > 0 && strings.Contains(string(data), "ordinary progress") {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("ordinary logs were not saved and delivered while CLI was running: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func assertAuthenticationExcluded(t *testing.T, dataDir, directory string, f *logControlPlane) {
+	t.Helper()
+	check := func(data []byte) {
+		t.Helper()
+		for _, secret := range []string{"original-token", "preflight-token", "refreshed-token"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatal("authentication value reached Runner persistence or delivery")
+			}
+		}
+	}
+	for _, pattern := range []string{filepath.Join(dataDir, "logs", "*.log"), filepath.Join(directory, "out", "*")} {
+		paths, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range paths {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check(data)
+		}
+	}
+	rows, err := f.db.Query(`SELECT payload FROM execution_events WHERE type='log'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			t.Fatal(err)
+		}
+		check(data)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+	if count == 0 {
+		t.Fatal("no CLI logs delivered")
+	}
+	rows, err = f.db.Query(`SELECT storage_path FROM artifacts`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(f.dataDir, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(data)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -225,9 +436,15 @@ case "$1 $2" in
  'container start')
   case "$last" in *-ingress|*-egress) exit 0 ;; esac
   : > "$COPY_STATE/cli-started"
-  if [ "$(/bin/cat "$COPY_STATE/phase")" = preflight ]; then exit 0; fi
+  if [ "$(/bin/cat "$COPY_STATE/phase")" = preflight ]; then
+   printf '%s\n' 'initial credential original-token' >&2
+   printf '%s' '{"token":"preflight-token"}' > "$COPY_STATE/volume/$COPY_AUTH"
+   exit 0
+  fi
+  printf '%s\n' 'known credentials original-token preflight-token' 'ordinary progress' >&2
   printf 'CLI state' > "$COPY_STATE/volume/session-state"
   printf '%s' '{"token":"refreshed-token"}' > "$COPY_STATE/volume/$COPY_AUTH"
+  printf '%s' 'summary original-token preflight-token refreshed-token' > "$COPY_OUT/summary.md"
   case "$COPY_MODE" in
    question|failure|cancel) printf '%s' '{"question":"Continue?"}' > "$COPY_OUT/question.json" ;;
    invalid-question) printf '{' > "$COPY_OUT/question.json" ;;
@@ -236,6 +453,9 @@ case "$1 $2" in
    : > "$COPY_STATE/running"
    while [ ! -f "$COPY_STATE/stopped" ]; do /bin/sleep 0.01; done
    exit 0
+  fi
+  if [ "$COPY_MODE" = stream ]; then
+   while [ ! -f "$COPY_STATE/release" ] && [ ! -f "$COPY_STATE/stopped" ]; do /bin/sleep 0.01; done
   fi
   if [ "$COPY_HARNESS" = codex ]; then
    printf '%s\n' '{"type":"thread.started","thread_id":"native-session"}' '{"type":"turn.completed"}'

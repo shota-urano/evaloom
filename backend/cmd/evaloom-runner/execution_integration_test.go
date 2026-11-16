@@ -27,6 +27,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/api"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
+	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
@@ -490,7 +491,12 @@ func (f *executionFixture) start() {
 	f.cancel = cancel
 	f.done = make(chan error, 1)
 	go func() {
-		f.done <- runWithAdapters(ctx, []string{"-config", f.configPath}, strings.NewReader(""), f.output, f.adapters)
+		f.done <- runWithAdapters(ctx, []string{"-config", f.configPath}, strings.NewReader(""), f.output, func(w runner.WorkAdapterConfig) *adapter.Registry {
+			base, _ := f.adapters.Lookup("codex")
+			adapters := &adapter.Registry{}
+			_ = adapters.Register("codex", &authenticatedFixtureAdapter{Adapter: base, wiring: w})
+			return adapters
+		})
 	}()
 	f.t.Cleanup(func() {
 		cancel()
@@ -503,6 +509,41 @@ func (f *executionFixture) start() {
 			f.t.Error("runner did not stop")
 		}
 	})
+}
+
+// The command test replaces only the micro-harness. Its deterministic Adapter
+// still installs real credentials under a real lease, as production Adapters
+// do; Runner no longer reads a credential store outside that lease.
+type authenticatedFixtureAdapter struct {
+	adapter.Adapter
+	wiring runner.WorkAdapterConfig
+}
+
+func (a *authenticatedFixtureAdapter) Start(ctx context.Context, req adapter.HarnessRequest, env adapter.SandboxEnv) (adapter.SessionID, error) {
+	original, err := a.wiring.ResolveConfig(env)
+	if err != nil {
+		return "", err
+	}
+	working, err := original.WorkingCopy(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer working.Close()
+	store, err := a.wiring.ResolveAuthentication(req)
+	if err != nil {
+		return "", err
+	}
+	lease, err := harnessenv.AcquireAuthentication(ctx, store)
+	if err != nil {
+		return "", err
+	}
+	defer lease.Close()
+	if err := lease.Install(working); err != nil {
+		return "", err
+	}
+	env.ConfigDir = working.ConfigDir()
+	env.Env = working.Env()
+	return a.Adapter.Start(ctx, req, env)
 }
 func (f *executionFixture) waitStatus(want string) {
 	f.t.Helper()

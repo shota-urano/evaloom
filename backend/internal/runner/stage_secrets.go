@@ -35,6 +35,21 @@ type stageSecurity struct {
 	credentials  []string
 }
 
+// The Adapter calls this only with credentials it read under its lease, at
+// installation and after each stopped CLI command. Store rereads would both
+// bypass the lock and lose intermediate refreshes or failed writebacks.
+func (in StageInvocation) observeAuthentication(values []string) {
+	if in.security == nil {
+		return
+	}
+	s := in.security
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active {
+		s.credentials = append(s.credentials, values...)
+	}
+}
+
 func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness string, in StageInvocation, executor StageExecutor) StageOutcome {
 	var declarations []contract.Secret
 	switch in.Stage {
