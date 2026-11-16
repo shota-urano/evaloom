@@ -141,11 +141,6 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 	if err != nil {
 		return StageOutcome{RunnerError: strPtr("config_error")}
 	}
-	if in.Stage == model.StageWork {
-		if err := e.readWorkCredentials(in); err != nil {
-			return StageOutcome{RunnerError: strPtr("config_error")}
-		}
-	}
 	log, err := in.NewLog(nil)
 	if err != nil {
 		return StageOutcome{RunnerError: strPtr("config_error")}
@@ -155,11 +150,6 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 	var outcome StageOutcome
 	if in.Stage == model.StageWork {
 		outcome = e.runWork(ctx, in, spec, config, log)
-		// The Adapter has released its credential lock after writeback. Include
-		// refreshed values before collecting work files or retaining inputs.
-		if err := e.readWorkCredentials(in); err != nil && outcome.RunnerError == nil {
-			outcome.RunnerError = strPtr("config_error")
-		}
 	} else {
 		// Pipes let Log.Read collect lines while the real container supervisor owns
 		// the runtime and waits for all attach writers to stop.
@@ -227,19 +217,6 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 		_ = e.retainWorkSession(reportCtx, outcome)
 	}
 	return outcome
-}
-
-func (e *executionExecutor) readWorkCredentials(in StageInvocation) error {
-	path := e.config.MicroHarnessAuthFiles[in.Profile.Definition.Stages.Work.MicroHarness]
-	if path == "" {
-		return fmt.Errorf("runner: missing micro-harness authentication")
-	}
-	values, err := harnessenv.ReadAuthenticationValues(path)
-	if err != nil {
-		return err
-	}
-	in.security.credentials = append(in.security.credentials, values...)
-	return nil
 }
 
 func (e *executionExecutor) stageSandbox(in StageInvocation) (sandbox.SandboxSpec, sandbox.ContainerConfig, error) {
@@ -404,7 +381,8 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	}
 	e.workSession = &harnessenv.Session{}
 	environment, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: e.claim.Profile.CommitSHA,
-		ConfigVariable: variable, Files: files, Instructions: work.Instructions, Session: e.workSession})
+		ConfigVariable: variable, Files: files, Instructions: work.Instructions, Session: e.workSession,
+		ObserveAuthentication: in.observeAuthentication})
 	if err != nil {
 		return fail("config_error")
 	}

@@ -136,3 +136,61 @@ func TestAuthenticationLogExclusionSurvivesPersistenceFailure(t *testing.T) {
 		t.Fatal("recovered value leaked after persistence failure")
 	}
 }
+
+func TestAuthenticationObserverReceivesOnlyValidatedLeaseValues(t *testing.T) {
+	for _, variable := range []string{"CODEX_HOME", "CLAUDE_CONFIG_DIR"} {
+		t.Run(variable, func(t *testing.T) {
+			var observed []string
+			env, err := Create(t.Context(), Config{Root: t.TempDir(), CommitSHA: strings.Repeat("a", 40), ConfigVariable: variable,
+				ObserveAuthentication: func(values []string) { observed = append(observed, values...) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer env.Close()
+			working, err := env.WorkingCopy(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer working.Close()
+			store := filepath.Join(t.TempDir(), "credential")
+			if err := os.WriteFile(store, []byte(`{"token":"private-initial"}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			a, err := AcquireAuthentication(t.Context(), store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			if len(observed) != 0 {
+				t.Fatal("credential values observed before installation")
+			}
+			if err := a.Install(working); err != nil {
+				t.Fatal(err)
+			}
+			if err := working.RefreshAuthentication([]byte(`{"token":"private-preflight"}`)); err != nil {
+				t.Fatal(err)
+			}
+			a.name = "missing/store" // fail atomic replacement, after successful recovery
+			if working.WriteBackAuthentication([]byte(`{"token":"private-final"}`)) == nil {
+				t.Fatal("replacement unexpectedly succeeded")
+			}
+			for _, secret := range []string{"private-initial", "private-preflight", "private-final"} {
+				found := false
+				for _, value := range observed {
+					found = found || value == secret
+				}
+				if !found {
+					t.Fatal("validated lease value missing from invocation exclusions")
+				}
+			}
+			before := len(observed)
+			if working.RefreshAuthentication([]byte(`{"token":"private-invalid`)) == nil || len(observed) != before {
+				t.Fatal("invalid recovery reached invocation exclusions")
+			}
+			stored, err := os.ReadFile(store)
+			if err != nil || string(stored) != `{"token":"private-initial"}` {
+				t.Fatal("failed persistence changed stored authentication")
+			}
+		})
+	}
+}

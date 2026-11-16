@@ -33,7 +33,7 @@ func runWithInput(ctx context.Context, args []string, input io.Reader, output io
 
 // Only the Adapter registry is replaceable; startup, pull and stage execution
 // are identical in the command integration tests and the installed binary.
-func runWithAdapters(ctx context.Context, args []string, input io.Reader, output io.Writer, adapters *adapter.Registry) error {
+func runWithAdapters(ctx context.Context, args []string, input io.Reader, output io.Writer, factory func(runner.WorkAdapterConfig) *adapter.Registry) error {
 	flags := flag.NewFlagSet("evaloom-runner", flag.ContinueOnError)
 	flags.SetOutput(output)
 	configPath := flags.String("config", "", "Runner JSON configuration file path (required)")
@@ -65,8 +65,8 @@ func runWithAdapters(ctx context.Context, args []string, input io.Reader, output
 	return process.RunJobs(ctx, runner.JobHandlers{
 		Execution: func(ctx context.Context, claim runner.Claim) {
 			if err := process.ExecuteClaim(ctx, config, claim, func(wiring runner.WorkAdapterConfig) *adapter.Registry {
-				if adapters != nil {
-					return adapters
+				if factory != nil {
+					return factory(wiring)
 				}
 				return productionAdapters(wiring)
 			}); err != nil {
