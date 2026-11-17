@@ -2,13 +2,10 @@ package adapter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 )
-
-var ErrProposalPermissionsUnsupported = errors.New("proposal: CLI cannot restrict tools to file reads and output writes")
 
 // ProposalAdapter is the internal, workspace-free entry point for spec 08 3.10.
 // It shares session supervision and authentication with work, never Resume or

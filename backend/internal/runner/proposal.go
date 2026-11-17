@@ -61,7 +61,9 @@ func ProposalServicesFromConfig(config Config) ProposalServices {
 // ExecuteProposal runs one route proposal (spec 05 3.13). It never passes
 // Evaloom secrets into the sandbox and only allows the selected harness model API destinations.
 func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, services ProposalServices) error {
-	reportCtx := context.WithoutCancel(ctx)
+	// Reporting survives the proposal's work timeout, but must stop on job
+	// cancellation or Runner shutdown, including while retrying artifacts.
+	reportCtx := ctx
 	if services.Paths == (contract.RequestPaths{}) {
 		services.Paths = DefaultProposalPaths
 	}
@@ -79,7 +81,7 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 	harness, err := resolve(proposer.MicroHarness)
 	if err != nil {
 		if services.Resolve == nil {
-			return &proposalAdapterError{adapter.ErrorConfig}
+			return reportProposalFailure(reportCtx, runner, claim.ID, strPtr("config_error"))
 		}
 		class := "sandbox_error"
 		return reportProposalFailure(reportCtx, runner, claim.ID, &class)
@@ -88,7 +90,6 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 	var outcome ProposalHarnessOutcome
 	var label, reason string
 	var readOK bool
-	var adapterErr error
 	runErr := runner.WithStageSecrets(ctx, "", stage, nil, func(ctx context.Context, keys secretstore.Resolved) error {
 		security := &stageSecurity{runner: runner, id: claim.ID, resolved: keys, active: true}
 		defer func() { security.active = false; clear(security.credentials) }()
@@ -114,11 +115,6 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 			Env: map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},
 		}, launch)
 		if err != nil {
-			var undefined *proposalAdapterError
-			if errors.Is(err, adapter.ErrProposalPermissionsUnsupported) || errors.As(err, &undefined) {
-				adapterErr = err
-				return nil
-			}
 			if runCtx.Err() != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 				outcome.ErrorClass = strPtr("timeout")
 			} else if ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled) {
@@ -149,9 +145,6 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 		}
 		return nil
 	})
-	if adapterErr != nil {
-		return adapterErr
-	}
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return runErr
 	}

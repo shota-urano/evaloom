@@ -14,14 +14,6 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
-// The proposal result API does not define config_error or work_failed. Preserve
-// the actual failure at this boundary instead of inventing a wire mapping.
-type proposalAdapterError struct{ class adapter.ErrorClass }
-
-func (e *proposalAdapterError) Error() string {
-	return fmt.Sprintf("runner: proposal Adapter failed with %s; proposal errorClass mapping is undefined", e.class)
-}
-
 type proposalAdapterHarness struct {
 	implementation adapter.ProposalAdapter
 	environment    *harnessenv.Environment
@@ -88,7 +80,7 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 	env, err := harnessenv.Create(ctx, harnessenv.Config{Root: in.ConfigHost,
 		ConfigVariable: h.implementation.ProposalConfigVariable(), ObserveAuthentication: in.invocation.observeAuthentication})
 	if err != nil {
-		return ProposalHarnessOutcome{}, &proposalAdapterError{adapter.ErrorConfig}
+		return ProposalHarnessOutcome{ErrorClass: strPtr("config_error")}, nil
 	}
 	defer env.Close()
 	h.environment, h.spec, h.launch = env, spec, launch
@@ -105,13 +97,13 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 		InputPath: filepath.Join(in.Paths.Inputs, "proposal-input.json"), OutPath: filepath.Join(in.Paths.Out, "proposal.json")},
 		adapter.SandboxEnv{ConfigDir: env.ConfigDir(), Env: env.Env()})
 	if err != nil {
-		return ProposalHarnessOutcome{}, err
+		return ProposalHarnessOutcome{ErrorClass: strPtr("config_error")}, err
 	}
 	lines, err := h.implementation.Logs(id)
 	if err != nil {
 		_ = h.implementation.Cancel(id)
 		_, _ = h.implementation.Result(id)
-		return ProposalHarnessOutcome{}, &proposalAdapterError{adapter.ErrorExecutionFailed}
+		return ProposalHarnessOutcome{ErrorClass: strPtr("work_failed")}, nil
 	}
 	done := make(chan error, 1)
 	go func() {
@@ -130,7 +122,7 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 	if err := log.Finish(false); err != nil {
 		logErr = err
 	}
-	if err := log.Deliver(context.WithoutCancel(ctx)); err != nil {
+	if err := log.Deliver(ctx); err != nil {
 		return ProposalHarnessOutcome{}, err
 	}
 	if resultErr != nil || logErr != nil {
@@ -147,9 +139,9 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 			return ProposalHarnessOutcome{}, context.Canceled
 		case adapter.ErrorSandbox:
 			return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
-		default:
-			return ProposalHarnessOutcome{}, &proposalAdapterError{*result.ErrorClass}
+		case adapter.ErrorConfig:
+			return ProposalHarnessOutcome{ErrorClass: strPtr("config_error")}, nil
 		}
 	}
-	return ProposalHarnessOutcome{}, &proposalAdapterError{adapter.ErrorExecutionFailed}
+	return ProposalHarnessOutcome{ErrorClass: strPtr("work_failed")}, nil
 }

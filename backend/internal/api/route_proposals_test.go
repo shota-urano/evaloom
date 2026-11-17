@@ -113,6 +113,8 @@ func TestRouteProposalProposedThenApproveQueuesTask(t *testing.T) {
 func TestRouteProposalFailedStillOpensDecision(t *testing.T) {
 	for _, tc := range []struct{ name, body, errorClass string }{
 		{"runner error", `{"label":null,"reason":null,"errorClass":"timeout"}`, "timeout"},
+		{"missing authentication", `{"label":null,"reason":null,"errorClass":"config_error"}`, "config_error"},
+		{"CLI failure", `{"label":null,"reason":null,"errorClass":"work_failed"}`, "work_failed"},
 		{"label outside candidates", `{"label":"route:zzz","reason":"guess","errorClass":null}`, "contract_error"},
 		{"reason too long", `{"label":"route:a","reason":"` + strings.Repeat("あ", 2001) + `","errorClass":null}`, "contract_error"},
 	} {

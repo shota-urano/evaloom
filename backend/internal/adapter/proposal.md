@@ -2,7 +2,7 @@
 
 `ProposalAdapter`は、ExecutionやProfileを持たない提案の入口である。
 Runnerは作業と同じ登録関数からAdapterを取得し、`StartProposal`を呼ぶ。
-Claude Codeは作業と同じ監視、専用設定コピー、認証ファイルのOSロック、
+Claude CodeとCodexは作業と同じ監視、専用設定コピー、認証ファイルのOSロック、
 認証更新の回収と書き戻しを使う。提案ではセッションを再開・保持しない。
 
 提案にマウントするのは読み取り専用の入力、`out`、`scratch`、
@@ -18,15 +18,14 @@ Runnerは標準出力から提案を組み立てない。`out/proposal.json`を�
 認証の開始値と各CLI終了後の更新値を除外し、`proposal_result`として登録する。
 ログも同じ提案に属する`log`成果物として登録する。
 
-## 仕様判断が必要な箇所
+Codexにはツール単位の権限制限が無いため、作業の段と同じくProposal Sandboxの
+隔離で制限する（仕様08の3.10、2026-11-17本人決定）。作業領域は渡さず、
+専用の`CODEX_HOME`で認証確認と`codex exec`を実行する。
 
-- Codex 0.163.0にはツール単位の権限制限が無い（仕様08の3.9）。
-  提案の「ファイルの読み取りとoutへの書き込みだけ」を表現できないため、
-  `ErrProposalPermissionsUnsupported`を返し、CLIを起動しない。
-- 提案のerrorClassには`config_error`と`work_failed`が無い（仕様02のroute_proposals）。
-  認証・設定・CLIの失敗を既存の別分類へ読み替えず、Runnerのエラーとして返す。
-  この場合は結果APIへ送らず、提案の行は終端状態にならない。
-  対応する分類または写像が決まるまで、この経路は未対応である。
+認証・設定の不足は`config_error`、CLIの異常終了は`work_failed`として結果APIへ
+報告し、提案を`failed`にして実行枠を空ける。ログ・提案結果の成果物と結果APIの
+再送には中止可能なcontextを渡し、中止やRunner終了時には再送を止める。
+保存済みのログと成果物はRunner側に残す。
 
 仕様書、公開APIの項目、DBの表・列には追加しない。
 `POST /api/route-proposals/{id}/artifacts`は仕様01・05にある既定のAPIを接続したものである。
