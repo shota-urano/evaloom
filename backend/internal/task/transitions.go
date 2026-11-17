@@ -39,7 +39,7 @@ func conflict(format string, args ...any) error {
 // A self-transition is not a task transition.
 var taskTransitions = map[model.TaskStatus][]model.TaskStatus{
 	model.TaskReceived:        {model.TaskQueued, model.TaskRouting, model.TaskBlocked, model.TaskCancelled},
-	model.TaskRouting:         {model.TaskQueued, model.TaskCancelled},
+	model.TaskRouting:         {model.TaskQueued, model.TaskBlocked, model.TaskCancelled},
 	model.TaskQueued:          {model.TaskRunning, model.TaskCancelled, model.TaskFailed, model.TaskBlocked, model.TaskWaitingApproval},
 	model.TaskRunning:         {model.TaskWaitingApproval, model.TaskBlocked, model.TaskCompleted, model.TaskFailed, model.TaskTimedOut, model.TaskCancelled, model.TaskQueued},
 	model.TaskWaitingApproval: {model.TaskQueued, model.TaskFailed, model.TaskCancelled},

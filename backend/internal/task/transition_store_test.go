@@ -456,7 +456,7 @@ func TestTaskOnlyTransitionsMatchSpec04Section32(t *testing.T) {
 	// routing, and cancellation before any Execution exists.
 	allowed := map[model.TaskStatus][]model.TaskStatus{
 		"received": {"routing", "blocked", "cancelled"},
-		"routing":  {"cancelled"},
+		"routing":  {"blocked", "cancelled"},
 		"blocked":  {"routing", "cancelled"},
 	}
 	for _, from := range taskStates {

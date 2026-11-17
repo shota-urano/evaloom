@@ -54,9 +54,9 @@ func InsertLinearTask(ctx context.Context, tx *sql.Tx, t *model.Task, blockCause
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO tasks
-		(id, project_id, title, body, acceptance_criteria,
+		(id, project_id, harness_id, title, body, acceptance_criteria,
 		collaboration_mode, status, idempotency_key, created_at, updated_at, source, intake_block_cause)
-		VALUES (?, nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, 'linear', nullif(?, ''))`, t.ID, t.ProjectID,
+		VALUES (?, nullif(?, ''), nullif(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, 'linear', nullif(?, ''))`, t.ID, t.ProjectID, t.HarnessID,
 		t.Title, t.Body, t.AcceptanceCriteria, t.CollaborationMode, t.Status,
 		t.IdempotencyKey, t.CreatedAt, t.UpdatedAt, cause)
 	return err

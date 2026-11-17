@@ -227,12 +227,10 @@ func ListHeldLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]Hel
 // LinearRecheck selects the held tasks an Evaloom setting change may release
 // (spec 15 3.6.3, the table of setting changes, Q81).
 type LinearRecheck struct {
-	// ProjectID is the changed Project: its config_missing_assignment tasks
-	// are selected.
+	// ProjectID is the changed Project: its missing_acceptance_criteria
+	// tasks are selected when the pinned Profile changes.
 	ProjectID string
-	// Routing is true when the Project's linear_team_id or
-	// linear_routing_label changed: every routing_unknown_label and
-	// routing_team_mismatch task is selected as well.
+	// Routing selects tasks still waiting for a routing label to resolve.
 	Routing bool
 	// HarnessID is the special harness whose default_profile_id was set: its
 	// direct-routed tasks held for config_missing_profile or
@@ -243,16 +241,15 @@ type LinearRecheck struct {
 // MarkLinearRecheck puts the recheck mark (recheck_requested_at) on the
 // linear_issue_states rows of the Issues whose held task the change selects.
 // It runs in the transaction that writes the setting, so a rolled-back write
-// leaves no mark. An existing mark keeps its earlier time. Tasks held for
-// routing_multiple_labels, routing_no_label or missing_acceptance_criteria
-// depend only on the Issue and are never marked.
+// leaves no mark. An existing mark keeps its earlier time. A Profile pin
+// change selects only the affected destination's criteria holds.
 func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE linear_issue_states
 		SET recheck_requested_at = coalesce(recheck_requested_at, ?)
 		WHERE linear_issue_id IN (SELECT l.linear_issue_id FROM linear_issue_links l
 			JOIN tasks t ON t.id = l.task_id
 			WHERE t.source = 'linear' AND (
-				(t.status = 'blocked' AND t.intake_block_cause = 'config_missing_profile' AND t.project_id = ?)
+				(t.status = 'blocked' AND t.intake_block_cause = 'missing_acceptance_criteria' AND t.project_id = ?)
 				OR (? AND t.status = 'routing')
 				OR (t.status = 'blocked' AND t.intake_block_cause IN ('config_missing_profile', 'missing_acceptance_criteria')
 					AND t.harness_id = nullif(?, ''))))`,
@@ -264,21 +261,21 @@ func MarkLinearRecheck(ctx context.Context, tx *sql.Tx, change LinearRecheck, at
 }
 
 // UpdateHeldLinearTask writes the redone 3.6 decision to a held task (spec 15
-// 3.6.3): projectID (empty: NULL), acceptance criteria and cause (empty:
+// 3.6.3): destination IDs (empty: NULL), acceptance criteria and cause (empty:
 // NULL, which releases the hold). Only a held task without an Execution is
 // changed; anything else is an error. A routing reason changes status to routing;
 // clearing the cause preserves status until the initial Execution is queued.
-func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, criteria, cause, updatedAt string) error {
+func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, harnessID, criteria, cause, updatedAt string) error {
 	status := ""
 	if cause != "" {
 		status, cause = intakeTaskState("blocked", cause)
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE tasks SET project_id = nullif(?, ''), acceptance_criteria = ?,
+	result, err := tx.ExecContext(ctx, `UPDATE tasks SET project_id = nullif(?, ''), harness_id = nullif(?, ''), acceptance_criteria = ?,
 		intake_block_cause = nullif(?, ''), updated_at = ?, status=CASE WHEN ?='' THEN status ELSE ? END
 		WHERE id = ? AND source = 'linear'
 		AND (status='routing' OR (status='blocked' AND intake_block_cause IS NOT NULL))
 		AND NOT EXISTS (SELECT 1 FROM executions e WHERE e.task_id = tasks.id)`,
-		projectID, criteria, cause, updatedAt, status, status, taskID)
+		projectID, harnessID, criteria, cause, updatedAt, status, status, taskID)
 	if err != nil {
 		return fmt.Errorf("store: update held linear task: %w", err)
 	}

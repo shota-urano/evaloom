@@ -296,7 +296,7 @@ type TaskTransition struct {
 // or QueueHeldTaskTx instead.
 var taskOnlyTransitions = map[model.TaskStatus][]model.TaskStatus{
 	model.TaskReceived: {model.TaskRouting, model.TaskBlocked, model.TaskCancelled},
-	model.TaskRouting:  {model.TaskCancelled},
+	model.TaskRouting:  {model.TaskBlocked, model.TaskCancelled},
 	model.TaskBlocked:  {model.TaskRouting, model.TaskCancelled},
 }
 

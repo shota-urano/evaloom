@@ -15,11 +15,11 @@ import (
 
 const criteriaBody = "Fix the login.\n\n## Acceptance Criteria\n- login works\n- tests pass\n\n## Notes\nnone"
 
-// startDB registers p1 (team-a, route:one) and p2 (team-b, route:two) with a
-// Default Harness assignment, and p3 (team-a, route:three) without one.
+// startDB registers three routed Projects on the same required Profile.
 func startDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db := openDB(t)
+	exec(t, db, `UPDATE harness_profiles SET definition = json_set(definition, '$.acceptanceCriteria', 'required') WHERE id = 'fixture-profile'`)
 	addProject(t, db, "p1", "team-a", "route:one")
 	addProject(t, db, "p2", "team-b", "route:two")
 	addProject(t, db, "p3", "team-a", "route:three")
@@ -151,8 +151,7 @@ func TestStartLinearTaskHoldsIssueWithoutCriteria(t *testing.T) {
 		{"no heading", "Fix the login.\n\n## Notes\n- tests pass", []string{"route:one"}, "p1"},
 		{"blank section", "Fix it.\n## 受け入れ条件\n   \n\n## Notes\nx", []string{"route:one"}, "p1"},
 		{"empty body", "", []string{"route:one"}, "p1"},
-		// Both routing and criteria fail: only this cause permits the empty
-		// acceptance_criteria the schema requires (spec 15 3.8).
+		// Routing must be decided before the criteria requirement is checked.
 		{"also unroutable", "no criteria", []string{"route:unknown"}, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -176,7 +175,8 @@ func TestStartLinearTaskHoldsIssueWithoutCriteria(t *testing.T) {
 	}
 }
 
-// Manual tasks keep rejecting an empty acceptance_criteria (spec 15 3.8).
+// The storage layer allows empty criteria; the Profile decides whether the
+// intake/manual API may queue the task (spec 19 3.9).
 func TestTaskStorageAllowsProfileDependentAcceptanceCriteria(t *testing.T) {
 	db := startDB(t)
 	tx, err := db.Begin()
@@ -190,7 +190,7 @@ func TestTaskStorageAllowsProfileDependentAcceptanceCriteria(t *testing.T) {
 	if err := store.InsertTask(context.Background(), tx, &task); err != nil {
 		t.Fatal(err)
 	}
-	// A Linear task that is not held for missing criteria is rejected too.
+	// A Linear task can also persist an empty value without a hold.
 	task.IdempotencyKey = "k2"
 	if err := store.InsertLinearTask(context.Background(), tx, &task, ""); err != nil {
 		t.Fatal(err)

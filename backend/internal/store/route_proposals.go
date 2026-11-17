@@ -147,9 +147,9 @@ func OpenRouteDecisionTx(ctx context.Context, tx *sql.Tx, taskID, proposalID str
 // caller has checked the decision is open, the answer's shape and basis, and
 // that the approved label is in routes; it writes the answer and its audit.
 //
-// approve: the task gets the label's destination, a seq=1 continue pending
-// Execution and becomes queued; the proposal becomes decided and the label
-// addition is written to linear_outbox. reject: the proposal becomes decided
+// approve: the task gets the label's destination and is checked against its
+// Profile before creating a seq=1 pending Execution; the proposal is decided
+// and the label addition is written to linear_outbox. reject: it is decided
 // and the task cancelled.
 func ApplyRouteAnswerTx(ctx context.Context, tx *sql.Tx, d OwnerDecision, action, label string) error {
 	if d.SubjectID == nil {
@@ -209,6 +209,31 @@ func approveRoute(ctx context.Context, tx *sql.Tx, d OwnerDecision, label string
 	if err := expectOneRow(result, err); err != nil {
 		return err
 	}
+	// Criteria were extracted when the Linear task was received, even while
+	// routing. Only now may the destination's declaration be applied (19 3.9).
+	var projectID, harnessID, criteria string
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(project_id, ''), coalesce(harness_id, ''), acceptance_criteria
+		FROM tasks WHERE id = ?`, d.TaskID).Scan(&projectID, &harnessID, &criteria); err != nil {
+		return err
+	}
+	cause, err := LinearIntakeBlockCause(ctx, tx, projectID, harnessID, criteria)
+	if err != nil {
+		return err
+	}
+	if err := linearoutbox.EnqueueRouteLabelTx(ctx, tx, d.TaskID, d.ID, label); err != nil {
+		return err
+	}
+	if cause != "" {
+		if err := task.TransitionTaskTx(ctx, tx, task.TaskTransition{TaskID: d.TaskID,
+			From: model.TaskRouting, To: model.TaskBlocked, IntakeBlockCause: cause}); err != nil {
+			return err
+		}
+		if cause == model.IntakeMissingAcceptanceCriteria {
+			return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: d.TaskID,
+				Kind: linearoutbox.KindMissingAcceptanceCriteria, TargetID: string(cause)})
+		}
+		return nil
+	}
 	executionID := ulid.Make().String()
 	if err := InsertInitialExecution(ctx, tx, executionID, d.TaskID, now.Format(time.RFC3339)); err != nil {
 		return err
@@ -220,5 +245,5 @@ func approveRoute(ctx context.Context, tx *sql.Tx, d OwnerDecision, label string
 		map[string]any{"from": model.TaskRouting, "to": model.TaskQueued, "reason": "route_approved"}); err != nil {
 		return err
 	}
-	return linearoutbox.EnqueueRouteLabelTx(ctx, tx, d.TaskID, d.ID, label)
+	return nil
 }
