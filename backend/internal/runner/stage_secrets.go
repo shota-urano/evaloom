@@ -15,11 +15,11 @@ import (
 	"syscall"
 
 	"github.com/oklog/ulid/v2"
-	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/logredact"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 	"github.com/shota-urano/evaloom/backend/internal/secretstore"
+	"github.com/shota-urano/evaloom/backend/internal/stage"
 )
 
 // This capability belongs to one invocation, never to the reusable Runner or
@@ -51,17 +51,18 @@ func (in StageInvocation) observeAuthentication(values []string) {
 }
 
 func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness string, in StageInvocation, executor StageExecutor) StageOutcome {
-	var declarations []contract.Secret
-	switch in.Stage {
-	case model.StagePrepare:
-		declarations = in.Profile.Definition.Stages.Prepare.Secrets
-	case model.StageCheck:
-		declarations = in.Profile.Definition.Stages.Check.Secrets
-	case model.StagePublish:
-		declarations = in.Profile.Definition.Stages.Publish.Secrets
-	}
 	var outcome StageOutcome
-	err := runner.WithStageSecrets(ctx, harness, in.Stage, declarations, func(ctx context.Context, keys secretstore.Resolved) error {
+	err := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		keys, err := stage.ResolveSecrets(secretstore.New(runner.dataDir), harness, in.Profile.Definition, in.Stage)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		security := &stageSecurity{runner: runner, id: id, resolved: keys, active: true}
 		in.security = security
 		defer func() {
@@ -99,7 +100,7 @@ func (runner *Runner) runStageWithSecrets(ctx context.Context, id, harness strin
 			outcome.Work = &work
 		}
 		return nil
-	})
+	}()
 	if err != nil {
 		code := "config_error"
 		if ctx.Err() != nil {

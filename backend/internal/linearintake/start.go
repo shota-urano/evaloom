@@ -32,15 +32,16 @@ const (
 	CauseRoutingTeamMismatch       BlockCause = "routing_team_mismatch"
 	CauseRoutingNoLabel            BlockCause = "routing_no_label"
 	CauseMissingAcceptanceCriteria BlockCause = "missing_acceptance_criteria"
-	CauseConfigMissingAssignment   BlockCause = "config_missing_assignment"
+	CauseConfigMissingProfile      BlockCause = "config_missing_profile"
 )
 
 // Routing is the outcome of steps 1-6 of spec 15 3.6 for one Issue.
 type Routing struct {
 	// ProjectID is empty when no Project was decided (3.6, Q45).
 	ProjectID string
-	// Criteria is the extracted acceptance criteria; empty only with
-	// CauseMissingAcceptanceCriteria.
+	// HarnessID is set only for direct special-harness routing.
+	HarnessID string
+	// Criteria may be empty while routing, when optional, or when held.
 	Criteria string
 	// Cause is empty when the task can run.
 	Cause BlockCause
@@ -58,7 +59,7 @@ var _ Starter = (*TaskStarter)(nil)
 
 // Route decides where the Issue runs (spec 15 3.6 steps 1-6) without writing.
 func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue) (Routing, error) {
-	criteria, written := ExtractAcceptanceCriteria(issue.Description)
+	criteria, _ := ExtractAcceptanceCriteria(issue.Description)
 	r := Routing{Criteria: criteria}
 	prefix := s.routingLabelPrefix(ctx)
 	var labels []string
@@ -71,15 +72,17 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 	case 0:
 		r.Cause = CauseRoutingNoLabel
 	case 1:
-		routes, err := store.ListLinearRoutesByLabel(ctx, tx, labels[0])
-		if err != nil {
+		route, err := store.GetRoute(ctx, tx, labels[0])
+		if errors.Is(err, sql.ErrNoRows) {
+			r.Cause = CauseRoutingUnknownLabel
+		} else if err != nil {
 			return Routing{}, err
-		}
-		r.Cause = CauseRoutingUnknownLabel
-		for _, route := range routes {
-			if route.ProjectID != "" {
-				r.ProjectID, r.Cause = route.ProjectID, ""
-				break
+		} else {
+			if route.ProjectID != nil {
+				r.ProjectID = *route.ProjectID
+			}
+			if route.HarnessID != nil {
+				r.HarnessID = *route.HarnessID
 			}
 		}
 	default:
@@ -88,19 +91,11 @@ func (s *TaskStarter) Route(ctx context.Context, tx *sql.Tx, issue linear.Issue)
 	if r.Cause != "" {
 		return r, nil
 	}
-	if !written {
-		r.Cause = CauseMissingAcceptanceCriteria
-		return r, nil
-	}
-	project, err := store.GetProject(ctx, tx, r.ProjectID)
+	cause, err := store.LinearIntakeBlockCause(ctx, tx, r.ProjectID, r.HarnessID, criteria)
 	if err != nil {
-		return Routing{}, fmt.Errorf("linearintake: read project: %w", err)
+		return Routing{}, fmt.Errorf("linearintake: check destination: %w", err)
 	}
-	if _, err := store.GetProjectHarness(ctx, tx, project.ID, ""); errors.Is(err, sql.ErrNoRows) {
-		r.Cause = CauseConfigMissingAssignment
-	} else if err != nil {
-		return Routing{}, fmt.Errorf("linearintake: read assignment: %w", err)
-	}
+	r.Cause = BlockCause(cause)
 	return r, nil
 }
 
@@ -116,7 +111,7 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 	now := s.now().UTC()
 	stamp := now.Format(time.RFC3339)
 	created := model.Task{
-		ProjectID: r.ProjectID, Title: issue.Title, Body: issue.Description, AcceptanceCriteria: r.Criteria,
+		ProjectID: r.ProjectID, HarnessID: r.HarnessID, Title: issue.Title, Body: issue.Description, AcceptanceCriteria: r.Criteria,
 		ShortName: strings.ToLower(issue.Identifier), TaskType: "development", CollaborationMode: "solo",
 		Status:         model.TaskReceived,
 		IdempotencyKey: fmt.Sprintf("linear:%s:%d", issue.ID, attachSeq),
@@ -126,6 +121,9 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		"issueIdentifier": issue.Identifier, "attachSeq": attachSeq}
 	if r.ProjectID != "" {
 		detail["projectId"] = r.ProjectID
+	}
+	if r.HarnessID != "" {
+		detail["harnessId"] = r.HarnessID
 	}
 	decision := DecisionStarted
 	if r.Cause != "" {
@@ -183,7 +181,7 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 // commented once per task (3.5 rule 3). The comment carries the reason and
 // the fix, with the routing label prefix the decision used.
 func enqueueHold(ctx context.Context, tx *sql.Tx, taskID string, cause BlockCause, prefix string) error {
-	if strings.HasPrefix(string(cause), "routing_") {
+	if strings.HasPrefix(string(cause), "routing_") || cause == CauseConfigMissingProfile {
 		return nil
 	}
 	kind := linearoutbox.KindIntakeBlocked

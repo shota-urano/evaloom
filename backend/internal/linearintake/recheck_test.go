@@ -310,7 +310,7 @@ func TestHeldTaskGuards(t *testing.T) {
 	if err := task.QueueHeldTaskTx(ctx, tx, held.id, "missing"); !errors.Is(err, task.ErrConflict) {
 		t.Fatalf("missing execution: %v", err)
 	}
-	if err := store.UpdateHeldLinearTask(ctx, tx, held.id, "p1", "ac", "", "t"); err != nil {
+	if err := store.UpdateHeldLinearTask(ctx, tx, held.id, "p1", "", "ac", "", "t"); err != nil {
 		t.Fatal(err)
 	}
 	for _, seq := range []int{1, 2} {
@@ -323,7 +323,7 @@ func TestHeldTaskGuards(t *testing.T) {
 		t.Fatalf("two executions: %v", err)
 	}
 	// The hold is released, so the task is no longer held.
-	if err := store.UpdateHeldLinearTask(ctx, tx, held.id, "p1", "ac", "", "t"); err == nil {
+	if err := store.UpdateHeldLinearTask(ctx, tx, held.id, "p1", "", "ac", "", "t"); err == nil {
 		t.Fatal("updated a task that is not held")
 	}
 }

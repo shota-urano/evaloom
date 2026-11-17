@@ -175,17 +175,11 @@ func checkManualAcceptanceCriteria(ctx context.Context, tx *sql.Tx, profileID, c
 	if strings.TrimSpace(criteria) != "" {
 		return nil
 	}
-	profile, err := store.GetHarnessProfileByID(ctx, tx, profileID)
+	required, err := store.ProfileRequiresAcceptanceCriteria(ctx, tx, profileID)
 	if err != nil {
 		return err
 	}
-	var definition struct {
-		AcceptanceCriteria string `json:"acceptanceCriteria"`
-	}
-	if err := json.Unmarshal(profile.Definition, &definition); err != nil {
-		return err
-	}
-	if definition.AcceptanceCriteria == "required" {
+	if required {
 		return invalid("acceptanceCriteria", "required")
 	}
 	return nil

@@ -21,6 +21,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
+	"github.com/shota-urano/evaloom/backend/internal/stage"
 )
 
 // ExecuteClaim is the command's production execution path. A registry supplied
@@ -44,25 +45,22 @@ func (r *Runner) ExecuteClaim(ctx context.Context, config Config, claim Claim, f
 	if errors.As(err, &profileError) {
 		// Preflight still uses the stage-report protocol; the old transition-shaped
 		// ReportResult is not accepted by the current Control Plane.
-		stage := model.StageWork
 		def, _ := contract.DecodeProfile(claim.Profile.Definition)
-		if def.Stages.Prepare != nil {
-			stage = model.StagePrepare
-		}
+		first := stage.First(def)
 		var resume stageResume
 		if json.Unmarshal(claim.Resume, &resume) == nil && resume.Stage != "" {
-			stage = resume.Stage
+			first = resume.Stage
 		}
-		request, requestErr := stageRequest(claim, stage, e.paths, resume)
+		request, requestErr := stageRequest(claim, first, e.paths, resume)
 		if requestErr != nil {
 			return requestErr
 		}
 		reportCtx := context.WithoutCancel(ctx)
-		attempt, reportErr := r.StartStage(reportCtx, claim.Execution.ID, stage, request)
+		attempt, reportErr := r.StartStage(reportCtx, claim.Execution.ID, first, request)
 		if reportErr != nil {
 			return reportErr
 		}
-		_, reportErr = r.FinishStage(reportCtx, claim.Execution.ID, stage, attempt, StageOutcome{RunnerError: strPtr("config_error")})
+		_, reportErr = r.FinishStage(reportCtx, claim.Execution.ID, first, attempt, StageOutcome{RunnerError: strPtr("config_error")})
 		return reportErr
 	}
 	return err
@@ -226,34 +224,19 @@ func (e *executionExecutor) stageSandbox(in StageInvocation) (sandbox.SandboxSpe
 		return sandbox.SandboxSpec{}, sandbox.ContainerConfig{}, err
 	}
 	roots := map[string]string{p.Profile: in.Profile.Path, p.Workspace: in.Workspace, p.Out: filepath.Join(in.Directory, "out"), p.Inputs: filepath.Join(in.Directory, "inputs"), p.Records: records, p.Scratch: filepath.Join(in.Directory, "scratch")}
-	spec := sandbox.SandboxSpec{Kind: sandbox.SandboxKind(in.Stage), Limits: e.config.Container.ResourceLimits(in.timeout), Network: sandbox.NetworkNone,
-		Env: map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "EVALOOM_REQUEST": "/evaloom/request.json"}}
-	permissions := map[string]bool{p.Out: true, p.Scratch: true}
-	if in.Stage == model.StageWork {
-		permissions[p.Workspace] = true
-		permissions[p.Inputs] = false
-		permissions[p.Records] = false
-	} else {
-		permissions[p.Profile] = false
-		permissions[p.Workspace] = in.Stage == model.StagePrepare
-		if in.Stage != model.StagePrepare {
-			permissions[p.Inputs] = false
-		}
+	spec, err := stage.Assemble(in.Profile.Definition, in.Stage, p, roots, e.config.Container.ResourceLimits(in.timeout))
+	if err != nil {
+		return sandbox.SandboxSpec{}, sandbox.ContainerConfig{}, err
+	}
+	spec.Env = map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "EVALOOM_REQUEST": "/evaloom/request.json"}
+	if in.Stage != model.StageWork {
 		spec.ChannelPath = in.ChannelPath
 		spec.Env["EVALOOM_CHANNEL"] = "/evaloom/channel.sock"
 		spec.Env["EVALOOM_RESULT"] = p.Scratch + "/result.json"
 	}
-	for guest, writable := range permissions {
-		spec.Mounts = append(spec.Mounts, sandbox.Mount{HostPath: roots[guest], GuestPath: guest, Writable: writable})
-	}
-	var program *contract.ProgramStage
-	switch in.Stage {
-	case model.StagePrepare:
-		program = in.Profile.Definition.Stages.Prepare
-	case model.StageCheck:
-		program = &in.Profile.Definition.Stages.Check
-	case model.StagePublish:
-		program = &in.Profile.Definition.Stages.Publish
+	program, err := stage.Program(in.Profile.Definition, in.Stage)
+	if err != nil {
+		return spec, sandbox.ContainerConfig{}, err
 	}
 	image := e.config.Container.Image
 	if program != nil {
@@ -262,10 +245,6 @@ func (e *executionExecutor) stageSandbox(in StageInvocation) (sandbox.SandboxSpe
 				return spec, sandbox.ContainerConfig{}, fmt.Errorf("runner: unsupported runtime")
 			}
 			image = program.Runtime.Image
-		}
-		if program.Network != nil {
-			spec.Network = sandbox.NetworkDeclared
-			spec.AllowedDestinations = program.Network.Allow
 		}
 	}
 	modelAPIs := map[string]bool{}
@@ -363,10 +342,7 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if !ok || auth == "" {
 		return fail("config_error")
 	}
-	var paths []string
-	paths = append(paths, work.Instructions...)
-	paths = append(paths, work.Skills...)
-	paths = append(paths, work.Settings...)
+	paths := stage.WorkFiles(in.Profile.Definition)
 	files, err := harnesscontext.Read(ctx, e.claim.Profile.RepoPath, e.claim.Profile.CommitSHA, paths)
 	if err != nil {
 		return fail("config_error")

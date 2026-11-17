@@ -48,7 +48,10 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if r.ProjectID != "" {
 		detail["projectId"] = r.ProjectID
 	}
-	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.Criteria, string(r.Cause), stamp); err != nil {
+	if r.HarnessID != "" {
+		detail["harnessId"] = r.HarnessID
+	}
+	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, string(r.Cause), stamp); err != nil {
 		return "", err
 	}
 	decision := DecisionHeld

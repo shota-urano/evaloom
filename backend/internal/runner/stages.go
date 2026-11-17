@@ -11,6 +11,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	stageplan "github.com/shota-urano/evaloom/backend/internal/stage"
 )
 
 // StageReporter is the spec 04 3.4.1 reporting boundary. StartStage must
@@ -136,10 +137,7 @@ func (runner *Runner) ExecuteStages(ctx context.Context, claim Claim, services S
 func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile LoadedProfile, services StageServices) error {
 	// Heartbeat cancellation stops the job, not delivery of its final report.
 	reportCtx := context.WithoutCancel(ctx)
-	stage := model.StageWork
-	if profile.Definition.Stages.Prepare != nil {
-		stage = model.StagePrepare
-	}
+	stage := stageplan.First(profile.Definition)
 	var resume stageResume
 	if raw := bytes.TrimSpace(claim.Resume); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
 		if err := json.Unmarshal(raw, &resume); err != nil ||
