@@ -173,7 +173,7 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 1. route_proposals に行を作る（status=`queued`、trigger は 3.6 の表の値、seen_labels は判定したときの振り分けのラベル、candidates は判定の時点の振り分けの表の全行と、振り分け先の種類・ID・Profile の description）。
 2. 全体設定 `routing.proposer` の model が null のときは、提案を作らない。route_proposals の行は Runner に渡さずに `failed` にする（error_class は NULL）。
 3. それ以外は、全体設定 `routing.defaultRunnerId` の Runner が claim で提案の仕事を受け取り（`job.kind=route_proposal`、[`01-architecture.md`](./01-architecture.md) 5.2）、鍵の無い `proposal` の隔離で AI に提案を作らせる（Q111）。AI に渡すのは、Issue のタイトルと本文（外から来た文として区切る、3.6.5）と candidates だけである。
-4. AI は結果を `out/proposal.json` に書く（形は Q202）。上限時間は Q201。Runner は結果を `POST /api/route-proposals/{id}/result` で返す。選んだラベルが candidates に無い、形が合わないときは `failed`（`contract_error`）にする。隔離の失敗は `sandbox_error`、上限時間を超えたら `timeout` にする。
+4. AI は結果を `out/proposal.json` に書く（形は Q202）。上限時間は Q201。Runner は結果を `POST /api/route-proposals/{id}/result` で返す。選んだラベルが candidates に無い、形が合わないときは `failed`（`contract_error`）にする。隔離の失敗は `sandbox_error`、上限時間を超えたら `timeout`、ミクロハーネスの認証ファイルが無いときは `config_error`、CLI の異常終了は `work_failed` にする。
 5. 提案が `proposed` になっても `failed` になっても、owner_decisions（kind=`route`、subject_id=提案の ID、basis=提案の ID）を作り、Linear に「管理画面で判断待ち」とリンクを返す（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2）。`failed` のときは提案なしで、本人が候補から選ぶ。
 6. 本人が管理画面で承認するまで、タスクは `routing` のままで実行しない。AI は提案するだけで、承認なしに実行を始めない（vision.md 3章）。
 
@@ -303,7 +303,7 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | タスク作成のトランザクションが失敗 | その Issue の linear_issue_states を変えない。次の照会で同じ判定をやり直す（3.5） |
 | 振り分けが決まらない | 振り分けの提案に回す（3.6.4）。エラーとしては扱わない |
 | 受け入れ条件・既定の版で保留 | タスクを保留にし、受け入れ条件のときはコメントを要求する。エラーとしては扱わない |
-| 振り分けの提案の失敗（`sandbox_error` / `timeout` / `contract_error`） | 提案を `failed` にし、提案なしの判断待ちを作る（3.6.4）。本人が候補から選ぶ |
+| 振り分けの提案の失敗（`sandbox_error` / `timeout` / `contract_error` / `config_error` / `work_failed`） | 提案を `failed` にし、提案なしの判断待ちを作る（3.6.4）。本人が候補から選ぶ |
 | `routing.defaultRunnerId` が未設定・Runner が offline | 提案は `queued` のまま待つ。Dashboard に、振り分けの提案を動かす Runner が無いことを出す |
 | 同じ Issue に終端状態でないタスクがすでにある状態で付与を検出 | 新しいタスクを作らない。last_decision=`skipped_active_task` |
 
