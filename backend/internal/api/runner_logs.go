@@ -26,6 +26,10 @@ func logStream(stream string) bool {
 // Check ownership under the same transaction that will persist the report.
 // Finished/older Executions still accept buffered logs from their owning Runner.
 func logTransaction(w http.ResponseWriter, r *http.Request, db *sql.DB, logger *slog.Logger, auth *OwnerAuth) *sql.Tx {
+	return reportTransaction(w, r, db, logger, auth, false)
+}
+
+func reportTransaction(w http.ResponseWriter, r *http.Request, db *sql.DB, logger *slog.Logger, auth *OwnerAuth, proposal bool) *sql.Tx {
 	if err := ValidateID("id", r.PathValue("id"), ULID); err != nil {
 		WriteError(w, logger, err)
 		return nil
@@ -36,7 +40,11 @@ func logTransaction(w http.ResponseWriter, r *http.Request, db *sql.DB, logger *
 		return nil
 	}
 	var owner sql.NullString
-	err = tx.QueryRowContext(r.Context(), `SELECT runner_id FROM executions WHERE id = ?`, r.PathValue("id")).Scan(&owner)
+	query := `SELECT runner_id FROM executions WHERE id = ?`
+	if proposal {
+		query = `SELECT runner_id FROM route_proposals WHERE id = ?`
+	}
+	err = tx.QueryRowContext(r.Context(), query, r.PathValue("id")).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = &Error{Code: NotFound, Message: "Execution not found"}
 	}
@@ -48,7 +56,11 @@ func logTransaction(w http.ResponseWriter, r *http.Request, db *sql.DB, logger *
 	runner, _ := r.Context().Value(runnerIdentityKey{}).(string)
 	if runner == "" || !owner.Valid || owner.String != runner {
 		tx.Rollback()
-		auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
+		if proposal {
+			auth.reject(w, r, Forbidden, "route_proposal_runner_mismatch", "Runner cannot report this route proposal")
+		} else {
+			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot report this Execution")
+		}
 		return nil
 	}
 	return tx

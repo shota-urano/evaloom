@@ -172,7 +172,7 @@ func TestOwnerDecisionTablesEnumsAndForeignKeys(t *testing.T) {
 		{"owner_decisions", "withdrawn_reason", []string{"cancelled", "superseded", "expired"}},
 		{"route_proposals", "trigger", []string{"no_label", "unknown_label", "multiple_labels"}},
 		{"route_proposals", "status", []string{"queued", "running", "proposed", "failed", "decided", "superseded", "cancelled"}},
-		{"route_proposals", "error_class", []string{"sandbox_error", "timeout", "contract_error", "interrupted"}},
+		{"route_proposals", "error_class", []string{"sandbox_error", "timeout", "contract_error", "config_error", "work_failed", "interrupted"}},
 		{"approvals", "requested_stage", []string{"check", "publish"}},
 		{"approvals", "status", []string{"pending", "approved", "rejected", "consumed", "invalidated", "expired"}},
 		{"approvals", "invalidated_reason", []string{"content_changed", "superseded", "cancelled"}},
