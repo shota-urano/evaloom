@@ -197,3 +197,22 @@ Execution詳細は `GET /api/executions/{id}` で返す。応答本文の構造�
 
 PR URL、Gate結果、worktree、Block（Gate・Context・Git の停止）は
 software-engineer へ移したため返さない（`docs/specs/19-routing-and-stages.md` 3.11）。
+
+`POST /api/executions/{id}/context` はRunnerのBearer認証を使い、そのExecutionを
+担当するRunnerだけが呼べる。既存のProfile固定版の読み出し結果を受け取り、
+Harnessのパス・版・ハッシュとTaskの内容・ハッシュを保存する。Globalの保存は
+`GlobalContextSource` が返した選択済みファイルを使い、内容からSHA-256を計算する。
+保存と `context_pinned` の発行は同じトランザクションで行う。再呼び出しでは
+Globalの取得を行わず、保存済みの行から同じExecution Contextを返す。
+
+Globalの選択と読み取り元の設定はContext Builder側の責務として残している。
+`NewHandlerWithContextSource` で取得元を渡せる。既存のコンストラクタとevaloomdは
+まだ取得元を渡さないため、Globalの行を追加しない。仕様07・02にはGlobalの
+`source_revision` の決め方とデプロイ時の読み取り元の設定方法がないため、
+この実装では決めず、取得元が相対パス・版・内容を返す境界を設けた。
+Taskの `source_revision` も仕様には定義がなく、既存のExecution IDを使う処理を
+維持している。これらの確定には仕様の補足が必要となる。
+
+Reportedは準備の段の結果の保存処理を再利用する。context APIの入力には含めず、
+渡す文脈と `revisionIds` にも含めない。`layer=project` はAPIから指定できず、
+DBの既存CHECK制約でも拒否する。記録の選択・整形・矛盾検出は今回変更していない。

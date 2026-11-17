@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -36,11 +37,24 @@ type contextRecord struct {
 	ArtifactID string `json:"artifactId"`
 }
 
+// GlobalContextSource supplies selected files from the Evaloom repository.
+// Spec 07 does not define Global's source_revision or deployment root. Keep
+// both decisions outside persistence; do not infer them from the working
+// directory, a Harness repository, or Runner-supplied paths.
+type GlobalContextSource interface {
+	ReadGlobalContext(context.Context) ([]GlobalContextFile, error)
+}
+
+type GlobalContextFile struct {
+	Path, Revision string
+	Content        []byte
+}
+
 // Spec 07 /context: only Control Plane writes context_revisions. A resumed
 // work attempt receives the original pins rather than snapshotting task edits.
-func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.HandlerFunc {
+func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, source GlobalContextSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		reply, err := buildExecutionContext(db, r, auth, w)
+		reply, err := buildExecutionContext(db, r, auth, w, source)
 		if err != nil {
 			WriteError(w, logger, err)
 			return
@@ -51,7 +65,7 @@ func pinExecutionContext(db *sql.DB, logger *slog.Logger, auth *OwnerAuth) http.
 	}
 }
 
-func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.ResponseWriter) (*executionContextReply, error) {
+func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.ResponseWriter, source GlobalContextSource) (*executionContextReply, error) {
 	id := r.PathValue("id")
 	if err := ValidateID("id", id, ULID); err != nil {
 		return nil, err
@@ -143,6 +157,24 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if pinned == 0 {
+		if source != nil {
+			files, err := source.ReadGlobalContext(r.Context())
+			if err != nil {
+				return nil, fmt.Errorf("read Global Context: %w", err)
+			}
+			seen := map[string]bool{}
+			for _, file := range files {
+				if !fs.ValidPath(file.Path) || file.Path == "." || strings.ContainsAny(file.Path, "\x00\\") || file.Revision == "" || seen[file.Path] {
+					return nil, fmt.Errorf("invalid Global Context source")
+				}
+				seen[file.Path] = true
+				digest := sha256.Sum256(file.Content)
+				_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'global','global_policy',?,?,?,?,?)`, ulid.Make().String(), id, file.Path, file.Revision, hex.EncodeToString(digest[:]), string(file.Content), now)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
 		for _, file := range input.Files {
 			_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness',?,?,?,?,NULL,?)`, ulid.Make().String(), id, file.Kind, file.Path, input.Commit, file.SHA256, now)
 			if err != nil {
@@ -189,22 +221,27 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 				}
 			}
 		}
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO execution_events(execution_id,type,payload,created_at) VALUES (?,'context_pinned','{}',?)`, id, now)
-		if err != nil {
-			return nil, err
-		}
 	}
 	reply := &executionContextReply{Records: []contextRecord{}, RevisionIDs: []string{}}
-	rows, err := tx.QueryContext(r.Context(), `SELECT id,layer,coalesce(content,'') FROM context_revisions WHERE execution_id=? AND layer!='reported' ORDER BY CASE layer WHEN 'global' THEN 0 WHEN 'harness' THEN 1 ELSE 2 END,kind,source_path,id`, id)
+	rows, err := tx.QueryContext(r.Context(), `SELECT id,layer,source_path,content_hash,coalesce(content,'') FROM context_revisions WHERE execution_id=? AND layer!='reported' ORDER BY CASE layer WHEN 'global' THEN 0 WHEN 'harness' THEN 1 ELSE 2 END,kind,source_path,id`, id)
 	if err != nil {
 		return nil, err
 	}
 	var prompt strings.Builder
+	type pinnedRevision struct {
+		Layer string `json:"layer"`
+		Path  string `json:"path"`
+		Hash  string `json:"hash"`
+	}
+	revisions := []pinnedRevision{}
 	for rows.Next() {
 		var revision, layer, content string
-		if err = rows.Scan(&revision, &layer, &content); err != nil {
+		var pin pinnedRevision
+		if err = rows.Scan(&revision, &layer, &pin.Path, &pin.Hash, &content); err != nil {
 			break
 		}
+		pin.Layer = layer
+		revisions = append(revisions, pin)
 		reply.RevisionIDs = append(reply.RevisionIDs, revision)
 		if layer == "global" {
 			prompt.WriteString(content + "\n")
@@ -216,6 +253,17 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 	err = errors.Join(err, rows.Err(), rows.Close())
 	if err != nil {
 		return nil, err
+	}
+	if pinned == 0 {
+		payload, err := json.Marshal(struct {
+			Revisions []pinnedRevision `json:"revisions"`
+		}{revisions})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO execution_events(execution_id,type,payload,created_at) VALUES (?,'context_pinned',?,?)`, id, string(payload), now); err != nil {
+			return nil, err
+		}
 	}
 	records, err := tx.QueryContext(r.Context(), `SELECT cr.source_path,hr.artifact_id FROM context_revisions cr JOIN harness_records hr ON hr.id=cr.source_revision WHERE cr.execution_id=? AND cr.kind='record' ORDER BY cr.source_path`, id)
 	if err != nil {
