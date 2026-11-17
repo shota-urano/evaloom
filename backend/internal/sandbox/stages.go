@@ -18,8 +18,12 @@ func (c *Container) configureStageMounts() error {
 	}
 	p := c.config.StagePaths
 	paths := []string{p.Profile, p.Workspace, p.Out, p.Inputs, p.Records, p.Scratch}
+	if len(c.config.StageMountRoots) == 3 {
+		// Proposals have no Profile, workspace or prior stage records.
+		paths = []string{p.Out, p.Inputs, p.Scratch}
+	}
 	if len(c.config.StageMountRoots) != len(paths) {
-		return &Error{Op: "six dedicated stage mount roots required"}
+		return &Error{Op: "dedicated stage or proposal mount roots required"}
 	}
 	c.stageRoots = make(map[string]string)
 	for i, target := range paths {

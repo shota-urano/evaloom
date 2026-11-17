@@ -66,7 +66,7 @@ func artifactKind(kind string) bool {
 	return false
 }
 
-func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config ArtifactConfig) http.HandlerFunc {
+func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config ArtifactConfig, isProposal bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
 		if err != nil {
@@ -107,7 +107,11 @@ func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config A
 			return
 		}
 		// As for events, even a retry of a finished Execution needs ownership.
-		tx := logTransaction(w, r, db, logger, auth)
+		if isProposal && (query.Get("stage") != "proposal" || (query.Get("kind") != "log" && query.Get("kind") != "proposal_result")) {
+			WriteError(w, logger, invalid("kind", "invalid_proposal_artifact"))
+			return
+		}
+		tx := reportTransaction(w, r, db, logger, auth, isProposal)
 		if tx == nil {
 			return
 		}
@@ -117,7 +121,11 @@ func registerArtifact(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config A
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, config.MaxBytes)
-		_, cleanup, err := config.Store.RegisterTx(r.Context(), tx, store.Artifact{ID: query.Get("artifactId"), ExecutionID: r.PathValue("id"), Stage: query.Get("stage"), Kind: query.Get("kind"), Name: query.Get("name"), Redacted: query.Get("redacted") == "1"}, r.Body)
+		artifact := store.Artifact{ID: query.Get("artifactId"), ExecutionID: r.PathValue("id"), Stage: query.Get("stage"), Kind: query.Get("kind"), Name: query.Get("name"), Redacted: query.Get("redacted") == "1"}
+		if isProposal {
+			artifact.RouteProposalID, artifact.ExecutionID = artifact.ExecutionID, ""
+		}
+		_, cleanup, err := config.Store.RegisterTx(r.Context(), tx, artifact, r.Body)
 		if err == nil {
 			err = tx.Commit()
 			if err != nil {

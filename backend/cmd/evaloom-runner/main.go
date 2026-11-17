@@ -62,6 +62,10 @@ func runWithAdapters(ctx context.Context, args []string, input io.Reader, output
 	}
 	fmt.Fprintln(output, "evaloom-runner: started")
 	services := runner.ProposalServicesFromConfig(config)
+	services.Adapters = productionAdapters
+	if factory != nil {
+		services.Adapters = factory
+	}
 	return process.RunJobs(ctx, runner.JobHandlers{
 		Execution: func(ctx context.Context, claim runner.Claim) {
 			if err := process.ExecuteClaim(ctx, config, claim, func(wiring runner.WorkAdapterConfig) *adapter.Registry {

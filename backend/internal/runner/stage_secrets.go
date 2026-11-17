@@ -189,8 +189,12 @@ func (in StageInvocation) CollectArtifact(kind, name string, source io.Reader) (
 	if writeErr != nil || closeErr != nil {
 		return LogArtifact{}, fmt.Errorf("runner: save stage artifact failed")
 	}
-	return LogArtifact{ID: id, ExecutionID: s.id, Stage: string(in.Stage), Kind: kind, Name: name, Path: path,
-		Redacted: !bytes.Equal(raw, data) || bytes.Contains(data, []byte(logredact.Marker))}, nil
+	artifact := LogArtifact{ID: id, ExecutionID: s.id, Stage: string(in.Stage), Kind: kind, Name: name, Path: path,
+		Redacted: !bytes.Equal(raw, data) || bytes.Contains(data, []byte(logredact.Marker))}
+	if in.Stage == "proposal" {
+		artifact.ExecutionID, artifact.RouteProposalID = "", s.id
+	}
+	return artifact, nil
 }
 
 func (in StageInvocation) redactBytes(raw []byte) []byte {

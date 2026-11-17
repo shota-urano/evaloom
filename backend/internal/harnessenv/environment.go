@@ -25,6 +25,7 @@ import (
 // Source paths are preserved except when the CLI's user-instruction path is
 // itself an instruction source: that path receives the Q142 concatenation.
 // Files remains the caller's original snapshot for context revision reporting.
+// A proposal has no Profile commit: CommitSHA may be empty only for an empty selection.
 type Config struct {
 	Root, CommitSHA, ConfigVariable string
 	Files                           []gitcontext.File
@@ -61,7 +62,7 @@ func create(ctx context.Context, config Config, working bool) (_ *Environment, e
 		return nil, configError(err)
 	}
 	if !filepath.IsAbs(config.Root) || (config.ConfigVariable != "CODEX_HOME" && config.ConfigVariable != "CLAUDE_CONFIG_DIR") ||
-		!commitSHA(config.CommitSHA) {
+		((config.CommitSHA != "" || len(config.Files) != 0 || len(config.Instructions) != 0) && !commitSHA(config.CommitSHA)) {
 		return nil, configError(fmt.Errorf("explicit configuration root, CLI variable and pinned commit required"))
 	}
 	expected := make(map[string]string, len(config.Files))
