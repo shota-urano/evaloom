@@ -103,8 +103,8 @@ func linearIssueJSON(id, body string, updated time.Time, labels ...string) map[s
 		"labels": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}
 }
 
-// setupLinearProject registers p1 for team-a and route:p with a Default
-// Harness assignment, so a routed Issue can be queued.
+// setupLinearProject registers p1 for team-a and route:p with a required
+// Profile, so a routed Issue queues only after criteria are supplied.
 func setupLinearProject(t *testing.T, db *sql.DB) {
 	t.Helper()
 	execAll := func(query string, args ...any) {
@@ -117,6 +117,7 @@ func setupLinearProject(t *testing.T, db *sql.DB) {
 	if err := testregistry.Seed(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
+	execAll(`UPDATE harness_profiles SET definition=json_set(definition, '$.acceptanceCriteria', 'required') WHERE id='fixture-profile'`)
 	execAll(`INSERT INTO projects (id,name,harness_id,profile_id,runner_id,created_at,updated_at) VALUES ('p1','Project','fixture-harness','fixture-profile','r1','t','t')`)
 	execAll(`INSERT INTO routes VALUES ('route:p','p1',NULL,'t','t')`)
 	execAll(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`)

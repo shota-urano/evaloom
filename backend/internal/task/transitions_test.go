@@ -24,8 +24,8 @@ func TestTaskTransitionsMatchSpec04Section32(t *testing.T) {
 	allowed := map[model.TaskStatus][]model.TaskStatus{
 		// 3.1/15 queued, 15/3.7 routing, intake hold, cancel (3.8).
 		"received": {"queued", "routing", "blocked", "cancelled"},
-		// 3.7 approve or label, reject, cancel.
-		"routing": {"queued", "cancelled"},
+		// 3.7 approve or label, 19 3.9 criteria hold after approval, reject, cancel.
+		"routing": {"queued", "blocked", "cancelled"},
 		// claim, cancel; claim-time config_error / workspace_missing (04 3.3)
 		// and approval expiry (17 Q166, 3.6).
 		"queued": {"running", "cancelled", "failed", "blocked", "waiting_approval"},

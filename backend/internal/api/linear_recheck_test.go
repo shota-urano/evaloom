@@ -53,6 +53,7 @@ type recheckFixture struct {
 func newRecheckFixture(t *testing.T) *recheckFixture {
 	t.Helper()
 	f, _, _ := assignmentFixture(t)
+	execSQL(t, f, `UPDATE harness_profiles SET definition = json_set(definition, '$.acceptanceCriteria', 'required') WHERE id = 'fixture-profile'`)
 	if _, err := f.db.Exec(`INSERT INTO routes VALUES ('route:a','project-a',NULL,'t','t'); INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func requireStarted(t *testing.T, got, held recheckTask, project string) {
 // Project に登録すると、Issue の更新時刻が変わらないまま次の照会で同じタスクが queued になり
 // Execution が1つできる。再判定の後に印が NULL に戻る。
 
-func TestLinearRecheckIssueOnlyCausesAreNotMarked(t *testing.T) {
+func TestLinearRecheckProfileChangeOnlyMarksCriteriaHolds(t *testing.T) {
 	f := newRecheckFixture(t)
 	noCriteria := recheckIssue("3", "team-a", "route:a")
 	noCriteria.Description = "no criteria here"
@@ -189,12 +190,20 @@ func TestLinearRecheckIssueOnlyCausesAreNotMarked(t *testing.T) {
 		}
 	}
 
+	held := f.task(t, "3")
 	f.patch(t, "project-a", map[string]any{"name": "Renamed"})
+	requireMarked(t, f.task(t, "3"), false)
+	// A different Project's pin must not mark this task.
+	f.assign(t, "project-b", "reviewer", "1.2.0")
+	requireMarked(t, f.task(t, "3"), false)
 	f.assign(t, "project-a", "reviewer", "1.2.0")
-	for _, id := range []string{"1", "2", "3"} {
+	for _, id := range []string{"1", "2"} {
 		requireMarked(t, f.task(t, id), false)
 	}
-	requireMarked(t, f.task(t, "4"), false) // the same change marks a routing hold
+	requireMarked(t, f.task(t, "4"), false)
+	requireMarked(t, f.task(t, "3"), true)
+	f.poll(t, issues...)
+	requireStarted(t, f.task(t, "3"), held, "project-a")
 }
 
 // 受け入れ基準: 値が変わらない PATCH では印が付かない（同じ Profile の割り当ての上書きも同じ）。
