@@ -21,6 +21,8 @@ type ProposalHarnessInput struct {
 	Env                                          map[string]string
 	invocation                                   StageInvocation
 	Limits                                       sandbox.ResourceLimits
+	// Log delivery follows job cancellation, independently of the Run deadline.
+	deliveryCtx context.Context
 }
 
 // ProposalHarnessOutcome is the harness result before Runner redaction and API delivery.

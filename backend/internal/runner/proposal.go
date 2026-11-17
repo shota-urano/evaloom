@@ -109,7 +109,7 @@ func (runner *Runner) ExecuteProposal(ctx context.Context, claim ProposalClaim, 
 		runCtx, cancel := context.WithTimeout(ctx, limits.Time)
 		defer cancel()
 		outcome, err = harness.Run(runCtx, ProposalHarnessInput{
-			Claim: claim, Paths: services.Paths, Limits: limits, invocation: invocation,
+			Claim: claim, Paths: services.Paths, Limits: limits, invocation: invocation, deliveryCtx: reportCtx,
 			InputsHost: input, OutHost: filepath.Join(directory, "out"),
 			ScratchHost: filepath.Join(directory, "scratch"), ConfigHost: filepath.Join(directory, "config"),
 			Env: map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},

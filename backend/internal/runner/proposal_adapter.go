@@ -122,7 +122,7 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 	if err := log.Finish(false); err != nil {
 		logErr = err
 	}
-	if err := log.Deliver(ctx); err != nil {
+	if err := log.Deliver(in.deliveryCtx); err != nil {
 		return ProposalHarnessOutcome{}, err
 	}
 	if resultErr != nil || logErr != nil {
