@@ -10,6 +10,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
+	"github.com/shota-urano/evaloom/backend/internal/stage"
 )
 
 // StageCancelGrace is the fixed policy of spec 05 3.10, also supplied to
@@ -43,27 +44,17 @@ func cooperativeCancellation(ctx context.Context, stage model.Stage, outcome Sta
 // the pinned Profile supplies the command and claim supplies the time limit.
 // Collectors read result.json/out and finish logs after this returns.
 func (in StageInvocation) RunProgram(ctx context.Context, launch func(context.Context, sandbox.SandboxSpec, []string) (sandbox.Process, error), spec sandbox.SandboxSpec) StageOutcome {
-	var command []string
-	switch in.Stage {
-	case model.StagePrepare:
-		if in.Profile.Definition.Stages.Prepare != nil {
-			command = in.Profile.Definition.Stages.Prepare.Command
-		}
-	case model.StageCheck:
-		command = in.Profile.Definition.Stages.Check.Command
-	case model.StagePublish:
-		command = in.Profile.Definition.Stages.Publish.Command
-	}
 	code := "config_error"
-	if launch == nil || len(command) == 0 || in.timeout <= 0 {
+	program, err := stage.Program(in.Profile.Definition, in.Stage)
+	if err != nil || program == nil || launch == nil || len(program.Command) == 0 || in.timeout <= 0 {
 		return StageOutcome{RunnerError: &code}
 	}
 	spec.Kind, spec.Limits.Time = sandbox.SandboxKind(in.Stage), in.timeout
-	spec, err := in.SandboxSpec(spec)
+	spec, err = in.SandboxSpec(spec)
 	if err != nil {
 		return StageOutcome{RunnerError: &code}
 	}
-	process, err := launch(ctx, spec, command)
+	process, err := launch(ctx, spec, program.Command)
 	if err != nil || process == nil {
 		code = "sandbox_error"
 		if ctx.Err() != nil {
