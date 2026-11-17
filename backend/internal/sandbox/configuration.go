@@ -195,6 +195,12 @@ func (w *workingConfiguration) close() error {
 	if w.closed {
 		return nil
 	}
+	// All workload writers have stopped. Recover session state before removing
+	// the private volume; the Runner retains it only if output is a question.
+	// Unrecoverable session files do not change the completed work result.
+	if w.env.SessionEnabled() {
+		_ = w.captureSession()
+	}
 	w.closed = true
 	w.archive = nil
 	if w.owner == nil {

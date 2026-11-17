@@ -152,8 +152,8 @@ func (p ProfileDefinition) issues() issues {
 		}
 	}
 	w := p.Stages.Work
-	if w.MicroHarness.Validate() != nil {
-		found.add("stages.work.microHarness", "unsupported")
+	if strings.TrimSpace(w.MicroHarness) == "" {
+		found.add("stages.work.microHarness", "required")
 	}
 	if strings.TrimSpace(w.Model) == "" {
 		found.add("stages.work.model", "required")
@@ -402,6 +402,7 @@ func destinationIssue(value string) string {
 // known model endpoints, or whether a Runner supports macOS VMs.
 type ProfileEnvironment interface {
 	StageTimeoutMaxSec(model.Stage) int
+	ValidateAdapter(string) error
 	ValidateToolPermissions(model.AdapterName, json.RawMessage) error
 	ValidateRuntime(Runtime) error
 	ValidateNetworkDestination(string) error
@@ -434,8 +435,10 @@ func (p ProfileDefinition) EnvironmentIssues(tagVersion string, environment Prof
 		found.add("stages.work.timeoutSec", "exceeds_limit")
 	}
 	w := p.Stages.Work
-	if len(w.ToolPermissions) > 0 && w.MicroHarness.Validate() == nil && toolPermissionsShape(w.ToolPermissions) == "" &&
-		environment.ValidateToolPermissions(w.MicroHarness, w.ToolPermissions) != nil {
+	if environment.ValidateAdapter(w.MicroHarness) != nil {
+		found.add("stages.work.microHarness", "unsupported")
+	} else if len(w.ToolPermissions) > 0 && toolPermissionsShape(w.ToolPermissions) == "" &&
+		environment.ValidateToolPermissions(model.AdapterName(w.MicroHarness), w.ToolPermissions) != nil {
 		found.add("stages.work.toolPermissions", "unconvertible")
 	}
 	for _, s := range p.programStages() {

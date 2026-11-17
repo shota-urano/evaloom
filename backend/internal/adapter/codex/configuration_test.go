@@ -36,6 +36,9 @@ func TestCodexRejectsCopyMismatchBeforeAnyCLI(t *testing.T) {
 				f.env.ConfigDir = filepath.Dir(f.env.ConfigDir)
 				f.env.Env["CODEX_HOME"] = f.env.ConfigDir
 			case "source_changed":
+				if err := os.Chmod(filepath.Join(f.settings.ConfigDir(), "config.toml"), 0600); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(filepath.Join(f.settings.ConfigDir(), "config.toml"), []byte("changed"), 0600); err != nil {
 					t.Fatal(err)
 				}

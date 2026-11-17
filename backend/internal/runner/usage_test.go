@@ -122,7 +122,7 @@ func TestStageUsageReachesControlPlane(t *testing.T) {
 				route_kind = 'project', project_id = 'project', harness_id = 'fixture-harness' WHERE id = ?`, logExecution); err != nil {
 				t.Fatal(err)
 			}
-			services.Reporter = workspaceHTTPReporter{t: t, r: r}
+			services.Reporter = r
 			known := mode != "unknown"
 			services.Executor = stageExecutorFunc(func(ctx context.Context, in StageInvocation) StageOutcome {
 				time.Sleep(15 * time.Millisecond)

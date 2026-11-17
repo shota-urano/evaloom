@@ -10,10 +10,15 @@ import (
 // os.Root pins the directory and prevents nested symlinks or concurrent renames
 // from redirecting recursive deletion outside it. Do not follow a workspace
 // symlink, even when its target is another workspace inside the root.
-func (runner *Runner) cleanWorkspace(id string) error {
+func (runner *Runner) cleanWorkspace(id string) (cleanupErr error) {
 	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\\x00") {
 		return fmt.Errorf("runner: invalid cleanup workspace ID")
 	}
+	defer func() {
+		if cleanupErr == nil {
+			cleanupErr = runner.cleanWorkSessions(id)
+		}
+	}()
 	root, err := os.OpenRoot(runner.workspaceRoot)
 	if os.IsNotExist(err) {
 		// A repeated instruction (including after a restart) is already done.
@@ -37,4 +42,32 @@ func (runner *Runner) cleanWorkspace(id string) error {
 		return fmt.Errorf("runner: cannot remove cleanup workspace")
 	}
 	return nil
+}
+
+// Session state follows the workspace retention instruction (spec 08 Q143).
+func (runner *Runner) cleanWorkSessions(id string) error {
+	data, err := os.OpenRoot(runner.dataDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer data.Close()
+	info, err := data.Lstat("work-sessions")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("runner: session storage must not be a symlink")
+	}
+	root, err := data.OpenRoot("work-sessions")
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.RemoveAll(id)
 }

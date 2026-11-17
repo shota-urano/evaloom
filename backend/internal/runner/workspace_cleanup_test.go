@@ -36,6 +36,9 @@ func TestHeartbeatCleansOnlyInstructedWorkspacesAndReportsNextTime(t *testing.T)
 	config := testConfig(t, server.URL)
 	removed := writeWorkspaceFile(t, config.WorkspaceRoot, "remove")
 	kept := writeWorkspaceFile(t, config.WorkspaceRoot, "keep")
+	sessions := filepath.Join(config.DataDir, "work-sessions")
+	removedSession := writeWorkspaceFile(t, sessions, "remove")
+	keptSession := writeWorkspaceFile(t, sessions, "keep")
 	process, err := New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +62,12 @@ func TestHeartbeatCleansOnlyInstructedWorkspacesAndReportsNextTime(t *testing.T)
 	}
 	if _, err := os.Stat(kept); err != nil {
 		t.Fatalf("uninstructed workspace changed: %v", err)
+	}
+	if _, err := os.Stat(removedSession); !os.IsNotExist(err) {
+		t.Fatalf("instructed session still exists: %v", err)
+	}
+	if _, err := os.Stat(keptSession); err != nil {
+		t.Fatalf("uninstructed session changed: %v", err)
 	}
 	// Repeated instructions remain harmless and generate one acknowledgement
 	// per ID, including a path already absent after a previous process deleted it.

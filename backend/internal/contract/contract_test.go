@@ -351,7 +351,7 @@ func TestProfileConstraints(t *testing.T) {
 		{"work resume invalid", func(v map[string]any) { object(object(v, "stages"), "work")["resume"] = "never" }},
 		{"work null instruction", func(v map[string]any) { object(object(v, "stages"), "work")["instructions"] = []any{nil} }},
 		{"work path outside", func(v map[string]any) { object(object(v, "stages"), "work")["skills"] = []any{"../outside"} }},
-		{"unknown adapter", func(v map[string]any) { object(object(v, "stages"), "work")["microHarness"] = "unknown" }},
+		{"empty adapter", func(v map[string]any) { object(object(v, "stages"), "work")["microHarness"] = "" }},
 		{"zero timeout", func(v map[string]any) { object(object(v, "stages"), "work")["timeoutSec"] = 0 }},
 		{"fractional timeout", func(v map[string]any) { object(object(v, "stages"), "check")["timeoutSec"] = 1.5 }},
 		{"absolute command", func(v map[string]any) { object(object(v, "stages"), "check")["command"] = []any{"/bin/sh"} }},
@@ -397,6 +397,13 @@ func TestProfileConstraints(t *testing.T) {
 
 type environment struct{ reject string }
 
+func (e environment) ValidateAdapter(name string) error {
+	if e.reject == "adapter" || (name != "codex" && name != "claude_code") {
+		return errors.New("unregistered Adapter")
+	}
+	return nil
+}
+
 func (e environment) StageTimeoutMaxSec(model.Stage) int {
 	if e.reject == "timeout" {
 		return 1
@@ -436,7 +443,7 @@ func TestProfileEnvironmentBoundary(t *testing.T) {
 	if err := profile.ValidateForRegistration("1.2.0", nil); err == nil {
 		t.Error("missing environment accepted")
 	}
-	for _, reject := range []string{"timeout", "permissions", "runtime", "model endpoint"} {
+	for _, reject := range []string{"adapter", "timeout", "permissions", "runtime", "model endpoint"} {
 		if err := profile.ValidateForRegistration("1.2.0", environment{reject}); err == nil {
 			t.Errorf("ignored environment rejection: %s", reject)
 		}

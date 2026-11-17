@@ -184,10 +184,11 @@ func profileEnvironment(ctx context.Context, db *sql.DB, adapters *adapter.Regis
 	raw, present := settings["limits.stageTimeoutMaxSec"]
 	environment := registry.Environment{
 		StageTimeoutMaxSecs: registry.ParseStageTimeoutMaxSec(raw, present),
+		AdapterNames:        adapters.Names(),
 		ToolPermissions:     map[model.AdapterName]registry.ToolPermissionsChecker{},
 		ModelAPIs:           map[string]bool{},
 	}
-	for _, name := range adapters.Names() {
+	for _, name := range environment.AdapterNames {
 		implementation, err := adapters.Lookup(name)
 		if err != nil {
 			return registry.Environment{}, err

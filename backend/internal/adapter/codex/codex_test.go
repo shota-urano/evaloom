@@ -81,13 +81,13 @@ func TestCodexCLIHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	cwd, _ := os.Getwd()
-	want := []string{"exec", "--json", "--color", "never", "--ephemeral", "--sandbox", "danger-full-access", "--model", "test-model", "--cd", cwd, "--"}
+	want := []string{"exec", "--json", "--color", "never", "--ephemeral", "--skip-git-repo-check", "--sandbox", "danger-full-access", "--model", "test-model", "--cd", cwd, "--"}
 	if len(args) != len(want)+1 || !slices.Equal(args[:len(want)], want) {
 		exit(fmt.Sprintf("unexpected exec arguments: got=%q want=%q", args, want))
 	}
 	prompt := args[len(want)]
-	if !strings.Contains(prompt, "fixed execution context") || !strings.Contains(prompt, `"acceptanceCriteria":"one commit"`) ||
-		!strings.Contains(prompt, "commit the changes") || !strings.Contains(prompt, "Do not push") {
+	if !strings.Contains(prompt, "fixed execution context") || !strings.Contains(prompt, `"acceptanceCriteria":"file changed"`) ||
+		strings.Contains(prompt, "commit the changes") || !strings.Contains(prompt, "untrusted JSON data") {
 		exit("task prompt missing")
 	}
 	if mode == "cancel" || mode == "ignore-term" {
@@ -111,6 +111,13 @@ func TestCodexCLIHelper(t *testing.T) {
 		os.Exit(0)
 	case "empty":
 		os.Exit(0)
+	case "invalid-session":
+		fmt.Println(`{"type":"thread.started","thread_id":null}`)
+		fmt.Println(`{"type":"turn.completed"}`)
+		os.Exit(0)
+	case "no-session":
+		fmt.Println(`{"type":"turn.completed"}`)
+		os.Exit(0)
 	case "incomplete":
 		fmt.Println(`{"type":"turn.started"}`)
 		os.Exit(0)
@@ -121,19 +128,16 @@ func TestCodexCLIHelper(t *testing.T) {
 		fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":0}}`)
 		os.Exit(0)
 	}
-	if mode == "commit" {
+	if mode == "change" {
 		if err := os.WriteFile("change.txt", []byte("Codex change\n"), 0600); err != nil {
 			exit(err.Error())
-		}
-		for _, args := range [][]string{{"add", "change.txt"}, {"commit", "--quiet", "-m", "fake Codex commit"}} {
-			out, err := exec.Command("git", args...).CombinedOutput()
-			if err != nil {
-				exit(string(out))
-			}
 		}
 	}
 	fmt.Fprintln(os.Stderr, "stderr without newline")
 	fmt.Println(`{"type":"thread.started","thread_id":"native-thread"}`)
+	if mode == "conflicting-session" {
+		fmt.Println(`{"type":"thread.started","thread_id":"other-thread"}`)
+	}
 	fmt.Println(`{"type":"future.event","extra":"forward compatible"}`)
 	if mode != "no-summary" {
 		fmt.Println(`{"type":"item.completed","item":{"type":"agent_message","text":"final summary"}}`)
@@ -221,7 +225,7 @@ func newFixture(t *testing.T, mode string) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{store: store, settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
-		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
+		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "file changed"},
 		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":[]},"executionConfiguration":{"adapter":"codex","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
@@ -324,16 +328,16 @@ func assertWorkingCopiesRemoved(t *testing.T, f *fixture) {
 	}
 }
 
-func TestCodexNonInteractiveCommit(t *testing.T) {
+func TestCodexNonInteractiveWorkspaceChange(t *testing.T) {
 	t.Setenv("PERSONAL_SECRET", "must not inherit")
-	f := newFixture(t, "commit")
+	f := newFixture(t, "change")
 	var registry adapter.Registry
 	if err := registry.Register("codex", f.h); err != nil {
 		t.Fatal(err)
 	}
 	f.h, _ = registry.Lookup("codex")
 	id, r, logs := runResult(t, f)
-	if r.Status != adapter.ResultSucceeded || r.ErrorClass != nil || r.SessionID != id || r.Summary != "final summary" ||
+	if r.Status != adapter.ResultSucceeded || r.ErrorClass != nil || r.SessionID != "native-thread" || r.Summary != "final summary" ||
 		r.Usage.InputTokens == nil || *r.Usage.InputTokens != 17 || r.Usage.OutputTokens == nil || *r.Usage.OutputTokens != 9 {
 		t.Fatalf("result=%+v logs=%+v", r, logs)
 	}
@@ -342,8 +346,12 @@ func TestCodexNonInteractiveCommit(t *testing.T) {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
 	out, err := exec.Command("git", "-C", f.env.Worktree, "rev-list", "--count", f.request.Project.BaseSHA+"..HEAD").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "1" {
+	if err != nil || strings.TrimSpace(string(out)) != "0" {
 		t.Fatalf("commits=%s err=%v", out, err)
+	}
+	change, err := os.ReadFile(filepath.Join(f.env.Worktree, "change.txt"))
+	if err != nil || string(change) != "Codex change\n" {
+		t.Fatalf("workspace change=%q err=%v", change, err)
 	}
 	if r.HeadSHA != "" || len(r.Commits) != 0 || r.DiffArtifactID != "" {
 		t.Fatalf("adapter must leave Git fields to Runner: %+v", r)
@@ -367,17 +375,20 @@ func TestCodexNonInteractiveCommit(t *testing.T) {
 func TestCodexErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
 		mode  string
-		class adapter.ErrorClass
+		class string
 	}{
-		{"config", adapter.ErrorConfig}, {"missing-cli", adapter.ErrorConfig}, {"exit", adapter.ErrorExecutionFailed}, {"signal", adapter.ErrorExecutionFailed},
-		{"malformed", adapter.ErrorExecutionFailed}, {"empty", adapter.ErrorExecutionFailed}, {"incomplete", adapter.ErrorExecutionFailed},
-		{"failed", adapter.ErrorExecutionFailed}, {"negative", adapter.ErrorExecutionFailed},
+		{"config", "config_error"}, {"missing-cli", "config_error"}, {"exit", "work_failed"}, {"signal", "work_failed"},
+		{"malformed", "work_failed"}, {"empty", "work_failed"}, {"incomplete", "work_failed"},
+		{"no-session", "work_failed"}, {"invalid-session", "work_failed"}, {"conflicting-session", "work_failed"}, {"failed", "work_failed"}, {"negative", "work_failed"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			f := newFixture(t, tc.mode)
 			_, r, _ := runResult(t, f)
-			if r.Status != adapter.ResultFailed || r.ErrorClass == nil || *r.ErrorClass != tc.class {
+			if r.Status != adapter.ResultFailed || r.ErrorClass == nil || string(*r.ErrorClass) != tc.class {
 				t.Fatalf("result=%+v", r)
+			}
+			if (tc.mode == "config" || tc.mode == "missing-cli") && r.SessionID != "" {
+				t.Fatal("configuration failure invented a Codex session ID")
 			}
 		})
 	}

@@ -3,7 +3,6 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"slices"
@@ -22,35 +21,37 @@ func (permissionProcess) Kill() error           { return nil }
 func (permissionProcess) ExitCode() (int, bool) { return 0, true }
 
 func TestCodexToolPermissionsRejectInvalidBeforeCLI(t *testing.T) {
-	cases := []struct{ name, policy, tools string }{
-		{"unknown_key", `{"allow":[]}`, `[]`},
-		{"unknown_key_with_deny", `{"deny":[],"extra":false}`, `[]`},
-		{"case_sensitive_key", `{"Deny":[]}`, `[]`},
-		{"missing_object", ``, `[]`},
-		{"null_object", `null`, `[]`},
-		{"array_object", `[]`, `[]`},
-		{"invalid_json", `{"deny":`, `[]`},
-		{"deny_string", `{"deny":"Bash"}`, `[]`},
-		{"deny_object", `{"deny":{}}`, `[]`},
-		{"deny_null", `{"deny":null}`, `[]`},
-		{"deny_empty_string", `{"deny":["Bash",""]}`, `[]`},
-		{"deny_number", `{"deny":[1]}`, `[]`},
-		{"deny_null_element", `{"deny":[null]}`, `[]`},
-		{"allow_string", `{}`, `"Bash"`},
-		{"allow_null", `{}`, `null`},
-		{"allow_empty_string", `{}`, `["Bash",""]`},
-		{"allow_number", `{}`, `[1]`},
-		{"allow_null_element", `{}`, `[null]`},
+	cases := []struct{ name, policy string }{
+		{"unknown_key", `{"tools":[]}`},
+		{"unknown_key_with_deny", `{"deny":[],"extra":false}`},
+		{"case_sensitive_key", `{"Deny":[]}`},
+		{"missing_object", ``},
+		{"null_object", `null`},
+		{"array_object", `[]`},
+		{"invalid_json", `{"deny":`},
+		{"deny_string", `{"deny":"Bash"}`},
+		{"deny_object", `{"deny":{}}`},
+		{"deny_null", `{"deny":null}`},
+		{"deny_empty_string", `{"deny":["Bash",""]}`},
+		{"deny_number", `{"deny":[1]}`},
+		{"deny_null_element", `{"deny":[null]}`},
+		{"allow_string", `{"allow":"Bash"}`},
+		{"allow_null", `{"allow":null}`},
+		{"allow_empty_string", `{"allow":["Bash",""]}`},
+		{"allow_number", `{"allow":[1]}`},
+		{"allow_null_element", `{"allow":[null]}`},
 	}
 	cases = append(cases,
-		struct{ name, policy, tools string }{"unsupported_allow", `{}`, `["Bash"]`},
-		struct{ name, policy, tools string }{"unsupported_deny", `{"deny":["Bash(git push:*)"]}`, `[]`},
-		struct{ name, policy, tools string }{"unsupported_both", `{"deny":["Bash"]}`, `["Bash"]`},
+		struct{ name, policy string }{"unsupported_allow", `{"allow":["Bash"]}`},
+		struct{ name, policy string }{"unsupported_deny", `{"deny":["Bash(git push:*)"]}`},
+		struct{ name, policy string }{"unsupported_both", `{"allow":["Bash"],"deny":["Bash"]}`},
 	)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, "success")
-			f.request.Profile.Definition = json.RawMessage(fmt.Sprintf(`{"toolConfiguration":{"allowedTools":%s}}`, tc.tools))
+			if err := f.h.(*harness).CheckToolPermissions(json.RawMessage(tc.policy)); err == nil {
+				t.Fatal("Profile registration accepted invalid tool permissions")
+			}
 			f.config.ResolveToolPermissions = func(_ context.Context, req adapter.HarnessRequest) (json.RawMessage, error) {
 				if req.Profile.HarnessID != "harness" {
 					t.Error("lost Harness ID")
@@ -74,16 +75,18 @@ func TestCodexToolPermissionsRejectInvalidBeforeCLI(t *testing.T) {
 func TestCodexToolPermissionsLaunchArguments(t *testing.T) {
 	cases := []struct {
 		name, policy string
-		allow, deny  []string
 	}{
-		{"empty_object", `{}`, []string{}, []string{}},
-		{"empty_deny", `{"deny":[]}`, []string{}, []string{}},
+		{"empty_object", `{}`},
+		{"empty_deny", `{"deny":[]}`},
+		{"empty_allow", `{"allow":[]}`},
+		{"empty_both", `{"allow":[],"deny":[]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, "success")
-			definition, _ := json.Marshal(map[string]any{"toolConfiguration": map[string]any{"allowedTools": tc.allow}})
-			f.request.Profile.Definition = definition
+			if err := f.h.(*harness).CheckToolPermissions(json.RawMessage(tc.policy)); err != nil {
+				t.Fatalf("Profile registration rejected empty permissions: %v", err)
+			}
 			f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 				return json.RawMessage(tc.policy), nil
 			}
@@ -98,6 +101,7 @@ func TestCodexToolPermissionsLaunchArguments(t *testing.T) {
 					t.Fatalf("invented per-tool override: %q", args)
 				}
 				if calls == 2 {
+					_, _ = io.WriteString(out, `{"type":"thread.started","thread_id":"permissions-thread"}`+"\n")
 					_, _ = io.WriteString(out, `{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`+"\n")
 				}
 				return permissionProcess{}, nil

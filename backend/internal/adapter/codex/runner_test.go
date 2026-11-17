@@ -31,8 +31,12 @@ func TestStageFramePreservesResultAfterAuthenticationRecoveryDeadline(t *testing
 			f.request.Limits.TimeoutSec = 1
 			r, claim := workStageFrame(t, f)
 			frame := &finishedWorkFrame{t: t, fixture: f}
+			adapters := &adapter.Registry{}
+			if err := adapters.Register("codex", f.h); err != nil {
+				t.Fatal(err)
+			}
 			if err := r.ExecuteStages(context.Background(), claim, runner.StageServices{
-				Reporter: frame, Executor: frame, Paths: contract.RequestPaths{
+				Reporter: frame, Executor: frame, Adapters: adapters, Paths: contract.RequestPaths{
 					Profile: "/sandbox/profile", Workspace: "/sandbox/workspace", Out: "/sandbox/out",
 					Inputs: "/sandbox/inputs", Records: "/sandbox/records", Scratch: "/sandbox/scratch",
 				},
@@ -74,18 +78,18 @@ func (f *finishedWorkFrame) RunStage(ctx context.Context, in runner.StageInvocat
 	if in.Stage != model.StageWork {
 		f.t.Fatalf("unexpected stage: %s", in.Stage)
 	}
-	id, err := f.h.Start(ctx, f.request, f.env)
+	id, err := in.Adapter.Start(ctx, f.request, f.env)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	result, err := in.WaitWork(ctx, f.h, id)
+	result, err := in.WaitWork(ctx, in.Adapter, id)
 	if err != nil || result.Status != adapter.ResultSucceeded || result.ErrorClass != nil {
 		f.t.Errorf("credential recovery changed finished work: %+v, err=%v", result, err)
 	}
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		f.t.Fatalf("test did not cross stage deadline during recovery: %v", ctx.Err())
 	}
-	logs, err := f.h.Logs(id)
+	logs, err := in.Adapter.Logs(id)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -125,7 +129,7 @@ func workStageFrame(t *testing.T, f *fixture) (*runner.Runner, runner.Claim) {
 	definition, err := json.Marshal(contract.ProfileDefinition{
 		ContractVersion: "1", ProfileVersion: "1.0.0", Name: "test", AcceptanceCriteria: "optional",
 		Stages: contract.ProfileStages{
-			Work:    contract.WorkStage{MicroHarness: model.AdapterCodex, Model: "test-model", TimeoutSec: 1},
+			Work:    contract.WorkStage{MicroHarness: string(model.AdapterCodex), Model: "test-model", TimeoutSec: 1},
 			Check:   contract.ProgramStage{Command: []string{"stage.sh"}, TimeoutSec: 1},
 			Publish: contract.ProgramStage{Command: []string{"stage.sh"}, TimeoutSec: 1},
 		},

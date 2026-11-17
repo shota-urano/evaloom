@@ -198,6 +198,7 @@ func TestClaudeCodeRuntimeHelper(t *testing.T) {
 				// Leave time for a competing context-triggered rm to be observed.
 				time.Sleep(120 * time.Millisecond)
 			}
+			fmt.Println(`{"type":"system","subtype":"init","session_id":"native-container-session"}`)
 			if mode == "multiple-results" {
 				fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result_index":0,"result":"intermediate","usage":{"input_tokens":7,"output_tokens":4}}`)
 				fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result_index":1,"result":"final summary","usage":{"input_tokens":17,"output_tokens":9}}`)
@@ -456,7 +457,7 @@ case "$1:$2" in
   volume:create|volume:rm) exit 0 ;;
   container:cp) if [ "$3" = - ]; then cat > "$CAPTURE.tar"; else cat "$CAPTURE.tar"; fi ;;
   container:create) exit 0 ;;
-  container:start) printf '%s\n' '{"type":"result","subtype":"success","is_error":false}' ;;
+  container:start) printf '%s\n' '{"type":"result","session_id":"native-container-session","subtype":"success","is_error":false}' ;;
   container:inspect) printf '%s\n' '{"Status":"exited","Running":false,"ExitCode":0}' ;;
   container:rm) exit 0 ;;
   *) exit 19 ;;

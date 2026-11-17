@@ -15,14 +15,22 @@ type Adapter interface {
 	Capabilities() Capabilities
 }
 
+// ResumableAdapter is the optional same-session continuation capability. Runner
+// uses it only after an answer to a work question, when Capabilities().Resume is
+// true and the session files have been restored. Restart recovery never uses it.
+type ResumableAdapter interface {
+	Adapter
+	Resume(ctx context.Context, id SessionID, req HarnessRequest, env SandboxEnv) error
+}
+
 type Capabilities struct {
 	Streaming              bool     // Logs can be streamed incrementally.
-	Resume                 bool     // Interrupted sessions can be resumed.
+	Resume                 bool     // A finished session can continue after a question.
 	TokenUsage             bool     // Token counts can be reported.
 	NativeInstructionFiles []string // Instruction files read by the CLI itself.
 }
 
-// SessionID is issued by the adapter and stored as executions.harness_session_id.
+// SessionID is issued by the adapter and stored as executions.work_session_id.
 type SessionID string
 
 // SessionStatus describes the harness session, not the Runner execution stages.

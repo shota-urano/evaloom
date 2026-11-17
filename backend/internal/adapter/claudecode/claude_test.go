@@ -27,7 +27,7 @@ import (
 )
 
 // The helper is reached only through the generated fake claude executable. It
-// checks the actual argv/env/cwd received by the OS process, then exercises Git,
+// checks the actual argv/env/cwd received by the OS process, then exercises file edits,
 // JSONL, stderr and signals without a real ClaudeCode installation or model call.
 func TestClaudeCodeCLIHelper(t *testing.T) {
 	if os.Getenv("EVALOOM_CLAUDE_HELPER") != "1" {
@@ -90,9 +90,12 @@ func TestClaudeCodeCLIHelper(t *testing.T) {
 		exit(fmt.Sprintf("unexpected exec arguments: got=%q want=%q", args, want))
 	}
 	prompt := args[len(want)]
-	if !strings.Contains(prompt, "fixed execution context") || !strings.Contains(prompt, `"acceptanceCriteria":"one commit"`) ||
-		!strings.Contains(prompt, "commit the changes") || !strings.Contains(prompt, "Do not push") {
+	if !strings.Contains(prompt, "fixed execution context") || !strings.Contains(prompt, `"acceptanceCriteria":"file changed"`) ||
+		!strings.Contains(prompt, "untrusted JSON data") || strings.Contains(prompt, "commit the changes") {
 		exit("task prompt missing")
+	}
+	if mode != "no-session" {
+		fmt.Println(`{"type":"system","subtype":"init","session_id":"native-session"}`)
 	}
 	if mode == "cancel" || mode == "ignore-term" {
 		if mode == "ignore-term" {
@@ -125,19 +128,12 @@ func TestClaudeCodeCLIHelper(t *testing.T) {
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":-1,"output_tokens":0}}`)
 		os.Exit(0)
 	}
-	if mode == "commit" {
+	if mode == "edit" {
 		if err := os.WriteFile("change.txt", []byte("ClaudeCode change\n"), 0600); err != nil {
 			exit(err.Error())
 		}
-		for _, args := range [][]string{{"add", "change.txt"}, {"commit", "--quiet", "-m", "fake ClaudeCode commit"}} {
-			out, err := exec.Command("git", args...).CombinedOutput()
-			if err != nil {
-				exit(string(out))
-			}
-		}
 	}
 	fmt.Fprintln(os.Stderr, "stderr without newline")
-	fmt.Println(`{"type":"system","subtype":"init","session_id":"native-session"}`)
 	fmt.Println(`{"type":"future.event","extra":"forward compatible"}`)
 	multiple := strings.HasPrefix(mode, "multiple-results") || mode == "duplicate-result-index"
 	if multiple {
@@ -241,7 +237,7 @@ func newFixture(t *testing.T, mode string) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{store: store, settings: settings, env: adapter.SandboxEnv{Worktree: worktree, ConfigDir: settings.ConfigDir(), Env: settings.Env()}, request: adapter.HarnessRequest{
-		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "one commit"},
+		ContractVersion: adapter.ContractVersion, ExecutionID: "execution", Task: adapter.RequestTask{Title: "task", AcceptanceCriteria: "file changed"},
 		Project: adapter.RequestProject{Workdir: worktree, BaseSHA: base}, Profile: adapter.RequestProfile{HarnessID: "harness", ModelID: "test-model", Definition: json.RawMessage(`{"toolConfiguration":{"allowedTools":["Bash","Edit"]},"executionConfiguration":{"adapter":"claude_code","args":[]}}`)},
 		Context: adapter.RequestContext{Instructions: "fixed execution context", RevisionIDs: []string{}},
 	}}
@@ -249,7 +245,7 @@ func newFixture(t *testing.T, mode string) *fixture {
 		if req.Profile.HarnessID != "harness" {
 			return nil, errors.New("policy unavailable")
 		}
-		return json.RawMessage(`{"deny":["WebFetch"]}`), nil
+		return json.RawMessage(`{"allow":["Bash","Edit"],"deny":["WebFetch"]}`), nil
 	}, Launch: func(ctx context.Context, env adapter.SandboxEnv, args []string, out, errOut io.Writer) (sandbox.Process, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -320,16 +316,16 @@ func runResult(t *testing.T, f *fixture) (adapter.SessionID, adapter.HarnessResu
 	return id, r, logs
 }
 
-func TestClaudeCodeNonInteractiveCommit(t *testing.T) {
+func TestClaudeCodeCommandContract(t *testing.T) {
 	t.Setenv("PERSONAL_SECRET", "must not inherit")
-	f := newFixture(t, "commit")
+	f := newFixture(t, "edit")
 	var registry adapter.Registry
 	if err := registry.Register("claude_code", f.h); err != nil {
 		t.Fatal(err)
 	}
 	f.h, _ = registry.Lookup("claude_code")
 	id, r, logs := runResult(t, f)
-	if r.Status != adapter.ResultSucceeded || r.ErrorClass != nil || r.SessionID != id || r.Summary != "final summary" ||
+	if r.Status != adapter.ResultSucceeded || r.ErrorClass != nil || r.SessionID != "native-session" || r.SessionID == id || r.Summary != "final summary" ||
 		r.Usage.InputTokens == nil || *r.Usage.InputTokens != 17 || r.Usage.OutputTokens == nil || *r.Usage.OutputTokens != 9 {
 		t.Fatalf("result=%+v logs=%+v", r, logs)
 	}
@@ -338,11 +334,15 @@ func TestClaudeCodeNonInteractiveCommit(t *testing.T) {
 		t.Fatalf("status=%s err=%v", status, err)
 	}
 	out, err := exec.Command("git", "-C", f.env.Worktree, "rev-list", "--count", f.request.Project.BaseSHA+"..HEAD").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "1" {
+	if err != nil || strings.TrimSpace(string(out)) != "0" {
 		t.Fatalf("commits=%s err=%v", out, err)
 	}
+	data, err := os.ReadFile(filepath.Join(f.env.Worktree, "change.txt"))
+	if err != nil || string(data) != "ClaudeCode change\n" {
+		t.Fatalf("workspace change=%q err=%v", data, err)
+	}
 	if r.HeadSHA != "" || len(r.Commits) != 0 || r.DiffArtifactID != "" {
-		t.Fatalf("adapter must leave Git fields to Runner: %+v", r)
+		t.Fatalf("adapter must leave Git fields to the special harness: %+v", r)
 	}
 	if len(logs) < 4 || !slices.ContainsFunc(logs, func(l adapter.LogLine) bool { return l.Stream == "stderr" && l.Text == "stderr without newline" }) {
 		t.Fatalf("logs=%+v", logs)
@@ -367,13 +367,20 @@ func TestClaudeCodeErrorClassification(t *testing.T) {
 	}{
 		{"config", adapter.ErrorConfig}, {"missing-cli", adapter.ErrorConfig}, {"exit", adapter.ErrorExecutionFailed}, {"signal", adapter.ErrorExecutionFailed},
 		{"malformed", adapter.ErrorExecutionFailed}, {"empty", adapter.ErrorExecutionFailed}, {"incomplete", adapter.ErrorExecutionFailed},
-		{"failed", adapter.ErrorExecutionFailed}, {"negative", adapter.ErrorExecutionFailed},
+		{"no-session", adapter.ErrorExecutionFailed}, {"failed", adapter.ErrorExecutionFailed}, {"negative", adapter.ErrorExecutionFailed},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			f := newFixture(t, tc.mode)
 			_, r, _ := runResult(t, f)
 			if r.Status != adapter.ResultFailed || r.ErrorClass == nil || *r.ErrorClass != tc.class {
 				t.Fatalf("result=%+v", r)
+			}
+			if tc.class == adapter.ErrorConfig || tc.mode == "no-session" {
+				if r.SessionID != "" {
+					t.Fatal("invented session before CLI initialization")
+				}
+			} else if r.SessionID != "native-session" {
+				t.Fatal("failed execution lost its native session")
 			}
 		})
 	}

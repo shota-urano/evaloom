@@ -83,6 +83,9 @@ func TestWorkingConfigurationTransfersOnlyVerifiedBytes(t *testing.T) {
 		t.Fatalf("transfer=%v want=%v", got, want)
 	}
 	pinned := bytes.Clone(w.archive)
+	if err := os.Chmod(filepath.Join(env.ConfigDir(), "config.toml"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(env.ConfigDir(), "config.toml"), []byte("unrecorded bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -24,8 +24,8 @@ import (
 // the file and registering its metadata; it must make retries with the same ID
 // idempotent. Runner implements this through the artifact registration API.
 type LogArtifact struct {
-	ID, ExecutionID, Stage, Kind, Name, Path string
-	Redacted                                 bool
+	ID, ExecutionID, RouteProposalID, Stage, Kind, Name, Path string
+	Redacted                                                  bool
 }
 
 type ArtifactRegistrar interface {
@@ -60,7 +60,7 @@ func (runner *Runner) NewLog(executionID, stream string, registrar ArtifactRegis
 		return nil, fmt.Errorf("runner: invalid log execution ID")
 	}
 	if stream != "harness" && stream != "setup" && stream != "test" && stream != "runner" &&
-		stream != "prepare" && stream != "work" && stream != "check" && stream != "publish" {
+		stream != "proposal" && stream != "prepare" && stream != "work" && stream != "check" && stream != "publish" {
 		return nil, fmt.Errorf("runner: invalid artifact log stream")
 	}
 	dir := filepath.Join(runner.dataDir, "logs")
@@ -186,6 +186,10 @@ func (log *Log) Deliver(ctx context.Context) error {
 		log.mu.Lock()
 		size, finished, redacted, writeErr := log.size, log.finished, log.redacted, log.writeErr
 		log.mu.Unlock()
+		// Proposals have no Execution event stream; their logs are artifacts.
+		if log.stream == "proposal" {
+			offset = size
+		}
 		if offset < size {
 			reader := bufio.NewReader(io.NewSectionReader(file, offset, size-offset))
 			events := []logEvent{}
@@ -219,10 +223,14 @@ func (log *Log) Deliver(ctx context.Context) error {
 			if legacy := map[string]string{"harness": "work", "setup": "prepare", "test": "check"}[stage]; legacy != "" {
 				stage = legacy
 			}
-			err := log.registrar.RegisterLogArtifact(ctx, LogArtifact{
+			artifact := LogArtifact{
 				ID: log.id, ExecutionID: log.executionID, Kind: "log", Stage: stage, Name: filepath.Base(log.path),
 				Path: log.path, Redacted: redacted,
-			})
+			}
+			if log.stream == "proposal" {
+				artifact.RouteProposalID, artifact.ExecutionID = log.executionID, ""
+			}
+			err := log.registrar.RegisterLogArtifact(ctx, artifact)
 			if err == nil {
 				log.mu.Lock()
 				log.delivered = true

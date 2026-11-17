@@ -61,7 +61,12 @@ func controlPlaneFixture(t *testing.T, observe func(*http.Request, int)) (*sql.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := api.NewHandler(db, logger, auth)
+	artifactStore, err := store.NewArtifactStore(db, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { artifactStore.Close() })
+	handler := api.NewHandlerWithArtifacts(db, logger, auth, nil, api.ArtifactConfig{Store: artifactStore, MaxBytes: 1 << 20})
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if observe == nil {
 			handler.ServeHTTP(w, r)

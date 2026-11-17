@@ -46,10 +46,12 @@ func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, we
 	mux.Handle("POST /auth/logout", auth.Protect(http.HandlerFunc(auth.logout)))
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
+	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/authorize", auth.protectRunner(authorizeExecution(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
-	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts)))
+	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts, false)))
+	mux.Handle("POST /api/route-proposals/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts, true)))
 	mux.Handle("POST /api/route-proposals/{id}/result", auth.protectRunner(reportRouteProposalResult(db, logger, auth)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})

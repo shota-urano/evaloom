@@ -60,7 +60,7 @@ func TestDedicatedConfigurationsAreIsolatedAndExact(t *testing.T) {
 	}
 	for _, f := range files {
 		info, err := os.Stat(filepath.Join(first.ConfigDir(), filepath.FromSlash(f.Path)))
-		if err != nil || info.Mode().Perm() != 0600 {
+		if err != nil || info.Mode().Perm() != 0400 {
 			t.Fatalf("file permissions: %v %v", info, err)
 		}
 	}
@@ -75,6 +75,151 @@ func TestDedicatedConfigurationsAreIsolatedAndExact(t *testing.T) {
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal("cleanup not idempotent:", err)
+	}
+}
+
+func TestUserInstructionsUseDeclarationOrderAndPinnedBytes(t *testing.T) {
+	for _, cli := range []struct{ variable, name string }{{"CODEX_HOME", "AGENTS.md"}, {"CLAUDE_CONFIG_DIR", "CLAUDE.md"}} {
+		t.Run(cli.variable, func(t *testing.T) {
+			cfg := config(t)
+			cfg.ConfigVariable = cli.variable
+			cfg.Files = append(cfg.Files, file("prompts/z.md", "last\n"), file("prompts/a.md", "first\r\n"), file("intro.md", "intro\n"))
+			cfg.Instructions = []string{"intro.md", "prompts/", "./prompts/a.md"}
+			env, err := harnessenv.Create(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer env.Close()
+			want := "intro\nfirst\r\nlast\n"
+			content, err := os.ReadFile(filepath.Join(env.ConfigDir(), cli.name))
+			if err != nil || string(content) != want {
+				t.Fatalf("user instructions = %q, %v; want %q", content, err, want)
+			}
+			files, err := env.Files(t.Context())
+			if err != nil || len(files) != len(cfg.Files)+1 {
+				t.Fatalf("installed files = %v, %v", files, err)
+			}
+			byPath := map[string]gitcontext.File{}
+			for _, f := range files {
+				byPath[f.Path] = f
+			}
+			for _, original := range append(cfg.Files, file(cli.name, want)) {
+				if byPath[original.Path] != original {
+					t.Errorf("installed file differs from expected pinned bytes: %s", original.Path)
+				}
+			}
+			copy, err := env.WorkingCopy(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer copy.Close()
+			copied, err := copy.Files(t.Context())
+			if err != nil || !reflect.DeepEqual(copied, files) {
+				t.Fatalf("working copy lost Q142 configuration: %v, %v", copied, err)
+			}
+			if err := os.WriteFile(filepath.Join(copy.ConfigDir(), cli.name), []byte("changed"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = copy.Files(t.Context())
+			requireConfigError(t, err)
+		})
+	}
+}
+
+func TestInstructionFailuresLeaveNoPartialConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		instructions []string
+		extra        []gitcontext.File
+	}{
+		{"missing", []string{"missing.md"}, nil},
+		{"traversal", []string{"skills/../config.toml"}, nil},
+		{"whole repository", []string{"."}, nil},
+		{"absolute", []string{"/config.toml"}, nil},
+		{"conflicting file", []string{"config.toml"}, []gitcontext.File{file("AGENTS.md", "different instructions")}},
+		{"conflicting directory", []string{"config.toml"}, []gitcontext.File{file("AGENTS.md/nested", "conflict")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config(t)
+			cfg.Instructions = test.instructions
+			cfg.Files = append(cfg.Files, test.extra...)
+			env, err := harnessenv.Create(t.Context(), cfg)
+			requireConfigError(t, err)
+			entries, readErr := os.ReadDir(cfg.Root)
+			if env != nil || readErr != nil || len(entries) != 0 {
+				t.Fatalf("partial environment = %v, %v, %v", env, entries, readErr)
+			}
+		})
+	}
+}
+
+func TestNativeInstructionSourceNeedsNoAdditionalFile(t *testing.T) {
+	cfg := config(t)
+	cfg.Files = []gitcontext.File{file("AGENTS.md", "native\n")}
+	cfg.Instructions = []string{"AGENTS.md"}
+	env, err := harnessenv.Create(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+	files, err := env.Files(t.Context())
+	if err != nil || !reflect.DeepEqual(files, cfg.Files) {
+		t.Fatalf("native instruction replaced or duplicated: %v, %v", files, err)
+	}
+}
+
+func TestNativeInstructionSourceConcatenatesWithoutChangingSnapshots(t *testing.T) {
+	for _, cli := range []struct{ variable, name string }{{"CODEX_HOME", "AGENTS.md"}, {"CLAUDE_CONFIG_DIR", "CLAUDE.md"}} {
+		for _, nativeFirst := range []bool{true, false} {
+			order := "native-first"
+			if !nativeFirst {
+				order = "native-last"
+			}
+			t.Run(cli.variable+"/"+order, func(t *testing.T) {
+				cfg := config(t)
+				cfg.ConfigVariable = cli.variable
+				cfg.Files = []gitcontext.File{file(cli.name, "A\n"), file("extra.md", "B\n")}
+				originals := append([]gitcontext.File{}, cfg.Files...)
+				cfg.Instructions = []string{cli.name, "extra.md"}
+				want := "A\nB\n"
+				if !nativeFirst {
+					cfg.Instructions = []string{"extra.md", cli.name}
+					want = "B\nA\n"
+				}
+				env, err := harnessenv.Create(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer env.Close()
+				if !reflect.DeepEqual(cfg.Files, originals) {
+					t.Fatal("creation changed the source snapshots or their hashes")
+				}
+				copy, err := env.WorkingCopy(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer copy.Close()
+				for _, installed := range []*harnessenv.Environment{env, copy} {
+					files, err := installed.Files(t.Context())
+					if err != nil || len(files) != len(originals) {
+						t.Fatalf("installed files = %v, %v", files, err)
+					}
+					for _, got := range files {
+						expected := file("extra.md", "B\n")
+						if got.Path == cli.name {
+							expected = file(cli.name, want)
+						}
+						if got != expected {
+							t.Errorf("installed file = %+v, want %+v", got, expected)
+						}
+					}
+					content, err := os.ReadFile(filepath.Join(installed.ConfigDir(), cli.name))
+					if err != nil || string(content) != want {
+						t.Fatalf("native instructions = %q, %v; want %q", content, err, want)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -116,6 +261,13 @@ func TestManifestRejectsUnrecordedChanges(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = env.Close() })
 			name := filepath.Join(env.ConfigDir(), "config.toml")
+			// Model tampering by a trusted host writer that can change permissions.
+			if err := os.Chmod(env.ConfigDir(), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(name, 0600); err != nil {
+				t.Fatal(err)
+			}
 			switch mode {
 			case "added":
 				err = os.WriteFile(filepath.Join(env.ConfigDir(), "unrecorded"), []byte("extra"), 0600)
@@ -192,13 +344,27 @@ func TestWorkingCopyIsIndependentAndUsesRecordedManifest(t *testing.T) {
 	}
 	for _, file := range want {
 		source, err := os.Stat(filepath.Join(original.ConfigDir(), file.Path))
-		if err != nil {
+		if err != nil || source.Mode().Perm() != 0400 {
 			t.Fatal(err)
 		}
 		copy, err := os.Stat(filepath.Join(first.ConfigDir(), file.Path))
 		if err != nil || os.SameFile(source, copy) || copy.Mode().Perm() != 0600 {
 			t.Fatalf("copy shares inode or has unsafe permissions: %v %v", copy, err)
 		}
+	}
+	if err := filepath.WalkDir(original.ConfigDir(), func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			info, err := entry.Info()
+			if err != nil || info.Mode().Perm() != 0500 {
+				t.Errorf("source directory is writable: %s %v", name, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(first.ConfigDir(), "config.toml"), []byte("CLI state"), 0600); err != nil {
 		t.Fatal(err)
@@ -230,6 +396,9 @@ func TestWorkingCopyRejectsChangedSourceWithoutLeavingCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = original.Close() })
+	if err := os.Chmod(filepath.Join(original.ConfigDir(), "config.toml"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(original.ConfigDir(), "config.toml"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}

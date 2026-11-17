@@ -316,7 +316,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 | runner_id | TEXT NULL FK→runners | |
 | proposed_label | TEXT NULL | AI が選んだラベル。candidates の中のものでなければ捨てて `failed` にする |
 | reason | TEXT NULL | AI が書いた理由（2000 文字以内、機密情報除外済み） |
-| error_class | TEXT NULL | `sandbox_error` / `timeout` / `contract_error`（提案が一覧に無い、形が合わない）/ `interrupted`（Runner の再起動で中断、Q133）。`routing.proposer` の model が null で提案を作らなかったときは NULL |
+| error_class | TEXT NULL | `sandbox_error` / `timeout` / `contract_error`（提案が一覧に無い、形が合わない）/ `config_error`（ミクロハーネスの認証ファイルが無い。5.5 と同じ値）/ `work_failed`（ミクロハーネスの CLI の異常終了。5.5 と同じ値）/ `interrupted`（Runner の再起動で中断、Q133）。`routing.proposer` の model が null で提案を作らなかったときは NULL |
 | decision_id | TEXT NULL FK→owner_decisions | |
 | created_at / finished_at | TEXT | |
 

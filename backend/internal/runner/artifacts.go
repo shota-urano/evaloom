@@ -47,12 +47,19 @@ func (runner *Runner) deliverArtifact(ctx context.Context, artifact LogArtifact)
 
 // registerArtifact uploads the supplied stage and display name unchanged.
 func (runner *Runner) registerArtifact(ctx context.Context, artifact LogArtifact) error {
-	for _, value := range []string{artifact.ID, artifact.ExecutionID} {
+	owner, resource := artifact.ExecutionID, "executions"
+	if artifact.RouteProposalID != "" {
+		if owner != "" {
+			return fmt.Errorf("runner: ambiguous artifact owner")
+		}
+		owner, resource = artifact.RouteProposalID, "route-proposals"
+	}
+	for _, value := range []string{artifact.ID, owner} {
 		if id, err := ulid.ParseStrict(value); err != nil || id.String() != value {
 			return fmt.Errorf("runner: invalid artifact identity")
 		}
 	}
-	endpoint, err := url.JoinPath(runner.controlPlaneURL, "api", "executions", artifact.ExecutionID, "artifacts")
+	endpoint, err := url.JoinPath(runner.controlPlaneURL, "api", resource, owner, "artifacts")
 	if err != nil {
 		return fmt.Errorf("runner: invalid artifact URL")
 	}

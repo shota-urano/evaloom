@@ -72,6 +72,7 @@ type events struct {
 	completed, failed, invalid bool
 	resultIndex                *int64
 	summary                    string
+	sessionID                  string
 	input, output              *int64
 }
 
@@ -81,6 +82,7 @@ type events struct {
 func (e *events) read(line []byte) {
 	var event struct {
 		Type        string  `json:"type"`
+		SessionID   string  `json:"session_id"`
 		Subtype     string  `json:"subtype"`
 		IsError     *bool   `json:"is_error"`
 		Result      *string `json:"result"`
@@ -93,6 +95,15 @@ func (e *events) read(line []byte) {
 	if json.Unmarshal(line, &event) != nil || event.Type == "" {
 		e.invalid = true
 		return
+	}
+	// All messages belong to one CLI session, including a failed final result.
+	// Missing IDs on intermediate messages are allowed; conflicting IDs are not.
+	if event.SessionID != "" {
+		if e.sessionID != "" && e.sessionID != event.SessionID {
+			e.invalid = true
+		} else {
+			e.sessionID = event.SessionID
+		}
 	}
 	switch event.Type {
 	case "result":

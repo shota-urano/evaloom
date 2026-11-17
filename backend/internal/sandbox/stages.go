@@ -18,8 +18,12 @@ func (c *Container) configureStageMounts() error {
 	}
 	p := c.config.StagePaths
 	paths := []string{p.Profile, p.Workspace, p.Out, p.Inputs, p.Records, p.Scratch}
+	if len(c.config.StageMountRoots) == 3 {
+		// Proposals have no Profile, workspace or prior stage records.
+		paths = []string{p.Out, p.Inputs, p.Scratch}
+	}
 	if len(c.config.StageMountRoots) != len(paths) {
-		return &Error{Op: "six dedicated stage mount roots required"}
+		return &Error{Op: "dedicated stage or proposal mount roots required"}
 	}
 	c.stageRoots = make(map[string]string)
 	for i, target := range paths {
@@ -167,6 +171,24 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	}
 	if channelMount != "" {
 		args = append(args, "--mount", channelMount)
+	}
+	if c.config.StageRequestFile != "" {
+		source, err := resolve(c.config.StageRequestFile)
+		info, statErr := os.Lstat(c.config.StageRequestFile)
+		target := c.config.StageRequestPath
+		if err != nil || statErr != nil || !info.Mode().IsRegular() || !c.safeStageSource(source) ||
+			!stageTarget(target) || spec.Env["EVALOOM_REQUEST"] != target {
+			return nil, &Error{Op: "invalid stage request mount"}
+		}
+		for guest := range c.stageRoots {
+			if overlapsTargets(target, guest) {
+				return nil, &Error{Op: "request overlaps stage region"}
+			}
+		}
+		if spec.ConfigDir != "" && overlapsTargets(target, spec.ConfigDir) {
+			return nil, &Error{Op: "request overlaps configuration"}
+		}
+		args = append(args, "--mount", "type=bind,source="+source+",target="+target+",readonly")
 	}
 	// env -i strips host and image ENV. The contract allowlist is enforced
 	// even if the trusted legacy AllowEnv contains additional variable names.

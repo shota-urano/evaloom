@@ -83,54 +83,6 @@ func TestRunWaitsUntilShutdown(t *testing.T) {
 	}
 }
 
-func TestRunReportsClaimFailedWithoutStageFramework(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var reports []runner.ExecutionResult
-	claimed := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch {
-		case strings.HasSuffix(req.URL.Path, "/heartbeat"):
-			io.WriteString(w, `{"cancelExecutionIds":[]}`)
-		case strings.HasSuffix(req.URL.Path, "/claim"):
-			if claimed {
-				w.WriteHeader(204)
-				return
-			}
-			claimed = true
-			io.WriteString(w, `{"job":{"kind":"execution","execution":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","taskId":"task-001","seq":1,"mode":"continue"},"profile":{"harnessId":"unconfigured"}}}`)
-		case strings.HasSuffix(req.URL.Path, "/result"):
-			var result runner.ExecutionResult
-			if err := json.NewDecoder(req.Body).Decode(&result); err != nil {
-				t.Error(err)
-			}
-			reports = append(reports, result)
-			w.WriteHeader(204)
-			if result.Status == "failed" {
-				cancel()
-			}
-		default:
-			t.Errorf("unexpected request: %s", req.URL.Path)
-			w.WriteHeader(404)
-		}
-	}))
-	defer server.Close()
-	path := writeConfig(t, server.URL)
-	done := make(chan error, 1)
-	go func() { done <- run(ctx, []string{"-config", path}, make(startupOutput, 8)) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("claimed execution was not stopped and reported")
-	}
-	if len(reports) != 1 || reports[0].FromStatus != "claimed" || reports[0].Status != "failed" || reports[0].ErrorClass != "config_error" {
-		t.Fatalf("reports=%+v", reports)
-	}
-}
-
 func TestRunRejectsUnexpectedArguments(t *testing.T) {
 	for _, args := range [][]string{nil, {"unexpected"}, {"-db", "control-plane.db"}, {"-config", "missing.json"}} {
 		if err := run(context.Background(), args, io.Discard); err == nil {

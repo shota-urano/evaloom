@@ -23,7 +23,7 @@ type routeProposalResultInput struct {
 
 // Runner-reported error classes (spec 02 3.4). interrupted is set by the
 // Control Plane on a Runner restart, not reported.
-var reportableProposalErrors = []string{"sandbox_error", "timeout", "contract_error"}
+var reportableProposalErrors = []string{"sandbox_error", "timeout", "contract_error", "config_error", "work_failed"}
 
 func validateProposalResult(fields map[string]json.RawMessage, in routeProposalResultInput) error {
 	known := []string{"label", "reason", "errorClass"}

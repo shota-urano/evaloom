@@ -194,14 +194,14 @@ type Runtime struct {
 }
 
 type WorkStage struct {
-	MicroHarness    model.AdapterName `json:"microHarness" required:"true"`
-	Model           string            `json:"model" required:"true"`
-	Instructions    []string          `json:"instructions,omitempty"`
-	Skills          []string          `json:"skills,omitempty"`
-	Settings        []string          `json:"settings,omitempty"`
-	ToolPermissions json.RawMessage   `json:"toolPermissions,omitempty"`
-	Resume          string            `json:"resume,omitempty"`
-	TimeoutSec      int               `json:"timeoutSec" required:"true"`
+	MicroHarness    string          `json:"microHarness" required:"true"`
+	Model           string          `json:"model" required:"true"`
+	Instructions    []string        `json:"instructions,omitempty"`
+	Skills          []string        `json:"skills,omitempty"`
+	Settings        []string        `json:"settings,omitempty"`
+	ToolPermissions json.RawMessage `json:"toolPermissions,omitempty"`
+	Resume          string          `json:"resume,omitempty"`
+	TimeoutSec      int             `json:"timeoutSec" required:"true"`
 }
 
 type ApprovalDeclaration struct {

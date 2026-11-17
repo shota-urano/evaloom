@@ -207,7 +207,8 @@ Tool Permissions は Profile の `stages.work.toolPermissions` だけから取�
 - 動かす場所は Proposal Sandbox とし、作業領域は持たない（[`09-sandbox.md`](./09-sandbox.md) 3.1）。
 - 指示は Evaloom の決まった提案の指示とし、スペシャルハーネスの `stages.work` は使わない。Issue の本文は外から来た文として区切って渡す。
 - 専用設定環境、認証ファイルの受け渡しと書き戻し、ミクロハーネスごとの排他ロック（3.5）は作業の段と同じに扱う。
-- Tool Permissions は、ファイルの読み取りと `out` への書き込みのほかを許さない Adapter の固定の値とする。
+- Tool Permissions は、ファイルの読み取りと `out` への書き込みのほかを許さない Adapter の固定の値とする。Codex はツールごとの制限を表せない（3.9）ため、作業の段と同じく Proposal Sandbox の隔離で代える。書けるのは `out` だけ、外への接続はモデル API だけとする（2026-11-17 本人決定）。
+- 認証ファイルが無いときは CLI を起動せず `failed`（`config_error`）、CLI の異常終了は `failed`（`work_failed`）として結果 API で返し、実行枠を空ける（2026-11-17 本人決定）。
 - 結果は `out/proposal.json` から Runner が読み、成果物（kind=`proposal_result`）として登録して、`POST /api/route-proposals/{id}/result` で返す。ファイルの形は [`15-linear-intake.md`](./15-linear-intake.md) の Q202。`Resume` は使わない。
 
 ## 4. 設定値・確定値

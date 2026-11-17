@@ -22,36 +22,31 @@ func (permissionProcess) Kill() error           { return nil }
 func (permissionProcess) ExitCode() (int, bool) { return 0, true }
 
 func TestClaudeCodeToolPermissionsRejectInvalidBeforeCLI(t *testing.T) {
-	cases := []struct{ name, policy, tools string }{
-		{"unknown_key", `{"allow":[]}`, `[]`},
-		{"unknown_key_with_deny", `{"deny":[],"extra":false}`, `[]`},
-		{"case_sensitive_key", `{"Deny":[]}`, `[]`},
-		{"missing_object", ``, `[]`},
-		{"null_object", `null`, `[]`},
-		{"array_object", `[]`, `[]`},
-		{"invalid_json", `{"deny":`, `[]`},
-		{"deny_string", `{"deny":"Bash"}`, `[]`},
-		{"deny_object", `{"deny":{}}`, `[]`},
-		{"deny_null", `{"deny":null}`, `[]`},
-		{"deny_empty_string", `{"deny":["Bash",""]}`, `[]`},
-		{"deny_number", `{"deny":[1]}`, `[]`},
-		{"deny_null_element", `{"deny":[null]}`, `[]`},
-		{"allow_string", `{}`, `"Bash"`},
-		{"allow_null", `{}`, `null`},
-		{"allow_empty_string", `{}`, `["Bash",""]`},
-		{"allow_number", `{}`, `[1]`},
-		{"allow_null_element", `{}`, `[null]`},
+	cases := []struct{ name, policy string }{
+		{"unknown_key", `{"extra":[]}`},
+		{"unknown_key_with_deny", `{"deny":[],"extra":false}`},
+		{"case_sensitive_key", `{"Deny":[]}`},
+		{"missing_object", ``}, {"null_object", `null`}, {"array_object", `[]`},
+		{"invalid_json", `{"deny":`},
+	}
+	for _, key := range []string{"allow", "deny"} {
+		for _, value := range []string{`"Bash"`, `{}`, `null`, `["Bash",""]`, `[1]`, `[null]`} {
+			cases = append(cases, struct{ name, policy string }{key + value, fmt.Sprintf(`{"%s":%s}`, key, value)})
+		}
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, "success")
-			f.request.Profile.Definition = json.RawMessage(fmt.Sprintf(`{"toolConfiguration":{"allowedTools":%s}}`, tc.tools))
+			f.request.Profile.Definition = json.RawMessage(`{"toolConfiguration":{"allowedTools":["Bash"]}}`)
 			f.config.ResolveToolPermissions = func(_ context.Context, req adapter.HarnessRequest) (json.RawMessage, error) {
 				if req.Profile.HarnessID != "harness" {
 					t.Error("lost Harness ID")
 				}
 				return json.RawMessage(tc.policy), nil
+			}
+			if err := New(Config{}).(interface{ CheckToolPermissions(json.RawMessage) error }).CheckToolPermissions(json.RawMessage(tc.policy)); err == nil {
+				t.Fatal("registration accepted invalid permissions")
 			}
 			calls := 0
 			f.config.Launch = func(context.Context, adapter.SandboxEnv, []string, io.Writer, io.Writer) (sandbox.Process, error) {
@@ -74,15 +69,19 @@ func TestClaudeCodeToolPermissionsLaunchArguments(t *testing.T) {
 	}{
 		{"empty_object", `{}`, []string{}, []string{}},
 		{"empty_deny", `{"deny":[]}`, []string{}, []string{}},
-		{"rules_preserved", `{"deny":["Bash(git push:*)","WebFetch"]}`, []string{"Bash(git push:*)", "Edit", "Bash(echo \"$HOME\":*)"}, []string{"Bash(git push:*)", "WebFetch"}},
+		{"only_deny", `{"deny":["WebFetch"]}`, []string{}, []string{"WebFetch"}},
+		{"only_allow", `{"allow":["Edit"]}`, []string{"Edit"}, []string{}},
+		{"rules_preserved", `{"allow":["Bash(git push:*)","Edit","Bash(echo \"$HOME\":*)"],"deny":["Bash(git push:*)","WebFetch"]}`, []string{"Bash(git push:*)", "Edit", "Bash(echo \"$HOME\":*)"}, []string{"Bash(git push:*)", "WebFetch"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, "success")
-			definition, _ := json.Marshal(map[string]any{"toolConfiguration": map[string]any{"allowedTools": tc.allow}})
-			f.request.Profile.Definition = definition
+			f.request.Profile.Definition = json.RawMessage(`{"toolConfiguration":{"allowedTools":["must-not-be-used"]}}`)
 			f.config.ResolveToolPermissions = func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
 				return json.RawMessage(tc.policy), nil
+			}
+			if err := New(Config{}).(interface{ CheckToolPermissions(json.RawMessage) error }).CheckToolPermissions(json.RawMessage(tc.policy)); err != nil {
+				t.Fatalf("registration rejected valid permissions: %v", err)
 			}
 			calls := 0
 			f.config.Launch = func(_ context.Context, _ adapter.SandboxEnv, args []string, out, _ io.Writer) (sandbox.Process, error) {
@@ -110,7 +109,7 @@ func TestClaudeCodeToolPermissionsLaunchArguments(t *testing.T) {
 					}
 				}
 				if calls == 2 {
-					_, _ = io.WriteString(out, `{"type":"result","subtype":"success","is_error":false}`+"\n")
+					_, _ = io.WriteString(out, `{"type":"result","session_id":"permissions-session","subtype":"success","is_error":false}`+"\n")
 				}
 				return permissionProcess{}, nil
 			}

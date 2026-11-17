@@ -56,7 +56,7 @@ func (r *Registry) Lookup(name string) (Adapter, error) {
 	return implementation, nil
 }
 
-// Names returns a sorted snapshot for Harness registration validation.
+// Names returns a sorted snapshot of the names available to Profile registration.
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

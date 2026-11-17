@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"io"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
@@ -9,7 +10,7 @@ import (
 
 // ProposalLaunch runs one process inside Proposal Sandbox. Production wiring
 // uses Container.RunControlled; tests inject a recorder or fake runtime.
-type ProposalLaunch func(context.Context, sandbox.SandboxSpec, []string) (sandbox.Process, error)
+type ProposalLaunch func(context.Context, sandbox.SandboxSpec, []string, io.Writer, io.Writer) (sandbox.Process, error)
 
 // ProposalHarnessInput is the Runner-owned Proposal Sandbox layout (spec 09 3.1).
 // The concrete Adapter fills prompts and commands (spec 08 3.10).
@@ -18,13 +19,15 @@ type ProposalHarnessInput struct {
 	Paths                                        contract.RequestPaths
 	InputsHost, OutHost, ScratchHost, ConfigHost string
 	Env                                          map[string]string
+	invocation                                   StageInvocation
 	Limits                                       sandbox.ResourceLimits
+	// Log delivery follows job cancellation, independently of the Run deadline.
+	deliveryCtx context.Context
 }
 
 // ProposalHarnessOutcome is the harness result before Runner redaction and API delivery.
 type ProposalHarnessOutcome struct {
-	ProposalJSON []byte
-	ErrorClass   *string
+	ErrorClass *string
 }
 
 // ProposalHarness is the Runner boundary for spec 08 3.10. Adapter packages

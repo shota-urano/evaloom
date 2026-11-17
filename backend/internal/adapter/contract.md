@@ -9,7 +9,7 @@ Phase 1 の JSON スキーマは次のように確定する。
 - 契約版は文字列の `"1"`。各オブジェクトは仕様例にあるすべての項目を必須とし、項目名は camelCase と完全一致させる。定義外の項目は拒否する。
 - `errorClass`、`prUrl`、`usage.inputTokens`、`usage.outputTokens` は null を許す。これらの項目も省略はできない。
 - 配列は空でもよいが、null や null の要素は許さない。`summary` は空文字でもよい。時間とトークン件数は 0 以上とする。
-- `task.acceptanceCriteria` は仕様 3.2 に従い、空文字を拒否する。
+- `task.acceptanceCriteria`は契約6.1に従い、空文字も受け付ける。必須かどうかは固定済みのProfileに従い、Adapterを呼ぶ前に検査する。
 - `profile.definition` は JSON オブジェクトとして受け付け、内部の項目はこの層では検証しない。Profile 登録時の整合性検証は Registry の担当とする。
 - ID、SHA、パス、Profile の版、URL の形式や実在性は、この JSON 検証では確認しない。仕様例のプレースホルダーもそのまま受け付ける。
 

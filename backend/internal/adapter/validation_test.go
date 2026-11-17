@@ -69,7 +69,6 @@ func TestInvalidContractValues(t *testing.T) {
 		{"request", "executionId", 1},
 		{"request", "task", []any{}},
 		{"request", "task.title", false},
-		{"request", "task.acceptanceCriteria", ""},
 		{"request", "profile.definition", []any{}},
 		{"request", "profile.definition", "not an object"},
 		{"request", "context.revisionIds", "not an array"},
@@ -108,6 +107,17 @@ func TestInvalidContractValues(t *testing.T) {
 				t.Errorf("%s accepted invalid document: %s", kind, input)
 			}
 		}
+	}
+}
+
+func TestRequestAllowsOptionalAcceptanceCriteria(t *testing.T) {
+	data := changed(t, fixture(t, "request"), []string{"task", "acceptanceCriteria"}, "", false)
+	var request adapter.HarnessRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatal(err)
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

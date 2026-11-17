@@ -15,6 +15,7 @@ import (
 type harness struct {
 	mu       sync.Mutex
 	sessions map[adapter.SessionID]session
+	onStart  func(adapter.HarnessRequest, adapter.SandboxEnv) error
 }
 
 type session struct {
@@ -23,7 +24,13 @@ type session struct {
 }
 
 // New returns only the shared contract, so consumers need no concrete type.
-func New() adapter.Adapter { return &harness{sessions: make(map[adapter.SessionID]session)} }
+func New() adapter.Adapter { return NewWithStart(nil) }
+
+// NewWithStart optionally produces deterministic work output at the Adapter
+// boundary. It never replaces Runner's stage frame, collectors or reporting.
+func NewWithStart(onStart func(adapter.HarnessRequest, adapter.SandboxEnv) error) adapter.Adapter {
+	return &harness{sessions: make(map[adapter.SessionID]session), onStart: onStart}
+}
 
 func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env adapter.SandboxEnv) (adapter.SessionID, error) {
 	if err := ctx.Err(); err != nil {
@@ -34,6 +41,11 @@ func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env ada
 	}
 	if env.Worktree == "" || env.Worktree != req.Project.Workdir {
 		return "", fmt.Errorf("dummy: worktree must match request")
+	}
+	if h.onStart != nil {
+		if err := h.onStart(req, env); err != nil {
+			return "", err
+		}
 	}
 	id := adapter.SessionID(ulid.Make().String())
 	s := session{

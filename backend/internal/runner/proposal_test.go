@@ -46,7 +46,7 @@ func (h *recordingProposalHarness) Run(ctx context.Context, in ProposalHarnessIn
 	if len(spec.Secrets) != 0 {
 		return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
 	}
-	process, err := launch(ctx, spec, []string{"/bin/true"})
+	process, err := launch(ctx, spec, []string{"/bin/true"}, io.Discard, io.Discard)
 	if err != nil {
 		return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
 	}
@@ -98,7 +98,7 @@ func proposalClaim(id string, timeout int) ProposalClaim {
 
 func immediateProposalLaunch(t *testing.T) ProposalLaunch {
 	t.Helper()
-	return func(_ context.Context, spec sandbox.SandboxSpec, _ []string) (sandbox.Process, error) {
+	return func(_ context.Context, spec sandbox.SandboxSpec, _ []string, _, _ io.Writer) (sandbox.Process, error) {
 		if len(spec.Secrets) != 0 {
 			return nil, fmt.Errorf("secrets in proposal sandbox")
 		}
@@ -266,10 +266,10 @@ func TestProposalSandboxHasNoSecretsAndOnlyModelDestinations(t *testing.T) {
 	}
 }
 
-func TestProposalInputContainsModel(t *testing.T) {
+func TestProposalInputContainsOnlyTaskAndCandidates(t *testing.T) {
 	claim := proposalClaim(ulid.Make().String(), 30)
 	dir := t.TempDir()
-	_, _, _, err := prepareProposalWorkspace(dir, claim, DefaultProposalPaths, "test-model")
+	_, _, _, err := prepareProposalFiles(dir, claim, DefaultProposalPaths)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,11 +277,9 @@ func TestProposalInputContainsModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var payload struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil || payload.Model != "test-model" {
-		t.Fatalf("proposal input model=%q err=%v", payload.Model, err)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(data, &payload); err != nil || len(payload) != 3 || payload["taskTitle"] == nil || payload["taskBody"] == nil || payload["candidates"] == nil {
+		t.Fatalf("proposal input=%s err=%v", data, err)
 	}
 	emptyClaim := proposalClaim(ulid.Make().String(), 30)
 	emptyClaim.Proposer = json.RawMessage(`{"microHarness":"codex","model":""}`)
@@ -306,15 +304,15 @@ func TestProposalStageMountRootsAreDedicated(t *testing.T) {
 	claim := proposalClaim(ulid.Make().String(), 30)
 	dir := t.TempDir()
 	paths := DefaultProposalPaths
-	_, _, roots, err := prepareProposalWorkspace(dir, claim, paths, "test-model")
+	_, _, roots, err := prepareProposalFiles(dir, claim, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(roots) != 6 {
-		t.Fatalf("roots=%d want 6", len(roots))
+	if len(roots) != 3 {
+		t.Fatalf("roots=%d want 3", len(roots))
 	}
 	want := []string{
-		paths.Profile, paths.Workspace, paths.Out, paths.Inputs, paths.Records, paths.Scratch,
+		paths.Out, paths.Inputs, paths.Scratch,
 	}
 	for _, target := range want {
 		root, ok := roots[target]
