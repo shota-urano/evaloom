@@ -302,3 +302,99 @@ func TestAuthorizeStorageFailureRollsBackAndDenies(t *testing.T) {
 		})
 	}
 }
+
+// Spec 17 3.2/3.5: waiving through the owner API, then removing the waiver
+// through the same API, makes the next approvalId=null query not_approved.
+func TestAuthorizeWaiverRemovedThroughProjectAPIDenies(t *testing.T) {
+	f, token, id, _ := authorizeFixture(t)
+	var projectID string
+	if err := f.db.QueryRow(`SELECT project_id FROM executions WHERE id=?`, id).Scan(&projectID); err != nil {
+		t.Fatal(err)
+	}
+	status, body := projectRequest(t, f, "PATCH", "/api/projects/"+projectID, map[string]any{"approvalWaivers": []string{"merge_pull_request"}})
+	if status != 200 {
+		t.Fatalf("waive=%d %s", status, body)
+	}
+	status, body = postAuthorize(t, f, token, id, authorizeBody(nil))
+	requireAuthorization(t, status, body, true, "")
+	status, body = projectRequest(t, f, "PATCH", "/api/projects/"+projectID, map[string]any{"approvalWaivers": []string{}})
+	if status != 200 {
+		t.Fatalf("unwaive=%d %s", status, body)
+	}
+	status, body = postAuthorize(t, f, token, id, authorizeBody(nil))
+	requireAuthorization(t, status, body, false, "not_approved")
+}
+
+// Spec 17 3.5: every outcome is recorded as execution_events approval_consumed
+// and audit_logs approval.consume (actor runner:<id>) with approvalId,
+// operation, allowed and reason. publish and waived operations have no row.
+func TestAuthorizeRecordsEveryOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name, setup, operation string
+		withApproval           bool
+		contentID              string
+		allowed                bool
+		reason, state          string
+	}{
+		{"publish", ``, "publish", false, authorizeContent, true, "", "approved"},
+		{"waived", `UPDATE projects SET approval_waivers='["merge_pull_request"]' WHERE id=(SELECT project_id FROM executions WHERE id=?)`, "merge_pull_request", false, authorizeContent, true, "", "approved"},
+		{"not waived", ``, "merge_pull_request", false, authorizeContent, false, "not_approved", "approved"},
+		{"undeclared", ``, "undeclared", false, authorizeContent, false, "not_approved", "approved"},
+		{"consumed", ``, "merge_pull_request", true, authorizeContent, true, "", "consumed"},
+		{"expired", `UPDATE approvals SET expires_at='2000-01-01T00:00:00Z' WHERE execution_id=?`, "merge_pull_request", true, authorizeContent, false, "expired", "expired"},
+		{"content changed", ``, "merge_pull_request", true, "release:r2", false, "content_changed", "invalidated"},
+		{"cancelled", `UPDATE executions SET cancel_requested_at='2026-01-01T00:00:00Z' WHERE id=?`, "merge_pull_request", true, authorizeContent, false, "cancelled", "invalidated"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, token, id, approvalID := authorizeFixture(t)
+			if test.setup != "" {
+				stageExec(t, f, test.setup, id)
+			}
+			var approval any
+			if test.withApproval {
+				approval = approvalID
+			}
+			approvals := stageCount(t, f, `SELECT count(*) FROM approvals`)
+			input := authorizeBody(approval)
+			input["operation"], input["contentId"] = test.operation, test.contentID
+			status, body := postAuthorize(t, f, token, id, input)
+			requireAuthorization(t, status, body, test.allowed, test.reason)
+			if n := stageCount(t, f, `SELECT count(*) FROM approvals`); n != approvals {
+				t.Fatalf("approvals=%d; want %d (authorize never creates rows)", n, approvals)
+			}
+			if status, _ := approvalStatus(t, f, approvalID); status != test.state {
+				t.Fatalf("approval=%s; want %s", status, test.state)
+			}
+			allowed := 0
+			if test.allowed {
+				allowed = 1
+			}
+			for _, query := range []string{
+				`SELECT payload FROM execution_events WHERE execution_id=? AND type='approval_consumed'`,
+				`SELECT detail FROM audit_logs WHERE target_type='execution' AND target_id=? AND action='approval.consume' AND actor='runner:claim-runner'`,
+			} {
+				var raw string
+				if err := f.db.QueryRow(query, id).Scan(&raw); err != nil {
+					t.Fatalf("%s: %v", query, err)
+				}
+				var record map[string]any
+				if err := json.Unmarshal([]byte(raw), &record); err != nil {
+					t.Fatal(err)
+				}
+				wantApproval, hasApproval := record["approvalId"]
+				if !hasApproval || wantApproval != approval {
+					t.Fatalf("record %s: approvalId=%v; want %v", raw, wantApproval, approval)
+				}
+				reason, _ := record["reason"].(string)
+				if record["operation"] != test.operation || record["allowed"] != (allowed == 1) || reason != test.reason {
+					t.Fatalf("record %s; want operation=%s allowed=%v reason=%q", raw, test.operation, test.allowed, test.reason)
+				}
+			}
+			if test.name == "expired" {
+				if n := stageCount(t, f, `SELECT count(*) FROM audit_logs WHERE action='approval.expire' AND target_id=? AND actor='system'`, approvalID); n != 1 {
+					t.Fatal("missing expiration audit by system")
+				}
+			}
+		})
+	}
+}
