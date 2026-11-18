@@ -1,0 +1,32 @@
+# Minimal special harness for the contract test (spec 19 Q173).
+# It never calls an AI: prepare, check and publish run bin/fixture, which the
+# test builds from program/ and commits before tagging profile/v1.0.0.
+# The work stage runs through a deterministic test Adapter instead of a
+# micro-harness.
+contractVersion: "1"
+profileVersion: "1.0.0"
+name: "special-harness-fixture"
+description: |
+  Contract test fixture. Prepares a file, reports it, and publishes it only
+  after asking Evaloom right before the operation.
+acceptanceCriteria: required
+stages:
+  prepare:
+    command: ["bin/fixture", "prepare"]
+    timeoutSec: 20
+  work:
+    microHarness: "codex"
+    model: "fixture"
+    instructions: ["prompts/work.md"]
+    resume: optional
+    timeoutSec: 20
+  check:
+    command: ["bin/fixture", "check"]
+    timeoutSec: 20
+  publish:
+    command: ["bin/fixture", "publish"]
+    timeoutSec: 20
+approvals:
+  - operation: "publish_report"
+    description: "Publish the checked report"
+    waivable: false
