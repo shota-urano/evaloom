@@ -197,25 +197,12 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 			recent = def.Records.Pass.Recent
 		}
 		if recent > 0 {
-			records, err := tx.QueryContext(r.Context(), `SELECT hr.id,hr.file_name,a.sha256 FROM harness_records hr JOIN artifacts a ON a.id=hr.artifact_id WHERE hr.harness_id=? AND hr.deleted_at IS NULL ORDER BY hr.created_at DESC,hr.id DESC LIMIT ?`, execution.HarnessID, recent)
+			records, err := store.HarnessRecordsForNextWork(r.Context(), tx, execution.HarnessID, recent)
 			if err != nil {
 				return nil, err
 			}
-			type recordPin struct{ id, name, hash string }
-			var pins []recordPin
-			for records.Next() {
-				var pin recordPin
-				if err = records.Scan(&pin.id, &pin.name, &pin.hash); err != nil {
-					break
-				}
-				pins = append(pins, pin)
-			}
-			err = errors.Join(err, records.Err(), records.Close())
-			if err != nil {
-				return nil, err
-			}
-			for _, pin := range pins {
-				_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness','record',?,?,?,NULL,?)`, ulid.Make().String(), id, pin.name, pin.id, pin.hash, now)
+			for _, record := range records {
+				_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness','record',?,?,?,NULL,?)`, ulid.Make().String(), id, record.FileName, record.ID, record.SHA256, now)
 				if err != nil {
 					return nil, err
 				}
@@ -265,7 +252,8 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 			return nil, err
 		}
 	}
-	records, err := tx.QueryContext(r.Context(), `SELECT cr.source_path,hr.artifact_id FROM context_revisions cr JOIN harness_records hr ON hr.id=cr.source_revision WHERE cr.execution_id=? AND cr.kind='record' ORDER BY cr.source_path`, id)
+	// Read only the original pins, including records deleted after pinning.
+	records, err := tx.QueryContext(r.Context(), `SELECT cr.source_path,hr.artifact_id FROM context_revisions cr JOIN harness_records hr ON hr.id=cr.source_revision WHERE cr.execution_id=? AND cr.layer='harness' AND cr.kind='record' ORDER BY hr.created_at DESC,hr.id DESC`, id)
 	if err != nil {
 		return nil, err
 	}
