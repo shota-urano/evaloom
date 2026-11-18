@@ -27,7 +27,13 @@ def attempt(item):
         return {}
     if kind == "http":
         # Ignore proxy settings, so loopback probes actually attempt loopback.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # With "proxy": true the Sandbox's proxy settings are used instead
+        # (the only route a declared destination may take); then only a 200
+        # from the destination counts, since the proxy denies with 403.
+        if item.get("proxy"):
+            opener = urllib.request.build_opener()
+        else:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             request = urllib.request.Request(item["url"], method=item.get("method", "GET"))
             with opener.open(request, timeout=item["timeoutSec"]) as response:
@@ -35,6 +41,10 @@ def attempt(item):
         except urllib.error.HTTPError as response:
             # A 401/403/404 is still a successful connection to the API.
             return {"status": response.code}
+    if kind == "resolve":
+        # Name resolution inside the Sandbox, without connecting.
+        socket.getaddrinfo(item["host"], None)
+        return {}
     if kind == "tcp":
         with socket.create_connection((item["host"], item["port"]), item["timeoutSec"]):
             return {}
@@ -129,6 +139,7 @@ def run_plan(plan, result_path):
         required = {"read": ["path"], "write": ["path", "value"],
                     "exists": ["path"], "http": ["url", "timeoutSec"],
                     "tcp": ["host", "port", "timeoutSec"],
+                    "resolve": ["host"],
                     "proxy_connect": ["host", "port", "timeoutSec"],
                     "env": ["allowlist", "secrets"],
                     "git_push": ["remote", "refspec", "timeoutSec"],
@@ -143,6 +154,8 @@ def run_plan(plan, result_path):
         try:
             detail = attempt(item)
             succeeded = item["kind"] != "proxy_connect" or detail["status"] == 200
+            if item["kind"] == "http" and item.get("proxy"):
+                succeeded = detail["status"] == 200
             if item["kind"] == "secret":
                 # Success means the value was obtained from the environment
                 # or a file.

@@ -15,8 +15,9 @@ fixtureのコマンドは `python3 setup.py` と `python3 test.py`。後者は�
 | `read` | `path` | ファイル全体の読み取り |
 | `write` | `path`, `value` | ファイルへの追記。破棄できるテスト用ファイルだけを指定する |
 | `exists` | `path` | ファイル・ソケット等の存在確認 |
-| `http` | `url`, `timeoutSec` | プロキシ設定を使わないHTTP接続。4xx/5xxでも接続成功として記録する |
+| `http` | `url`, `timeoutSec` | プロキシ設定を使わないHTTP接続。4xx/5xxでも接続成功として記録する。`"proxy": true` のときは Sandbox のプロキシ設定を使い、200 のときだけ成功とする（プロキシの拒否は 403） |
 | `tcp` | `host`, `port`, `timeoutSec` | DNS解決を含む直接TCP接続 |
+| `resolve` | `host` | Sandbox の中での名前解決だけ（接続しない） |
 | `proxy_connect` | `host`, `port`, `timeoutSec` | SandboxのプロキシへのCONNECT。完全なHTTP応答の200は接続成功、403は拒否。プロキシへの接続拒否・タイムアウト・通信障害・不正応答は実行不能。単体テストでは `proxyPort` でプロキシのポートを渡せる |
 | `env` | `allowlist`, `secrets` | 環境変数名、許可外の名前、既知の秘密の値が含まれるかの確認 |
 | `git_push` | `remote`, `refspec`, `timeoutSec` | 明示したリモート・refへのpush |
@@ -68,7 +69,30 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 
 実環境テストの呼び出し側は、開始前に `Prerequisites.Check(ctx)` のエラーをテストの失敗として扱う。モデルを使う場合は `RequireModel` と実際の認証状態を調べる `ModelCredentials` を渡す。通常検証では、Sandboxや認証情報が無い場合にエラーが返り、実行しないことを単体テストで確かめる。スキップ処理は設けていない。
 
-## 3.2 権限境界の実環境テスト
+## 3.2 段ごとの隔離テスト（ハーネス契約 v1 の段）
+
+判定の基準（3.2 の表）は `stage_isolation.go` にある。`IsolationDeclarations.Expected(row, stage)` が表の各セル、`EnvAllowlist` が環境変数の行、`IsolationPlan` が段ごとのプローブの plan と判定規則である。証拠は2種類あり、どちらも製品の配線から導かずにテスト側が持つ。
+
+| 証拠 | 判定 | Docker |
+|---|---|---|
+| Runner がその段に作らせたコンテナ作成コマンド（ネットワーク、見える場所と書ける場所、守るホストのパス、鍵、環境変数） | `CreateArgsVerdict` | 不要 |
+| Sandbox の中でのアクセスの試み（`IsolationPlan` の観測）と、Sandbox の外の記録（Control API のアクセスログ、テスト用の外部の宛先の記録） | `ObservationVerdict`。「届かない」行は、結果ファイルが失敗と書いていても外の記録に要求が残れば不合格 | 必要 |
+
+「意図的に緩めた状態」は `Loosening` で作る。コンテナ実行環境の CLI の境界で1つの段の作成コマンドだけを書き換える（ネットワークを `host` にする、鍵の変数を足す、マウントを足す）。製品には緩めるためのスイッチを足していない。
+
+`make verify` に入るもの:
+
+- `TestIsolationTableMatchesSpec`、`TestCreateArgsVerdictRejectsLoosenedSandboxes`、`TestObservationVerdictUsesReportAndTrustedRecords`、`TestProbeResolveAndProxiedHTTP`（判定と plan の単体テスト）
+- `TestProposalSandboxCreateArgsIsolation`。製品の `runner.BuildProposalSandboxSpec` と `sandbox.Container` で Proposal の作成コマンドを作り、表と照合する。緩めた5通りが該当する行で失敗することも確かめる
+- `cmd/evaloom-runner` の `TestStageIsolationThroughRunner`。製品の Runner コマンドで準備・作業（プローブ Adapter）・確かめる・出すを通し、全段の作成コマンドを `CreateArgsVerdict` で判定する。偽の CLI でも環境変数は実際に渡るので、鍵の行（`probe_read`、`probe_write`、宣言していない鍵）は Sandbox の中の観測でも判定する。緩めた5通り（確かめる段のループバック許可、作業の段への鍵、準備の段への write の鍵、出す段への宣言していない鍵、確かめる段へのホストのマウント）が、その段のその行だけで失敗することを確かめる
+
+偽の CLI はホストでコマンドを動かすため、ファイル・ネットワーク・名前解決の行の「実際に届かない・見えない」は `make verify` では証明しない。作成コマンドの上で表と一致していることまでを確かめる。
+
+実環境（Mac mini）では `cmd/evaloom-runner/stage_isolation_docker_test.go`（タグ `security_docker`）の `TestStageIsolationDocker` が、全行の plan を本物の Sandbox で実行し、両方の証拠で判定する。Proposal の列は、製品の Proposal Sandbox の spec と Container を実 Docker で動かして確かめる（Runner の提案ジョブの経路は 3.6 の範囲）。緩めた状態（ループバック許可、作業の段への鍵、準備の段への write の鍵、Proposal のループバック許可）が失敗することも同じテストで確かめる。実行方法と必要な環境変数はファイル冒頭のコメントにある。テスト用の外部の宛先は、Sandbox のプロキシが公開アドレスだけを通すため、公開アドレスに届く名前を呼び出し側が用意する（Q150）。前提が無ければ実行不能として失敗し、スキップしない。
+
+「モデル API の認証情報の値」の行は Q8 の第一案を採った場合の行で、仕様09の3.5で第二案に決まっているため、プローブを置いていない。
+
+## 3.2 権限境界の実環境テスト（旧工程）
 
 リポジトリのルートから、イメージを一度ビルドし、ビルドタグ `security_docker` で受け入れテストを選択して実行する。
 

@@ -31,6 +31,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
+	"github.com/shota-urano/evaloom/backend/internal/securitytest"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -60,6 +61,13 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 	case "image inspect":
 		fmt.Print(`{"Os":"linux","Config":{}}`)
 	case "container create":
+		// Spec 14 3.2 negative controls weaken one stage's command here, at
+		// the runtime CLI boundary, as a broken Sandbox configuration would.
+		if raw := os.Getenv("EVALOOM_FAKE_LOOSEN"); raw != "" {
+			var l securitytest.Loosening
+			must(json.Unmarshal([]byte(raw), &l))
+			args = l.Loosen(args, runner.DefaultProposalPaths)
+		}
 		data, _ := json.Marshal(args)
 		must(os.WriteFile(filepath.Join(root, value("--name")+".json"), data, 0600))
 		// Name-only --env options import values from this create client's
@@ -319,6 +327,8 @@ type executionFixture struct {
 	cancel       context.CancelFunc
 	mu           sync.Mutex
 	workRequests []adapter.HarnessRequest
+	accesses     []string
+	wait         time.Duration // waitStatus deadline; 0 means 25s
 	claims       []runner.Claim
 	// workAdapter, when set, replaces the deterministic dummy work Adapter
 	// with one built from Runner's real work wiring (the probe Adapter).
@@ -329,9 +339,12 @@ type executionFixture struct {
 // populate writes its files before the commit tagged profile/v1.0.0;
 // instructions is the pinned work instruction text the work Adapter must see.
 type fixtureHarness struct {
-	populate     func(t *testing.T, repo, binary string)
-	instructions string
-	taskBody     string
+	populate func(t *testing.T, repo, binary string)
+	// populateFixture, when set, replaces populate for content that depends
+	// on the running fixture (Control API address, data paths).
+	populateFixture func(t *testing.T, f *executionFixture, repo string)
+	instructions    string
+	taskBody        string
 }
 
 // inlineHarness wraps this test binary as the prepare/check/publish program.
@@ -402,6 +415,11 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 	// Capture actual claim replies without changing any request, status or body.
 	handler := api.NewHandlerWithArtifacts(f.db, log, auth, nil, api.ArtifactConfig{Store: files, MaxBytes: 1 << 20}, f.adapters)
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Control Plane access log in front of the real handler (spec 14 3.2
+		// judges "unreachable" rows by it too, not only by probe reports).
+		f.mu.Lock()
+		f.accesses = append(f.accesses, r.RequestURI)
+		f.mu.Unlock()
 		if !strings.HasSuffix(r.URL.Path, "/claim") {
 			handler.ServeHTTP(w, r)
 			return
@@ -523,7 +541,11 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)
 	}
-	harness.populate(t, repo, binary)
+	if harness.populateFixture != nil {
+		harness.populateFixture(t, f, repo)
+	} else {
+		harness.populate(t, repo, binary)
+	}
 	git := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -667,7 +689,11 @@ func (a *authenticatedFixtureAdapter) Start(ctx context.Context, req adapter.Har
 }
 func (f *executionFixture) waitStatus(want string) {
 	f.t.Helper()
-	deadline := time.Now().Add(25 * time.Second)
+	wait := 25 * time.Second
+	if f.wait != 0 {
+		wait = f.wait
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		var status string
 		var errorClass sql.NullString

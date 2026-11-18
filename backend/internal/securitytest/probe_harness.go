@@ -169,3 +169,8 @@ func NewWorkProbe(w runner.WorkAdapterConfig, plan json.RawMessage) (adapter.Ada
 	command := []string{"/usr/bin/env", "python3", "-c", string(source), "--inline-plan", string(plan), WorkProbeReport}
 	return probe.NewWithConfig(probe.Config{Sandbox: box, Command: command, Report: WorkProbeReport, Session: session}), nil
 }
+
+// ProbeAccessSource is the access-attempt script (probe_access.py) for
+// Sandboxes without a committed Profile, such as the Proposal Sandbox. Run
+// it as python3 -c <source> --inline-plan <plan> <result>.
+func ProbeAccessSource() ([]byte, error) { return assets.ReadFile("assets/probe.py") }

@@ -17,8 +17,8 @@ const DestinationOperationPath = "/operations"
 // DestinationRequest is recorded before any routing, including requests the
 // destination answers with 404. It is independent of files a stage writes.
 type DestinationRequest struct {
-	Method, Path, RemoteAddr string
-	Body                     []byte
+	Method, Path, Query, RemoteAddr string
+	Body                            []byte
 }
 
 // Destination is the test external destination of spec 14 3.0 (Q150): a
@@ -99,7 +99,7 @@ func (d *Destination) Check(ctx context.Context) error {
 func (d *Destination) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	d.mu.Lock()
-	d.requests = append(d.requests, DestinationRequest{Method: r.Method, Path: r.URL.Path, RemoteAddr: r.RemoteAddr, Body: body})
+	d.requests = append(d.requests, DestinationRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, RemoteAddr: r.RemoteAddr, Body: body})
 	file, found := d.files[r.URL.Path]
 	d.mu.Unlock()
 	switch {
