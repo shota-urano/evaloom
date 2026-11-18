@@ -15,12 +15,14 @@ fixtureのコマンドは `python3 setup.py` と `python3 test.py`。後者は�
 | `read` | `path` | ファイル全体の読み取り |
 | `write` | `path`, `value` | ファイルへの追記。破棄できるテスト用ファイルだけを指定する |
 | `exists` | `path` | ファイル・ソケット等の存在確認 |
-| `http` | `url`, `timeoutSec` | プロキシ設定を使わないHTTP接続。4xx/5xxでも接続成功として記録する |
+| `http` | `url`, `timeoutSec` | プロキシ設定を使わないHTTP接続。4xx/5xxでも接続成功として記録する。`"proxy": true` のときは Sandbox のプロキシ設定を使い、200 のときだけ成功とする（プロキシの拒否は 403） |
 | `tcp` | `host`, `port`, `timeoutSec` | DNS解決を含む直接TCP接続 |
+| `resolve` | `host` | Sandbox の中での名前解決だけ（接続しない） |
 | `proxy_connect` | `host`, `port`, `timeoutSec` | SandboxのプロキシへのCONNECT。完全なHTTP応答の200は接続成功、403は拒否。プロキシへの接続拒否・タイムアウト・通信障害・不正応答は実行不能。単体テストでは `proxyPort` でプロキシのポートを渡せる |
 | `env` | `allowlist`, `secrets` | 環境変数名、許可外の名前、既知の秘密の値が含まれるかの確認 |
 | `git_push` | `remote`, `refspec`, `timeoutSec` | 明示したリモート・refへのpush |
 | `command` | `argv`, `timeoutSec` | キーチェーンやSSHエージェント等にアクセスするコマンドの実行 |
+| `authorize` | `operation`, `timeoutSec` | 通話口（`EVALOOM_CHANNEL`）への `authorize` の送信。返事があれば成功（Runner が Control Plane に中継した）とする。`detail.connected` が偽のときは通話口に届いておらず、拒否の証拠にならない |
 
 `python3 probe.py <plan> <result>` でも同じ処理を呼べる。入力例は次のとおり。
 
@@ -39,6 +41,21 @@ CONNECTの結果には `detail.status` を記録する。プロキシ自体の�
 
 結果ファイルは改ざんされうる。後続の権限境界テストは、期待する全IDの結果に加えて、Control Planeの `audit_logs`、HTTPアクセス記録、`Fixture.Refs(ctx)` で取得するbareリモートのrefを照合する必要がある。ファイルだけで合格にしてはいけない。`NewCanary()` は設定ファイル等に使う一意の文字列を生成する。
 
+## 仕様14の3.0の道具（ハーネス契約 v1 の段で使う）
+
+上の `NewFixture` と `harness.py` は旧工程の道具である。3.2〜3.6のテストは、次の道具を使う。
+
+| 道具 | 実体 | 使い方 |
+|---|---|---|
+| プローブ用スペシャルハーネス | `ProbeHarness`、`WriteProbeHarness(repo, h)`。`probeharness/probe_stage.py` が `bin/probe` になる | 空のディレクトリに Profile（`evaloom/profile.yaml`）と `bin/probe` を書く。呼び出し側が commit して `profile/v1.0.0` を付け、通常どおり登録する。準備・確かめる・出すの段で `probe/<stage>-plan.json` のアクセスを試し、`out/probe-<stage>.json` に観測を書く。結果 JSON は `Results` の値で上書きできる（`{{contentId}}` などを置換、`"{{omit}}"` で項目を消す）。`Authorize` を指定すると、出す段が通話口で `authorize` を送り、`allowed: true` のときだけテスト用の外部の宛先へ操作を1回送る |
+| プローブ Adapter | `NewWorkProbe(runner.WorkAdapterConfig, plan)`。`adapter/probe` の `NewWithConfig` と `LaunchSandbox` を使う | 作業の段で、Runner が渡す Work Sandbox の起動口（`Launch`）と専用設定の作業用コピーを使い、`python3 -c` で plan を実行する。観測は作業領域の `.evaloom-probe/work-results.json`。AI は呼ばない。起動口が無い、または Sandbox でコマンドを実行できないときは実行不能で失敗する。振り分けの提案（Proposal Sandbox）での実行は未実装 |
+| テスト用の鍵 | `NewProbeSecrets()`、`ProbeSecrets.Store(dataDir, harnessID)` | `probe_read` を `read`、`probe_write` を `write` で Runner の鍵の保管に登録する。値はカナリア。plan には値を書かず、`SecretProbe(id, value, paths...)` で SHA-256 と長さだけを書く（段は Profile の plan を読めるため）。観測は見つかったかどうかの真偽だけ |
+| テスト用の外部の宛先 | `NewDestination(listener)` | 受けた要求をすべて記録し（`Requests`）、`POST /operations` を出す操作として数える（`Operations`）。`SetFile` で準備の段が取り込むファイルを置ける。待ち受けのアドレスと名前解決は呼び出し側が用意する（Q150） |
+
+前提の確認は `Prerequisites.Require(ctx, t)` を使う。Sandbox が無い・動かない、`RequireDestination` で宛先が無い・ループバックか未指定のアドレス、`RequireModel` で認証情報が無い、のどれでも `t.Fatalf` で失敗し、スキップしない（仕様14の6章）。`TestPrerequisitesFailInsteadOfSkipping` がこれを固定する。
+
+`cmd/evaloom-runner` の `TestProbeHarnessExecutionSucceeds` は、これらの道具で準備から出すまでの Execution が `succeeded` まで通ることを、製品の Runner コマンドで確かめる（`make verify` に含む）。置き換えるのはコンテナ実行環境の CLI だけで、Docker デーモンは要らない。このため隔離そのものは証明しない。鍵は宣言した段（準備は `probe_read`、出すは両方）にだけ届き、確かめる段と作業の段に届かないことと、記録にカナリアの値が残らないことも確かめる。宛先へのネットワークを宣言した Profile は実コンテナが要るため、この試験では使わない。実環境での隔離のテスト（3.2〜3.6）はビルドタグで選び、`Prerequisites.Require` を通してから実行する。
+
 ## 偽のGitHub API
 
 `NewGitHub("owner/repo", "test-token")` はローカルHTTPサーバを起動する。PRの作成・一覧・番号指定の取得に対応し、重複作成、認証不足、未対応操作を拒否する。`Accesses()` は拒否した要求も含めて記録を返す。トークン値は記録しない。終了時は `Close()` を呼ぶ。
@@ -53,7 +70,30 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 
 実環境テストの呼び出し側は、開始前に `Prerequisites.Check(ctx)` のエラーをテストの失敗として扱う。モデルを使う場合は `RequireModel` と実際の認証状態を調べる `ModelCredentials` を渡す。通常検証では、Sandboxや認証情報が無い場合にエラーが返り、実行しないことを単体テストで確かめる。スキップ処理は設けていない。
 
-## 3.2 権限境界の実環境テスト
+## 3.2 段ごとの隔離テスト（ハーネス契約 v1 の段）
+
+判定の基準（3.2 の表）は `stage_isolation.go` にある。`IsolationDeclarations.Expected(row, stage)` が表の各セル、`EnvAllowlist` が環境変数の行、`IsolationPlan` が段ごとのプローブの plan と判定規則である。証拠は2種類あり、どちらも製品の配線から導かずにテスト側が持つ。
+
+| 証拠 | 判定 | Docker |
+|---|---|---|
+| Runner がその段に作らせたコンテナ作成コマンド（ネットワーク、見える場所と書ける場所、守るホストのパス、鍵、環境変数） | `CreateArgsVerdict` | 不要 |
+| Sandbox の中でのアクセスの試み（`IsolationPlan` の観測）と、Sandbox の外の記録（Control API のアクセスログ、テスト用の外部の宛先の記録） | `ObservationVerdict`。「届かない」行は、結果ファイルが失敗と書いていても外の記録に要求が残れば不合格 | 必要 |
+
+「意図的に緩めた状態」は `Loosening` で作る。コンテナ実行環境の CLI の境界で1つの段の作成コマンドだけを書き換える（ネットワークを `host` にする、鍵の変数を足す、マウントを足す）。製品には緩めるためのスイッチを足していない。
+
+`make verify` に入るもの:
+
+- `TestIsolationTableMatchesSpec`、`TestCreateArgsVerdictRejectsLoosenedSandboxes`、`TestObservationVerdictUsesReportAndTrustedRecords`、`TestProbeResolveAndProxiedHTTP`（判定と plan の単体テスト）
+- `TestProposalSandboxCreateArgsIsolation`。製品の `runner.BuildProposalSandboxSpec` と `sandbox.Container` で Proposal の作成コマンドを作り、表と照合する。緩めた5通りが該当する行で失敗することも確かめる
+- `cmd/evaloom-runner` の `TestStageIsolationThroughRunner`。製品の Runner コマンドで準備・作業（プローブ Adapter）・確かめる・出すを通し、全段の作成コマンドを `CreateArgsVerdict` で判定する。偽の CLI でも環境変数は実際に渡るので、鍵の行（`probe_read`、`probe_write`、宣言していない鍵）は Sandbox の中の観測でも判定する。緩めた5通り（確かめる段のループバック許可、作業の段への鍵、準備の段への write の鍵、出す段への宣言していない鍵、確かめる段へのホストのマウント）が、その段のその行だけで失敗することを確かめる
+
+偽の CLI はホストでコマンドを動かすため、ファイル・ネットワーク・名前解決の行の「実際に届かない・見えない」は `make verify` では証明しない。作成コマンドの上で表と一致していることまでを確かめる。
+
+実環境（Mac mini）では `cmd/evaloom-runner/stage_isolation_docker_test.go`（タグ `security_docker`）の `TestStageIsolationDocker` が、全行の plan を本物の Sandbox で実行し、両方の証拠で判定する。Proposal の列は、製品の Proposal Sandbox の spec と Container を実 Docker で動かして確かめる（Runner の提案ジョブの経路は 3.6 の範囲）。緩めた状態（ループバック許可、作業の段への鍵、準備の段への write の鍵、Proposal のループバック許可）が失敗することも同じテストで確かめる。実行方法と必要な環境変数はファイル冒頭のコメントにある。テスト用の外部の宛先は、Sandbox のプロキシが公開アドレスだけを通すため、公開アドレスに届く名前を呼び出し側が用意する（Q150）。前提が無ければ実行不能として失敗し、スキップしない。
+
+「モデル API の認証情報の値」の行は Q8 の第一案を採った場合の行で、仕様09の3.5で第二案に決まっているため、プローブを置いていない。
+
+## 3.2 権限境界の実環境テスト（旧工程）
 
 リポジトリのルートから、イメージを一度ビルドし、ビルドタグ `security_docker` で受け入れテストを選択して実行する。
 
@@ -247,3 +287,12 @@ CLI失敗を拒否する。`TestConfigurationAccessVerdict`と
 これらはHTTP認証の境界のテストであり、上記のSandboxによる接続遮断の証明とは区別する。
 Control Planeの起動処理を通す再起動確認は、既存の
 `cmd/evaloomd.TestOwnerSessionSurvivesControlPlaneRestart`も通常検証で実行する。
+
+## 3.3 隔離突破テスト
+
+`breakout.go` の `NewBreakout(targets, rows...)` が、信頼できないスクリプト（`probe.py` に plan を埋め込んだもの、`evaloom_breakout.py STAGE RESULT`）と、確かめる段・準備の段の判定規則を作る。作業の段のプローブ Adapter が `WorkPlan` でスクリプトを作業領域に書き、確かめる段が作業領域からそれを実行し、準備の段がテスト用の外部の宛先から取り込んで実行する（`StagePlans`）。スクリプトは 3.2 のアクセスに加えて通話口の `authorize` を試す。判定は `BreakoutVerdict` で、段がスクリプトを実行したこと、スクリプトの観測、Control API のアクセスログ（`/authorize` への要求が1件でもあれば不合格）とテスト用の外部の宛先の記録を合わせて見る。
+
+| テスト | 確かめること | Docker |
+|---|---|---|
+| `cmd/evaloom-runner` の `TestBreakoutThroughRunner`（`make verify`） | 偽の CLI で製品の Runner を通し、段ごとのコンテナ作成コマンド、スクリプトが環境変数に見つけた鍵、通話口の `authorize` を Runner が拒否して Control API に要求が届かないこと。確かめる段・準備の段に鍵を渡すように緩めると該当の行が失敗すること | 不要 |
+| `TestBreakoutDocker`（タグ `security_docker`） | 3.3 の全行（Control API、管理 DB、鍵、Runner トークン、本人の HOME、Docker ソケット、外部ネットワーク、`authorize`）を実コンテナで試す。前提は `TestStageIsolationDocker` と同じで、無ければスキップせず失敗する | 必要 |

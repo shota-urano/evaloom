@@ -26,6 +26,12 @@ type Sandbox interface {
 	ReadFile(context.Context, adapter.SandboxEnv, string) ([]byte, error)
 }
 
+// EnvChecker is a Sandbox whose availability can only be proven with the
+// session's environment. Start then calls CheckEnv instead of Check.
+type EnvChecker interface {
+	CheckEnv(context.Context, adapter.SandboxEnv) error
+}
+
 type Output struct {
 	ExitCode       int
 	Stdout, Stderr string
@@ -35,6 +41,9 @@ var ErrUnavailable = errors.New("probe: 実行不能 (Sandbox の実体が必要
 
 type harness struct {
 	sandbox  Sandbox
+	command  []string
+	report   string
+	prepare  func(context.Context, adapter.SandboxEnv) (context.Context, adapter.SandboxEnv, func(), error)
 	mu       sync.Mutex
 	sessions map[adapter.SessionID]*session
 }
@@ -46,8 +55,30 @@ type session struct {
 	logs   []adapter.LogLine
 }
 
+// New runs the legacy fixture script (python3 harness.py) and reads
+// harness-results.json from the worktree.
 func New(sandbox Sandbox) adapter.Adapter {
-	return &harness{sandbox: sandbox, sessions: make(map[adapter.SessionID]*session)}
+	return NewWithConfig(Config{Sandbox: sandbox, Command: []string{"python3", "harness.py"}, Report: "harness-results.json"})
+}
+
+// Config selects the deterministic script the work stage runs. Command runs
+// in the Sandbox with the worktree as its working directory; Report is the
+// worktree-relative observation file it must write (DecodeReport format).
+//
+// Session, when set, prepares the session before the Sandbox check (for
+// example the Work Sandbox's working configuration copy, as production
+// Adapters do). It returns the context and environment the session uses and
+// a release function called once the session has stopped.
+type Config struct {
+	Sandbox Sandbox
+	Command []string
+	Report  string
+	Session func(context.Context, adapter.SandboxEnv) (context.Context, adapter.SandboxEnv, func(), error)
+}
+
+func NewWithConfig(config Config) adapter.Adapter {
+	return &harness{sandbox: config.Sandbox, command: append([]string(nil), config.Command...), report: config.Report,
+		prepare: config.Session, sessions: make(map[adapter.SessionID]*session)}
 }
 
 func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env adapter.SandboxEnv) (adapter.SessionID, error) {
@@ -60,11 +91,32 @@ func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env ada
 	if env.Worktree == "" || env.Worktree != req.Project.Workdir {
 		return "", fmt.Errorf("probe: worktree must match request")
 	}
+	if len(h.command) == 0 || h.report == "" {
+		return "", fmt.Errorf("probe: command and report are required")
+	}
 	if h.sandbox == nil {
 		return "", ErrUnavailable
 	}
-	if err := h.sandbox.Check(ctx); err != nil {
-		return "", errors.Join(ErrUnavailable, err)
+	ctx, cancel := context.WithCancel(ctx)
+	release := func() {}
+	if h.prepare != nil {
+		var err error
+		ctx, env, release, err = h.prepare(ctx, env)
+		if err != nil {
+			cancel()
+			return "", errors.Join(ErrUnavailable, err)
+		}
+	}
+	var check error
+	if c, ok := h.sandbox.(EnvChecker); ok {
+		check = c.CheckEnv(ctx, env)
+	} else {
+		check = h.sandbox.Check(ctx)
+	}
+	if check != nil {
+		release()
+		cancel()
+		return "", errors.Join(ErrUnavailable, check)
 	}
 	// Own the environment snapshot for this asynchronous session.
 	vars := make(map[string]string, len(env.Env))
@@ -72,7 +124,6 @@ func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env ada
 		vars[key] = value
 	}
 	env.Env = vars
-	ctx, cancel := context.WithCancel(ctx)
 	id := adapter.SessionID(ulid.Make().String())
 	s := &session{cancel: cancel, done: make(chan struct{})}
 	h.mu.Lock()
@@ -80,13 +131,14 @@ func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env ada
 	h.mu.Unlock()
 	go func() {
 		defer close(s.done)
+		defer release()
 		defer cancel()
 		s.result = adapter.HarnessResult{
 			ContractVersion: adapter.ContractVersion, SessionID: id,
 			Status: adapter.ResultSucceeded, Summary: "probe completed " + req.ExecutionID,
 			Commits: []string{}, LogArtifactIDs: []string{}, ArtifactIDs: []string{},
 		}
-		out, err := h.sandbox.Run(ctx, env, []string{"python3", "harness.py"})
+		out, err := h.sandbox.Run(ctx, env, h.command)
 		for _, line := range []adapter.LogLine{{Stream: "stdout", Text: out.Stdout}, {Stream: "stderr", Text: out.Stderr}} {
 			if line.Text != "" {
 				s.logs = append(s.logs, line)
@@ -99,7 +151,7 @@ func (h *harness) Start(ctx context.Context, req adapter.HarnessRequest, env ada
 				err = fmt.Errorf("probe: script failed")
 			} else {
 				var data []byte
-				data, err = h.sandbox.ReadFile(ctx, env, "harness-results.json")
+				data, err = h.sandbox.ReadFile(ctx, env, h.report)
 				if err == nil {
 					_, err = DecodeReport(data)
 				}

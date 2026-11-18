@@ -31,6 +31,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
+	"github.com/shota-urano/evaloom/backend/internal/securitytest"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -60,8 +61,30 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 	case "image inspect":
 		fmt.Print(`{"Os":"linux","Config":{}}`)
 	case "container create":
+		// Spec 14 3.2 negative controls weaken one stage's command here, at
+		// the runtime CLI boundary, as a broken Sandbox configuration would.
+		if raw := os.Getenv("EVALOOM_FAKE_LOOSEN"); raw != "" {
+			var l securitytest.Loosening
+			must(json.Unmarshal([]byte(raw), &l))
+			args = l.Loosen(args, runner.DefaultProposalPaths)
+		}
 		data, _ := json.Marshal(args)
 		must(os.WriteFile(filepath.Join(root, value("--name")+".json"), data, 0600))
+		// Name-only --env options import values from this create client's
+		// environment (stage secrets), as the Docker CLI does. The fake daemon
+		// keeps them in the test-owned runtime directory until start.
+		imported := map[string]string{}
+		for i, arg := range args {
+			if arg == "--env" && i+1 < len(args) && !strings.Contains(args[i+1], "=") {
+				if v, ok := os.LookupEnv(args[i+1]); ok {
+					imported[args[i+1]] = v
+				}
+			}
+		}
+		if len(imported) != 0 {
+			data, _ := json.Marshal(imported)
+			must(os.WriteFile(filepath.Join(root, value("--name")+".env"), data, 0600))
+		}
 	case "container start":
 		name := args[len(args)-1]
 		raw, err := os.ReadFile(filepath.Join(root, name+".json"))
@@ -76,9 +99,13 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 				workdir = create[i+1]
 			case "--mount":
 				var source, target string
+				volume := strings.HasPrefix(create[i+1], "type=volume,")
 				for _, part := range strings.Split(create[i+1], ",") {
 					if s, ok := strings.CutPrefix(part, "source="); ok {
 						source = s
+						if volume {
+							source = filepath.Join(root, "volumes", s)
+						}
 					}
 					if s, ok := strings.CutPrefix(part, "target="); ok {
 						target = s
@@ -100,8 +127,23 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 			}
 			return path
 		}
-		index := slices.Index(create, "-i") + 1
 		var env []string
+		index := slices.Index(create, "-i") + 1
+		if index == 0 {
+			// Keyed stages replace env -i with "-u NAME" pairs and keep only
+			// the imported --env variables.
+			index = slices.Index(create, "-u")
+			for index >= 0 && index+1 < len(create) && create[index] == "-u" {
+				index += 2
+			}
+			if raw, err := os.ReadFile(filepath.Join(root, name+".env")); err == nil {
+				var imported map[string]string
+				must(json.Unmarshal(raw, &imported))
+				for key, v := range imported {
+					env = append(env, key+"="+v)
+				}
+			}
+		}
 		for index < len(create) && strings.Contains(create[index], "=") {
 			key, v, _ := strings.Cut(create[index], "=")
 			env = append(env, key+"="+translate(v))
@@ -131,6 +173,53 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 			}
 		}
 		must(os.WriteFile(filepath.Join(root, name+".exit"), []byte(fmt.Sprint(exit)), 0600))
+	case "volume create":
+		// Work sessions seed a private configuration volume (spec 09). The
+		// fake daemon keeps it as a directory plus the archive it received.
+		must(os.MkdirAll(filepath.Join(root, "volumes", args[len(args)-1]), 0700))
+	case "volume rm":
+		must(os.RemoveAll(filepath.Join(root, "volumes", args[len(args)-1])))
+		_ = os.Remove(filepath.Join(root, "volumes", args[len(args)-1]+".tar"))
+	case "volume ls":
+		filter := strings.TrimSuffix(strings.TrimPrefix(value("--filter"), "name=^"), "$")
+		if _, err := os.Stat(filepath.Join(root, "volumes", filter)); err == nil {
+			fmt.Println(filter)
+		}
+	case "container cp":
+		// cp - name:dir/. stores the archive in the container's volume;
+		// cp name:dir/. - returns it, as the daemon reads the mounted volume.
+		source, target := args[2], args[3]
+		name, _, _ := strings.Cut(target, ":")
+		if source != "-" {
+			name, _, _ = strings.Cut(source, ":")
+		}
+		raw, err := os.ReadFile(filepath.Join(root, name+".json"))
+		must(err)
+		var create []string
+		must(json.Unmarshal(raw, &create))
+		volume := ""
+		for i, arg := range create {
+			if i > 0 && create[i-1] == "--mount" && strings.HasPrefix(arg, "type=volume,") {
+				for _, part := range strings.Split(arg, ",") {
+					if v, ok := strings.CutPrefix(part, "source="); ok {
+						volume = v
+					}
+				}
+			}
+		}
+		if volume == "" {
+			must(fmt.Errorf("cp without configuration volume"))
+		}
+		archive := filepath.Join(root, "volumes", volume+".tar")
+		if source == "-" {
+			data, err := io.ReadAll(os.Stdin)
+			must(err)
+			must(os.WriteFile(archive, data, 0600))
+		} else {
+			data, err := os.ReadFile(archive)
+			must(err)
+			_, _ = os.Stdout.Write(data)
+		}
 	case "container inspect":
 		raw, err := os.ReadFile(filepath.Join(root, args[len(args)-1]+".exit"))
 		must(err)
@@ -238,16 +327,24 @@ type executionFixture struct {
 	cancel       context.CancelFunc
 	mu           sync.Mutex
 	workRequests []adapter.HarnessRequest
+	accesses     []string
+	wait         time.Duration // waitStatus deadline; 0 means 25s
 	claims       []runner.Claim
+	// workAdapter, when set, replaces the deterministic dummy work Adapter
+	// with one built from Runner's real work wiring (the probe Adapter).
+	workAdapter func(runner.WorkAdapterConfig) adapter.Adapter
 }
 
 // fixtureHarness is the special harness repository a fixture registers.
 // populate writes its files before the commit tagged profile/v1.0.0;
 // instructions is the pinned work instruction text the work Adapter must see.
 type fixtureHarness struct {
-	populate     func(t *testing.T, repo, binary string)
-	instructions string
-	taskBody     string
+	populate func(t *testing.T, repo, binary string)
+	// populateFixture, when set, replaces populate for content that depends
+	// on the running fixture (Control API address, data paths).
+	populateFixture func(t *testing.T, f *executionFixture, repo string)
+	instructions    string
+	taskBody        string
 }
 
 // inlineHarness wraps this test binary as the prepare/check/publish program.
@@ -318,6 +415,11 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 	// Capture actual claim replies without changing any request, status or body.
 	handler := api.NewHandlerWithArtifacts(f.db, log, auth, nil, api.ArtifactConfig{Store: files, MaxBytes: 1 << 20}, f.adapters)
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Control Plane access log in front of the real handler (spec 14 3.2
+		// judges "unreachable" rows by it too, not only by probe reports).
+		f.mu.Lock()
+		f.accesses = append(f.accesses, r.RequestURI)
+		f.mu.Unlock()
 		if !strings.HasSuffix(r.URL.Path, "/claim") {
 			handler.ServeHTTP(w, r)
 			return
@@ -439,7 +541,11 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)
 	}
-	harness.populate(t, repo, binary)
+	if harness.populateFixture != nil {
+		harness.populateFixture(t, f, repo)
+	} else {
+		harness.populate(t, repo, binary)
+	}
 	git := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -523,8 +629,13 @@ func (f *executionFixture) start() {
 	f.done = make(chan error, 1)
 	go func() {
 		f.done <- runWithAdapters(ctx, []string{"-config", f.configPath}, strings.NewReader(""), f.output, func(w runner.WorkAdapterConfig) *adapter.Registry {
-			base, _ := f.adapters.Lookup("codex")
 			adapters := &adapter.Registry{}
+			if f.workAdapter != nil {
+				// The probe Adapter manages its own working configuration.
+				_ = adapters.Register("codex", f.workAdapter(w))
+				return adapters
+			}
+			base, _ := f.adapters.Lookup("codex")
 			_ = adapters.Register("codex", &authenticatedFixtureAdapter{Adapter: base, wiring: w})
 			return adapters
 		})
@@ -578,7 +689,11 @@ func (a *authenticatedFixtureAdapter) Start(ctx context.Context, req adapter.Har
 }
 func (f *executionFixture) waitStatus(want string) {
 	f.t.Helper()
-	deadline := time.Now().Add(25 * time.Second)
+	wait := 25 * time.Second
+	if f.wait != 0 {
+		wait = f.wait
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		var status string
 		var errorClass sql.NullString
