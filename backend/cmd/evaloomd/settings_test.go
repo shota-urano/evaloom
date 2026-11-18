@@ -20,10 +20,21 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-// labelPollClient reports the trigger label of each list query.
-type labelPollClient struct{ labels chan string }
+// labelPollClient reports the trigger label of each list query. teams is
+// the Linear Team list; nil lists team-a as the uslab Team.
+type labelPollClient struct {
+	labels chan string
+	teams  []linear.Team
+}
 
 func (c labelPollClient) CheckKey() error { return nil }
+
+func (c labelPollClient) ListTeams(context.Context) ([]linear.Team, error) {
+	if c.teams != nil {
+		return c.teams, nil
+	}
+	return []linear.Team{{ID: "team-a", Key: "uslab", Name: "Lab"}}, nil
+}
 
 func (c labelPollClient) ListReadyIssues(_ context.Context, _, label string) ([]linear.Issue, error) {
 	select {
@@ -61,14 +72,28 @@ type daemon struct {
 	stop          func()
 }
 
-func startDaemon(t *testing.T, path string) *daemon {
+// startDaemon runs evaloomd on path. teams, when given, is the Linear Team
+// list its Poller reads.
+func startDaemon(t *testing.T, path string, teams ...linear.Team) *daemon {
+	t.Helper()
+	labels := make(chan string, 1)
+	d := startDaemonWithPoller(t, path, func(db *sql.DB, logger *slog.Logger) *linearintake.Poller {
+		// An interval far longer than the test isolates the startup poll.
+		return &linearintake.Poller{DB: db, Client: labelPollClient{labels, teams}, Logger: logger, Interval: time.Hour}
+	})
+	d.labels = labels
+	return d
+}
+
+// startDaemonWithPoller runs evaloomd on path with the Linear Poller that
+// build returns.
+func startDaemonWithPoller(t *testing.T, path string, build func(*sql.DB, *slog.Logger) *linearintake.Poller) *daemon {
 	t.Helper()
 	configureTestOwner(t, path)
-	d := &daemon{output: &lockedBuffer{}, labels: make(chan string, 1)}
+	d := &daemon{output: &lockedBuffer{}}
 	original := newLinearPoller
 	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
-		// An interval far longer than the test isolates the startup poll.
-		d.poller = &linearintake.Poller{DB: db, Client: labelPollClient{d.labels}, Logger: logger, Interval: time.Hour}
+		d.poller = build(db, logger)
 		return d.poller, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -190,8 +215,16 @@ func TestSettingsSurviveRestartForAPIAndPoller(t *testing.T) {
 	if label := first.polledLabel(t); label != "ai-ready" {
 		t.Fatalf("first run polled with %q; want the default", label)
 	}
+	// A prefix that route:p does not start with is rejected (Q160).
 	status, body := first.request(t, "PATCH", "/api/settings", `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`)
-	if status != 200 || body != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
+	if status != 422 {
+		t.Fatalf("PATCH with a prefix outside routes: status=%d body=%s", status, body)
+	}
+	const patched = `{"linear":{"triggerLabel":"go","routingLabelPrefix":"route:"},` +
+		`"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"}}` + "\n"
+	status, body = first.request(t, "PATCH", "/api/settings",
+		`{"linear":{"triggerLabel":"go"},"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"}}`)
+	if status != 200 || body != patched {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}
 	first.stop()
@@ -200,12 +233,17 @@ func TestSettingsSurviveRestartForAPIAndPoller(t *testing.T) {
 	if label := second.polledLabel(t); label != "go" {
 		t.Fatalf("restarted Poller queried with %q; want go", label)
 	}
-	if got := second.poller.Settings.LinearLabels(context.Background()); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "to:"}) {
+	if got := second.poller.Settings.LinearLabels(context.Background()); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "route:"}) {
 		t.Fatalf("restarted Poller settings = %+v", got)
 	}
 	status, body = second.request(t, "GET", "/api/settings", "")
-	if status != 200 || body != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
+	if status != 200 || body != patched {
 		t.Fatalf("GET after restart status=%d body=%s", status, body)
+	}
+	// The polling Team is not a setting (Q216).
+	status, body = second.request(t, "PATCH", "/api/settings", `{"linear":{"teamId":"team-b"}}`)
+	if status != 400 {
+		t.Fatalf("PATCH linear.teamId status=%d body=%s", status, body)
 	}
 }
 
@@ -231,11 +269,48 @@ func TestStartupWithEmptyStoredSettingPollsWithDefaultAndLogs(t *testing.T) {
 		t.Fatalf("polled with %q; want the default ai-ready", label)
 	}
 	status, body := d.request(t, "GET", "/api/settings", "")
-	if status != 200 || body != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"to:"}}`+"\n" {
+	if status != 200 || body != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"to:"},`+
+		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null}}`+"\n" {
 		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 	d.stop()
 	if logs := d.output.String(); !strings.Contains(logs, "setting is empty; using the default") || !strings.Contains(logs, "key=linear.triggerLabel") {
 		t.Fatalf("logs = %s", logs)
+	}
+}
+
+// 受け入れ基準: uslab の Team が見つからない・複数あるときは照会せず、
+// GET /api/linear/status に「照会先 Team（uslab）が見つからない」「照会先 Team
+// （uslab）が複数ある」が出る（15 3.2、6章、Q216）。evaloomd の配線で確かめる。
+func TestLinearStatusShowsUnresolvedUslabTeam(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		teams []linear.Team
+		want  string
+	}{
+		{"not found", []linear.Team{{ID: "eng", Key: "ENG", Name: "Engineering"}},
+			`"teamProblem":{"reason":"not_found","message":"照会先 Team（uslab）が見つからない"}`},
+		{"multiple", []linear.Team{{ID: "a", Key: "USLAB", Name: "A"}, {ID: "b", Key: "B", Name: "Uslab"}},
+			`"teamProblem":{"reason":"multiple","message":"照会先 Team（uslab）が複数ある"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			d := startDaemon(t, newLinearDB(t), test.teams...)
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				status, body := d.request(t, "GET", "/api/linear/status", "")
+				if status == 200 && strings.Contains(body, test.want) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("status=%d body=%s; want %s", status, body, test.want)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			select {
+			case label := <-d.labels:
+				t.Fatalf("polled with %q without a single uslab Team", label)
+			default:
+			}
+		})
 	}
 }

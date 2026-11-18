@@ -33,7 +33,7 @@ func newRecheckFixture(t *testing.T) *recheckFixture {
 
 func (f *recheckFixture) round(t *testing.T, issues ...linear.Issue) error {
 	t.Helper()
-	teams, err := store.SyncLinearPollTeams(context.Background(), f.db)
+	teams, err := syncTestTeams(context.Background(), f.db)
 	if err != nil {
 		t.Fatal(err)
 	}

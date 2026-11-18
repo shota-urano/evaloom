@@ -126,8 +126,8 @@ func TestStartLinearTaskRoutesUnroutableIssueToProposal(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := startDB(t)
-			// A direct special-harness route without a default Profile is a
-			// candidate too; its description is unknown (null).
+			// A direct special-harness route without a default Profile is not
+			// a candidate (spec 15 3.6.4 step 1, Q218).
 			exec(t, db, `INSERT INTO routes VALUES ('route:direct',NULL,'fixture-harness','t','t')`)
 			exec(t, db, `UPDATE harness_profiles SET definition = json_set(definition, '$.description', 'fixture desc') WHERE id = 'fixture-profile'`)
 			d, err := start(t, db, test.issue, 1)
@@ -150,8 +150,7 @@ func TestStartLinearTaskRoutesUnroutableIssueToProposal(t *testing.T) {
 				Scan(&trigger, &seen, &candidates, &status, &runner, &decision, &created); err != nil {
 				t.Fatal(err)
 			}
-			wantCandidates := `[{"label":"route:direct","kind":"harness","id":"fixture-harness","description":null},` +
-				`{"label":"route:one","kind":"project","id":"p1","description":"fixture desc"},` +
+			wantCandidates := `[{"label":"route:one","kind":"project","id":"p1","description":"fixture desc"},` +
 				`{"label":"route:three","kind":"project","id":"p3","description":"fixture desc"},` +
 				`{"label":"route:two","kind":"project","id":"p2","description":"fixture desc"}]`
 			if trigger != string(test.trigger) || seen != test.seen || candidates != wantCandidates ||
@@ -358,7 +357,7 @@ func TestIntakeWithTaskStarterRetriesFailedCreation(t *testing.T) {
 	in := &Intake{DB: db, Fetcher: &stubFetcher{}, Starter: &TaskStarter{Now: func() time.Time { return base }},
 		Canceller: canceller, Now: func() time.Time { return base }}
 	round := func(issues ...linear.Issue) error {
-		teams, err := store.SyncLinearPollTeams(context.Background(), db)
+		teams, err := syncTestTeams(context.Background(), db)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,5 +432,57 @@ func TestExtractAcceptanceCriteria(t *testing.T) {
 				t.Fatalf("got %q, %v; want %q, %v", got, ok, test.want, test.ok)
 			}
 		})
+	}
+}
+
+// proposalCandidates reads the candidates JSON of the route proposal of the
+// task of the Issue.
+func proposalCandidates(t *testing.T, db *sql.DB, issueID string, seq int) string {
+	t.Helper()
+	got := readStarted(t, db, issueID, seq)
+	var candidates string
+	if err := db.QueryRow(`SELECT candidates FROM route_proposals WHERE task_id = ?`, got.id).Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	return candidates
+}
+
+// 受け入れ基準（spec 15 3.6.4 手順1、Q218）: 既定の版の無いスペシャルハーネスへ振り分ける
+// routes の行は candidates に入らない。既定の版を設定した後に作る提案では入る。Project の
+// 行と既定の版のあるスペシャルハーネスの行は今までどおり入る。
+func TestStartLinearTaskLeavesHarnessWithoutDefaultProfileOutOfCandidates(t *testing.T) {
+	db := startDB(t)
+	exec(t, db, `UPDATE harness_profiles SET definition = json_set(definition, '$.description', 'fixture desc') WHERE id = 'fixture-profile'`)
+	exec(t, db, `INSERT INTO harnesses (id,name,repo_path,repo_url,created_at,updated_at) VALUES ('bare-harness','Bare','/repos/bare','','t','t')`)
+	exec(t, db, `UPDATE harnesses SET default_profile_id = 'fixture-profile' WHERE id = 'fixture-harness'`)
+	exec(t, db, `INSERT INTO routes VALUES ('route:bare',NULL,'bare-harness','t','t')`)
+	exec(t, db, `INSERT INTO routes VALUES ('route:direct',NULL,'fixture-harness','t','t')`)
+
+	if d, err := start(t, db, routedIssue("1", "bug"), 1); err != nil || d != DecisionRouting {
+		t.Fatalf("decision = %q, err = %v", d, err)
+	}
+	projects := `{"label":"route:one","kind":"project","id":"p1","description":"fixture desc"},` +
+		`{"label":"route:three","kind":"project","id":"p3","description":"fixture desc"},` +
+		`{"label":"route:two","kind":"project","id":"p2","description":"fixture desc"}]`
+	direct := `{"label":"route:direct","kind":"harness","id":"fixture-harness","description":"fixture desc"},`
+	if got, want := proposalCandidates(t, db, "1", 1), `[`+direct+projects; got != want {
+		t.Fatalf("candidates without default = %s, want %s", got, want)
+	}
+
+	// After the default Profile is set, a new proposal includes the row; the
+	// earlier proposal keeps the candidates of its own decision time.
+	exec(t, db, `INSERT INTO harness_profiles (id,harness_id,version,commit_sha,tag_name,contract_version,definition,definition_hash,model_id,operation_status,registered_at)
+		SELECT 'bare-profile','bare-harness',version,commit_sha,tag_name,contract_version,json_set(definition, '$.description', 'bare desc'),
+		definition_hash,model_id,operation_status,registered_at FROM harness_profiles WHERE id='fixture-profile'`)
+	exec(t, db, `UPDATE harnesses SET default_profile_id = 'bare-profile' WHERE id = 'bare-harness'`)
+	if d, err := start(t, db, routedIssue("2", "bug"), 1); err != nil || d != DecisionRouting {
+		t.Fatalf("decision = %q, err = %v", d, err)
+	}
+	bare := `{"label":"route:bare","kind":"harness","id":"bare-harness","description":"bare desc"},`
+	if got, want := proposalCandidates(t, db, "2", 1), `[`+bare+direct+projects; got != want {
+		t.Fatalf("candidates with default = %s, want %s", got, want)
+	}
+	if got, want := proposalCandidates(t, db, "1", 1), `[`+direct+projects; got != want {
+		t.Fatalf("earlier candidates = %s, want %s", got, want)
 	}
 }

@@ -55,6 +55,8 @@ func (l *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer l.mu.Unlock()
 	var data any
 	switch {
+	case strings.Contains(req.Query, "EvaloomTeams"):
+		data = linearTeamsJSON()
 	case strings.Contains(req.Query, "EvaloomReadyIssues"):
 		nodes := []any{}
 		for _, issue := range l.issues {
@@ -83,6 +85,15 @@ func (l *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"data": data})
 }
 
+// linearTeamsJSON is the Team list of the fake Linear APIs: team-a is the
+// polling Team uslab (spec 15 3.2, Q216).
+func linearTeamsJSON() map[string]any {
+	return map[string]any{"teams": map[string]any{"nodes": []any{
+		map[string]any{"id": "team-other", "key": "ENG", "name": "Engineering"},
+		map[string]any{"id": "team-a", "key": "USLAB", "name": "Lab"},
+	}, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}
+}
+
 func hasLabel(issue map[string]any, label any) bool {
 	for _, node := range issue["labels"].(map[string]any)["nodes"].([]any) {
 		if node.(map[string]any)["name"] == label {
@@ -103,8 +114,9 @@ func linearIssueJSON(id, body string, updated time.Time, labels ...string) map[s
 		"labels": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}
 }
 
-// setupLinearProject registers p1 for team-a and route:p with a required
-// Profile, so a routed Issue queues only after criteria are supplied.
+// setupLinearProject registers p1 and route:p with a required Profile, so a
+// routed Issue queues only after criteria are supplied. The polling Team
+// team-a comes from the fake Linear Team list (uslab).
 func setupLinearProject(t *testing.T, db *sql.DB) {
 	t.Helper()
 	execAll := func(query string, args ...any) {
@@ -120,8 +132,6 @@ func setupLinearProject(t *testing.T, db *sql.DB) {
 	execAll(`UPDATE harness_profiles SET definition=json_set(definition, '$.acceptanceCriteria', 'required') WHERE id='fixture-profile'`)
 	execAll(`INSERT INTO projects (id,name,harness_id,profile_id,runner_id,created_at,updated_at) VALUES ('p1','Project','fixture-harness','fixture-profile','r1','t','t')`)
 	execAll(`INSERT INTO routes VALUES ('route:p','p1',NULL,'t','t')`)
-	execAll(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`)
-
 }
 
 // The production wiring (linearPoller) carries one Issue through the

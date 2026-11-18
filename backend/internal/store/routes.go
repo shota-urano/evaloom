@@ -88,3 +88,22 @@ func ProjectRouteLabels(ctx context.Context, db *sql.DB, projectIDs []string) (m
 	}
 	return labels, rows.Err()
 }
+
+// RouteLabels returns every routes label in order, read in tx so a settings
+// change can check them in its own transaction (spec 15 Q160).
+func RouteLabels(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT label FROM routes ORDER BY label`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var labels []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
+}

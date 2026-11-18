@@ -41,15 +41,17 @@ func TestSettingsRejectsUnknownKeysOnInsertAndUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for _, key := range []string{"linear.teamId", "linear.triggerLabel", "linear.routingLabelPrefix",
+	for _, key := range []string{"linear.triggerLabel", "linear.routingLabelPrefix",
 		"routing.proposer", "routing.defaultRunnerId", "limits.stageTimeoutMaxSec", "approval.ttlSec"} {
 		if err := PutSetting(ctx, tx, key, `null`); err != nil {
 			t.Fatalf("allowed key %s: %v", key, err)
 		}
 	}
-	for _, key := range []string{"unknown", "linear.apiKey", "linear.teamIds", "Linear.teamId", ""} {
+	// linear.teamId is not a setting: the polling Team is uslab (spec 15
+	// 3.2, 02 3.8, Q216).
+	for _, key := range []string{"linear.teamId", "unknown", "linear.apiKey", "linear.teamIds", "Linear.teamId", ""} {
 		assertRegistryConstraint(t, PutSetting(ctx, tx, key, `"value"`), sqlite3.SQLITE_CONSTRAINT_CHECK)
-		_, err := tx.Exec(`UPDATE settings SET key=? WHERE key='linear.teamId'`, key)
+		_, err := tx.Exec(`UPDATE settings SET key=? WHERE key='linear.triggerLabel'`, key)
 		assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_CHECK)
 	}
 	_, err = tx.Exec(`INSERT INTO settings VALUES (NULL,'null','t')`)
@@ -57,7 +59,7 @@ func TestSettingsRejectsUnknownKeysOnInsertAndUpdate(t *testing.T) {
 	if err := PutSetting(ctx, tx, "linear.triggerLabel", `invalid`); err == nil {
 		t.Fatal("invalid JSON was accepted")
 	}
-	if rows, err := ReadSettings(ctx, tx); err != nil || len(rows) != 7 || rows["linear.triggerLabel"] != "null" {
+	if rows, err := ReadSettings(ctx, tx); err != nil || len(rows) != 6 || rows["linear.triggerLabel"] != "null" {
 		t.Fatalf("settings after rejected writes = %v, err=%v", rows, err)
 	}
 }
@@ -228,5 +230,28 @@ func TestLinearSettingsMigrationRejectsUnknownLegacyKeyAtomically(t *testing.T) 
 	}
 	if got := migrationRows(t, db, `SELECT version FROM schema_migrations WHERE version=30`); len(got) != 0 {
 		t.Fatalf("failed migration recorded: %v", got)
+	}
+}
+
+// A linear.teamId row left by an older version is removed by the migration;
+// the other settings rows and the outbox label triggers stay (Q216).
+func TestMigrationRemovesStoredLinearTeamID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "team.db")
+	db, err := open(context.Background(), path, migrationsBefore(t, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustTaskExec(t, db, `INSERT INTO settings VALUES ('linear.teamId','"team-a"','t'),('linear.triggerLabel','"go"','t')`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = openRegistry(t, path)
+	rows, err := ReadSettings(context.Background(), db)
+	if err != nil || len(rows) != 1 || rows["linear.triggerLabel"] != `"go"` {
+		t.Fatalf("settings = %v, err=%v", rows, err)
+	}
+	var triggers int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'linear_outbox_label_%'`).Scan(&triggers); err != nil || triggers != 2 {
+		t.Fatalf("outbox label triggers = %d, err=%v", triggers, err)
 	}
 }

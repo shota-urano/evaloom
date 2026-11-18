@@ -54,7 +54,7 @@ func newRecheckFixture(t *testing.T) *recheckFixture {
 	t.Helper()
 	f, _, _ := assignmentFixture(t)
 	execSQL(t, f, `UPDATE harness_profiles SET definition = json_set(definition, '$.acceptanceCriteria', 'required') WHERE id = 'fixture-profile'`)
-	if _, err := f.db.Exec(`INSERT INTO routes VALUES ('route:a','project-a',NULL,'t','t'); INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
+	if _, err := f.db.Exec(`INSERT INTO routes VALUES ('route:a','project-a',NULL,'t','t')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,10 +62,16 @@ func newRecheckFixture(t *testing.T) *recheckFixture {
 	intake := &linearintake.Intake{DB: f.db, Fetcher: recheckFetcher{}, Starter: starter,
 		Canceller: linearintake.TaskCanceller{}, Rechecker: starter}
 	rf := &recheckFixture{authFixture: f, client: &recheckClient{issues: map[string][]linear.Issue{}}}
-	rf.poller = &linearintake.Poller{DB: f.db, Client: rf.client, Handler: intake}
+	rf.poller = &linearintake.Poller{DB: f.db, Client: rf.client, Handler: intake, Teams: fixedPollTeam("team-a")}
 	rf.poll(t) // first poll: record only (spec 15 3.4, Q64)
 	return rf
 }
+
+// fixedPollTeam names the polling Team directly; production resolves uslab
+// from Linear (Q216).
+type fixedPollTeam string
+
+func (f fixedPollTeam) LinearPollTeamID(context.Context) (string, error) { return string(f), nil }
 
 func (f *recheckFixture) poll(t *testing.T, issues ...linear.Issue) {
 	t.Helper()

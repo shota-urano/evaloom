@@ -108,6 +108,8 @@ func (l *loopLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.queries = append(l.queries, req.Query)
 	var data any
 	switch {
+	case strings.Contains(req.Query, "EvaloomTeams"):
+		data = linearTeamsJSON()
 	case strings.Contains(req.Query, "EvaloomReadyIssues"):
 		nodes := []any{}
 		for _, issue := range l.issues {
@@ -441,9 +443,11 @@ func TestLinearPollQueriesDoNotRequestComments(t *testing.T) {
 	_, queries := h.fake.snapshot()
 
 	requestsComments := func(query string) bool { return strings.Contains(strings.ToLower(query), "comment") }
-	var lists, refetches int
+	var teamLists, lists, refetches int
 	for _, q := range queries {
 		switch {
+		case strings.Contains(q, "query EvaloomTeams("):
+			teamLists++
 		case strings.Contains(q, "query EvaloomReadyIssues("):
 			lists++
 		case strings.Contains(q, "query EvaloomIssue("):
@@ -455,8 +459,10 @@ func TestLinearPollQueriesDoNotRequestComments(t *testing.T) {
 			t.Errorf("poll query requests comments:\n%s", q)
 		}
 	}
-	if lists != 3 || refetches != 1 {
-		t.Fatalf("poll requests: %d lists, %d refetches; want 3 and 1", lists, refetches)
+	// The Team list is read once, at the first poll, and kept while the
+	// queries succeed (spec 15 3.2, Q216).
+	if teamLists != 1 || lists != 3 || refetches != 1 {
+		t.Fatalf("poll requests: %d team lists, %d lists, %d refetches; want 1, 3 and 1", teamLists, lists, refetches)
 	}
 
 	if _, err := h.client.IssueComments(context.Background(), "issue-1"); err != nil {
