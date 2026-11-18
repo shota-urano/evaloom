@@ -84,6 +84,54 @@ func TestRunPinsEvaloomRepositoryHeadAtStartup(t *testing.T) {
 	if !strings.Contains(output.String(), "Global Context pinned") || !strings.Contains(output.String(), "commit="+head) {
 		t.Fatalf("startup did not pin HEAD %s:\n%s", head, output)
 	}
+	if strings.Contains(output.String(), "-evaloom-repo not set") || strings.Contains(output.String(), "level=WARN") {
+		t.Fatalf("startup with -evaloom-repo logged the omission warning:\n%s", output)
+	}
+}
+
+// startAndStop runs evaloomd until it listens, stops it, and returns its log.
+func startAndStop(t *testing.T, args []string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output := &lockedOutput{}
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, args, output) }()
+	for !strings.Contains(output.String(), "evaloomd: listening on ") {
+		select {
+		case err := <-done:
+			t.Fatalf("server exited before startup: %v\n%s", err, output)
+		case <-ctx.Done():
+			t.Fatalf("server did not start:\n%s", output)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return output.String()
+}
+
+// Spec 07 3.5 (Q209): omitting -evaloom-repo starts evaloomd without Global
+// Context and logs exactly one warning line saying so.
+func TestRunWarnsOnceWhenEvaloomRepositoryOmitted(t *testing.T) {
+	log := startAndStop(t, []string{"-db", filepath.Join(t.TempDir(), "evaloom.db"), "-port", "0"})
+	var warnings []string
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "level=WARN") {
+			warnings = append(warnings, line)
+		}
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want exactly one warning line, got %d:\n%s", len(warnings), log)
+	}
+	if !strings.Contains(warnings[0], "-evaloom-repo") || !strings.Contains(warnings[0], "Global Context will not be passed") {
+		t.Fatalf("warning does not say Global Context is not passed: %q", warnings[0])
+	}
+	if strings.Contains(log, "Global Context pinned") {
+		t.Fatalf("Global Context pinned without -evaloom-repo:\n%s", log)
+	}
 }
 
 // A path that is not a Git repository root, or has no commit yet, cannot supply a

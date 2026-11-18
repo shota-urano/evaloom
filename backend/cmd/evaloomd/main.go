@@ -307,6 +307,11 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	recoveryTimer := time.NewTimer(store.StartupHeartbeatGrace)
 	defer recoveryTimer.Stop()
 	fmt.Fprintf(output, "evaloomd: listening on %s\n", listener.Addr())
+	if global == nil {
+		// Omitting -evaloom-repo is allowed but disables Global Context (spec 07
+		// 3.5, Q209). Logged after the listening line, which stays the first line.
+		logger.Warn("-evaloom-repo not set; Global Context will not be passed to work stages")
+	}
 
 	for {
 		select {
