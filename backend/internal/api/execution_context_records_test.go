@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 type contextRecordSeed struct {
@@ -173,5 +175,55 @@ func testContextAPIRecordsStayPinnedAfterQuestionAnswer(t *testing.T, recent int
 	assertContextRecords(t, f, id, status, second, want)
 	if string(second) != string(first) || !reflect.DeepEqual(savedContexts(t, f, id), pins) {
 		t.Fatalf("resume changed context: first=%s second=%s", first, second)
+	}
+}
+
+// Spec 07 3.3 step 3 (Q210): when selected records share a file_name, the
+// newest keeps it and each older one is renamed with its harness_records.id;
+// the response fileName and the context_revisions source_path both carry the
+// placed name. Records whose names do not collide keep their names.
+func TestContextAPIRenamesCollidingRecordFileNames(t *testing.T) {
+	f, token, id, _ := reportFixture(t)
+	input := contextInput(t, f, id)
+	setDefinition(t, f, id, "$.records", `{"keep":[],"pass":{"recent":10}}`)
+	sourceID, taskID := contextRecordSource(t, f)
+	seeds := []contextRecordSeed{}
+	for i, name := range []string{"report.md", "notes", "report.md", "unique.md", "notes", "report.md"} {
+		record := seedContextRecord(t, f, sourceID, taskID, "harness-a", i+1)
+		execSQL(t, f, `UPDATE harness_records SET file_name=? WHERE id=?`, name, record.id)
+		record.fileName = name
+		seeds = append(seeds, record)
+	}
+	// Newest first: record-006 report.md, 005 notes, 004 unique.md, 003 report.md, 002 notes, 001 report.md.
+	want := []contextRecordSeed{seeds[5], seeds[4], seeds[3], seeds[2], seeds[1], seeds[0]}
+	want[3].fileName = "report-record-003.md"
+	want[4].fileName = "notes-record-002"
+	want[5].fileName = "report-record-001.md"
+	startStage(t, f, token, id, "work")
+	status, body := requestContext(t, f, token, id, nil, input)
+	assertContextRecords(t, f, id, status, body, want)
+}
+
+func TestRecordPlacementNames(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		files []string
+		want  []string
+	}{
+		{name: "no_collision_unchanged", files: []string{"a.md", "b.md", "c"}, want: []string{"a.md", "b.md", "c"}},
+		{name: "older_renamed_with_extension", files: []string{"a.md", "a.md"}, want: []string{"a.md", "a-r2.md"}},
+		{name: "older_renamed_without_extension", files: []string{"a", "a"}, want: []string{"a", "a-r2"}},
+		{name: "last_extension_only", files: []string{"a.tar.gz", "a.tar.gz"}, want: []string{"a.tar.gz", "a.tar-r2.gz"}},
+		{name: "three_way", files: []string{"a.md", "b.md", "a.md", "a.md"}, want: []string{"a.md", "b.md", "a-r3.md", "a-r4.md"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			records := []store.HarnessRecord{}
+			for i, file := range test.files {
+				records = append(records, store.HarnessRecord{ID: fmt.Sprintf("r%d", i+1), FileName: file})
+			}
+			if got := recordPlacementNames(records); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("names=%v; want %v", got, test.want)
+			}
+		})
 	}
 }
