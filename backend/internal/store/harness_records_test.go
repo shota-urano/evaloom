@@ -47,7 +47,7 @@ func TestHarnessRecordsForNextWorkExcludesDeletedAndOtherHarnessesBeforeLimit(t 
 		ids := []string{}
 		for _, record := range records {
 			ids = append(ids, record.ID)
-			if record.DeletedAt != nil || record.HarnessID != test.harness || record.SourceIdentifier != nil || record.FileName != record.ID+".md" {
+			if record.DeletedAt != nil || record.HarnessID != test.harness || record.SourceIdentifier != nil || record.FileName != record.ID+".md" || record.SHA256 != "hash" {
 				t.Fatal(record)
 			}
 		}
