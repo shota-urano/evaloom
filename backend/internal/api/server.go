@@ -54,6 +54,7 @@ func NewHandlerWithContextSource(db *sql.DB, logger *slog.Logger, auth *OwnerAut
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, source)))
+	mux.Handle("GET /api/executions/{id}/records/{artifactId}", auth.protectRunner(getPinnedRecord(db, logger, auth, artifacts)))
 	mux.Handle("POST /api/executions/{id}/authorize", auth.protectRunner(authorizeExecution(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
