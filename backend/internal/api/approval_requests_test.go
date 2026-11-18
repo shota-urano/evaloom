@@ -114,6 +114,11 @@ func TestApprovalRequestNotifiesOnceAndWritesDecisionOpenForLinearTask(t *testin
 	if c := count(t, f, `SELECT count(*) FROM linear_outbox WHERE kind = 'decision_open'`); c != 2 {
 		t.Fatalf("all decision_open rows=%d", c)
 	}
+	// Spec 16 3.2, 3.7: decision_open is the only comment of the approval
+	// wait; the old waiting_approval comment is not written beside it.
+	if c := count(t, f, `SELECT count(*) FROM linear_outbox WHERE action = 'comment' AND kind <> 'decision_open'`); c != 0 {
+		t.Fatalf("other comment rows=%d; want none", c)
+	}
 }
 
 // spec 16 3.1: a manual task writes no decision_open row.

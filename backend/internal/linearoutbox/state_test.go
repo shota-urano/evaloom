@@ -102,7 +102,7 @@ func TestStateTransitionMapping(t *testing.T) {
 		kind, name string
 	}{
 		{model.TaskRunning, model.ExecutionPreparing, model.ExecutionRunning, "started", "In Progress"},
-		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval", "PR Review"},
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_decision", "In Review"},
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed, "", ""},
@@ -220,7 +220,7 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 			dedupe_key, status, created_at) VALUES (?, 'linear-1', 'issue-1', 'set_state', 'started', 'In Progress', ?, ?, ?)`,
 			status, status, status, testTime)
 	}
-	// Replaying an older start must leave PR Review pending.
+	// Replaying an older start must leave In Review pending.
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -234,8 +234,8 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status string
-	if err := db.QueryRow(`SELECT status FROM linear_outbox WHERE kind = 'waiting_approval' AND action = 'set_state'`).Scan(&status); err != nil || status != "pending" {
-		t.Fatalf("PR Review = %q, err=%v", status, err)
+	if err := db.QueryRow(`SELECT status FROM linear_outbox WHERE kind = 'waiting_decision' AND action = 'set_state'`).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("In Review = %q, err=%v", status, err)
 	}
 	// Spec 02 5.2: approval resumes publish, which then succeeds.
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)

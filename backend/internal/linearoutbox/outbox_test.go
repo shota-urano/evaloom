@@ -141,19 +141,26 @@ func TestSameTriggerTwiceKeepsOneRow(t *testing.T) {
 			t.Fatalf("outbox rows = %+v; want one", rows)
 		}
 	})
-	t.Run("blocked twice on the same execution", func(t *testing.T) {
-		// The production path: a blocked Execution is continued by the owner
-		// and blocked again. Its blocked comment is written once.
+	t.Run("transition then the same trigger again", func(t *testing.T) {
+		// The production path writes the succeeded row; replaying the same
+		// trigger (a delayed or repeated report) keeps that one row.
 		db := outboxDB(t)
-		setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning)
-		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked)
-		transition(t, db, "linear-1", model.TaskBlocked, model.ExecutionBlocked, model.ExecutionPending)
-		transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
-		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionRunning)
-		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked)
+		setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded)
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := linearoutbox.EnqueueTx(context.Background(), tx, linearoutbox.Trigger{TaskID: "linear-1",
+			Kind: linearoutbox.KindSucceeded, TargetID: "linear-1-e1", ExecutionID: "linear-1-e1"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
 		rows := outboxRows(t, db)
-		if len(rows) != 1 || rows[0].dedupeKey != "linear-1:blocked:linear-1-e1" {
-			t.Fatalf("outbox rows = %+v; want one blocked row", rows)
+		if len(rows) != 1 || rows[0].dedupeKey != "linear-1:succeeded:linear-1-e1" {
+			t.Fatalf("outbox rows = %+v; want one succeeded row", rows)
 		}
 	})
 	t.Run("schema rejects a duplicate key", func(t *testing.T) {
@@ -216,7 +223,8 @@ func TestManualTaskWritesNoOutboxRow(t *testing.T) {
 }
 
 // Every Execution trigger of spec 16 3.2 maps to its kind; intermediate
-// steps write nothing.
+// steps write nothing. Entering blocked or waiting_approval writes no
+// comment: the owner decision gets decision_open instead (3.2, 3.7).
 func TestExecutionTriggerKinds(t *testing.T) {
 	cases := []struct {
 		fromTask model.TaskStatus
@@ -227,10 +235,10 @@ func TestExecutionTriggerKinds(t *testing.T) {
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed, "failed"},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionInterrupted, "failed"},
 		{model.TaskRunning, model.ExecutionVerifying, model.ExecutionTimedOut, "failed"},
-		{model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked, "blocked"},
+		{model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked, ""},
 		{model.TaskQueued, model.ExecutionPending, model.ExecutionCancelled, "cancelled"},
 		{model.TaskBlocked, model.ExecutionBlocked, model.ExecutionCancelled, "cancelled"},
-		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_approval"},
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, ""},
 		{model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed, ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionVerifying, ""},
 		{model.TaskRunning, model.ExecutionVerifying, model.ExecutionPublishing, ""},
@@ -305,37 +313,5 @@ func mustExec(t *testing.T, db execer, statement string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(statement, args...); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// spec 17 3.3 step 4, spec 16 3.2/3.3: a Linear task waiting for approval
-// gets one comment naming the required approval, and a refused consume that
-// returns the same Execution to the wait does not comment again.
-func TestWaitingApprovalCommentNamesRequiredApprovalOnce(t *testing.T) {
-	db := outboxDB(t)
-	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
-	mustExec(t, db, `INSERT INTO owner_decisions (id,kind,task_id,execution_id,subject_id,detail,status,created_at)
-		VALUES ('decision-1','approval','linear-1','linear-1-e1','approval-1','{}','open',?)`, testTime)
-	mustExec(t, db, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target, content_id, params_hash, status, created_at)
-		VALUES ('approval-1', 'linear-1', 'linear-1-e1', 'decision-1', 'publish', 'merge_pull_request',
-		'{"repository":"owner/repo","prNumber":12,"baseBranch":"main","headBranch":"evaloom/linear-1-test"}', ?, ?, 'pending', ?)`,
-		strings.Repeat("a", 40), strings.Repeat("d", 64), testTime)
-	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
-	transition(t, db, "linear-1", model.TaskWaitingApproval, model.ExecutionWaitingApproval, model.ExecutionPending)
-	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
-	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionPublishing)
-	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
-	rows := outboxRows(t, db)
-	if len(rows) != 1 || rows[0].kind != "waiting_approval" || rows[0].dedupeKey != "linear-1:waiting_approval:linear-1-e1" {
-		t.Fatalf("outbox rows = %+v; want one waiting_approval", rows)
-	}
-	for _, want := range []string{
-		"- 実行ステータス: Waiting Approval\n",
-		"- 必要な承認事項: merge_pull_request\n",
-		"- 承認・却下は管理画面で本人が行う\n",
-	} {
-		if !strings.Contains(rows[0].body, want) {
-			t.Errorf("body lacks %q:\n%s", want, rows[0].body)
-		}
 	}
 }

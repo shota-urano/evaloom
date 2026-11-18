@@ -109,17 +109,6 @@ func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 			"- エラー情報: interrupted（runner_heartbeat_lost）\n",
 		}, []string{"作業概要", "検証結果", "PR URL"})
 	})
-	t.Run("blocked", func(t *testing.T) {
-		db := outboxDB(t)
-		claimedLinearExecution(t, db, "テストを消した")
-		setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionVerifying)
-		transition(t, db, "linear-1", model.TaskRunning, model.ExecutionVerifying, model.ExecutionBlocked)
-		checkBody(t, onlyBody(t, db), []string{
-			"- 実行ステータス: Blocked\n",
-			"- 続行・中止は管理画面で本人が選ぶ\n",
-			"\n作業概要:\nテストを消した\n",
-		}, []string{"PR URL", "検証結果", "Block 原因"})
-	})
 	t.Run("cancelled", func(t *testing.T) {
 		db := outboxDB(t)
 		claimedLinearExecution(t, db, "途中")

@@ -23,14 +23,14 @@ type Kind string
 const (
 	KindIntakeBlocked             Kind = "intake_blocked"
 	KindMissingAcceptanceCriteria Kind = "missing_acceptance_criteria"
-	KindBlocked                   Kind = "blocked"
-	KindWaitingApproval           Kind = "waiting_approval"
 	KindSucceeded                 Kind = "succeeded"
 	KindFailed                    Kind = "failed"
-	KindMerged                    Kind = "merged"
 	KindCancelled                 Kind = "cancelled"
 	KindStarted                   Kind = "started"
 	KindCompleted                 Kind = "completed"
+	// KindWaitingDecision is the set_state trigger of an owner decision
+	// with an Execution (spec 16 3.6.1): the Issue goes to In Review.
+	KindWaitingDecision Kind = "waiting_decision"
 	// KindDecisionOpen is the "管理画面で判断待ち" comment of spec 16 3.2:
 	// one per owner_decisions row, whose ID is the trigger's TargetID (Q162).
 	KindDecisionOpen Kind = "decision_open"
@@ -78,8 +78,8 @@ func EnqueueStateTx(ctx context.Context, tx *sql.Tx, t Trigger) error {
 	switch t.Kind {
 	case KindStarted:
 		name = "In Progress"
-	case KindWaitingApproval:
-		name = "PR Review"
+	case KindWaitingDecision:
+		name = "In Review"
 	case KindCompleted:
 		name = "Done"
 	case KindCancelled:
