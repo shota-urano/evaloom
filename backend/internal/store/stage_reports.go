@@ -757,7 +757,9 @@ func publishSucceeded(ctx context.Context, tx *sql.Tx, e *reportExecution, resul
 
 // keepRecords registers the latest out_file of each records.keep entry
 // ("<stage>/<path in out>") as a harness record. A declared file the stage
-// did not write is skipped.
+// did not write is skipped. Only the fixed programs' out (prepare, check,
+// publish) becomes a record; the work stage's output never does, even when a
+// stored definition names it (spec 19 3.8, contract 9).
 func keepRecords(ctx context.Context, tx *sql.Tx, e *reportExecution, keep []string) error {
 	var identifier sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT l.issue_identifier FROM tasks t LEFT JOIN linear_issue_links l ON l.task_id = t.id
@@ -771,7 +773,7 @@ func keepRecords(ctx context.Context, tx *sql.Tx, e *reportExecution, keep []str
 	}
 	for _, entry := range keep {
 		stage, name, ok := cutStage(entry)
-		if !ok {
+		if !ok || !recordStage(stage) {
 			continue
 		}
 		var artifactID string
@@ -791,6 +793,10 @@ func keepRecords(ctx context.Context, tx *sql.Tx, e *reportExecution, keep []str
 		}
 	}
 	return nil
+}
+
+func recordStage(stage string) bool {
+	return stage == string(model.StagePrepare) || stage == string(model.StageCheck) || stage == string(model.StagePublish)
 }
 
 func cutStage(entry string) (string, string, bool) {
