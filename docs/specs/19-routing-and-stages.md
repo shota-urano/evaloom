@@ -40,7 +40,7 @@ Evaloom が仕事を頼む相手は、次の2種類である（契約 0章）。
 
 - 振り分けの表（02 の routes）は、ラベルから振り分け先を1つ引く。ラベルは表の中で一意で、振り分け先は Project かスペシャルハーネスのどちらか一方である。1つの Project、1つのスペシャルハーネスに付けられるラベルは1つだけとする。
 - 振り分けのラベルは、全体設定 `linear.routingLabelPrefix`（既定 `route:`、Q120）で始まる名前にする。Project にもスペシャルハーネスにも同じ接頭辞を使う。
-- 振り分けに Linear の Team は使わない（本人決定 2）。照会する Team は全体設定 `linear.teamId` の1つだけである。
+- 振り分けに Linear の Team は使わない（本人決定 2）。照会する Team はキーまたは名前が `uslab` の Team の1つだけである（[`15-linear-intake.md`](./15-linear-intake.md) の Q216）。
 - Issue に付いた振り分けのラベルがちょうど1つで、表にあれば、振り分け先が決まる。ラベルが無い、表に無い、2つ以上のときは、AI が鍵の無い隔離（Proposal Sandbox）で振り分け先を1つ提案し、本人が管理画面で承認するまで実行しない（vision.md 3章）。取り込みと提案の手順は [`15-linear-intake.md`](./15-linear-intake.md) 3.6・3.6.4、判断の形は 02 の 5.6 に従う。
 - 振り分け先は、タスクを `queued` にした時点で決まり、その後は変えない（02 の tasks）。
 - Project とスペシャルハーネスの登録と、振り分けの表の編集は [`03-registry.md`](./03-registry.md) 3.1〜3.3 と [`13-management-ui.md`](./13-management-ui.md) 3.5〜3.7 で定める。
