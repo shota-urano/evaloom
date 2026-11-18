@@ -55,8 +55,9 @@ Runner が作業の段の最初（Execution の状態は `working`）に行う�
 
 1. Control Plane は、同じスペシャルハーネスの harness_records のうち deleted_at が NULL の行を、新しい順に Profile の `records.pass.recent` 件まで選ぶ（契約 9章）。
 2. 選んだ記録を、context_revisions に layer=`harness`、kind=`record` で保存する。source_path は `records/` に置くときのファイル名（harness_records.file_name）、source_revision は harness_records.id、content_hash は記録のファイル（artifacts.sha256）のハッシュとする。内容は保存しない。
-3. Runner は、Execution Context の応答に入った記録の一覧に従って、成果物を Runner 用 API `GET /api/executions/{id}/records/{artifactId}`（5章、Q208）で受け取り、`records/` に読み取り専用で置く。
-4. 再開（質問への回答の後）でも、同じ Execution で固定した記録を使う。途中で本人が記録を消しても、固定した一覧は変えない（Q141）。
+3. 選んだ記録の中で file_name が重なるときは、新しい記録が元の名前を使い、古い記録は `<拡張子を除いた名前>-<harness_records.id>.<拡張子>`（拡張子が無ければ `<名前>-<harness_records.id>`）にする。Execution Context の応答の `fileName` と context_revisions の source_path も、この名前にする（Q210）。
+4. Runner は、Execution Context の応答に入った記録の一覧に従って、成果物を Runner 用 API `GET /api/executions/{id}/records/{artifactId}`（5章、Q208）で受け取り、`records/` に読み取り専用で置く。
+5. 再開（質問への回答の後）でも、同じ Execution で固定した記録を使う。途中で本人が記録を消しても、固定した一覧は変えない（Q141）。
 
 記録は前の AI が書いたものを含むため、指示ではなく参考資料として扱う（契約 6.6）。
 
@@ -71,6 +72,7 @@ Runner が作業の段の最初（Execution の状態は `working`）に行う�
 1. evaloomd は起動時に、指定された evaloom リポジトリの HEAD の commit SHA を読む。Control Plane は、その commit から `context/global/` の下のファイルを読み、作業の段に渡すファイルを選ぶ（3.7、Q140）。作業ツリーの未コミットの変更は使わない（Q206）。
 2. 選んだファイルの内容とハッシュを context_revisions（layer=`global`、kind=`global_policy`）に保存する。source_revision は読んだ commit SHA とする（Q206）。
 3. `context/global/` が無い、または空のときは、0件として作業の段に進む。global の行は作らない（Q207）。
+4. evaloom リポジトリは evaloomd のフラグ `-evaloom-repo <リポジトリのルートの絶対パス>` で指定する。省略してよい。省略したときは Global Context を渡さず、evaloomd は起動時のログに警告を1行出す。指定したパスがリポジトリのルートでない、または commit が無いときは、起動時にエラーで終了する。HEAD を変えたときは evaloomd の再起動で反映する（Q209）。
 
 ### 3.6 Task の層の固定
 
@@ -180,6 +182,11 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 - [ ] [Backend] 記録の成果物を Runner に渡す API と `records/` への配置
   - 受け入れ基準: その Execution に固定した記録の成果物だけが返り、一覧に無い artifactId は 404 になる; Runner の認証が無いと読めない; Runner が受け取った成果物を `records/` に読み取り専用で置く; 成果物のファイルが無いときは、その記録を置かずにログに残して作業を続ける
 
+- [ ] [Backend] `-evaloom-repo` を省略したときの起動時の警告
+  - 受け入れ基準: `-evaloom-repo` を省略して evaloomd を起動すると、起動時のログに Global Context を渡さないことを示す警告が1行出る; 指定したときは警告が出ない
+- [ ] [Backend] 記録のファイル名が重なるときの名前の付け替え
+  - 受け入れ基準: 同じ file_name の記録が2件選ばれたとき、新しい記録が元の名前、古い記録が `<名前>-<harness_records.id>.<拡張子>` で `records/` に置かれ、作業の段が失敗しない; 応答の `fileName` と context_revisions の source_path が置いた名前と一致する; 重ならないときは名前を変えない
+
 ## 10. 要確認
 
 | # | 内容 | 案 |
@@ -190,4 +197,6 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 | Q206 | Global Context をどの状態から読むか | 決定（2026-11-18 本人）: evaloomd の起動時の HEAD の commit から読む。source_revision はその commit SHA。作業ツリーの未コミットの変更は使わない |
 | Q207 | `context/global/` が無い、または空のとき | 決定（2026-11-18 本人）: 0件として続ける。global の行は作らない |
 | Q208 | Runner が記録の成果物を受け取る方法（仕様に API が無かった） | 決定（2026-11-18 本人）: 専用の Runner 用 API `GET /api/executions/{id}/records/{artifactId}` を足す。その Execution に固定した記録だけを返す |
+| Q209 | evaloom リポジトリを evaloomd にどう渡すか（evaloom-7cb.5 で実装側が決めた値） | 決定（2026-11-18 本人）: フラグ `-evaloom-repo <絶対パス>`。省略可で、省略したら Global Context を渡さず起動時に警告を出す。不正なパスは起動時にエラー終了 |
+| Q210 | 記録の file_name が重なったとき（一意の制約が無く、`records/` への配置が衝突していた） | 決定（2026-11-18 本人）: 置くときに名前を変える。新しい記録が元の名前、古い記録は `<名前>-<harness_records.id>.<拡張子>`。保存側の制約は増やさない |
 | Q141 | 質問への回答の後に作業の段を再開するとき、文脈を固定し直すか | 決定（2026-11-10 本人、案を採用）: 固定し直さない。同じ Execution で最初に固定した Global・Harness・記録・Task をそのまま使い、本人の回答は要求 JSON の `answer`（契約 8章）だけで渡す。同じ Execution の中で文脈が変わると、再開した AI の前提がずれるため |
