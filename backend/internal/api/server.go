@@ -36,6 +36,13 @@ func NewHandlerWithArtifacts(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, w
 // NewHandlerWithSettings serves GET/PATCH /api/settings from settings, which
 // the Control Plane shares with its Linear Poller (spec 15 5章).
 func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, artifacts ArtifactConfig, settings LinearSettings, registries ...*adapter.Registry) http.Handler {
+	return NewHandlerWithContextSource(db, logger, auth, web, artifacts, settings, nil, registries...)
+}
+
+// NewHandlerWithContextSource adds the Control Plane's selected Global files.
+// Selection and revision resolution belong to the Context Builder, not the
+// Runner request. A nil source supplies no Global files.
+func NewHandlerWithContextSource(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, web fs.FS, artifacts ArtifactConfig, settings LinearSettings, source GlobalContextSource, registries ...*adapter.Registry) http.Handler {
 	adapters := &adapter.Registry{}
 	if len(registries) > 0 && registries[0] != nil {
 		adapters = registries[0]
@@ -46,7 +53,7 @@ func NewHandlerWithSettings(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, we
 	mux.Handle("POST /auth/logout", auth.Protect(http.HandlerFunc(auth.logout)))
 	mux.Handle("POST /api/runners/{runnerID}/claim", auth.protectRunner(claimExecution(db, logger)))
 	mux.Handle("POST /api/executions/{id}/result", auth.protectRunner(reportExecutionResult(db, logger, auth)))
-	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth)))
+	mux.Handle("POST /api/executions/{id}/context", auth.protectRunner(pinExecutionContext(db, logger, auth, source)))
 	mux.Handle("POST /api/executions/{id}/authorize", auth.protectRunner(authorizeExecution(db, logger, auth)))
 	mux.Handle("POST /api/runners/{runnerID}/heartbeat", auth.protectRunner(runnerHeartbeat(db, logger, auth)))
 	mux.Handle("POST /api/executions/{id}/events", auth.protectRunner(reportLogEvents(db, logger, auth)))
