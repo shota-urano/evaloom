@@ -154,6 +154,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	port := flags.Int("port", defaultPort, "HTTP port on 127.0.0.1 (0 selects an available port)")
 	remoteHost := flags.String("remote-host", "", "single Tailscale DNS name allowed as Host with its HTTPS Origin")
 	webDir := flags.String("web", "", "directory of the built Management UI (frontend/dist); empty disables UI serving")
+	evaloomRepo := flags.String("evaloom-repo", "", "Evaloom Git repository whose startup HEAD commit supplies context/global/; empty disables Global Context")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -167,7 +168,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		return setOwnerPassword(ctx, *path, flags.Args()[1:], input, output)
 	}
 	if *path == "" || flags.NArg() != 0 {
-		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-remote-host <name>] [-web <built UI directory>]")
+		return fmt.Errorf("usage: evaloomd -db <database file path> [-port <0-65535>] [-remote-host <name>] [-web <built UI directory>] [-evaloom-repo <Evaloom repository>]")
 	}
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("evaloomd: port must be between 0 and 65535")
@@ -183,6 +184,17 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		}
 		defer root.Close()
 		web = root.FS()
+	}
+	// Pin Global Context to the HEAD commit once, before the database opens, so
+	// later commits and uncommitted edits never reach a work stage (spec 07 3.5).
+	var global api.GlobalContextSource
+	var globalCommit string
+	if *evaloomRepo != "" {
+		source, err := api.NewCommitGlobalContext(ctx, *evaloomRepo)
+		if err != nil {
+			return fmt.Errorf("evaloomd: evaloom repository %q has no readable HEAD commit: %w", *evaloomRepo, err)
+		}
+		global, globalCommit = source, source.Commit
 	}
 	db, err := store.Open(ctx, *path)
 	if err != nil {
@@ -209,6 +221,9 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	}
 	defer listener.Close()
 	logger := slog.New(slog.NewTextHandler(output, nil))
+	if global != nil {
+		logger.Info("Global Context pinned", "repository", *evaloomRepo, "commit", globalCommit)
+	}
 	auth, err := api.NewOwnerAuth(db, logger, listener.Addr().String(), *remoteHost)
 	if err != nil {
 		return err
@@ -221,7 +236,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithSettings(db, logger, auth, web, artifacts, linearSettings, adapters),
+		Handler:           api.NewHandlerWithContextSource(db, logger, auth, web, artifacts, linearSettings, global, adapters),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },

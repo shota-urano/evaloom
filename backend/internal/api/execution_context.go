@@ -38,9 +38,10 @@ type contextRecord struct {
 }
 
 // GlobalContextSource supplies selected files from the Evaloom repository.
-// Spec 07 does not define Global's source_revision or deployment root. Keep
-// both decisions outside persistence; do not infer them from the working
-// directory, a Harness repository, or Runner-supplied paths.
+// The source decides each file's source_revision: evaloomd uses
+// CommitGlobalContext, whose revision is the HEAD commit pinned at startup
+// (spec 07 3.5, Q206). Do not infer it from the working directory, a Harness
+// repository, or Runner-supplied paths.
 type GlobalContextSource interface {
 	ReadGlobalContext(context.Context) ([]GlobalContextFile, error)
 }
