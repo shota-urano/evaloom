@@ -19,6 +19,12 @@ type startupPollClient struct{ polled chan string }
 
 func (c startupPollClient) CheckKey() error { return nil }
 
+// ListTeams lists the polling Team: team-a has the key USLAB (spec 15 3.2,
+// Q216).
+func (c startupPollClient) ListTeams(context.Context) ([]linear.Team, error) {
+	return []linear.Team{{ID: "team-x", Key: "ENG", Name: "Engineering"}, {ID: "team-a", Key: "USLAB", Name: "Lab"}}, nil
+}
+
 func (c startupPollClient) ListReadyIssues(_ context.Context, teamID, _ string) ([]linear.Issue, error) {
 	select {
 	case c.polled <- teamID:
@@ -34,9 +40,6 @@ func TestRunPollsLinearAtStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('r1', 'r1', 'h', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
 		t.Fatal(err)
 	}
 

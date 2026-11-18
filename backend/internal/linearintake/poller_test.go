@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"log/slog"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,13 +109,35 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
+// testTeams is the polling Team of each test database. In production the
+// Team is resolved from Linear (uslab, Q216); these tests name it directly.
+var testTeams sync.Map // *sql.DB -> string
+
+// setTestTeam makes teamID the polling Team of db.
+func setTestTeam(db *sql.DB, teamID string) { testTeams.Store(db, teamID) }
+
+// dbTeams is a TeamSource naming db's test polling Team.
+type dbTeams struct{ db *sql.DB }
+
+func (d dbTeams) LinearPollTeamID(context.Context) (string, error) {
+	id, _ := testTeams.Load(d.db)
+	team, _ := id.(string)
+	return team, nil
+}
+
+// syncTestTeams returns db's polling Team row as the Poller sees it.
+func syncTestTeams(ctx context.Context, db *sql.DB) ([]store.LinearPollTeam, error) {
+	id, _ := dbTeams{db}.LinearPollTeamID(ctx)
+	return store.SyncLinearPollTeam(ctx, db, id)
+}
+
 // addProject registers a direct Profile pin and, optionally, a route. The
-// polling Team is a global setting; the first non-empty Team configures it.
+// first non-empty Team becomes the polling Team.
 func addProject(t *testing.T, db *sql.DB, id string, teamID any, label any) {
 	t.Helper()
 	exec(t, db, `INSERT INTO projects (id,name,harness_id,profile_id,runner_id,created_at,updated_at) VALUES (?,'Project','fixture-harness','fixture-profile','r1','t','t')`, id)
 	if team, ok := teamID.(string); ok && team != "" {
-		exec(t, db, `INSERT OR IGNORE INTO settings VALUES ('linear.teamId',?,'t')`, strconv.Quote(team))
+		testTeams.LoadOrStore(db, team)
 	}
 	if label, ok := label.(string); ok && label != "" {
 		exec(t, db, `INSERT INTO routes VALUES (?, ?, NULL,'t','t')`, label, id)
@@ -143,7 +164,7 @@ func newPoller(db *sql.DB, client Client, logs *bytes.Buffer) *Poller {
 	if logs == nil {
 		logs = &bytes.Buffer{}
 	}
-	return &Poller{DB: db, Client: client, Logger: slog.New(slog.NewTextHandler(logs, nil))}
+	return &Poller{DB: db, Client: client, Teams: dbTeams{db}, Logger: slog.New(slog.NewTextHandler(logs, nil))}
 }
 
 func pollOnce(t *testing.T, p *Poller) Result {
@@ -354,7 +375,7 @@ func (f fixedTeams) LinearPollTeamID(context.Context) (string, error) { return f
 // Team を決めるのは口の側で、Poller は受け取った Team だけを照会する。
 func TestPollerQueriesOnlyTheTeamItsSourceNames(t *testing.T) {
 	db := openDB(t)
-	addProject(t, db, "p1", "team-a", "route:one") // settings.linear.teamId = team-a
+	addProject(t, db, "p1", "team-a", "route:one") // polling Team = team-a
 	client := &stubClient{}
 	p := newPoller(db, client, nil)
 
@@ -525,7 +546,7 @@ func TestGlobalTeamIsQueriedOnceRegardlessOfProjectCount(t *testing.T) {
 		t.Fatalf("calls=%v", calls)
 	}
 	// Projects do not determine the polling Team.
-	exec(t, db, `UPDATE settings SET value='"team-b"' WHERE key='linear.teamId'`)
+	setTestTeam(db, "team-b")
 	pollOnce(t, p)
 	calls, _, _ = client.snapshot()
 	if strings.Join(calls, ",") != "team-a/ai-ready,team-b/ai-ready" {

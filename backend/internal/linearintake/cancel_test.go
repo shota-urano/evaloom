@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
-	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
 // cancelFixture runs the real Intake with TaskStarter and TaskCanceller on
@@ -31,7 +30,7 @@ func newCancelFixture(t *testing.T) *cancelFixture {
 
 func (f *cancelFixture) round(t *testing.T, issues ...linear.Issue) error {
 	t.Helper()
-	teams, err := store.SyncLinearPollTeams(context.Background(), f.db)
+	teams, err := syncTestTeams(context.Background(), f.db)
 	if err != nil {
 		t.Fatal(err)
 	}

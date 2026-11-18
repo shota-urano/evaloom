@@ -62,16 +62,23 @@ func readSettingsState(t *testing.T, db *sql.DB) settingsState {
 	return state
 }
 
+// settingsJSON is a GET/PATCH /api/settings body with the given labels and
+// the default routing settings.
+func settingsJSON(trigger, prefix string) string {
+	return `{"linear":{"triggerLabel":"` + trigger + `","routingLabelPrefix":"` + prefix + `"},` +
+		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null}}` + "\n"
+}
+
 func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	f := newAuthFixture(t)
 	// No settings rows: the defaults (spec 15 3.4).
 	status, body := getJSON(t, f, "/api/settings")
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"route:"}}`+"\n" {
+	if status != 200 || string(body) != settingsJSON("ai-ready", "route:") {
 		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 	// Omitted keys keep their values.
 	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"triggerLabel": "go"}})
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"route:"}}`+"\n" {
+	if status != 200 || string(body) != settingsJSON("go", "route:") {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}
 	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"routingLabelPrefix": "to:"}})
@@ -82,7 +89,7 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	if got := f.settings.LinearLabels(context.Background()); got != (linearintake.Labels{TriggerLabel: "go", RoutingLabelPrefix: "to:"}) {
 		t.Fatalf("shared settings = %+v", got)
 	}
-	if status, body = getJSON(t, f, "/api/settings"); string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
+	if status, body = getJSON(t, f, "/api/settings"); string(body) != settingsJSON("go", "to:") {
 		t.Fatalf("GET after PATCH status=%d body=%s", status, body)
 	}
 	// One settings.update row per changed key, with the values before and
@@ -99,7 +106,7 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 	}
 	// The same values again: 200 and no audit row.
 	status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"linear": map[string]any{"triggerLabel": "go", "routingLabelPrefix": "to:"}})
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"go","routingLabelPrefix":"to:"}}`+"\n" {
+	if status != 200 || string(body) != settingsJSON("go", "to:") {
 		t.Fatalf("same-value PATCH status=%d body=%s", status, body)
 	}
 	if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
@@ -129,7 +136,26 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 		{"null prefix", map[string]any{"linear": map[string]any{"routingLabelPrefix": nil}}, "linear.routingLabelPrefix", "required"},
 		{"number", map[string]any{"linear": map[string]any{"routingLabelPrefix": 1}}, "linear.routingLabelPrefix", "invalid"},
 		{"unknown linear key", map[string]any{"linear": map[string]any{"pollInterval": "1m"}}, "body", "invalid_json"},
+		// The polling Team is uslab, not a setting (Q216).
+		{"linear.teamId", map[string]any{"linear": map[string]any{"teamId": "team-a"}}, "body", "invalid_json"},
+		{"linear.teamId beside a valid key", map[string]any{"linear": map[string]any{"triggerLabel": "new", "teamId": "team-a"}}, "body", "invalid_json"},
 		{"unknown top-level key", map[string]any{"concurrency": map[string]any{}}, "body", "invalid_json"},
+		{"unknown routing key", map[string]any{"routing": map[string]any{"teamId": "x"}}, "body", "invalid_json"},
+		{"null runner", map[string]any{"routing": map[string]any{"defaultRunnerId": nil}}, "routing.defaultRunnerId", "required"},
+		{"empty runner", map[string]any{"routing": map[string]any{"defaultRunnerId": ""}}, "routing.defaultRunnerId", "required"},
+		{"blank runner", map[string]any{"routing": map[string]any{"defaultRunnerId": "  "}}, "routing.defaultRunnerId", "required"},
+		{"null proposer", map[string]any{"routing": map[string]any{"proposer": nil}}, "routing.proposer", "required"},
+		{"proposer not an object", map[string]any{"routing": map[string]any{"proposer": "codex"}}, "routing.proposer", "invalid"},
+		{"blank micro harness", map[string]any{"routing": map[string]any{"proposer": map[string]any{"microHarness": " ", "model": nil}}}, "routing.proposer.microHarness", "required"},
+		{"missing model", map[string]any{"routing": map[string]any{"proposer": map[string]any{"microHarness": "codex"}}}, "routing.proposer.model", "required"},
+		{"empty model", map[string]any{"routing": map[string]any{"proposer": map[string]any{"microHarness": "codex", "model": ""}}}, "routing.proposer.model", "required"},
+		{"unknown proposer key", map[string]any{"routing": map[string]any{"proposer": map[string]any{"microHarness": "codex", "model": nil, "x": 1}}}, "body", "invalid_json"},
+		{"routing null", map[string]any{"routing": nil}, "routing", "invalid"},
+		// A rejected routing key leaves the valid label key unapplied.
+		{"partly invalid routing", map[string]any{"linear": map[string]any{"triggerLabel": "new"}, "routing": map[string]any{"defaultRunnerId": ""}}, "routing.defaultRunnerId", "required"},
+		// Q160: the trigger label must not start with the prefix.
+		{"trigger with prefix", map[string]any{"linear": map[string]any{"triggerLabel": "to:go"}}, "linear.triggerLabel", "starts_with_routing_label_prefix"},
+		{"prefix of trigger", map[string]any{"linear": map[string]any{"routingLabelPrefix": "go"}}, "linear.routingLabelPrefix", "starts_with_routing_label_prefix"},
 		{"unknown key beside a valid one", map[string]any{"linear": map[string]any{"triggerLabel": "new", "x": "y"}}, "body", "invalid_json"},
 		{"unknown top-level key beside linear", map[string]any{"linear": map[string]any{"triggerLabel": "new"}, "x": 1}, "body", "invalid_json"},
 		{"linear not an object", map[string]any{"linear": "ai-ready"}, "linear", "invalid"},
@@ -158,7 +184,7 @@ func TestSettingsEmptyStoredValueIsServedAsDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, body := getJSON(t, f, "/api/settings")
-	if status != 200 || string(body) != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"route:"}}`+"\n" {
+	if status != 200 || string(body) != settingsJSON("ai-ready", "route:") {
 		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 }
@@ -166,7 +192,7 @@ func TestSettingsEmptyStoredValueIsServedAsDefault(t *testing.T) {
 func TestLinearStatusListsTeamsAndAttachedIssues(t *testing.T) {
 	f := newAuthFixture(t)
 	status, body := getJSON(t, f, "/api/linear/status")
-	if status != 200 || string(body) != `{"teams":[],"issues":[]}`+"\n" {
+	if status != 200 || string(body) != `{"teams":[],"teamProblem":null,"issues":[]}`+"\n" {
 		t.Fatalf("empty status=%d body=%s", status, body)
 	}
 	if _, err := f.db.Exec(`INSERT INTO linear_poll_teams (team_id, baseline_done_at, last_success_at, last_error, consecutive_failures)
@@ -185,7 +211,7 @@ func TestLinearStatusListsTeamsAndAttachedIssues(t *testing.T) {
 	want := `{"teams":[` +
 		`{"teamId":"team-a","lastSuccessAt":"2026-11-08T09:00:00.5Z","lastError":null,"consecutiveFailures":0},` +
 		`{"teamId":"team-b","lastSuccessAt":null,"lastError":"rate_limited","consecutiveFailures":3}],` +
-		`"issues":[` +
+		`"teamProblem":null,"issues":[` +
 		`{"linearIssueId":"i-1","issueIdentifier":"ENG-1","teamId":"team-a","lastDecision":null,"lastDecisionAt":null},` +
 		`{"linearIssueId":"i-2","issueIdentifier":"ENG-2","teamId":"team-a","lastDecision":"held","lastDecisionAt":"2026-11-08T09:01:00Z"}]}` + "\n"
 	if status != 200 || string(body) != want {
@@ -204,7 +230,8 @@ func TestLinearStatusNeverContainsAPIKey(t *testing.T) {
 	const secret = "lin_api_SECRETVALUE123"
 	f := projectFixture(t)
 	input := projectInput(t, "project-a")
-	if _, err := f.db.Exec(`INSERT INTO settings VALUES ('linear.teamId','"team-a"','t')`); err != nil {
+	// A previous run resolved the polling Team uslab to team-a (Q216).
+	if _, err := store.SyncLinearPollTeam(context.Background(), f.db, "team-a"); err != nil {
 		t.Fatal(err)
 	}
 	if status, body := projectRequest(t, f, "POST", "/api/projects", input); status != 201 {

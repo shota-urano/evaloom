@@ -20,36 +20,6 @@ type LinearPollTeam struct {
 	ConsecutiveFailures int
 }
 
-// Polling scope comes from the global setting; routes have no Team column.
-const registeredLinearTeams = `SELECT json_extract(value, '$') AS team_id FROM settings
- WHERE key='linear.teamId' AND json_valid(value)
- AND json_type(CASE WHEN json_valid(value) THEN value ELSE 'null' END)='text'
- AND trim(json_extract(value, '$')) <> ''`
-
-// LinearPollTeamID returns settings.linear.teamId, or "" when it is unset,
-// empty, blank or unreadable (spec 15 3.2, 6章).
-func LinearPollTeamID(ctx context.Context, db *sql.DB) (string, error) {
-	var teamID string
-	err := db.QueryRowContext(ctx, registeredLinearTeams).Scan(&teamID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("store: read linear poll team: %w", err)
-	}
-	return teamID, nil
-}
-
-// SyncLinearPollTeams returns the Team named by settings.linear.teamId, as
-// SyncLinearPollTeam does.
-func SyncLinearPollTeams(ctx context.Context, db *sql.DB) ([]LinearPollTeam, error) {
-	teamID, err := LinearPollTeamID(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-	return SyncLinearPollTeam(ctx, db, teamID)
-}
-
 // SyncLinearPollTeam returns the given polling Team, creates its baseline if
 // needed, and removes every other Team's baseline in the same transaction. A
 // blank teamID means no polling Team: every row is removed and none returned.

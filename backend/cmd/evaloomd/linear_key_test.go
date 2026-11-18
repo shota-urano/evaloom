@@ -78,6 +78,12 @@ func TestLinearAPIKeyNeverReachesLogsOrDB(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	setupLinearProject(t, db)
+	// A previous run resolved the polling Team uslab to team-a. With an
+	// unusable key the Team list cannot be read again, so the failure is
+	// recorded on that known Team (spec 15 3.2, 6章, Q216).
+	if _, err := store.SyncLinearPollTeam(ctx, db, "team-a"); err != nil {
+		t.Fatal(err)
+	}
 
 	fake := &fakeLinear{issues: map[string]map[string]any{}}
 	var rejectAuth atomic.Bool
@@ -173,6 +179,12 @@ func TestMissingLinearKeyFileMarksPollTeamAuth(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	setupLinearProject(t, db)
+	// A previous run resolved the polling Team uslab to team-a. With an
+	// unusable key the Team list cannot be read again, so the failure is
+	// recorded on that known Team (spec 15 3.2, 6章, Q216).
+	if _, err := store.SyncLinearPollTeam(ctx, db, "team-a"); err != nil {
+		t.Fatal(err)
+	}
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
