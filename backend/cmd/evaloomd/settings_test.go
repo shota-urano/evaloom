@@ -76,12 +76,24 @@ type daemon struct {
 // list its Poller reads.
 func startDaemon(t *testing.T, path string, teams ...linear.Team) *daemon {
 	t.Helper()
+	labels := make(chan string, 1)
+	d := startDaemonWithPoller(t, path, func(db *sql.DB, logger *slog.Logger) *linearintake.Poller {
+		// An interval far longer than the test isolates the startup poll.
+		return &linearintake.Poller{DB: db, Client: labelPollClient{labels, teams}, Logger: logger, Interval: time.Hour}
+	})
+	d.labels = labels
+	return d
+}
+
+// startDaemonWithPoller runs evaloomd on path with the Linear Poller that
+// build returns.
+func startDaemonWithPoller(t *testing.T, path string, build func(*sql.DB, *slog.Logger) *linearintake.Poller) *daemon {
+	t.Helper()
 	configureTestOwner(t, path)
-	d := &daemon{output: &lockedBuffer{}, labels: make(chan string, 1)}
+	d := &daemon{output: &lockedBuffer{}}
 	original := newLinearPoller
 	newLinearPoller = func(db *sql.DB, logger *slog.Logger, _ int) (*linearintake.Poller, error) {
-		// An interval far longer than the test isolates the startup poll.
-		d.poller = &linearintake.Poller{DB: db, Client: labelPollClient{d.labels, teams}, Logger: logger, Interval: time.Hour}
+		d.poller = build(db, logger)
 		return d.poller, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
