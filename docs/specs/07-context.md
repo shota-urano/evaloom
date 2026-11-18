@@ -42,7 +42,7 @@ written: 2026-11-10
 
 ### 3.2 Harness の層の固定
 
-Runner が作業の段を始める前に行う。
+Runner が作業の段の最初（Execution の状態は `working`）に行う（[`05-runner.md`](./05-runner.md) 3.3 の表の4行目、Q205）。
 
 1. Execution に固定した Profile の commit（executions.profile_commit_sha）から、`stages.work.instructions` / `skills` / `settings` で宣言したファイルを読む。スペシャルハーネスのリポジトリの作業ツリーは使わない（契約 4.2）。読み出し方は [`09-sandbox.md`](./09-sandbox.md) 3.7 に従う。
 2. 読んだファイルの相対パスとハッシュを、Runner 用 API `POST /api/executions/{id}/context`（5章）で Control Plane に送る。
@@ -55,7 +55,7 @@ Runner が作業の段を始める前に行う。
 
 1. Control Plane は、同じスペシャルハーネスの harness_records のうち deleted_at が NULL の行を、新しい順に Profile の `records.pass.recent` 件まで選ぶ（契約 9章）。
 2. 選んだ記録を、context_revisions に layer=`harness`、kind=`record` で保存する。source_path は `records/` に置くときのファイル名（harness_records.file_name）、source_revision は harness_records.id、content_hash は記録のファイル（artifacts.sha256）のハッシュとする。内容は保存しない。
-3. Runner は、Execution Context の応答に入った記録の一覧に従って、成果物を `records/` に読み取り専用で置く。
+3. Runner は、Execution Context の応答に入った記録の一覧に従って、成果物を Runner 用 API `GET /api/executions/{id}/records/{artifactId}`（5章、Q208）で受け取り、`records/` に読み取り専用で置く。
 4. 再開（質問への回答の後）でも、同じ Execution で固定した記録を使う。途中で本人が記録を消しても、固定した一覧は変えない（Q141）。
 
 記録は前の AI が書いたものを含むため、指示ではなく参考資料として扱う（契約 6.6）。
@@ -68,8 +68,9 @@ Runner が作業の段を始める前に行う。
 
 ### 3.5 Global の層の固定
 
-1. Control Plane が evaloom リポジトリの `context/` から、作業の段に渡すファイルを選ぶ（3.7、Q140）。
-2. 選んだファイルの内容とハッシュを context_revisions（layer=`global`、kind=`global_policy`）に保存する。
+1. evaloomd は起動時に、指定された evaloom リポジトリの HEAD の commit SHA を読む。Control Plane は、その commit から `context/global/` の下のファイルを読み、作業の段に渡すファイルを選ぶ（3.7、Q140）。作業ツリーの未コミットの変更は使わない（Q206）。
+2. 選んだファイルの内容とハッシュを context_revisions（layer=`global`、kind=`global_policy`）に保存する。source_revision は読んだ commit SHA とする（Q206）。
+3. `context/global/` が無い、または空のときは、0件として作業の段に進む。global の行は作らない（Q207）。
 
 ### 3.6 Task の層の固定
 
@@ -77,7 +78,7 @@ Runner が作業の段を始める前に行う。
 
 ### 3.7 Context Builder（requirements 7.2）
 
-Control Plane が持つ。Runner は、準備の段が終わった後（準備の段が無ければ claim の後）、作業の段を始める前に、Harness の層の固定の結果を送り、応答として Execution Context を受け取る（`POST /api/executions/{id}/context`）。
+Control Plane が持つ。Runner は、準備の段が終わった後（準備の段が無ければ claim の後）、作業の段の最初（Execution の状態は `working`）に、Harness の層の固定の結果を送り、応答として Execution Context を受け取る（`POST /api/executions/{id}/context`）。
 
 | 処理（requirements 7.2） | 内容 |
 |---|---|
@@ -93,8 +94,12 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 
 - Global の安全・権限ルールは、ほかの層で上書きできない。安全・権限ルールは指示文ではなく、段ごとの Sandbox と Runner の権限で強制する（[`09-sandbox.md`](./09-sandbox.md)）。指示文の並びは Global → Harness → Task とする（案）。
 - 記録と Reported は参考資料であり、優先順位の並びに入れない。指示文の中では、記録は `records/` にある参考資料として示すだけにする。
-- 矛盾の自動検出は、構造的な確認（宣言したファイルの欠け、版の不一致）に限る。意味の矛盾を検出する方法は requirements に無い（21章「Context Builder の優先順位・競合解決」）。
-- 解決できない重要な矛盾を検出したら作業の段を始めず、Execution を `blocked`（cause=`context_conflict`、[`02-data-model.md`](./02-data-model.md) 5.6）にする。
+- 宣言したファイルの欠けと版の不一致は、設定の誤りとして `failed`（`config_error`）にする（6章）。矛盾としては扱わない（Q204）。
+- 矛盾の自動検出は、構造的な食い違いに限る（Q204）。対象は次の2つである。
+  - 同じ Execution で、同じパスに違うハッシュが報告された
+  - 固定済みの context_revisions が、別のタスク、別の版、別のスペシャルハーネスの記録、または `context/global/` 以外の Global を指している
+- 意味の矛盾を検出する方法は requirements に無い（21章「Context Builder の優先順位・競合解決」）。
+- 構造的な矛盾を検出したら作業を進めず、Execution を `blocked`（cause=`context_conflict`、[`02-data-model.md`](./02-data-model.md) 5.6）にする。
 
 ## 4. 設定値・確定値
 
@@ -104,7 +109,7 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 | Project の層 | 持たない。対象リポジトリの文脈はスペシャルハーネスが固定して報告する | vision-alignment.md 2章、02 の 3.3 |
 | 記録の受け渡し | layer=`harness`、kind=`record` | 02 の 3.3、契約 9章 |
 | 記録する内容 | ハッシュと版。内容は global と task だけ保存する | requirements 7.1 |
-| 文脈の版の固定時点 | Profile は claim の時点。Global・Harness・記録・Task は作業の段の前の context API の時点。Reported は準備の段の結果を受けた時点 | requirements 8.3 |
+| 文脈の版の固定時点 | Profile は claim の時点。Global・Harness・記録・Task は作業の段の最初の context API の時点。Reported は準備の段の結果を受けた時点 | requirements 8.3 |
 | 全文脈の毎回の受け渡し | しない | requirements 7.2 |
 | Global の安全・権限ルール | ほかの層で上書きできない | requirements 7.3 |
 | 作業領域の中のファイル | Evaloom は読まず、固定しない | vision.md 4章 |
@@ -123,6 +128,9 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 }
 ```
 
+- Runner 用 API `GET /api/executions/{id}/records/{artifactId}`（[`01-architecture.md`](./01-architecture.md) 5.2、Q208）
+  - その Execution に固定した記録（layer=`harness`、kind=`record`）の成果物のファイルを返す。固定した一覧に無い artifactId は 404 を返す。別のスペシャルハーネスの記録は、この確認で読めない
+  - Runner の認証で呼ぶ
 - 同じ Execution で2回目以降に呼ばれたとき（質問への回答の後の再開）は、新しく固定せず、最初に固定した context_revisions から同じ Execution Context を返す（Q141）。
 - テーブル: context_revisions（[`02-data-model.md`](./02-data-model.md) 3.3）
 - イベント: `context_pinned`（[`02-data-model.md`](./02-data-model.md) 5.3）
@@ -134,9 +142,10 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
 | Runner が送った Profile の commit SHA が Execution に固定した値と違う | `failed`（`config_error`） |
 | `stages.work` で宣言したファイルが Profile の commit に無い | `failed`（`config_error`） |
 | Global Context のファイルが読めない | `failed`（`config_error`） |
+| `context/global/` が無い、または空 | 0件として続ける。global の行は作らない（Q207） |
 | 記録の成果物のファイルが無い | その記録を渡さず、Runner のログに残して続ける（記録は参考資料のため） |
 | `reportedContext` が契約の形に合わない | `failed`（`contract_error`。準備の段の結果として扱う） |
-| 解決できない重要な矛盾 | `blocked`（`context_conflict`） |
+| 構造的な矛盾（3.8） | `blocked`（`context_conflict`） |
 
 ## 7. スコープ外
 
@@ -166,10 +175,19 @@ Control Plane が持つ。Runner は、準備の段が終わった後（準備�
   - 受け入れ基準: 同じスペシャルハーネスの記録だけが新しい順に `records.pass.recent` 件まで選ばれ、layer=harness・kind=record で保存される; 本人が消した記録が選ばれない; 別のスペシャルハーネスの記録が含まれない
 - [ ] [Backend] Context Builder（選択、版の確認、整形、矛盾の時の Blocked）
   - 受け入れ基準: 別の振り分け先の文脈が含まれない; Execution に固定した版と違う commit SHA を送るとエラーになる; Issue の本文がタスクの内容として区切られて指示文に入る; 構造的な矛盾のテストケースで blocked(context_conflict) になる
+- [ ] [Backend] Global Context を evaloomd につなぐ（起動時の HEAD の commit から `context/global/` を読む）
+  - 受け入れ基準: evaloomd が起動時の HEAD の commit から `context/global/` の下のファイルを読み、global の行の source_revision にその commit SHA が入る; 作業ツリーの未コミットの変更が使われない; `context/global/` が無いか空のときは global の行を作らずに作業の段へ進む
+- [ ] [Backend] 記録の成果物を Runner に渡す API と `records/` への配置
+  - 受け入れ基準: その Execution に固定した記録の成果物だけが返り、一覧に無い artifactId は 404 になる; Runner の認証が無いと読めない; Runner が受け取った成果物を `records/` に読み取り専用で置く; 成果物のファイルが無いときは、その記録を置かずにログに残して作業を続ける
 
 ## 10. 要確認
 
 | # | 内容 | 案 |
 |---|---|---|
 | Q140 | Global Context をどう選ぶか（以前は「開発タスク向けに指定したファイル」） | 決定（2026-11-10 本人、案を採用）: `context/global/` の下のファイルを全部、すべての仕事の作業の段に渡す。仕事の種類で選び分けない（Evaloom は仕事の種類を知らないため。vision.md 4章）。仕事の種類ごとの指示は、スペシャルハーネスの `stages.work.instructions` に書く |
+| Q204 | 構造的な矛盾として blocked にするものは何か（3.8 の本文と6章の表が食い違っていた） | 決定（2026-11-18 本人）: 宣言したファイルの欠けと版の不一致は `failed`（`config_error`）。blocked（`context_conflict`）にするのは、同じパスへの違うハッシュの報告と、固定済みの行の食い違いだけ（evaloom-7cb.4 の実装に合わせた） |
+| Q205 | context API を呼ぶ時期（07 は「作業の段を始める前」、05 は作業の段の中と書いていた） | 決定（2026-11-18 本人）: 05 に合わせ、作業の段の最初（状態は `working`）とする。02 の遷移表にも合う |
+| Q206 | Global Context をどの状態から読むか | 決定（2026-11-18 本人）: evaloomd の起動時の HEAD の commit から読む。source_revision はその commit SHA。作業ツリーの未コミットの変更は使わない |
+| Q207 | `context/global/` が無い、または空のとき | 決定（2026-11-18 本人）: 0件として続ける。global の行は作らない |
+| Q208 | Runner が記録の成果物を受け取る方法（仕様に API が無かった） | 決定（2026-11-18 本人）: 専用の Runner 用 API `GET /api/executions/{id}/records/{artifactId}` を足す。その Execution に固定した記録だけを返す |
 | Q141 | 質問への回答の後に作業の段を再開するとき、文脈を固定し直すか | 決定（2026-11-10 本人、案を採用）: 固定し直さない。同じ Execution で最初に固定した Global・Harness・記録・Task をそのまま使い、本人の回答は要求 JSON の `answer`（契約 8章）だけで渡す。同じ Execution の中で文脈が変わると、再開した AI の前提がずれるため |
