@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
+	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
 // Approval is one approvals row (spec 17 3.9) as the owner APIs show it.
@@ -173,6 +176,22 @@ func RenewApprovalTx(ctx context.Context, tx *sql.Tx, old Approval, now string) 
 		return "", err
 	} else if n != 1 {
 		return "", ErrApprovalStale
+	}
+	// The renewed wait is a new approval request like spec 17 3.3 steps 4-7:
+	// it records decision_opened and approval_requested, and a Linear task
+	// gets the decision_open comment for the new decision (spec 16 3.2).
+	// requestApproval is not reused because it reads the stage result.
+	if err := appendEvent(ctx, tx, old.ExecutionID, model.EventDecisionOpened, map[string]any{
+		"decisionId": decisionID, "kind": model.DecisionApproval, "cause": nil}); err != nil {
+		return "", err
+	}
+	if err := linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: old.TaskID, Kind: linearoutbox.KindDecisionOpen,
+		TargetID: decisionID, ExecutionID: old.ExecutionID}); err != nil {
+		return "", err
+	}
+	if err := appendEvent(ctx, tx, old.ExecutionID, model.EventApprovalRequested, map[string]any{
+		"approvalId": id, "operation": old.Operation, "contentId": old.ContentVersion}); err != nil {
+		return "", err
 	}
 	return id, nil
 }

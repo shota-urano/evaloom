@@ -411,3 +411,54 @@ func TestListAndGetApprovals(t *testing.T) {
 	status, body = approvalRequest(t, f, "GET", "/api/approvals/01ARZ3NDEKTSV4RRFFQ69G5FAV", "")
 	assertAuthError(t, status, body, 404, NotFound)
 }
+
+// Acceptance (3.6, spec 16 3.2): the decision a renew opens is announced like
+// a new approval request. The events decision_opened and approval_requested
+// name the new decision and approval, and a Linear task gets exactly one
+// decision_open comment for the new decision, carrying only its ID.
+func TestRenewWritesDecisionOpenAndRequestEvents(t *testing.T) {
+	for _, linear := range []bool{true, false} {
+		name := "manual"
+		if linear {
+			name = "linear"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, _, id, taskID, approval := waitingApprovalFixture(t)
+			if linear {
+				linearTask(t, f, taskID)
+			}
+			var oldDecision string
+			if err := f.db.QueryRow(`SELECT decision_id FROM approvals WHERE id=?`, approval.ID).Scan(&oldDecision); err != nil {
+				t.Fatal(err)
+			}
+			stageExec(t, f, `UPDATE approvals SET status='expired', decided_at='2026-11-01T00:00:00Z',
+				expires_at='2026-11-02T00:00:00Z' WHERE id=?`, approval.ID)
+			status, body := approvalRequest(t, f, "POST", "/api/approvals/"+approval.ID+"/renew", "")
+			view := decodeApproval(t, status, body, 201)
+			if view.DecisionID == "" || view.DecisionID == oldDecision {
+				t.Fatalf("renewed decision = %q; want a new decision", view.DecisionID)
+			}
+			if n := stageCount(t, f, `SELECT count(*) FROM execution_events WHERE execution_id=? AND type='decision_opened'
+				AND json_extract(payload,'$.decisionId')=? AND json_extract(payload,'$.kind')='approval'`, id, view.DecisionID); n != 1 {
+				t.Fatalf("decision_opened events = %d; want 1", n)
+			}
+			if n := stageCount(t, f, `SELECT count(*) FROM execution_events WHERE execution_id=? AND type='approval_requested'
+				AND json_extract(payload,'$.approvalId')=? AND json_extract(payload,'$.operation')=?
+				AND json_extract(payload,'$.contentId')=?`, id, view.ID, approval.Operation, approval.ContentVersion); n != 1 {
+				t.Fatalf("approval_requested events = %d; want 1", n)
+			}
+			want := 0
+			if linear {
+				want = 1
+			}
+			if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE kind='decision_open' AND action='comment'
+				AND status='pending' AND execution_id=? AND dedupe_key=? AND instr(body, ?) > 0 AND instr(body, ?) = 0`,
+				id, taskID+":decision_open:"+view.DecisionID, view.DecisionID, approval.ContentVersion); n != want {
+				t.Fatalf("decision_open rows for the new decision = %d; want %d", n, want)
+			}
+			if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE kind='decision_open'`); n != want {
+				t.Fatalf("all decision_open rows = %d; want %d", n, want)
+			}
+		})
+	}
+}
