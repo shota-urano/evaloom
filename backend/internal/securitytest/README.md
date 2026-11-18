@@ -70,6 +70,21 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 
 実環境テストの呼び出し側は、開始前に `Prerequisites.Check(ctx)` のエラーをテストの失敗として扱う。モデルを使う場合は `RequireModel` と実際の認証状態を調べる `ModelCredentials` を渡す。通常検証では、Sandboxや認証情報が無い場合にエラーが返り、実行しないことを単体テストで確かめる。スキップ処理は設けていない。
 
+## 承認の受け入れテスト（仕様17 条件21・22）
+
+`cmd/evaloom-runner/approval_acceptance_test.go` の `TestApprovalAcceptance` は、承認の要る操作（`ProbeOperation`）を宣言したプローブ用スペシャルハーネスを、本物の Control Plane と製品の Runner コマンドで動かす（`make verify` に含む）。出す段は通話口で `authorize` を送り、`allowed: true` のときだけテスト用の外部の宛先へ操作を送る。判定は、段が受けた応答、approvals・execution_events・audit_logs、宛先が受けた操作の回数で行う。
+
+| サブテスト | 確かめること |
+|---|---|
+| `without_approval`、`without_approval_waivable_not_waived` | 承認を求めずに出す段まで進んでも `not_approved`。`waivable: true` でも Project が省いていなければ同じ |
+| `approved` | 承認した中身のままなら1回だけ許可され、宛先に1回届く（対照） |
+| `content_changed_after_approval` | 承認し、出す段が claim された後に作業領域の中身を変えると `content_changed`、承認は invalidated |
+| `used_approval_second_time` | 同じ承認で2回問い合わせると2回目が `already_used`、宛先には1回だけ |
+| `expired_approval` | 承認し、出す段が claim された後に期限が切れると `expired`、承認は expired |
+| `only_management_ui_approves` | Runner のトークンで判断待ちに回答すると 403（audit_logs に記録）、待ちの間の `authorize` は 409。Linear 起因のタスクで、本人が Issue に「承認」と返信しても（コメントを読むのは結果不明の再送前のコメント Worker だけなので、その経路で読ませる）承認は pending のまま。管理画面の回答の後にだけ操作が1回届く |
+
+`ProbeAuthorize.Attempts` は同じ承認で問い合わせと操作を繰り返す回数で、応答はすべて `out/authorizations.json` に残る。出す段の plan に `command` を置くと、問い合わせの前に段を止めておける（期限切れと中身の変更は、これで「承認の後」に起こす）。期限切れは最短の `ttlSec`（60秒）を待つ代わりに、出す段が claim された後で `expires_at` を過去に書き換えて表す。偽のコンテナ実行環境はホストで段を動かすため、宛先はループバックで待ち受け、出す段はネットワークを宣言しない。Sandbox の隔離そのものは証明しない。
+
 ## 3.2 段ごとの隔離テスト（ハーネス契約 v1 の段）
 
 判定の基準（3.2 の表）は `stage_isolation.go` にある。`IsolationDeclarations.Expected(row, stage)` が表の各セル、`EnvAllowlist` が環境変数の行、`IsolationPlan` が段ごとのプローブの plan と判定規則である。証拠は2種類あり、どちらも製品の配線から導かずにテスト側が持つ。

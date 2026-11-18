@@ -8,9 +8,13 @@ files under probe/ in the committed Profile repository:
   probe/<stage>-plan.json       accesses to attempt (probe_access.py plan);
                                 observations go to out/probe-<stage>.json
   probe/<stage>-result.json     values merged into the result JSON
-  probe/publish-authorize.json  {"operation", "destination"[, "contentId"]}:
-                                ask authorize right before the operation and
-                                send it to the destination only when allowed
+  probe/publish-authorize.json  {"operation", "destination"[, "contentId"]
+                                [, "attempts"]}: ask authorize right before
+                                the operation and send it to the destination
+                                only when allowed; "attempts" (default 1)
+                                repeats ask-then-operate with the same
+                                approval, recording every reply in
+                                out/authorizations.json
 
 Strings may contain {{contentId}}, {{workspace}}, {{out}}, {{inputs}},
 {{taskId}}. A result value "{{omit}}" removes that key.
@@ -70,7 +74,7 @@ def content_id(workspace):
     return hashlib.sha256(data).hexdigest()
 
 
-def authorize(request, ask, out):
+def authorize(request, ask):
     approval_id = None
     for approval in request.get("approvals") or []:
         if approval.get("operation") == ask["operation"]:
@@ -82,8 +86,7 @@ def authorize(request, ask, out):
         conn.sendall((json.dumps(message) + "\n").encode())
         with conn.makefile("rb") as stream:
             line = stream.readline()
-    (Path(out) / "authorization.json").write_bytes(line)
-    return json.loads(line)
+    return line
 
 
 def send_operation(ask, out):
@@ -121,12 +124,20 @@ def main():
         if ask is not None:
             ask = substitute(ask, variables)
             ask.setdefault("contentId", variables["contentId"])
-            reply = authorize(request, ask, paths["out"])
-            if reply.get("allowed") is True:
-                send_operation(ask, paths["out"])
-            else:
-                result.update(status="failed", errorClass="publish_failed",
-                              message="not allowed: " + str(reply.get("reason")))
+            attempts = int(ask.pop("attempts", 1))
+            replies = []
+            for _ in range(attempts):
+                line = authorize(request, ask)
+                if not replies:
+                    (Path(paths["out"]) / "authorization.json").write_bytes(line)
+                reply = json.loads(line)
+                replies.append(reply)
+                if reply.get("allowed") is True:
+                    send_operation(ask, paths["out"])
+                else:
+                    result.update(status="failed", errorClass="publish_failed",
+                                  message="not allowed: " + str(reply.get("reason")))
+            (Path(paths["out"]) / "authorizations.json").write_text(json.dumps(replies) + "\n")
     override = load(stage + "-result.json")
     if override is not None:
         for key, value in substitute(override, variables).items():

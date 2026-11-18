@@ -28,11 +28,15 @@ const ProbeOperation = "probe_publish"
 // ProbeAuthorize makes the publish stage ask authorize right before its one
 // operation and send that operation to Destination only on allowed: true.
 // ContentID is optional; by default the program recomputes the identifier
-// from the prepared workspace content.
+// from the prepared workspace content. Attempts (0 means 1) repeats
+// ask-then-operate with the same approval, as a harness that tries to reuse
+// a consumed approval would (spec 14 3.4); every reply is written to
+// out/authorizations.json and the first also to out/authorization.json.
 type ProbeAuthorize struct {
 	Operation   string `json:"operation"`
 	Destination string `json:"destination"`
 	ContentID   string `json:"contentId,omitempty"`
+	Attempts    int    `json:"attempts,omitempty"`
 }
 
 // ProbeHarness is one test case's probe special harness (spec 14 3.0). Its
