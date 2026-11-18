@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -34,8 +33,9 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if err != nil {
 		return "", err
 	}
+	// ListHeldLinearTasks reports a routing task as "routing".
 	comparisonCause := string(r.Cause)
-	if strings.HasPrefix(comparisonCause, "routing_") {
+	if r.Trigger != "" {
 		comparisonCause = "routing"
 	}
 	if comparisonCause == h.Cause {
@@ -51,11 +51,14 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if r.HarnessID != "" {
 		detail["harnessId"] = r.HarnessID
 	}
-	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, string(r.Cause), stamp); err != nil {
+	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, comparisonCause, stamp); err != nil {
 		return "", err
 	}
 	decision := DecisionHeld
-	if r.Cause != "" {
+	if r.Trigger != "" {
+		decision = DecisionRouting
+		detail["routeTrigger"] = string(r.Trigger)
+	} else if r.Cause != "" {
 		detail["intakeBlockCause"] = string(r.Cause)
 		if err := enqueueHold(ctx, tx, h.TaskID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
 			return "", err

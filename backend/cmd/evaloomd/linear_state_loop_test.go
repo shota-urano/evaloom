@@ -299,9 +299,9 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 			if err := h.db.QueryRow(`SELECT status, coalesce(intake_block_cause, '') FROM tasks WHERE id = ?`, id).Scan(&status, &cause); err != nil {
 				t.Fatal(err)
 			}
-			wantStatus, wantCause, wantComments := "blocked", hold.cause, 1
+			wantStatus, wantCause, wantComments, wantDecision := "blocked", hold.cause, 1, "held"
 			if hold.cause == "routing_unknown_label" {
-				wantStatus, wantCause, wantComments = "routing", "", 0
+				wantStatus, wantCause, wantComments, wantDecision = "routing", "", 0, "routing"
 			}
 			if status != wantStatus || cause != wantCause {
 				t.Fatalf("held task = %s / %s, want blocked / %s", status, cause, hold.cause)
@@ -336,7 +336,7 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 						h.wantEffects(t, effects)
 					}
 					got := h.state(t, "issue-1")
-					if !got.aiReady || got.seq != before.seq || got.decision != "held" || !sameInstant(t, got.updatedAt, advanced) {
+					if !got.aiReady || got.seq != before.seq || got.decision != wantDecision || !sameInstant(t, got.updatedAt, advanced) {
 						t.Fatalf("held Issue after state change = %+v, before = %+v", got, before)
 					}
 					if probe.calls != n+1 {

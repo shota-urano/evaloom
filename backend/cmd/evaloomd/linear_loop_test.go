@@ -369,9 +369,9 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 				WHERE idempotency_key = 'linear:issue-1:1'`).Scan(&status, &cause); err != nil {
 				t.Fatal(err)
 			}
-			wantStatus, wantComments := "blocked", 1
+			wantStatus, wantComments, wantDecision := "blocked", 1, "held"
 			if tc.name == "routing" {
-				wantStatus, wantComments = "routing", 0
+				wantStatus, wantComments, wantDecision = "routing", 0, "routing"
 			}
 			if status != wantStatus || (tc.cause != "" && cause != tc.cause) {
 				t.Fatalf("held task = %s/%s", status, cause)
@@ -397,7 +397,7 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 			if !sameInstant(t, got.updatedAt, advanced) {
 				t.Fatalf("poll did not see the advanced updatedAt: state %s, Linear %s", got.updatedAt, advanced)
 			}
-			if got.seq != before.seq || got.decision != "held" {
+			if got.seq != before.seq || got.decision != wantDecision {
 				t.Fatalf("issue state after comment = %+v, before = %+v", got, before)
 			}
 			if c := h.counts(t); c != afterComment || c.tasks != 1 || c.executions != 0 || c.recheckAudits != 0 {

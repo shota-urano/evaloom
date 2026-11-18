@@ -18,6 +18,7 @@ type Decision string
 
 const (
 	DecisionStarted           Decision = "started"
+	DecisionRouting           Decision = "routing"
 	DecisionHeld              Decision = "held"
 	DecisionCancelled         Decision = "cancelled"
 	DecisionSkippedActiveTask Decision = "skipped_active_task"
@@ -47,7 +48,7 @@ type IssueFetcher interface {
 // attach. It runs inside tx, which also updates linear_issue_states, so a
 // failure leaves the previous record unchanged (3.5 rule 1). It must use
 // idempotency key linear:<Issue ID>:<attachSeq> and write linear_issue_links,
-// and returns DecisionStarted or DecisionHeld.
+// and returns DecisionStarted, DecisionRouting or DecisionHeld.
 type Starter interface {
 	StartLinearTask(ctx context.Context, tx *sql.Tx, issue linear.Issue, attachSeq int) (Decision, error)
 }
@@ -62,7 +63,7 @@ type Canceller interface {
 // is called inside tx for an Issue that stays attached and whose updatedAt
 // is newer than the recorded one or that carries the recheck mark of an
 // Evaloom setting change (Q81); it must not create a new task. It returns
-// the new last_decision (DecisionStarted or DecisionHeld), or "" when nothing
+// the new last_decision (DecisionStarted, DecisionRouting or DecisionHeld), or "" when nothing
 // changed (no held task, or the same cause), which keeps the previous one.
 type HeldRechecker interface {
 	RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue linear.Issue) (Decision, error)

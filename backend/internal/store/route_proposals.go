@@ -247,3 +247,81 @@ func approveRoute(ctx context.Context, tx *sql.Tx, d OwnerDecision, label string
 	}
 	return nil
 }
+
+// RouteCandidate is one entry of route_proposals.candidates (spec 02 3.4, 04
+// 3.3): a routes label, its destination kind and ID, and the description of
+// the destination's Profile (a Project's pinned Profile or a special
+// harness's default Profile). Description is nil when the destination has no
+// Profile to read it from.
+type RouteCandidate struct {
+	Label       string  `json:"label"`
+	Kind        string  `json:"kind"`
+	ID          string  `json:"id"`
+	Description *string `json:"description"`
+}
+
+// RouteCandidatesTx reads every routes row as candidates at the time of the
+// routing decision (spec 15 3.6.4 step 1), ordered by label.
+func RouteCandidatesTx(ctx context.Context, tx *sql.Tx) ([]RouteCandidate, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.label,
+		CASE WHEN r.project_id IS NOT NULL THEN 'project' ELSE 'harness' END,
+		coalesce(r.project_id, r.harness_id),
+		json_extract(hp.definition, '$.description')
+		FROM routes r
+		LEFT JOIN projects p ON p.id = r.project_id
+		LEFT JOIN harnesses h ON h.id = r.harness_id
+		LEFT JOIN harness_profiles hp ON hp.id = coalesce(p.profile_id, h.default_profile_id)
+		ORDER BY r.label`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list route candidates: %w", err)
+	}
+	defer rows.Close()
+	out := []RouteCandidate{}
+	for rows.Next() {
+		var c RouteCandidate
+		var description sql.NullString
+		if err := rows.Scan(&c.Label, &c.Kind, &c.ID, &description); err != nil {
+			return nil, err
+		}
+		if description.Valid {
+			c.Description = &description.String
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// NewRouteProposal is a queued route_proposals row (spec 15 3.6.4 step 1).
+type NewRouteProposal struct {
+	ID, TaskID, Trigger string
+	SeenLabels          []string
+	Candidates          []RouteCandidate
+	CreatedAt           string
+}
+
+// InsertRouteProposalTx writes a queued proposal for a routing task. The
+// caller owns tx, which also creates the task.
+func InsertRouteProposalTx(ctx context.Context, tx *sql.Tx, p NewRouteProposal) error {
+	seen := p.SeenLabels
+	if seen == nil {
+		seen = []string{}
+	}
+	candidates := p.Candidates
+	if candidates == nil {
+		candidates = []RouteCandidate{}
+	}
+	seenJSON, err := json.Marshal(seen)
+	if err != nil {
+		return err
+	}
+	candidatesJSON, err := json.Marshal(candidates)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO route_proposals (id, task_id, trigger, seen_labels, candidates, status, created_at)
+		VALUES (?, ?, ?, ?, ?, 'queued', ?)`, p.ID, p.TaskID, p.Trigger, string(seenJSON), string(candidatesJSON), p.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("store: insert route proposal: %w", err)
+	}
+	return nil
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -54,19 +53,26 @@ func (f *recheckFixture) mustRound(t *testing.T, issues ...linear.Issue) {
 	}
 }
 
-// hold attaches issue "1" with labels so it is held, and returns the task.
-func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause BlockCause) startedTask {
+// hold attaches issue "1" with labels so it is held (want is the cause) or
+// waits for routing (want is the route_proposals trigger), and returns the
+// task.
+func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, want string) startedTask {
 	t.Helper()
 	f.mustRound(t, issue)
 	held := readStarted(t, f.db, "1", 1)
-	wantStatus, wantCause := "blocked", string(cause)
-	if strings.HasPrefix(wantCause, "routing_") {
-		wantStatus, wantCause = "routing", ""
+	wantStatus, wantCause, wantDecision := "blocked", want, DecisionHeld
+	switch RouteTrigger(want) {
+	case TriggerNoLabel, TriggerUnknownLabel, TriggerMultipleLabels:
+		wantStatus, wantCause, wantDecision = "routing", "", DecisionRouting
+		if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND trigger = ? AND status = 'queued'`,
+			held.id, want); n != 1 {
+			t.Fatalf("queued route proposals with trigger %s = %d", want, n)
+		}
 	}
 	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 {
 		t.Fatalf("held task = %+v", held)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) {
+	if s := mustState(t, f.db, "1"); s.decision != string(wantDecision) {
 		t.Fatalf("state = %+v", s)
 	}
 	return held
@@ -101,11 +107,11 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		issue linear.Issue
-		cause BlockCause
+		cause string
 	}{
-		{"unknown label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel},
-		{"two labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels},
-		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel},
+		{"unknown label", routedIssue("1", "route:unknown"), string(TriggerUnknownLabel)},
+		{"two labels", routedIssue("1", "route:one", "route:three"), string(TriggerMultipleLabels)},
+		{"no label", routedIssue("1", "bug"), string(TriggerNoLabel)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRecheckFixture(t)
@@ -159,7 +165,7 @@ func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 	f := newRecheckFixture(t)
 	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
-	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
+	held := f.hold(t, issue, string(CauseMissingAcceptanceCriteria))
 
 	issue.Description = "## 受け入れ条件\n- 動く"
 	issue.UpdatedAt = base.Add(time.Minute)
@@ -174,7 +180,7 @@ func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 // 受け入れ基準: 更新時刻が変わらない照会では再判定しない。
 func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 
 	fixed := routedIssue("1", "route:one") // same updatedAt as recorded
 	f.now = base.Add(time.Minute)
@@ -196,7 +202,7 @@ func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 // A different cause is written to the task, which stays held.
 func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	before := mustState(t, f.db, "1")
 	heldAt := taskUpdatedAt(t, f.db, held.id)
 
@@ -224,7 +230,7 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("changed cause = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != before.decidedAt {
+	if s := mustState(t, f.db, "1"); s.decision != string(DecisionRouting) || s.decidedAt != before.decidedAt {
 		t.Fatalf("state = %+v", s)
 	}
 	if n := countTasks(t, f.db, "1"); n != 1 {
@@ -271,7 +277,7 @@ func TestRecheckIgnoresTaskNotHeld(t *testing.T) {
 // task and linear_issue_states unchanged, so the next poll rechecks again.
 func TestRecheckFailureIsRetried(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	exec(t, f.db, `CREATE TRIGGER fail_execution BEFORE INSERT ON executions
 		BEGIN SELECT RAISE(ABORT, 'injected execution failure'); END`)
 
@@ -285,7 +291,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 		got.executions != 0 || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("task after failure = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.updatedAt != stamp(base) || s.decision != string(DecisionHeld) {
+	if s := mustState(t, f.db, "1"); s.updatedAt != stamp(base) || s.decision != string(DecisionRouting) {
 		t.Fatalf("state after failure = %+v", s)
 	}
 
@@ -300,7 +306,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 // pending seq 1; UpdateHeldLinearTask touches only a held task.
 func TestHeldTaskGuards(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	ctx := context.Background()
 	tx, err := f.db.Begin()
 	if err != nil {
@@ -332,7 +338,7 @@ func TestHeldTaskGuards(t *testing.T) {
 // and 3.7, and the recheck mark is cleared with that decision.
 func TestRecheckMarkClearedWhenIssueLeavesList(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at = ? WHERE linear_issue_id = '1'`,
 		stamp(base)); err != nil {
 		t.Fatal(err)

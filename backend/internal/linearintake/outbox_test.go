@@ -40,7 +40,7 @@ func outboxKeys(t *testing.T, db *sql.DB, taskID string) map[string][]string {
 // comment in the hold's transaction; a routed Issue writes none.
 func TestHoldWritesOutboxRow(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	got := outboxKeys(t, f.db, held.id)
 	if len(got) != 0 {
 		t.Fatalf("outbox = %v", got)
@@ -49,7 +49,7 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 	f2 := newRecheckFixture(t)
 	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
-	held2 := f2.hold(t, issue, CauseMissingAcceptanceCriteria)
+	held2 := f2.hold(t, issue, string(CauseMissingAcceptanceCriteria))
 	got = outboxKeys(t, f2.db, held2.id)
 	if len(got) != 1 || len(got["missing_acceptance_criteria"]) != 1 ||
 		got["missing_acceptance_criteria"][0] != held2.id+":missing_acceptance_criteria:missing_acceptance_criteria" {
@@ -68,7 +68,7 @@ func TestHoldWritesOutboxRow(t *testing.T) {
 // writes none.
 func TestRecheckOutboxRows(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 
 	same := routedIssue("1", "route:other")
 	same.UpdatedAt = base.Add(time.Minute)
@@ -143,14 +143,14 @@ func TestRoutingDoesNotWriteAnIntakeHoldComment(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		issue       linear.Issue
-		cause       BlockCause
+		cause       string
 		reason, fix string
 	}{
-		{"two labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels,
+		{"two labels", routedIssue("1", "route:one", "route:three"), string(TriggerMultipleLabels),
 			"実行先ラベル（route: で始まるラベル）が2つ以上付いている", "直し方: 実行先ラベルを1つにする"},
-		{"unknown label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel,
+		{"unknown label", routedIssue("1", "route:unknown"), string(TriggerUnknownLabel),
 			"実行先ラベル（route: で始まるラベル）が Evaloom に登録されていない", "直し方: Evaloom に登録済みの実行先ラベルを付ける"},
-		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel,
+		{"no label", routedIssue("1", "bug"), string(TriggerNoLabel),
 			"実行先ラベル（route: で始まるラベル）が付いていない", "直し方: Evaloom に登録済みの実行先ラベルを1つ付ける"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestRoutingDoesNotWriteAnIntakeHoldComment(t *testing.T) {
 func TestRoutingWithRoundPrefixDoesNotWriteAHoldComment(t *testing.T) {
 	f := newRecheckFixture(t)
 	f.intake.Starter.(*TaskStarter).RoutingLabelPrefix = "run:"
-	held := f.hold(t, routedIssue("1", "bug"), CauseRoutingNoLabel)
+	held := f.hold(t, routedIssue("1", "bug"), string(TriggerNoLabel))
 	if got := outboxKeys(t, f.db, held.id); len(got) != 0 {
 		t.Fatal(got)
 	}
@@ -181,7 +181,7 @@ func TestMissingCriteriaHoldAsksOnce(t *testing.T) {
 	f := newRecheckFixture(t)
 	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
-	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
+	held := f.hold(t, issue, string(CauseMissingAcceptanceCriteria))
 	bodyHas(t, outboxBody(t, f.db, held.id), "受け入れ条件の記入をお願いします",
 		"保留の理由: Issue の本文に受け入れ条件が書かれていない",
 		"「受け入れ条件」または「Acceptance Criteria」という見出し", "## 受け入れ条件")
@@ -227,7 +227,7 @@ func outboxExecutionIDs(t *testing.T, db *sql.DB, taskID string) map[string]stri
 // タスクの中止の行では NULL になる。
 func TestOutboxExecutionIDByTrigger(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	if got := outboxExecutionIDs(t, f.db, held.id); len(got) != 0 {
 		t.Fatalf("intake_blocked execution_id = %v", got)
 	}
@@ -238,7 +238,7 @@ func TestOutboxExecutionIDByTrigger(t *testing.T) {
 	f2 := newRecheckFixture(t)
 	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
-	held2 := f2.hold(t, issue, CauseMissingAcceptanceCriteria)
+	held2 := f2.hold(t, issue, string(CauseMissingAcceptanceCriteria))
 	if n := countRows(t, f2.db, `SELECT count(*) FROM linear_outbox WHERE task_id = '`+held2.id+`'
 		AND kind = 'missing_acceptance_criteria' AND execution_id IS NULL`); n != 1 {
 		t.Fatalf("missing_acceptance_criteria rows with NULL execution_id = %d (%v)", n, outboxExecutionIDs(t, f2.db, held2.id))

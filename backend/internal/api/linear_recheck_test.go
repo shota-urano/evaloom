@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 	"time"
 
@@ -122,18 +121,28 @@ func (f *recheckFixture) task(t *testing.T, issueID string) recheckTask {
 	return r
 }
 
-func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause linearintake.BlockCause) recheckTask {
+// hold attaches issue so it is held (cause is the intake_block_cause) or
+// waits for routing (cause is a route_proposals trigger).
+func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause string) recheckTask {
 	t.Helper()
 	f.poll(t, issue)
 	held := f.task(t, issue.ID)
-	wantStatus, wantCause := "blocked", string(cause)
-	if strings.HasPrefix(wantCause, "routing_") {
+	wantStatus, wantCause := "blocked", cause
+	if isRouteTrigger(cause) {
 		wantStatus, wantCause = "routing", ""
 	}
 	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 || held.mark.Valid {
 		t.Fatalf("held task = %+v; want blocked by %s", held, cause)
 	}
 	return held
+}
+
+func isRouteTrigger(v string) bool {
+	switch linearintake.RouteTrigger(v) {
+	case linearintake.TriggerNoLabel, linearintake.TriggerUnknownLabel, linearintake.TriggerMultipleLabels:
+		return true
+	}
+	return false
 }
 
 func requireMarked(t *testing.T, got recheckTask, want bool) {
@@ -177,12 +186,12 @@ func TestLinearRecheckProfileChangeOnlyMarksCriteriaHolds(t *testing.T) {
 		recheckIssue("4", "team-a", "route:b"),
 	}
 	f.poll(t, issues...)
-	for id, cause := range map[string]linearintake.BlockCause{
-		"1": linearintake.CauseRoutingMultipleLabels, "2": linearintake.CauseRoutingNoLabel,
-		"3": linearintake.CauseMissingAcceptanceCriteria, "4": linearintake.CauseRoutingUnknownLabel,
+	for id, cause := range map[string]string{
+		"1": string(linearintake.TriggerMultipleLabels), "2": string(linearintake.TriggerNoLabel),
+		"3": string(linearintake.CauseMissingAcceptanceCriteria), "4": string(linearintake.TriggerUnknownLabel),
 	} {
-		wantCause := string(cause)
-		if strings.HasPrefix(wantCause, "routing_") {
+		wantCause := cause
+		if isRouteTrigger(cause) {
 			wantCause = ""
 		}
 		if got := f.task(t, id); got.cause.String != wantCause {
@@ -211,7 +220,7 @@ func TestLinearRecheckProfileChangeOnlyMarksCriteriaHolds(t *testing.T) {
 func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
 	issue := recheckIssue("1", "team-a", "route:b")
-	held := f.hold(t, issue, linearintake.CauseRoutingUnknownLabel)
+	held := f.hold(t, issue, string(linearintake.TriggerUnknownLabel))
 	var updatedAt string
 	if err := f.db.QueryRow(`SELECT updated_at FROM tasks WHERE id = ?`, held.id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
