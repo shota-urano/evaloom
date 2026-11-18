@@ -41,7 +41,7 @@ written: 2026-11-10
 旧仕様の承認ポリシー（projects.approval_policy、Q60）を、Project の承認を省く設定（projects.approval_waivers、[`02-data-model.md`](./02-data-model.md) 3.2）に置き換えた。
 
 - 値は、承認を省く操作の名前の配列である。既定は `[]`（すべての承認を求める）。
-- 入れられるのは、Project が固定した版（projects.profile_id）の Profile で `waivable: true` と宣言された操作だけである（契約 5.2、7.3）。それ以外の名前は 422（`not_waivable`）で拒否する。
+- 入れられるのは、Project が固定した版（projects.profile_id）の Profile で `waivable: true` と宣言された操作だけである（契約 5.2、7.3）。Profile に無い操作の名前は 422（`unknown_operation`、[`03-harness-registry.md`](./03-harness-registry.md) 3.5 と同じ）、Profile にあるが `waivable: true` でない操作は 422（`not_waivable`）で拒否する（Q213）。
 - Project の固定する版を別の版に変えるとき、新しい版で `waivable: true` でない操作が承認を省く設定に残っていれば、その変更を 422 で拒否する。
 - スペシャルハーネスへ直接振り分けた仕事では、スペシャルハーネスの承認を省く設定（harnesses.approval_waivers）を使う。既定は `[]` で、宣言したすべての承認を求める。本人が、もう止めなくてよい操作を後から足していく。入れられる操作と拒否の規則は Project と同じで、版は harnesses.default_profile_id と読む（Q113）。変更は `PATCH /api/harnesses/{id}` から行い、audit_logs（`harness.update`）に残す。
 - 承認を省く設定を変えられるのは本人だけで、管理画面の `PATCH /api/projects/{id}` から行う。Runner 用 API とスペシャルハーネスには変更の経路を作らない（requirements 15.3）。変更は audit_logs（`project.update`）に変更前後の値を残す。
@@ -93,11 +93,11 @@ Control Plane は、次の判定と書き込みを1つの書き込みトラン�
 
 | 状況 | 応答 | approvals の status |
 |---|---|---|
+| 要求の Runner が claim した Runner でない、または Execution が `publishing` でない | 403 / 409（[`01-architecture.md`](./01-architecture.md) 5.3）。Runner は段に `allowed: false`（`unavailable`）を返す。別の Runner からの要求は、中止要求があっても 403 で答え、承認を無効にしない（Q214） | 変えない |
 | タスクの中止要求がある | `allowed: false`、`cancelled` | 未使用の承認を `invalidated`（理由 `cancelled`） |
-| 要求の Runner が claim した Runner でない、または Execution が `publishing` でない | 403 / 409（[`01-architecture.md`](./01-architecture.md) 5.3）。Runner は段に `allowed: false`（`unavailable`）を返す | 変えない |
 | operation が `publish`（承認の要らない操作） | `allowed: true` | 行は無い |
 | operation が Profile の `approvals` に無い（`publish` 以外） | `allowed: false`、`not_approved` | 行は無い |
-| approvalId が null で、operation が振り分け先（Project かスペシャルハーネス）の現在の approval_waivers にある（3.2） | `allowed: true` | 行は無い。execution_events に `approval_consumed`（approvalId null）を書く |
+| approvalId が null で、operation が振り分け先（Project かスペシャルハーネス）の現在の approval_waivers にあり、Profile でその操作が `waivable: true`（3.2、Q214） | `allowed: true` | 行は無い。execution_events に `approval_consumed`（approvalId null）を書く |
 | approvalId が null で、上に当てはまらない（省く設定が外された場合を含む） | `allowed: false`、`not_approved` | 行は無い |
 | approvalId の行が、この Execution・この operation のものでない、または status が `approved` でない（`pending` / `rejected` / `invalidated`） | `allowed: false`、`not_approved` | 変えない |
 | 行の status が `consumed`、または use_count が max_uses に達している | `allowed: false`、`already_used` | 変えない |
@@ -107,7 +107,7 @@ Control Plane は、次の判定と書き込みを1つの書き込みトラン�
 
 - 消費は `UPDATE approvals SET status='consumed', use_count=use_count+1, consumed_at=? WHERE id=? AND execution_id=? AND operation=? AND status='approved' AND use_count < max_uses AND expires_at > ? AND content_id=?` のように、期待する現在値を条件にした1つの更新で行う。更新できた行が0件なら許可しない（requirements 15.8「承認の消費は DB で原子的に管理する」）。
 - 判定の結果は execution_events に `approval_consumed`（approvalId、operation、allowed、reason）として残し、audit_logs（actor `runner:<id>`、action `approval.consume`）にも残す。
-- Control Plane の DB の書き込みに失敗したら `allowed: false` を返す。Runner が Control Plane に届かないときは、Runner が段に `allowed: false`（`unavailable`）を返す（[`01-architecture.md`](./01-architecture.md) 3.7）。
+- Control Plane の DB の書き込みに失敗したら、HTTP 500 で `allowed: false` を返す。`reason` は付けない（Q214）。Runner が Control Plane に届かないときは、Runner が段に `allowed: false`（`unavailable`）を返す（[`01-architecture.md`](./01-architecture.md) 3.7）。
 - スペシャルハーネスは `allowed: true` を受け取ったときだけ、その操作を1回行う。許可されなかったときは操作せず、`publish_failed` を返す（契約 7.4）。この Execution は失敗になる。
 - 承認の要る操作を `publish` と名乗って問い合わせることを Evaloom は見分けられない。宣言した操作は必ずその名前で問い合わせることは、スペシャルハーネスの義務である（契約 12章の 4）。
 
@@ -120,7 +120,7 @@ Control Plane は、次の判定と書き込みを1つの書き込みトラン�
 | 出す直前の問い合わせで content_id が違った | `invalidated`（`content_changed`） | 変えない（判断済み） | publish の段が `publish_failed` を返し、Execution は `failed`。本人に通知する |
 | 判断待ちのまま時間がたった | 変えない | 変えない | 有効期限は承認した時刻から数えるため、判断待ちのままでは期限切れにならない |
 | 承認した後、出す直前の問い合わせまでに期限が切れた | `expired` | 変えない（判断済み） | Q166 |
-| 本人が期限切れの承認から承認待ちを作り直す（`POST /api/approvals/{id}/renew`） | 新しい `pending` の行（同じ operation・target・content_id） | 新しい kind=`approval` の行 | Execution とタスクを `waiting_approval` にする |
+| 本人が期限切れの承認から承認待ちを作り直す（`POST /api/approvals/{id}/renew`） | 新しい `pending` の行（同じ operation・target・content_id） | 新しい kind=`approval` の行 | Execution とタスクを `waiting_approval` にする。Linear 起因のタスクなら、3.3 の手順7と同じく「管理画面で判断待ち」（`decision_open`）を linear_outbox に書く（Q215） |
 | タスクの中止（本人、または Linear 起因、[`15-linear-intake.md`](./15-linear-intake.md) 3.7） | 未使用なら `invalidated`（`cancelled`） | 開いていれば `withdrawn`（`cancelled`） | `cancelled`。外に出したものを Evaloom は取り消さない |
 | 承認待ちの間に、外の対象が本人の手で変わった（GitHub で直接マージした、など） | 変えない | 変えない | Evaloom は外を照合しない。Q167 |
 
@@ -279,3 +279,6 @@ Q55（有効期限の既定 24 時間）、Q57（却下で failed）、Q59（承
 | Q165 | 承認を省く操作を足すとき、管理画面で何を確かめさせるか（旧仕様の `direct_push` の確認ダイアログを一般化） | 決定（2026-11-10 本人、案を採用）: 確認ダイアログを出し、省く操作の名前と Profile の description と、「この Project では、この操作を本人の承認なしにスペシャルハーネスが行う」ことを示す。パスワードの入れ直しは求めない（18 の 3.7 の決定どおり） |
 | Q166 | 承認してから publish の段が問い合わせるまでに有効期限が切れたとき（Runner が止まっていて、承認から 24 時間たって claim された、など） | 決定（2026-11-10 本人、案を採用）: claim の時点で Execution の承認の有効期限を確かめ、切れた承認があれば publish の段を始めない。その承認を `expired` にし、Execution とタスクを `waiting_approval` に戻して、期限切れを示す判断待ちを作る（本人は renew で承認し直す）。段が始まった後の問い合わせで切れていたときは、契約どおり `expired` で許可せず、Execution は失敗になる |
 | Q167 | 承認待ちの間に、外の対象が本人の手で変わったとき（PR を GitHub で直接マージした、投稿を手で公開した、など）、Evaloom は気付くべきか | 決定（2026-11-10 本人、案を採用）: Evaloom は外を読まず、何もしない（本人決定 5、vision.md 4章）。本人は判断待ちの画面で却下するか、タスクを中止する。承認した場合は、publish の段が始めに外の状態を確かめて、すでに行われた操作を繰り返さない（契約 7.5、12章の 9） |
+| Q213 | 承認を省く設定に Profile に無い操作の名前を入れたとき（3.2 は `not_waivable` とだけ書き、03 3.5 と実装は `unknown_operation` を返していた。evaloom-vhe.3） | 決定（2026-11-18 本人）: 実装どおり。Profile に無い操作は 422 `unknown_operation`（03 3.5 と同じ）、`waivable: true` でない操作が 422 `not_waivable` |
+| Q214 | authorize の判定順・DB 書き込み失敗時の応答・省く操作の条件（evaloom-vhe.4 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。Runner の照合（403）を中止要求より先に行う（別の Runner は中止済みでも 403 で、承認を無効にしない）。DB 書き込みの失敗は HTTP 500 で `allowed: false`、reason なし。省く操作は approval_waivers にあることに加えて Profile の `waivable: true` も条件にする |
+| Q215 | renew でできた判断待ちを Linear にどう知らせるか（evaloom-vhe.2 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。Linear 起因なら 3.3 の手順7と同じ `decision_open` を書く |
