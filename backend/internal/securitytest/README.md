@@ -39,6 +39,21 @@ CONNECTの結果には `detail.status` を記録する。プロキシ自体の�
 
 結果ファイルは改ざんされうる。後続の権限境界テストは、期待する全IDの結果に加えて、Control Planeの `audit_logs`、HTTPアクセス記録、`Fixture.Refs(ctx)` で取得するbareリモートのrefを照合する必要がある。ファイルだけで合格にしてはいけない。`NewCanary()` は設定ファイル等に使う一意の文字列を生成する。
 
+## 仕様14の3.0の道具（ハーネス契約 v1 の段で使う）
+
+上の `NewFixture` と `harness.py` は旧工程の道具である。3.2〜3.6のテストは、次の道具を使う。
+
+| 道具 | 実体 | 使い方 |
+|---|---|---|
+| プローブ用スペシャルハーネス | `ProbeHarness`、`WriteProbeHarness(repo, h)`。`probeharness/probe_stage.py` が `bin/probe` になる | 空のディレクトリに Profile（`evaloom/profile.yaml`）と `bin/probe` を書く。呼び出し側が commit して `profile/v1.0.0` を付け、通常どおり登録する。準備・確かめる・出すの段で `probe/<stage>-plan.json` のアクセスを試し、`out/probe-<stage>.json` に観測を書く。結果 JSON は `Results` の値で上書きできる（`{{contentId}}` などを置換、`"{{omit}}"` で項目を消す）。`Authorize` を指定すると、出す段が通話口で `authorize` を送り、`allowed: true` のときだけテスト用の外部の宛先へ操作を1回送る |
+| プローブ Adapter | `NewWorkProbe(runner.WorkAdapterConfig, plan)`。`adapter/probe` の `NewWithConfig` と `LaunchSandbox` を使う | 作業の段で、Runner が渡す Work Sandbox の起動口（`Launch`）と専用設定の作業用コピーを使い、`python3 -c` で plan を実行する。観測は作業領域の `.evaloom-probe/work-results.json`。AI は呼ばない。起動口が無い、または Sandbox でコマンドを実行できないときは実行不能で失敗する。振り分けの提案（Proposal Sandbox）での実行は未実装 |
+| テスト用の鍵 | `NewProbeSecrets()`、`ProbeSecrets.Store(dataDir, harnessID)` | `probe_read` を `read`、`probe_write` を `write` で Runner の鍵の保管に登録する。値はカナリア。plan には値を書かず、`SecretProbe(id, value, paths...)` で SHA-256 と長さだけを書く（段は Profile の plan を読めるため）。観測は見つかったかどうかの真偽だけ |
+| テスト用の外部の宛先 | `NewDestination(listener)` | 受けた要求をすべて記録し（`Requests`）、`POST /operations` を出す操作として数える（`Operations`）。`SetFile` で準備の段が取り込むファイルを置ける。待ち受けのアドレスと名前解決は呼び出し側が用意する（Q150） |
+
+前提の確認は `Prerequisites.Require(ctx, t)` を使う。Sandbox が無い・動かない、`RequireDestination` で宛先が無い・ループバックか未指定のアドレス、`RequireModel` で認証情報が無い、のどれでも `t.Fatalf` で失敗し、スキップしない（仕様14の6章）。`TestPrerequisitesFailInsteadOfSkipping` がこれを固定する。
+
+`cmd/evaloom-runner` の `TestProbeHarnessExecutionSucceeds` は、これらの道具で準備から出すまでの Execution が `succeeded` まで通ることを、製品の Runner コマンドで確かめる（`make verify` に含む）。置き換えるのはコンテナ実行環境の CLI だけで、Docker デーモンは要らない。このため隔離そのものは証明しない。鍵は宣言した段（準備は `probe_read`、出すは両方）にだけ届き、確かめる段と作業の段に届かないことと、記録にカナリアの値が残らないことも確かめる。宛先へのネットワークを宣言した Profile は実コンテナが要るため、この試験では使わない。実環境での隔離のテスト（3.2〜3.6）はビルドタグで選び、`Prerequisites.Require` を通してから実行する。
+
 ## 偽のGitHub API
 
 `NewGitHub("owner/repo", "test-token")` はローカルHTTPサーバを起動する。PRの作成・一覧・番号指定の取得に対応し、重複作成、認証不足、未対応操作を拒否する。`Accesses()` は拒否した要求も含めて記録を返す。トークン値は記録しない。終了時は `Close()` を呼ぶ。

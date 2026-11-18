@@ -121,6 +121,26 @@ type Prerequisites struct {
 	Sandbox          interface{ Check(context.Context) error }
 	RequireModel     bool
 	ModelCredentials func(context.Context) error
+	// RequireDestination demands the test external destination (Destination
+	// rejects loopback and unspecified addresses as unavailable).
+	RequireDestination bool
+	Destination        interface{ Check(context.Context) error }
+}
+
+// Fataler is the part of testing.TB that Require uses.
+type Fataler interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// Require fails the test (never skips it) when a prerequisite is missing, so
+// an environment without the Sandbox, the model credentials or the test
+// destination cannot look like a pass (spec 14 6).
+func (p Prerequisites) Require(ctx context.Context, t Fataler) {
+	t.Helper()
+	if err := p.Check(ctx); err != nil {
+		t.Fatalf("実行不能（スキップではない）: %v", err)
+	}
 }
 
 func (p Prerequisites) Check(ctx context.Context) error {
@@ -132,6 +152,14 @@ func (p Prerequisites) Check(ctx context.Context) error {
 	}
 	if err := p.Sandbox.Check(ctx); err != nil {
 		return fmt.Errorf("実行不能: Sandbox: %w", err)
+	}
+	if p.RequireDestination {
+		if p.Destination == nil {
+			return fmt.Errorf("実行不能: テスト用の外部の宛先が必要")
+		}
+		if err := p.Destination.Check(ctx); err != nil {
+			return fmt.Errorf("実行不能: テスト用の外部の宛先: %w", err)
+		}
 	}
 	if p.RequireModel {
 		if p.ModelCredentials == nil {

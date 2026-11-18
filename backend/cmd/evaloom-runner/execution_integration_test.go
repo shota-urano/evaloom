@@ -62,6 +62,21 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 	case "container create":
 		data, _ := json.Marshal(args)
 		must(os.WriteFile(filepath.Join(root, value("--name")+".json"), data, 0600))
+		// Name-only --env options import values from this create client's
+		// environment (stage secrets), as the Docker CLI does. The fake daemon
+		// keeps them in the test-owned runtime directory until start.
+		imported := map[string]string{}
+		for i, arg := range args {
+			if arg == "--env" && i+1 < len(args) && !strings.Contains(args[i+1], "=") {
+				if v, ok := os.LookupEnv(args[i+1]); ok {
+					imported[args[i+1]] = v
+				}
+			}
+		}
+		if len(imported) != 0 {
+			data, _ := json.Marshal(imported)
+			must(os.WriteFile(filepath.Join(root, value("--name")+".env"), data, 0600))
+		}
 	case "container start":
 		name := args[len(args)-1]
 		raw, err := os.ReadFile(filepath.Join(root, name+".json"))
@@ -76,9 +91,13 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 				workdir = create[i+1]
 			case "--mount":
 				var source, target string
+				volume := strings.HasPrefix(create[i+1], "type=volume,")
 				for _, part := range strings.Split(create[i+1], ",") {
 					if s, ok := strings.CutPrefix(part, "source="); ok {
 						source = s
+						if volume {
+							source = filepath.Join(root, "volumes", s)
+						}
 					}
 					if s, ok := strings.CutPrefix(part, "target="); ok {
 						target = s
@@ -100,8 +119,23 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 			}
 			return path
 		}
-		index := slices.Index(create, "-i") + 1
 		var env []string
+		index := slices.Index(create, "-i") + 1
+		if index == 0 {
+			// Keyed stages replace env -i with "-u NAME" pairs and keep only
+			// the imported --env variables.
+			index = slices.Index(create, "-u")
+			for index >= 0 && index+1 < len(create) && create[index] == "-u" {
+				index += 2
+			}
+			if raw, err := os.ReadFile(filepath.Join(root, name+".env")); err == nil {
+				var imported map[string]string
+				must(json.Unmarshal(raw, &imported))
+				for key, v := range imported {
+					env = append(env, key+"="+v)
+				}
+			}
+		}
 		for index < len(create) && strings.Contains(create[index], "=") {
 			key, v, _ := strings.Cut(create[index], "=")
 			env = append(env, key+"="+translate(v))
@@ -131,6 +165,53 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 			}
 		}
 		must(os.WriteFile(filepath.Join(root, name+".exit"), []byte(fmt.Sprint(exit)), 0600))
+	case "volume create":
+		// Work sessions seed a private configuration volume (spec 09). The
+		// fake daemon keeps it as a directory plus the archive it received.
+		must(os.MkdirAll(filepath.Join(root, "volumes", args[len(args)-1]), 0700))
+	case "volume rm":
+		must(os.RemoveAll(filepath.Join(root, "volumes", args[len(args)-1])))
+		_ = os.Remove(filepath.Join(root, "volumes", args[len(args)-1]+".tar"))
+	case "volume ls":
+		filter := strings.TrimSuffix(strings.TrimPrefix(value("--filter"), "name=^"), "$")
+		if _, err := os.Stat(filepath.Join(root, "volumes", filter)); err == nil {
+			fmt.Println(filter)
+		}
+	case "container cp":
+		// cp - name:dir/. stores the archive in the container's volume;
+		// cp name:dir/. - returns it, as the daemon reads the mounted volume.
+		source, target := args[2], args[3]
+		name, _, _ := strings.Cut(target, ":")
+		if source != "-" {
+			name, _, _ = strings.Cut(source, ":")
+		}
+		raw, err := os.ReadFile(filepath.Join(root, name+".json"))
+		must(err)
+		var create []string
+		must(json.Unmarshal(raw, &create))
+		volume := ""
+		for i, arg := range create {
+			if i > 0 && create[i-1] == "--mount" && strings.HasPrefix(arg, "type=volume,") {
+				for _, part := range strings.Split(arg, ",") {
+					if v, ok := strings.CutPrefix(part, "source="); ok {
+						volume = v
+					}
+				}
+			}
+		}
+		if volume == "" {
+			must(fmt.Errorf("cp without configuration volume"))
+		}
+		archive := filepath.Join(root, "volumes", volume+".tar")
+		if source == "-" {
+			data, err := io.ReadAll(os.Stdin)
+			must(err)
+			must(os.WriteFile(archive, data, 0600))
+		} else {
+			data, err := os.ReadFile(archive)
+			must(err)
+			_, _ = os.Stdout.Write(data)
+		}
 	case "container inspect":
 		raw, err := os.ReadFile(filepath.Join(root, args[len(args)-1]+".exit"))
 		must(err)
@@ -239,6 +320,9 @@ type executionFixture struct {
 	mu           sync.Mutex
 	workRequests []adapter.HarnessRequest
 	claims       []runner.Claim
+	// workAdapter, when set, replaces the deterministic dummy work Adapter
+	// with one built from Runner's real work wiring (the probe Adapter).
+	workAdapter func(runner.WorkAdapterConfig) adapter.Adapter
 }
 
 // fixtureHarness is the special harness repository a fixture registers.
@@ -523,8 +607,13 @@ func (f *executionFixture) start() {
 	f.done = make(chan error, 1)
 	go func() {
 		f.done <- runWithAdapters(ctx, []string{"-config", f.configPath}, strings.NewReader(""), f.output, func(w runner.WorkAdapterConfig) *adapter.Registry {
-			base, _ := f.adapters.Lookup("codex")
 			adapters := &adapter.Registry{}
+			if f.workAdapter != nil {
+				// The probe Adapter manages its own working configuration.
+				_ = adapters.Register("codex", f.workAdapter(w))
+				return adapters
+			}
+			base, _ := f.adapters.Lookup("codex")
 			_ = adapters.Register("codex", &authenticatedFixtureAdapter{Adapter: base, wiring: w})
 			return adapters
 		})
