@@ -544,3 +544,70 @@ func TestIntakeRequiresStarterAndCanceller(t *testing.T) {
 		t.Fatal("unconfigured intake recorded an attach")
 	}
 }
+
+// switchableTeams is a TeamSource whose polling Team the test changes, as
+// changing linear.teamId (or however the Team is chosen, dcj.10) would.
+type switchableTeams struct{ id string }
+
+func (s *switchableTeams) LinearPollTeamID(context.Context) (string, error) { return s.id, nil }
+
+// 受け入れ基準: 照会先の Team を変えた後の最初の照会でも、一覧の Issue を記録するだけでタスクが作られない。
+// 前に照会していた Team へ戻した場合も、戻した後の最初の照会は記録するだけになる。
+func TestPollTeamChangeFirstPollOnlyRecords(t *testing.T) {
+	f := newIntakeFixture(t)
+	teamIssue := func(id, team string) linear.Issue {
+		issue := readyIssue(id, base)
+		issue.TeamID = team
+		return issue
+	}
+	lists := map[string][]linear.Issue{"team-a": {teamIssue("a1", "team-a")}}
+	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) { return lists[teamID], nil }}
+	source := &switchableTeams{id: "team-a"}
+	p := newPoller(f.db, client, nil)
+	p.Handler, p.Teams = f.intake, source
+
+	pollOnce(t, p) // team-a: first poll
+	lists["team-a"] = append(lists["team-a"], teamIssue("a2", "team-a"))
+	pollOnce(t, p) // team-a: a2 is a normal attach
+	if !slices.Equal(f.starter.calls, []startCall{{"a2", 1}}) {
+		t.Fatalf("starts on team-a = %v, want a2 seq 1", f.starter.calls)
+	}
+
+	// Change the polling Team: its first poll only records.
+	source.id = "team-b"
+	lists["team-b"] = []linear.Issue{teamIssue("b1", "team-b"), teamIssue("b2", "team-b")}
+	pollOnce(t, p)
+	if len(f.starter.calls) != 1 {
+		t.Fatalf("first poll after the Team change started: %v", f.starter.calls)
+	}
+	for _, id := range []string{"b1", "b2"} {
+		if s := mustState(t, f.db, id); !s.aiReady || s.seq != 0 || s.decision != string(DecisionSkippedInitial) || s.teamID != "team-b" {
+			t.Fatalf("%s: %+v, want ai_ready=1 seq=0 skipped_initial on team-b", id, s)
+		}
+		if countTasks(t, f.db, id) != 0 {
+			t.Fatalf("%s: task created on the first poll after the Team change", id)
+		}
+	}
+	if !baselineDone(t, f.db, "team-b") {
+		t.Fatal("team-b first poll not marked done")
+	}
+	lists["team-b"] = append(lists["team-b"], teamIssue("b3", "team-b"))
+	pollOnce(t, p)
+	if got := f.starter.calls[len(f.starter.calls)-1]; len(f.starter.calls) != 2 || got != (startCall{"b3", 1}) {
+		t.Fatalf("starts after team-b's first poll = %v, want b3 seq 1 added", f.starter.calls)
+	}
+
+	// Back to team-a: its earlier first poll does not count any more.
+	source.id = "team-a"
+	lists["team-a"] = append(lists["team-a"], teamIssue("a3", "team-a"))
+	pollOnce(t, p)
+	if len(f.starter.calls) != 2 {
+		t.Fatalf("first poll after returning to team-a started: %v", f.starter.calls)
+	}
+	if s := mustState(t, f.db, "a3"); !s.aiReady || s.seq != 0 || s.decision != string(DecisionSkippedInitial) {
+		t.Fatalf("a3: %+v, want skipped_initial", s)
+	}
+	if countTasks(t, f.db, "a3") != 0 {
+		t.Fatal("a3: task created on the first poll after returning to team-a")
+	}
+}

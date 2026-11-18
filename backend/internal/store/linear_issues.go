@@ -291,12 +291,14 @@ func UpdateHeldLinearTask(ctx context.Context, tx *sql.Tx, taskID, projectID, ha
 
 // ListCancellableLinearTasks returns the IDs of the tasks linked to the Issue
 // through linear_issue_links that a Linear-caused cancellation stops (spec 15
-// 3.7): queued, running, verifying or blocked (held included), oldest attach
-// first. Terminal tasks are never returned.
+// 3.7): routing, queued, running, waiting_approval or blocked (held
+// included), oldest attach first. Terminal tasks are never returned. received
+// is not listed: a Linear task leaves it in the transaction that creates it
+// (spec 15 3.6), so no committed task is ever received.
 func ListCancellableLinearTasks(ctx context.Context, tx *sql.Tx, issueID string) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT t.id FROM linear_issue_links l
 		JOIN tasks t ON t.id = l.task_id
-		WHERE l.linear_issue_id = ? AND t.status IN ('routing', 'queued', 'running', 'blocked')
+		WHERE l.linear_issue_id = ? AND t.status IN ('routing', 'queued', 'running', 'waiting_approval', 'blocked')
 		ORDER BY l.attach_seq`, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list cancellable linear tasks: %w", err)

@@ -104,6 +104,7 @@ func writeRoute(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 		var before any
+		changed := create
 		if !create {
 			old, err := store.GetRoute(r.Context(), tx, label)
 			if err != nil {
@@ -111,6 +112,7 @@ func writeRoute(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc {
 				return
 			}
 			route.CreatedAt, before = old.CreatedAt, old
+			changed = !sameID(old.ProjectID, route.ProjectID) || !sameID(old.HarnessID, route.HarnessID)
 		}
 		if create {
 			settings, err := store.ReadSettings(r.Context(), tx)
@@ -155,6 +157,11 @@ func writeRoute(db *sql.DB, logger *slog.Logger, create bool) http.HandlerFunc {
 			action, status = "route.create", http.StatusCreated
 		}
 		err = store.SaveRoute(r.Context(), tx, route, create)
+		if err == nil && changed {
+			// spec 15 3.6.3 (Q81): every routing task is decided again on the
+			// next poll. An update that keeps the destination marks nothing.
+			err = store.MarkLinearRecheck(r.Context(), tx, store.LinearRecheck{Routing: true}, now)
+		}
 		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{Actor: "owner", Action: action, TargetType: "route", TargetID: label, Detail: map[string]any{"before": before, "after": route}})
 		}
@@ -182,6 +189,10 @@ func deleteRoute(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 			_, err = tx.ExecContext(r.Context(), `DELETE FROM routes WHERE label=?`, before.Label)
 		}
 		if err == nil {
+			// spec 15 3.6.3 (Q81), in the transaction of the delete.
+			err = store.MarkLinearRecheck(r.Context(), tx, store.LinearRecheck{Routing: true}, time.Now().UTC().Format(time.RFC3339Nano))
+		}
+		if err == nil {
 			_, err = store.RecordAuditLog(r.Context(), tx, store.AuditLog{Actor: "owner", Action: "route.delete", TargetType: "route", TargetID: before.Label, Detail: map[string]any{"before": before, "after": nil}})
 		}
 		if err == nil {
@@ -193,4 +204,9 @@ func deleteRoute(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// sameID reports whether two optional destination IDs are equal.
+func sameID(a, b *string) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }

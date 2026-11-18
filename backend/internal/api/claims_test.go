@@ -46,6 +46,11 @@ func enableDirectRouting(t *testing.T, f *authFixture, profileID, runner string)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, `"`+runner+`"`); err != nil {
 		t.Fatal(err)
 	}
+	// A proposer model lets the proposals reach the Runner (spec 15 3.6.4).
+	if _, err := f.db.Exec(`INSERT INTO settings (key, value, updated_at) VALUES ('routing.proposer', ?, '2026-01-01T00:00:00Z')
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, `{"microHarness":"claude_code","model":"model-x"}`); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func createClaimTask(t *testing.T, f *authFixture, project, key string) model.Task {

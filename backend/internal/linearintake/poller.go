@@ -50,6 +50,20 @@ type Alert struct {
 	ConsecutiveFailures int
 }
 
+// TeamSource names the Team to poll. An empty ID means no polling Team: the
+// round queries nothing (spec 15 3.2, 6章). How the Team is chosen is up to
+// the implementation; the Poller only asks.
+type TeamSource interface {
+	LinearPollTeamID(ctx context.Context) (string, error)
+}
+
+// settingsTeamSource reads settings.linear.teamId.
+type settingsTeamSource struct{ db *sql.DB }
+
+func (s settingsTeamSource) LinearPollTeamID(ctx context.Context) (string, error) {
+	return store.LinearPollTeamID(ctx, s.db)
+}
+
 // Alerter delivers an Alert to the owner (macOS notification, spec 15 6章).
 type Alerter interface {
 	AlertLinearPollFailing(ctx context.Context, alert Alert) error
@@ -67,7 +81,12 @@ type Poller struct {
 	// Settings supplies the global label settings, read once per round and
 	// passed to Handler through the context. nil: TriggerLabel and defaults.
 	Settings LabelSource
-	Now      func() time.Time
+	// Teams names the polling Team each round. nil: settings.linear.teamId.
+	Teams TeamSource
+	Now   func() time.Time
+	// After waits between rounds, like time.After. nil: a real timer. Tests
+	// set it to drive Run without sleeping.
+	After func(time.Duration) <-chan time.Time
 	// AuthGate is the authentication error notification suppression shared
 	// with the Linear comment Worker (spec 16 3.4.3, Q84). nil: the Poller
 	// uses a gate of its own.
@@ -83,7 +102,7 @@ type Poller struct {
 
 // Result summarizes one round.
 type Result struct {
-	// Polled is false when settings.linear.teamId is unset.
+	// Polled is false when there is no polling Team (TeamSource gave "").
 	Polled bool
 	// ResumeAt is Linear's restart hint after rate limiting; zero otherwise.
 	ResumeAt time.Time
@@ -103,13 +122,29 @@ func (p *Poller) Run(ctx context.Context) {
 		if result.ResumeAt.After(next) {
 			next = result.ResumeAt
 		}
-		timer := time.NewTimer(max(next.Sub(p.now()), 0))
+		if !p.wait(ctx, max(next.Sub(p.now()), 0)) {
+			return
+		}
+	}
+}
+
+// wait blocks for d and reports false when ctx ended first.
+func (p *Poller) wait(ctx context.Context, d time.Duration) bool {
+	if p.After != nil {
 		select {
 		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
+			return false
+		case <-p.After(d):
+			return true
 		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -120,7 +155,15 @@ func (p *Poller) PollOnce(ctx context.Context) (Result, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var result Result
-	teams, err := store.SyncLinearPollTeams(ctx, p.DB)
+	var source TeamSource = settingsTeamSource{p.DB}
+	if p.Teams != nil {
+		source = p.Teams
+	}
+	teamID, err := source.LinearPollTeamID(ctx)
+	if err != nil {
+		return result, err
+	}
+	teams, err := store.SyncLinearPollTeam(ctx, p.DB, teamID)
 	if err != nil || len(teams) == 0 {
 		// No registered Team: do not query (spec 15 3.2), not even the key.
 		return result, err

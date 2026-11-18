@@ -112,7 +112,7 @@ func TestUpdateLinearLabelsWritesChangedKeysWithAudit(t *testing.T) {
 		t.Fatalf("labels = %+v", got)
 	}
 	var rows int
-	if err := db.QueryRow(`SELECT count(*) FROM settings`).Scan(&rows); err != nil || rows != 0 {
+	if err := db.QueryRow(`SELECT count(*) FROM settings WHERE key LIKE 'linear.%'`).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("settings rows = %d err=%v", rows, err)
 	}
 	if got := update(LabelsPatch{TriggerLabel: &goLabel, RoutingLabelPrefix: &toPrefix}); got != (Labels{"go", "to:"}) {

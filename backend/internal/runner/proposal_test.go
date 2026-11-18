@@ -402,4 +402,11 @@ func insertRoutingProposal(t *testing.T, db *sql.DB, proposalID, taskID, runnerI
 		proposalID, taskID, runnerID, now); err != nil {
 		t.Fatal(err)
 	}
+	// A Linear task is linked to its Issue in the same transaction (spec 15
+	// 3.6); the route decision's decision_open comment needs the link.
+	if _, err := db.Exec(`INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
+		VALUES (?, ?, 'ENG-1', 'https://linear.app/x/issue/ENG-1', 'team-a', ?, 1, ?)`,
+		"link-"+taskID, "issue-"+taskID, taskID, now); err != nil {
+		t.Fatal(err)
+	}
 }

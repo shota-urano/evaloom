@@ -268,3 +268,137 @@ func TestLinearCancellationFailureIsRetried(t *testing.T) {
 	}
 	assertSystemAudit(t, f.db, taskID, ReasonLabelRemoved, false)
 }
+
+type withdrawnDecision struct{ status, reason string }
+
+func readDecision(t *testing.T, db *sql.DB, id string) withdrawnDecision {
+	t.Helper()
+	var d withdrawnDecision
+	var reason sql.NullString
+	if err := db.QueryRow(`SELECT status, withdrawn_reason FROM owner_decisions WHERE id = ?`, id).Scan(&d.status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	d.reason = reason.String
+	return d
+}
+
+func executionOf(t *testing.T, db *sql.DB, taskID string) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRow(`SELECT id FROM executions WHERE task_id = ?`, taskID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// 受け入れ基準: waiting_approval のタスクが中止の経路に入り、開いている判断待ちが withdrawn（cancelled）、
+// 未使用の承認が無効（cancelled）になる（3.7、17 3.6）。
+func TestLinearCancellationWithdrawsApprovalDecisions(t *testing.T) {
+	for _, trigger := range detachTriggers {
+		t.Run(trigger.name, func(t *testing.T) {
+			f := newCancelFixture(t)
+			issue, taskID := f.attach(t, "queued")
+			executionID := executionOf(t, f.db, taskID)
+			exec(t, f.db, `UPDATE executions SET status = 'waiting_approval' WHERE id = ?`, executionID)
+			exec(t, f.db, `UPDATE tasks SET status = 'waiting_approval' WHERE id = ?`, taskID)
+			exec(t, f.db, `INSERT INTO owner_decisions (id, kind, task_id, execution_id, subject_id, basis, detail, status, created_at)
+				VALUES ('decision-1', 'approval', ?, ?, 'approval-1', 'v1', '{}', 'open', '2026-11-08T00:00:00Z')`, taskID, executionID)
+			exec(t, f.db, `INSERT INTO approvals (id, task_id, execution_id, decision_id, requested_stage, operation, target,
+				content_id, params_hash, status, created_at)
+				VALUES ('approval-1', ?, ?, 'decision-1', 'publish', 'merge_pull_request', '{"repository":"owner/repo","prNumber":12}',
+				'v1', 'hash-v1', 'pending', '2026-11-08T00:00:00Z')`, taskID, executionID)
+
+			trigger.run(t, f, issue)
+
+			got := readCancelled(t, f.db, taskID)
+			if got.task != "cancelled" || got.execution != "cancelled" || got.errorClass != "cancelled" || !got.finished {
+				t.Fatalf("task = %+v; want cancelled", got)
+			}
+			assertSystemAudit(t, f.db, taskID, trigger.reason, false)
+			if d := readDecision(t, f.db, "decision-1"); d != (withdrawnDecision{"withdrawn", "cancelled"}) {
+				t.Fatalf("decision = %+v", d)
+			}
+			var status, reason string
+			if err := f.db.QueryRow(`SELECT status, invalidated_reason FROM approvals WHERE id = 'approval-1'`).
+				Scan(&status, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if status != "invalidated" || reason != "cancelled" {
+				t.Fatalf("approval = %s %s", status, reason)
+			}
+		})
+	}
+}
+
+// 受け入れ基準: blocked のタスクの開いている判断待ちが withdrawn（cancelled）になる（3.7）。
+func TestLinearCancellationWithdrawsBlockedDecision(t *testing.T) {
+	for _, trigger := range detachTriggers {
+		t.Run(trigger.name, func(t *testing.T) {
+			f := newCancelFixture(t)
+			issue, taskID := f.attach(t, "blocked")
+			exec(t, f.db, `INSERT INTO owner_decisions (id, kind, task_id, execution_id, cause, detail, status, created_at)
+				VALUES ('decision-1', 'blocked', ?, ?, 'check_blocked', '{}', 'open', '2026-11-08T00:00:00Z')`,
+				taskID, executionOf(t, f.db, taskID))
+
+			trigger.run(t, f, issue)
+
+			if got := readCancelled(t, f.db, taskID); got.task != "cancelled" || got.execution != "cancelled" {
+				t.Fatalf("task = %+v; want cancelled", got)
+			}
+			assertSystemAudit(t, f.db, taskID, trigger.reason, false)
+			if d := readDecision(t, f.db, "decision-1"); d != (withdrawnDecision{"withdrawn", "cancelled"}) {
+				t.Fatalf("decision = %+v", d)
+			}
+		})
+	}
+}
+
+// 受け入れ基準: routing のタスクが中止の経路に入る。route の判断待ちは withdrawn（cancelled）、
+// 待っている提案は cancelled になる（3.7、04 3.8）。
+func TestLinearCancellationStopsRoutingTask(t *testing.T) {
+	for _, trigger := range detachTriggers {
+		for _, proposer := range []struct {
+			name, model string
+			decision    bool
+		}{
+			{"queued proposal", "", false},
+			{"failed proposal with a route decision", "null", true},
+		} {
+			t.Run(trigger.name+"/"+proposer.name, func(t *testing.T) {
+				f := newCancelFixture(t)
+				if proposer.model != "" {
+					setProposerModel(t, f.db, proposer.model)
+				}
+				issue := routedIssue("1", "bug")
+				f.mustRound(t, issue)
+				started := readStarted(t, f.db, "1", 1)
+				if started.status != "routing" {
+					t.Fatalf("task = %+v; want routing", started)
+				}
+
+				trigger.run(t, f, issue)
+
+				if got := readCancelled(t, f.db, started.id); got.task != "cancelled" || got.execution != "" || got.cancelAudits != 1 {
+					t.Fatalf("task = %+v; want cancelled without an Execution", got)
+				}
+				assertSystemAudit(t, f.db, started.id, trigger.reason, false)
+				if n := countRows(t, f.db, `SELECT count(*) FROM owner_decisions WHERE task_id = ? AND status = 'open'`, started.id); n != 0 {
+					t.Fatalf("open decisions = %d", n)
+				}
+				withdrawn := countRows(t, f.db, `SELECT count(*) FROM owner_decisions
+					WHERE task_id = ? AND kind = 'route' AND status = 'withdrawn' AND withdrawn_reason = 'cancelled'`, started.id)
+				if proposer.decision && withdrawn != 1 {
+					t.Fatalf("withdrawn route decisions = %d", withdrawn)
+				}
+				if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND status = 'queued'`, started.id); n != 0 {
+					t.Fatalf("queued proposals left = %d", n)
+				}
+				if !proposer.decision {
+					if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND status = 'cancelled'`, started.id); n != 1 {
+						t.Fatalf("cancelled proposals = %d", n)
+					}
+				}
+			})
+		}
+	}
+}

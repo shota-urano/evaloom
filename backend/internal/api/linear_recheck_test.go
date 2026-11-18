@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
-	"strings"
+	"errors"
 	"testing"
 	"time"
 
@@ -122,18 +122,28 @@ func (f *recheckFixture) task(t *testing.T, issueID string) recheckTask {
 	return r
 }
 
-func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause linearintake.BlockCause) recheckTask {
+// hold attaches issue so it is held (cause is the intake_block_cause) or
+// waits for routing (cause is a route_proposals trigger).
+func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause string) recheckTask {
 	t.Helper()
 	f.poll(t, issue)
 	held := f.task(t, issue.ID)
-	wantStatus, wantCause := "blocked", string(cause)
-	if strings.HasPrefix(wantCause, "routing_") {
+	wantStatus, wantCause := "blocked", cause
+	if isRouteTrigger(cause) {
 		wantStatus, wantCause = "routing", ""
 	}
 	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 || held.mark.Valid {
 		t.Fatalf("held task = %+v; want blocked by %s", held, cause)
 	}
 	return held
+}
+
+func isRouteTrigger(v string) bool {
+	switch linearintake.RouteTrigger(v) {
+	case linearintake.TriggerNoLabel, linearintake.TriggerUnknownLabel, linearintake.TriggerMultipleLabels:
+		return true
+	}
+	return false
 }
 
 func requireMarked(t *testing.T, got recheckTask, want bool) {
@@ -177,12 +187,12 @@ func TestLinearRecheckProfileChangeOnlyMarksCriteriaHolds(t *testing.T) {
 		recheckIssue("4", "team-a", "route:b"),
 	}
 	f.poll(t, issues...)
-	for id, cause := range map[string]linearintake.BlockCause{
-		"1": linearintake.CauseRoutingMultipleLabels, "2": linearintake.CauseRoutingNoLabel,
-		"3": linearintake.CauseMissingAcceptanceCriteria, "4": linearintake.CauseRoutingUnknownLabel,
+	for id, cause := range map[string]string{
+		"1": string(linearintake.TriggerMultipleLabels), "2": string(linearintake.TriggerNoLabel),
+		"3": string(linearintake.CauseMissingAcceptanceCriteria), "4": string(linearintake.TriggerUnknownLabel),
 	} {
-		wantCause := string(cause)
-		if strings.HasPrefix(wantCause, "routing_") {
+		wantCause := cause
+		if isRouteTrigger(cause) {
 			wantCause = ""
 		}
 		if got := f.task(t, id); got.cause.String != wantCause {
@@ -211,7 +221,7 @@ func TestLinearRecheckProfileChangeOnlyMarksCriteriaHolds(t *testing.T) {
 func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
 	issue := recheckIssue("1", "team-a", "route:b")
-	held := f.hold(t, issue, linearintake.CauseRoutingUnknownLabel)
+	held := f.hold(t, issue, string(linearintake.TriggerUnknownLabel))
 	var updatedAt string
 	if err := f.db.QueryRow(`SELECT updated_at FROM tasks WHERE id = ?`, held.id).Scan(&updatedAt); err != nil {
 		t.Fatal(err)
@@ -243,3 +253,116 @@ func TestLinearRecheckSameCauseChangesNothing(t *testing.T) {
 }
 
 // 受け入れ基準: 照会が失敗した回は印が残り、次に成功した回で再判定する。
+func TestLinearRecheckMarkSurvivesFailedPoll(t *testing.T) {
+	f := newRecheckFixture(t)
+	issue := recheckIssue("1", "team-a", "route:b")
+	held := f.hold(t, issue, string(linearintake.TriggerUnknownLabel))
+	f.routeRequest(t, "POST", "/api/routes", map[string]any{"label": "route:b", "projectId": "project-b"}, 201)
+	requireMarked(t, f.task(t, "1"), true)
+
+	f.client.err = errors.New("network down")
+	// The failure is recorded on linear_poll_teams; the round decides nothing (6章).
+	f.poller.PollOnce(context.Background())
+	var failures int
+	if err := f.db.QueryRow(`SELECT consecutive_failures FROM linear_poll_teams WHERE team_id = 'team-a'`).Scan(&failures); err != nil || failures != 1 {
+		t.Fatalf("consecutive_failures = %d, %v; want the failed round recorded", failures, err)
+	}
+	got := f.task(t, "1")
+	requireMarked(t, got, true)
+	if got.status != "routing" || got.executions != 0 {
+		t.Fatalf("task after failed poll = %+v", got)
+	}
+	f.client.err = nil
+	f.poll(t, issue)
+	requireStarted(t, f.task(t, "1"), held, "project-b")
+}
+
+func (f *recheckFixture) routeRequest(t *testing.T, method, endpoint string, values map[string]any, want int) {
+	t.Helper()
+	status, body := projectRequest(t, f.authFixture, method, endpoint, values)
+	if status != want {
+		t.Fatalf("%s %s status=%d body=%s; want %d", method, endpoint, status, body, want)
+	}
+}
+
+// 受け入れ基準: 振り分けを待つタスクの Issue のラベルを routes に登録すると、Issue の更新時刻が
+// 変わらないまま次の照会で queued になる。POST / PATCH / DELETE /api/routes each mark every
+// routing task (spec 15 3.6.3); a PATCH keeping the destination and a held
+// (blocked) task are not marked.
+func TestLinearRecheckRoutesChangeMarksRoutingTasks(t *testing.T) {
+	f := newRecheckFixture(t)
+	noCriteria := recheckIssue("3", "team-a", "route:a")
+	noCriteria.Description = "no criteria here"
+	issues := []linear.Issue{recheckIssue("1", "team-a", "route:b"), recheckIssue("2", "team-a", "bug"), noCriteria}
+	f.poll(t, issues...)
+	held := f.task(t, "1")
+	if held.status != "routing" || f.task(t, "2").status != "routing" || f.task(t, "3").status != "blocked" {
+		t.Fatalf("setup: %+v %+v %+v", held, f.task(t, "2"), f.task(t, "3"))
+	}
+	marks := func(want1, want2, want3 bool) {
+		t.Helper()
+		requireMarked(t, f.task(t, "1"), want1)
+		requireMarked(t, f.task(t, "2"), want2)
+		requireMarked(t, f.task(t, "3"), want3)
+	}
+	clear := func() {
+		t.Helper()
+		execSQL(t, f.authFixture, `UPDATE linear_issue_states SET recheck_requested_at = NULL`)
+	}
+
+	// A rolled-back write leaves no mark.
+	execSQL(t, f.authFixture, `CREATE TRIGGER reject_route_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'audit unavailable'); END`)
+	status, body := projectRequest(t, f.authFixture, "POST", "/api/routes", map[string]any{"label": "route:c", "projectId": "project-b"})
+	requireProjectError(t, status, body, 500, Internal, "", "")
+	execSQL(t, f.authFixture, `DROP TRIGGER reject_route_audit`)
+	marks(false, false, false)
+
+	f.routeRequest(t, "POST", "/api/routes", map[string]any{"label": "route:c", "projectId": "project-b"}, 201)
+	marks(true, true, false)
+	clear()
+	// The same destination again: nothing changes, nothing is marked.
+	f.routeRequest(t, "PATCH", "/api/routes/route:c", map[string]any{"projectId": "project-b"}, 200)
+	marks(false, false, false)
+	f.routeRequest(t, "PATCH", "/api/routes/route:c", map[string]any{"harnessId": "harness-a"}, 200)
+	marks(true, true, false)
+	clear()
+	f.routeRequest(t, "DELETE", "/api/routes/route:c", nil, 204)
+	marks(true, true, false)
+	clear()
+
+	// Registering the Issue's label: the next poll queues the same task
+	// without the Issue being updated; the still-undecided one stays.
+	f.routeRequest(t, "POST", "/api/routes", map[string]any{"label": "route:b", "projectId": "project-b"}, 201)
+	f.poll(t, issues...)
+	requireStarted(t, f.task(t, "1"), held, "project-b")
+	other := f.task(t, "2")
+	requireMarked(t, other, false)
+	if other.status != "routing" || other.executions != 0 {
+		t.Fatalf("undecided task = %+v", other)
+	}
+	if n := projectCount(t, f.authFixture, "route_proposals"); n != 2 {
+		t.Fatalf("route proposals = %d; a recheck must not make one", n)
+	}
+}
+
+// 受け入れ基準: スペシャルハーネスの既定の版を設定すると config_missing_profile のタスクが
+// 次の照会で進む。
+func TestLinearRecheckHarnessDefaultProfileStartsHeldTask(t *testing.T) {
+	f := newRecheckFixture(t)
+	execSQL(t, f.authFixture, `INSERT INTO routes VALUES ('route:h', NULL, 'harness-a', 't', 't')`)
+	issue := recheckIssue("1", "team-a", "route:h")
+	held := f.hold(t, issue, "config_missing_profile")
+	var profileID string
+	if err := f.db.QueryRow(`SELECT id FROM harness_profiles WHERE harness_id = 'harness-a' ORDER BY id LIMIT 1`).Scan(&profileID); err != nil {
+		t.Fatal(err)
+	}
+	f.routeRequest(t, "PATCH", "/api/harnesses/harness-a", map[string]any{"defaultProfileId": profileID}, 200)
+	requireMarked(t, f.task(t, "1"), true)
+	f.poll(t, issue)
+	got := f.task(t, "1")
+	if got.id != held.id || got.tasks != 1 || got.status != "queued" || got.executions != 1 || got.cause.Valid ||
+		got.decision != "started" || got.issueUpdatedAt != held.issueUpdatedAt {
+		t.Fatalf("task after recheck = %+v; want held task %s queued", got, held.id)
+	}
+	requireMarked(t, got, false)
+}

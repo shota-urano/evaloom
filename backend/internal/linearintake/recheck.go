@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
@@ -34,8 +33,9 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if err != nil {
 		return "", err
 	}
+	// ListHeldLinearTasks reports a routing task as "routing".
 	comparisonCause := string(r.Cause)
-	if strings.HasPrefix(comparisonCause, "routing_") {
+	if r.Trigger != "" {
 		comparisonCause = "routing"
 	}
 	if comparisonCause == h.Cause {
@@ -51,11 +51,30 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if r.HarnessID != "" {
 		detail["harnessId"] = r.HarnessID
 	}
-	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, string(r.Cause), stamp); err != nil {
+	from := model.TaskBlocked
+	if h.Cause == "routing" {
+		from = model.TaskRouting
+		if r.Trigger == "" {
+			// The owner labelled the Issue in Linear: ordinary routing, not
+			// an approval (本人決定 3). Open proposals are superseded and
+			// the route decision is withdrawn (superseded).
+			superseded, err := store.SupersedeRouteProposalsTx(ctx, tx, h.TaskID)
+			if err != nil {
+				return "", err
+			}
+			if len(superseded) > 0 {
+				detail["supersededRouteProposalIds"] = superseded
+			}
+		}
+	}
+	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, comparisonCause, stamp); err != nil {
 		return "", err
 	}
 	decision := DecisionHeld
-	if r.Cause != "" {
+	if r.Trigger != "" {
+		decision = DecisionRouting
+		detail["routeTrigger"] = string(r.Trigger)
+	} else if r.Cause != "" {
 		detail["intakeBlockCause"] = string(r.Cause)
 		if err := enqueueHold(ctx, tx, h.TaskID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
 			return "", err
@@ -66,15 +85,22 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 		if err != nil {
 			return "", err
 		}
-		detail["executionId"], detail["from"], detail["to"] = executionID, model.TaskBlocked, model.TaskQueued
+		detail["executionId"], detail["from"], detail["to"] = executionID, from, model.TaskQueued
 		if err := store.InsertInitialExecution(ctx, tx, executionID, h.TaskID, stamp); err != nil {
 			return "", fmt.Errorf("linearintake: insert execution: %w", err)
 		}
 		if err := task.QueueHeldTaskTx(ctx, tx, h.TaskID, executionID); err != nil {
 			return "", err
 		}
-		if _, err := store.AppendExecutionEvent(ctx, tx, executionID, model.EventStatusChanged,
-			json.RawMessage(`{"from":"blocked","to":"queued","reason":"intake_recheck"}`)); err != nil {
+		payload, err := json.Marshal(struct {
+			From   model.TaskStatus `json:"from"`
+			To     model.TaskStatus `json:"to"`
+			Reason string           `json:"reason"`
+		}{from, model.TaskQueued, "intake_recheck"})
+		if err != nil {
+			return "", err
+		}
+		if _, err := store.AppendExecutionEvent(ctx, tx, executionID, model.EventStatusChanged, payload); err != nil {
 			return "", err
 		}
 	}

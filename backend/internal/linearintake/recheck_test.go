@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -54,19 +53,26 @@ func (f *recheckFixture) mustRound(t *testing.T, issues ...linear.Issue) {
 	}
 }
 
-// hold attaches issue "1" with labels so it is held, and returns the task.
-func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, cause BlockCause) startedTask {
+// hold attaches issue "1" with labels so it is held (want is the cause) or
+// waits for routing (want is the route_proposals trigger), and returns the
+// task.
+func (f *recheckFixture) hold(t *testing.T, issue linear.Issue, want string) startedTask {
 	t.Helper()
 	f.mustRound(t, issue)
 	held := readStarted(t, f.db, "1", 1)
-	wantStatus, wantCause := "blocked", string(cause)
-	if strings.HasPrefix(wantCause, "routing_") {
-		wantStatus, wantCause = "routing", ""
+	wantStatus, wantCause, wantDecision := "blocked", want, DecisionHeld
+	switch RouteTrigger(want) {
+	case TriggerNoLabel, TriggerUnknownLabel, TriggerMultipleLabels:
+		wantStatus, wantCause, wantDecision = "routing", "", DecisionRouting
+		if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND trigger = ? AND status IN ('queued', 'failed')`,
+			held.id, want); n != 1 {
+			t.Fatalf("queued route proposals with trigger %s = %d", want, n)
+		}
 	}
 	if held.status != wantStatus || held.cause.String != wantCause || held.executions != 0 {
 		t.Fatalf("held task = %+v", held)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) {
+	if s := mustState(t, f.db, "1"); s.decision != string(wantDecision) {
 		t.Fatalf("state = %+v", s)
 	}
 	return held
@@ -101,14 +107,15 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		issue linear.Issue
-		cause BlockCause
+		cause string
 	}{
-		{"unknown label", routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel},
-		{"two labels", routedIssue("1", "route:one", "route:three"), CauseRoutingMultipleLabels},
-		{"no label", routedIssue("1", "bug"), CauseRoutingNoLabel},
+		{"unknown label", routedIssue("1", "route:unknown"), string(TriggerUnknownLabel)},
+		{"two labels", routedIssue("1", "route:one", "route:three"), string(TriggerMultipleLabels)},
+		{"no label", routedIssue("1", "bug"), string(TriggerNoLabel)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newRecheckFixture(t)
+			setProposerModel(t, f.db, "null") // failed proposal with an open route decision
 			held := f.hold(t, test.issue, test.cause)
 
 			fixed := routedIssue("1", "route:one")
@@ -132,7 +139,7 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			if seq != 1 || mode != "continue" || status != "pending" ||
-				event != `{"from":"blocked","to":"queued","reason":"intake_recheck"}` {
+				event != `{"from":"routing","to":"queued","reason":"intake_recheck"}` {
 				t.Fatalf("execution = %d %s %s %s", seq, mode, status, event)
 			}
 			s := mustState(t, f.db, "1")
@@ -142,6 +149,9 @@ func TestRecheckQueuesFixedRouting(t *testing.T) {
 			if recheckAudits(t, f.db, got.id) != 1 {
 				t.Fatal("recheck audit log missing")
 			}
+			// The open proposal is superseded and its route decision is
+			// withdrawn (superseded); nothing is left open (3.6.3, 本人決定 3).
+			requireSuperseded(t, f.db, got.id)
 			// The queued task is not rechecked again by a later edit.
 			fixed.UpdatedAt = base.Add(time.Hour)
 			fixed.Labels = []string{"ai-ready", "route:unknown"}
@@ -159,7 +169,7 @@ func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 	f := newRecheckFixture(t)
 	issue := routedIssue("1", "route:one")
 	issue.Description = "no criteria"
-	held := f.hold(t, issue, CauseMissingAcceptanceCriteria)
+	held := f.hold(t, issue, string(CauseMissingAcceptanceCriteria))
 
 	issue.Description = "## 受け入れ条件\n- 動く"
 	issue.UpdatedAt = base.Add(time.Minute)
@@ -174,7 +184,7 @@ func TestRecheckQueuesWrittenCriteria(t *testing.T) {
 // 受け入れ基準: 更新時刻が変わらない照会では再判定しない。
 func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 
 	fixed := routedIssue("1", "route:one") // same updatedAt as recorded
 	f.now = base.Add(time.Minute)
@@ -196,7 +206,8 @@ func TestRecheckNeedsNewerUpdatedAt(t *testing.T) {
 // A different cause is written to the task, which stays held.
 func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	setProposerModel(t, f.db, "null") // failed proposal with an open route decision
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	before := mustState(t, f.db, "1")
 	heldAt := taskUpdatedAt(t, f.db, held.id)
 
@@ -214,6 +225,9 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 	if after.decision != before.decision || after.decidedAt != before.decidedAt {
 		t.Fatalf("decision changed: %+v -> %+v", before, after)
 	}
+	// 受け入れ基準: ラベルを付けてもまだ決まらなければ提案が作り直されない。
+	// The first proposal and its open decision stay as they were (Q159).
+	requireOneOpenProposal(t, f.db, held.id)
 
 	// The cause changes: written, still held, no Execution.
 	edited.Labels = []string{"ai-ready", "route:one", "route:three"}
@@ -224,11 +238,135 @@ func TestRecheckSameCauseDoesNothing(t *testing.T) {
 		recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("changed cause = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.decision != string(DecisionHeld) || s.decidedAt != before.decidedAt {
+	if s := mustState(t, f.db, "1"); s.decision != string(DecisionRouting) || s.decidedAt != before.decidedAt {
 		t.Fatalf("state = %+v", s)
 	}
 	if n := countTasks(t, f.db, "1"); n != 1 {
 		t.Fatalf("tasks = %d", n)
+	}
+	requireOneOpenProposal(t, f.db, held.id)
+}
+
+// requireOneOpenProposal checks the routing task still has exactly the
+// proposal made at creation, failed without a proposer model, with its route
+// decision open (spec 15 3.6.4 steps 2 and 5).
+func requireOneOpenProposal(t *testing.T, db *sql.DB, taskID string) {
+	t.Helper()
+	if n := countRows(t, db, `SELECT count(*) FROM route_proposals WHERE task_id = ?`, taskID); n != 1 {
+		t.Fatalf("route proposals = %d; want the one made at creation", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM route_proposals rp JOIN owner_decisions d ON d.id = rp.decision_id
+		WHERE rp.task_id = ? AND rp.status = 'failed' AND d.status = 'open'`, taskID); n != 1 {
+		t.Fatalf("open route decisions = %d; want 1", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM owner_decisions WHERE task_id = ?`, taskID); n != 1 {
+		t.Fatalf("route decisions = %d; want 1", n)
+	}
+}
+
+// requireSuperseded checks every proposal of the task is superseded and every
+// route decision withdrawn with the reason superseded.
+func requireSuperseded(t *testing.T, db *sql.DB, taskID string) {
+	t.Helper()
+	if n := countRows(t, db, `SELECT count(*) FROM route_proposals WHERE task_id = ?`, taskID); n != 1 {
+		t.Fatalf("route proposals = %d; want 1", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND status <> 'superseded'`, taskID); n != 0 {
+		t.Fatalf("route proposals not superseded = %d", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM owner_decisions WHERE task_id = ? AND kind = 'route'
+		AND NOT (status = 'withdrawn' AND withdrawn_reason = 'superseded')`, taskID); n != 0 {
+		t.Fatalf("route decisions not withdrawn (superseded) = %d", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM owner_decisions WHERE task_id = ? AND kind = 'route'`, taskID); n != 1 {
+		t.Fatalf("route decisions = %d; want 1", n)
+	}
+}
+
+// 受け入れ基準: 振り分けを待つタスクの Issue に routes のラベルを1つだけ付けて更新時刻が進むと、
+// 提案が superseded、判断待ちが withdrawn（superseded）になり、同じタスクが queued になる。
+// The fixture's proposer model keeps the proposal queued (no decision yet), or
+// running at a Runner; either is superseded. A result the Runner sends later
+// is only recorded (3.6.4).
+func TestRecheckSupersedesQueuedAndRunningProposals(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		f := newRecheckFixture(t)
+		issue := routedIssue("1", "bug")
+		f.mustRound(t, issue)
+		held := readStarted(t, f.db, "1", 1)
+		if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND status = 'queued'`, held.id); n != 1 {
+			t.Fatalf("queued proposals = %d", n)
+		}
+		var proposalID string
+		if err := f.db.QueryRow(`SELECT id FROM route_proposals WHERE task_id = ?`, held.id).Scan(&proposalID); err != nil {
+			t.Fatal(err)
+		}
+		if running {
+			exec(t, f.db, `INSERT OR IGNORE INTO runners (id, name, token_hash, status, created_at) VALUES ('r1', 'r1', 'h', 'online', 't')`)
+			exec(t, f.db, `UPDATE route_proposals SET status = 'running', runner_id = 'r1' WHERE id = ?`, proposalID)
+		}
+
+		fixed := routedIssue("1", "route:one")
+		fixed.UpdatedAt = base.Add(time.Minute)
+		f.mustRound(t, fixed)
+		if got := readStarted(t, f.db, "1", 1); got.id != held.id || got.status != "queued" || got.executions != 1 {
+			t.Fatalf("running=%v task = %+v", running, got)
+		}
+		if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE task_id = ? AND status = 'superseded'`, held.id); n != 1 {
+			t.Fatalf("running=%v superseded proposals = %d", running, n)
+		}
+		if n := countRows(t, f.db, `SELECT count(*) FROM owner_decisions WHERE task_id = ?`, held.id); n != 0 {
+			t.Fatalf("running=%v decisions = %d; none was open", running, n)
+		}
+		if !running {
+			continue
+		}
+		label, reason := "route:one", "late"
+		tx, err := f.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.ReportRouteProposalResultTx(context.Background(), tx, store.RouteProposalResult{
+			ProposalID: proposalID, RunnerID: "r1", Label: &label, Reason: &reason}); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE id = ? AND status = 'superseded'
+			AND proposed_label = 'route:one'`, proposalID); n != 1 {
+			t.Fatal("late result was not only recorded")
+		}
+		if n := countRows(t, f.db, `SELECT count(*) FROM owner_decisions WHERE task_id = ?`, held.id); n != 0 {
+			t.Fatalf("late result opened %d decisions", n)
+		}
+	}
+}
+
+// 受け入れ基準: 理由が変わらなければ何も起きずコメントも増えない（保留したタスク）。
+func TestRecheckSameHoldCauseAddsNoComment(t *testing.T) {
+	f := newRecheckFixture(t)
+	issue := routedIssue("1", "route:one")
+	issue.Description = "no criteria"
+	held := f.hold(t, issue, string(CauseMissingAcceptanceCriteria))
+	comments := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE task_id = ?`, held.id)
+	if comments != 1 {
+		t.Fatalf("hold comments = %d; want 1", comments)
+	}
+	heldAt := taskUpdatedAt(t, f.db, held.id)
+
+	issue.Description = "still no criteria"
+	issue.UpdatedAt = base.Add(time.Minute)
+	f.now = base.Add(2 * time.Minute)
+	f.mustRound(t, issue)
+	got := readStarted(t, f.db, "1", 1)
+	if got.status != "blocked" || got.cause.String != string(CauseMissingAcceptanceCriteria) || got.executions != 0 ||
+		taskUpdatedAt(t, f.db, held.id) != heldAt || recheckAudits(t, f.db, held.id) != 0 {
+		t.Fatalf("same cause changed the task: %+v", got)
+	}
+	if n := countRows(t, f.db, `SELECT count(*) FROM linear_outbox WHERE task_id = ?`, held.id); n != comments {
+		t.Fatalf("hold comments = %d; want %d", n, comments)
 	}
 }
 
@@ -271,7 +409,7 @@ func TestRecheckIgnoresTaskNotHeld(t *testing.T) {
 // task and linear_issue_states unchanged, so the next poll rechecks again.
 func TestRecheckFailureIsRetried(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	exec(t, f.db, `CREATE TRIGGER fail_execution BEFORE INSERT ON executions
 		BEGIN SELECT RAISE(ABORT, 'injected execution failure'); END`)
 
@@ -285,7 +423,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 		got.executions != 0 || recheckAudits(t, f.db, held.id) != 0 {
 		t.Fatalf("task after failure = %+v", got)
 	}
-	if s := mustState(t, f.db, "1"); s.updatedAt != stamp(base) || s.decision != string(DecisionHeld) {
+	if s := mustState(t, f.db, "1"); s.updatedAt != stamp(base) || s.decision != string(DecisionRouting) {
 		t.Fatalf("state after failure = %+v", s)
 	}
 
@@ -300,7 +438,7 @@ func TestRecheckFailureIsRetried(t *testing.T) {
 // pending seq 1; UpdateHeldLinearTask touches only a held task.
 func TestHeldTaskGuards(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	ctx := context.Background()
 	tx, err := f.db.Begin()
 	if err != nil {
@@ -332,7 +470,7 @@ func TestHeldTaskGuards(t *testing.T) {
 // and 3.7, and the recheck mark is cleared with that decision.
 func TestRecheckMarkClearedWhenIssueLeavesList(t *testing.T) {
 	f := newRecheckFixture(t)
-	held := f.hold(t, routedIssue("1", "route:unknown"), CauseRoutingUnknownLabel)
+	held := f.hold(t, routedIssue("1", "route:unknown"), string(TriggerUnknownLabel))
 	if _, err := f.db.Exec(`UPDATE linear_issue_states SET recheck_requested_at = ? WHERE linear_issue_id = '1'`,
 		stamp(base)); err != nil {
 		t.Fatal(err)

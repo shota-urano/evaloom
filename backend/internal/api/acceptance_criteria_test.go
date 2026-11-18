@@ -88,7 +88,8 @@ func TestRouteApprovalCriteriaHoldIsAtomic(t *testing.T) {
 	if got := routeDecisionOf(t, f, proposalID); got != decisionID {
 		t.Fatal("failed hold changed decision")
 	}
-	if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=?`, taskID) +
+	// Only the decision_open comment of the opened decision remains.
+	if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND kind<>'decision_open'`, taskID) +
 		stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID); n != 0 {
 		t.Fatal("failed hold left side effects")
 	}
@@ -108,7 +109,7 @@ func TestRouteApprovalWithoutDefaultProfileHolds(t *testing.T) {
 		t.Fatal("missing default did not hold the approved task")
 	}
 	if n := stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID) +
-		stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND action='comment'`, taskID); n != 0 {
+		stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND action='comment' AND kind<>'decision_open'`, taskID); n != 0 {
 		t.Fatal("missing default created an Execution or a criteria comment")
 	}
 	requireAnswered(t, f, decisionID)
