@@ -21,7 +21,9 @@ var _ HeldRechecker = (*TaskStarter)(nil)
 // criteria, its first Execution and the queued status; no task is created.
 // When the cause is unchanged nothing is written (no second comment for the
 // same cause, spec 16 3.2). A different cause is written to the task and
-// stays held. An Issue without a held task is left alone.
+// stays held. A held task whose labels no longer decide a destination goes
+// back to routing with a new routing proposal (Q219). An Issue without a held
+// task is left alone.
 func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue linear.Issue) (Decision, error) {
 	held, err := store.ListHeldLinearTasks(ctx, tx, issue.ID)
 	if err != nil || len(held) == 0 {
@@ -74,6 +76,17 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if r.Trigger != "" {
 		decision = DecisionRouting
 		detail["routeTrigger"] = string(r.Trigger)
+		if from == model.TaskBlocked {
+			// The held task's routing labels no longer decide a destination:
+			// it is back to routing and the routing proposal is made again
+			// as in 3.6.4 (2026-11-18 本人決定, Q219), with the candidates of
+			// now. A routing task never gets here (same cause, Q159).
+			proposalID, err := s.remakeRouteProposal(ctx, tx, h.TaskID, r, now, stamp)
+			if err != nil {
+				return "", err
+			}
+			detail["routeProposalId"], detail["from"], detail["to"] = proposalID, from, model.TaskRouting
+		}
 	} else if r.Cause != "" {
 		detail["intakeBlockCause"] = string(r.Cause)
 		if err := enqueueHold(ctx, tx, h.TaskID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
@@ -109,4 +122,25 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 		return "", err
 	}
 	return decision, nil
+}
+
+// remakeRouteProposal writes a new queued routing proposal (spec 15 3.6.4
+// step 1) for a held task that went back to routing (3.6.3, Q219). Any
+// proposal still open is superseded first and its route decision withdrawn
+// (superseded), so the task keeps at most one open route decision; a running
+// one is not stopped at the Runner and its later result is only recorded.
+// Without a routing.proposer model the new proposal fails at once and the
+// route decision opens (steps 2 and 5); otherwise a Runner claims it.
+func (s *TaskStarter) remakeRouteProposal(ctx context.Context, tx *sql.Tx, taskID string, r Routing, now time.Time, stamp string) (string, error) {
+	if _, err := store.SupersedeRouteProposalsTx(ctx, tx, taskID); err != nil {
+		return "", err
+	}
+	proposalID, err := newID(now)
+	if err != nil {
+		return "", err
+	}
+	if err := insertRouteProposal(ctx, tx, taskID, proposalID, r, stamp); err != nil {
+		return "", err
+	}
+	return proposalID, nil
 }
