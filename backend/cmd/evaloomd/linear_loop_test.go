@@ -38,7 +38,7 @@ type loopLinear struct {
 var loopWorkflowStates = []linear.WorkflowState{
 	{ID: "todo", Name: "Todo", Type: "unstarted"},
 	{ID: "in-progress", Name: "In Progress", Type: "started"},
-	{ID: "pr-review", Name: "PR Review", Type: "started"},
+	{ID: "in-review", Name: "In Review", Type: "started"},
 	{ID: "done", Name: "Done", Type: "completed"},
 	{ID: "canceled", Name: "Canceled", Type: "canceled"},
 }

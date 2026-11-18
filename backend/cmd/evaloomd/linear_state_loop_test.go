@@ -209,7 +209,7 @@ func TestLinearReattachedCanceledIssueDoesNotStart(t *testing.T) {
 }
 
 // 受け入れ基準3: running / waiting_approval / completed の実際の遷移が
-// In Progress / PR Review / Done を送信して更新時刻が進んでも、ai-ready が
+// In Progress / In Review / Done を送信して更新時刻が進んでも、ai-ready が
 // 付いたままなら起動しない。Done では元のタスクが終端なので、アクティブな
 // タスクの重複防止だけでは防げない再起動も検出する (16 3.5.4、3.6.4)。
 func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
@@ -225,7 +225,7 @@ func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 		steps []model.ExecutionStatus
 	}{
 		{"In Progress", []model.ExecutionStatus{model.ExecutionClaimed}},
-		{"PR Review", []model.ExecutionStatus{model.ExecutionPreparing, model.ExecutionRunning,
+		{"In Review", []model.ExecutionStatus{model.ExecutionPreparing, model.ExecutionRunning,
 			model.ExecutionVerifying, model.ExecutionPublishing, model.ExecutionWaitingApproval}},
 		// Spec 02 5.2: approval resumes the publish stage, which succeeds.
 		{"Done", []model.ExecutionStatus{model.ExecutionPending, model.ExecutionClaimed,
