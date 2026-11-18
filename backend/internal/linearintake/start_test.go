@@ -357,7 +357,7 @@ func TestIntakeWithTaskStarterRetriesFailedCreation(t *testing.T) {
 	in := &Intake{DB: db, Fetcher: &stubFetcher{}, Starter: &TaskStarter{Now: func() time.Time { return base }},
 		Canceller: canceller, Now: func() time.Time { return base }}
 	round := func(issues ...linear.Issue) error {
-		teams, err := store.SyncLinearPollTeams(context.Background(), db)
+		teams, err := syncTestTeams(context.Background(), db)
 		if err != nil {
 			t.Fatal(err)
 		}

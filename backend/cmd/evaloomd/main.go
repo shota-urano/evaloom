@@ -89,12 +89,21 @@ var newLinearFeedback = func(db *sql.DB, logger *slog.Logger, port int) (*linear
 // linearPoller connects the Poller to Intake (spec 15 3.4), which starts
 // tasks with TaskStarter (3.6), rechecks held tasks with the same TaskStarter
 // (3.6.3) and cancels with TaskCanceller (3.7). client also re-reads the
-// Issues that left the list.
+// Issues that left the list, and lists the Teams to find the polling Team
+// uslab (3.2, Q216).
 func linearPoller(db *sql.DB, client *linear.Client, logger *slog.Logger) *linearintake.Poller {
 	starter := &linearintake.TaskStarter{}
 	return &linearintake.Poller{DB: db, Client: client, Logger: logger, Interval: linearintake.DefaultInterval,
+		Teams: linearintake.NewUslabTeams(client),
 		Handler: &linearintake.Intake{DB: db, Fetcher: client, Starter: starter,
 			Canceller: linearintake.TaskCanceller{}, Rechecker: starter, Logger: logger}}
+}
+
+// linearControl is what the API reads of the Linear Poller's state: the
+// global settings it shares and the polling Team problem it publishes.
+type linearControl struct {
+	*linearintake.LabelSettings
+	*linearintake.PollTeamStatus
 }
 
 // macOSLinearAlerter sends the Linear polling alert (spec 15 6章) and the
@@ -231,12 +240,16 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	// The settings API and the Linear Poller share the label settings stored
 	// in the settings table, so they survive a restart (spec 15 5章, Q48, Q76).
 	linearSettings := linearintake.NewLabelSettings(db, logger)
+	// The Poller publishes why it could not choose the polling Team (uslab)
+	// and GET /api/linear/status shows it (spec 15 3.2, 6章, Q216).
+	teamStatus := &linearintake.PollTeamStatus{}
 	adapters, err := controlPlaneAdapters()
 	if err != nil {
 		return err
 	}
 	server := &http.Server{
-		Handler:           api.NewHandlerWithContextSource(db, logger, auth, web, artifacts, linearSettings, global, adapters),
+		Handler: api.NewHandlerWithContextSource(db, logger, auth, web, artifacts,
+			linearControl{linearSettings, teamStatus}, global, adapters),
 		ReadHeaderTimeout: readHeaderTimeout,
 		// Cancel long-lived SSE requests before waiting for graceful shutdown.
 		BaseContext: func(net.Listener) context.Context { return ctx },
@@ -272,6 +285,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 		return err
 	}
 	poller.Settings = linearSettings
+	poller.TeamStatus = teamStatus
 	poller.AuthGate = authGate
 	pollerCtx, cancelPoller := context.WithCancel(ctx)
 	pollerDone := make(chan struct{})

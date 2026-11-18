@@ -31,9 +31,12 @@ func TestRegistryMigrationPreservesPinsRoutesAndExecutionReferences(t *testing.T
 		if harness != "codex-developer" || profile != "profile-1" || params != "{}" || waivers != "[]" || label != "route:project" || boot != "boot" {
 			t.Fatal(harness, profile, params, waivers, label, boot)
 		}
-		var team, prefix string
-		if err := db.QueryRow(`SELECT value FROM settings WHERE key='linear.teamId'`).Scan(&team); err != nil || team != `"team"` {
-			t.Fatal(team, err)
+		// 0026 kept the legacy Team as linear.teamId; 0032 removes it
+		// because the polling Team is uslab (Q216).
+		var prefix string
+		var teamRows int
+		if err := db.QueryRow(`SELECT count(*) FROM settings WHERE key='linear.teamId'`).Scan(&teamRows); err != nil || teamRows != 0 {
+			t.Fatal(teamRows, err)
 		}
 		if err := db.QueryRow(`SELECT value FROM settings WHERE key='linear.routingLabelPrefix'`).Scan(&prefix); err != nil || prefix != `"repo:"` {
 			t.Fatal(prefix, err)

@@ -167,6 +167,9 @@ func TestPollerUsesDefaultForEmptyStoredSetting(t *testing.T) {
 func TestPollerUsesGlobalLabelSettings(t *testing.T) {
 	db := startDB(t)
 	exec(t, db, `UPDATE routes SET label='to:one' WHERE project_id='p1'`)
+	// Every routes label must start with the new prefix (Q160).
+	exec(t, db, `UPDATE routes SET label='to:two' WHERE project_id='p2'`)
+	exec(t, db, `DELETE FROM routes WHERE label='route:three'`)
 	settings := NewLabelSettings(db, nil)
 	goLabel, toPrefix := "go", "to:"
 	if _, err := settings.UpdateLinearLabels(context.Background(), LabelsPatch{TriggerLabel: &goLabel, RoutingLabelPrefix: &toPrefix}); err != nil {

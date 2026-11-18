@@ -110,9 +110,15 @@ func (c *pollClient) ListReadyIssues(context.Context, string, string) ([]linear.
 func sharedPoller(t *testing.T, db *sql.DB, client linearintake.Client, gate *linear.AuthAlertGate,
 	alerter linearintake.Alerter) *linearintake.Poller {
 	t.Helper()
-	mustExec(t, db, `INSERT OR IGNORE INTO settings VALUES ('linear.teamId','"team-a"','t')`)
-	return &linearintake.Poller{DB: db, Client: client, AuthGate: gate, Alerter: alerter, TriggerLabel: "ai-ready"}
+	return &linearintake.Poller{DB: db, Client: client, AuthGate: gate, Alerter: alerter, TriggerLabel: "ai-ready",
+		Teams: fixedPollTeam("team-a")}
 }
+
+// fixedPollTeam names the polling Team directly; production resolves uslab
+// from Linear (Q216).
+type fixedPollTeam string
+
+func (f fixedPollTeam) LinearPollTeamID(context.Context) (string, error) { return string(f), nil }
 
 func pollOnce(t *testing.T, p *linearintake.Poller) {
 	t.Helper()

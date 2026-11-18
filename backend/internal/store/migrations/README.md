@@ -73,3 +73,6 @@ settingsは3.8の7キーだけを許す。未知の旧キーやNULLのキーが�
 
 0031はroute_proposalsのerror_classの制約にconfig_errorとwork_failedを加える。
 既存の行・列と、判断待ち・成果物からの参照を保持する。
+
+0032は全体設定から`linear.teamId`を外す（仕様15のQ216。照会先Teamはキーまたは名前が`uslab`のTeamを起動時にLinearから引く）。
+残っている`linear.teamId`の行は削除し、settingsの許可キーからも除く。settingsを読むlinear_outboxのラベルのトリガーは作り直す。

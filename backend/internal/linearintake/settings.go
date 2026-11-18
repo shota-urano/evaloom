@@ -99,14 +99,119 @@ func (s *LabelSettings) resolve(rows map[string]string) Labels {
 	return labels
 }
 
-// UpdateLinearLabels applies patch and returns the resulting values. Each key
-// whose value changes gets its settings row and one settings.update audit row
-// with the values before and after, all in one transaction (spec 15 5章,
-// spec 02 3.4, Q76). A value equal to the current one writes nothing.
-func (s *LabelSettings) UpdateLinearLabels(ctx context.Context, patch LabelsPatch) (_ Labels, err error) {
+// Keys of the routing settings rows (spec 02 3.8, spec 15 3.6.4, Q111).
+const (
+	SettingRouteProposer   = "routing.proposer"
+	SettingDefaultRunnerID = "routing.defaultRunnerId"
+)
+
+// RouteProposer is the global setting routing.proposer: the AI that
+// proposes a route. A nil Model means no proposal is made (spec 02 3.8).
+type RouteProposer struct {
+	MicroHarness string  `json:"microHarness"`
+	Model        *string `json:"model"`
+}
+
+func (p RouteProposer) equal(other RouteProposer) bool {
+	if p.MicroHarness != other.MicroHarness || (p.Model == nil) != (other.Model == nil) {
+		return false
+	}
+	return p.Model == nil || *p.Model == *other.Model
+}
+
+// DefaultRouteProposer is the default of routing.proposer (spec 02 3.8).
+func DefaultRouteProposer() RouteProposer { return RouteProposer{MicroHarness: "claude_code"} }
+
+// RoutingSettings are routing.proposer and routing.defaultRunnerId. A nil
+// DefaultRunnerID means no Runner is set (the default, spec 02 3.8).
+type RoutingSettings struct {
+	Proposer        RouteProposer `json:"proposer"`
+	DefaultRunnerID *string       `json:"defaultRunnerId"`
+}
+
+// Settings are the global settings served by GET/PATCH /api/settings (spec
+// 15 5章): linear.triggerLabel, linear.routingLabelPrefix, routing.proposer
+// and routing.defaultRunnerId. The polling Team is not a setting (Q216).
+type Settings struct {
+	Linear  Labels          `json:"linear"`
+	Routing RoutingSettings `json:"routing"`
+}
+
+// SettingsPatch holds the keys a PATCH /api/settings supplies; nil keeps the
+// current value. The caller has already rejected null and blank values.
+type SettingsPatch struct {
+	TriggerLabel       *string
+	RoutingLabelPrefix *string
+	Proposer           *RouteProposer
+	DefaultRunnerID    *string
+}
+
+// ErrTriggerLabelHasPrefix rejects settings in which linear.triggerLabel
+// starts with linear.routingLabelPrefix (spec 15 Q160: 400). Field names
+// the key the PATCH changed.
+type ErrTriggerLabelHasPrefix struct{ Field string }
+
+func (e *ErrTriggerLabelHasPrefix) Error() string {
+	return "linearintake: trigger label starts with the routing label prefix"
+}
+
+// ErrRoutesOutsidePrefix rejects a routing label prefix that some routes
+// label does not start with (spec 15 Q160: 422). Labels are the routes
+// labels left outside the new prefix.
+type ErrRoutesOutsidePrefix struct{ Labels []string }
+
+func (e *ErrRoutesOutsidePrefix) Error() string {
+	return "linearintake: routes labels do not start with the routing label prefix"
+}
+
+// Settings returns every global setting, each from its row or its default
+// (spec 02 3.8, spec 15 6章).
+func (s *LabelSettings) Settings(ctx context.Context) Settings {
+	rows, err := store.ReadSettings(ctx, s.DB)
+	if err != nil {
+		s.logger().Error("settings could not be read; using the defaults", "error", err)
+		return Settings{Linear: DefaultLabels(), Routing: RoutingSettings{Proposer: DefaultRouteProposer()}}
+	}
+	return Settings{Linear: s.resolve(rows), Routing: s.resolveRouting(rows)}
+}
+
+func (s *LabelSettings) resolveRouting(rows map[string]string) RoutingSettings {
+	routing := RoutingSettings{Proposer: DefaultRouteProposer()}
+	if raw, ok := rows[SettingRouteProposer]; ok {
+		var proposer RouteProposer
+		if err := json.Unmarshal([]byte(raw), &proposer); err != nil || strings.TrimSpace(proposer.MicroHarness) == "" {
+			s.logger().Warn("setting is unusable; using the default", "key", SettingRouteProposer)
+		} else {
+			routing.Proposer = proposer
+		}
+	}
+	if raw, ok := rows[SettingDefaultRunnerID]; ok {
+		var id *string
+		if err := json.Unmarshal([]byte(raw), &id); err != nil || (id != nil && strings.TrimSpace(*id) == "") {
+			s.logger().Warn("setting is unusable; using the default", "key", SettingDefaultRunnerID)
+		} else {
+			routing.DefaultRunnerID = id
+		}
+	}
+	return routing
+}
+
+// UpdateLinearLabels applies patch to the label settings and returns them.
+func (s *LabelSettings) UpdateLinearLabels(ctx context.Context, patch LabelsPatch) (Labels, error) {
+	settings, err := s.UpdateSettings(ctx, SettingsPatch{TriggerLabel: patch.TriggerLabel, RoutingLabelPrefix: patch.RoutingLabelPrefix})
+	return settings.Linear, err
+}
+
+// UpdateSettings applies patch and returns the resulting settings. Each key
+// whose value changes gets its settings row and one settings.update audit
+// row with the values before and after, all in one transaction (spec 15
+// 5章, spec 02 3.8, Q76). A value equal to the current one writes nothing.
+// The label keys are checked against each other and the routes table as
+// Q160 decides; a rejected patch writes nothing.
+func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch) (_ Settings, err error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return Labels{}, err
+		return Settings{}, err
 	}
 	defer func() {
 		if err != nil {
@@ -115,38 +220,87 @@ func (s *LabelSettings) UpdateLinearLabels(ctx context.Context, patch LabelsPatc
 	}()
 	rows, err := store.ReadSettings(ctx, tx)
 	if err != nil {
-		return Labels{}, err
+		return Settings{}, err
 	}
-	labels := s.resolve(rows)
-	for _, change := range []struct {
-		key     string
-		target  *string
-		updated *string
-	}{
-		{SettingTriggerLabel, &labels.TriggerLabel, patch.TriggerLabel},
-		{SettingRoutingLabelPrefix, &labels.RoutingLabelPrefix, patch.RoutingLabelPrefix},
-	} {
-		if change.updated == nil || *change.updated == *change.target {
-			continue
-		}
-		encoded, err := json.Marshal(*change.updated)
+	current := Settings{Linear: s.resolve(rows), Routing: s.resolveRouting(rows)}
+	next := current
+	type change struct {
+		key           string
+		before, after any
+	}
+	var changes []change
+	if patch.TriggerLabel != nil && *patch.TriggerLabel != current.Linear.TriggerLabel {
+		next.Linear.TriggerLabel = *patch.TriggerLabel
+		changes = append(changes, change{SettingTriggerLabel, current.Linear.TriggerLabel, next.Linear.TriggerLabel})
+	}
+	prefixChanged := patch.RoutingLabelPrefix != nil && *patch.RoutingLabelPrefix != current.Linear.RoutingLabelPrefix
+	if prefixChanged {
+		next.Linear.RoutingLabelPrefix = *patch.RoutingLabelPrefix
+		changes = append(changes, change{SettingRoutingLabelPrefix, current.Linear.RoutingLabelPrefix, next.Linear.RoutingLabelPrefix})
+	}
+	if patch.Proposer != nil && !patch.Proposer.equal(current.Routing.Proposer) {
+		next.Routing.Proposer = *patch.Proposer
+		changes = append(changes, change{SettingRouteProposer, current.Routing.Proposer, next.Routing.Proposer})
+	}
+	if patch.DefaultRunnerID != nil && (current.Routing.DefaultRunnerID == nil || *patch.DefaultRunnerID != *current.Routing.DefaultRunnerID) {
+		id := *patch.DefaultRunnerID
+		next.Routing.DefaultRunnerID = &id
+		changes = append(changes, change{SettingDefaultRunnerID, current.Routing.DefaultRunnerID, id})
+	}
+	if len(changes) == 0 {
+		return current, tx.Commit()
+	}
+	if err := checkLabels(ctx, tx, patch, next.Linear, prefixChanged); err != nil {
+		return Settings{}, err
+	}
+	for _, c := range changes {
+		encoded, err := json.Marshal(c.after)
 		if err != nil {
-			return Labels{}, err
+			return Settings{}, err
 		}
-		if err := store.PutSetting(ctx, tx, change.key, string(encoded)); err != nil {
-			return Labels{}, err
+		if err := store.PutSetting(ctx, tx, c.key, string(encoded)); err != nil {
+			return Settings{}, err
 		}
 		if _, err := store.RecordAuditLog(ctx, tx, store.AuditLog{Actor: "owner", Action: "settings.update",
-			TargetType: "settings", TargetID: change.key,
-			Detail: map[string]any{"before": *change.target, "after": *change.updated}}); err != nil {
-			return Labels{}, fmt.Errorf("linearintake: audit setting %s: %w", change.key, err)
+			TargetType: "settings", TargetID: c.key,
+			Detail: map[string]any{"before": c.before, "after": c.after}}); err != nil {
+			return Settings{}, fmt.Errorf("linearintake: audit setting %s: %w", c.key, err)
 		}
-		*change.target = *change.updated
 	}
 	if err := tx.Commit(); err != nil {
-		return Labels{}, err
+		return Settings{}, err
 	}
-	return labels, nil
+	return next, nil
+}
+
+// checkLabels applies Q160 to the labels a patch would leave: the trigger
+// label must not start with the routing label prefix (400), and a changed
+// prefix must still start every routes label (422).
+func checkLabels(ctx context.Context, tx *sql.Tx, patch SettingsPatch, labels Labels, prefixChanged bool) error {
+	if (patch.TriggerLabel != nil || prefixChanged) && strings.HasPrefix(labels.TriggerLabel, labels.RoutingLabelPrefix) {
+		field := SettingRoutingLabelPrefix
+		if patch.TriggerLabel != nil {
+			field = SettingTriggerLabel
+		}
+		return &ErrTriggerLabelHasPrefix{Field: field}
+	}
+	if !prefixChanged {
+		return nil
+	}
+	routes, err := store.RouteLabels(ctx, tx)
+	if err != nil {
+		return err
+	}
+	var outside []string
+	for _, label := range routes {
+		if !strings.HasPrefix(label, labels.RoutingLabelPrefix) {
+			outside = append(outside, label)
+		}
+	}
+	if len(outside) > 0 {
+		return &ErrRoutesOutsidePrefix{Labels: outside}
+	}
+	return nil
 }
 
 type roundLabelsKey struct{}

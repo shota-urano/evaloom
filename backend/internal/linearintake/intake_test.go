@@ -112,7 +112,7 @@ func newIntakeFixture(t *testing.T) *intakeFixture {
 // round runs one Team's decision with the Team row as the Poller sees it.
 func (f *intakeFixture) round(t *testing.T, teamID string, issues ...linear.Issue) error {
 	t.Helper()
-	teams, err := store.SyncLinearPollTeams(context.Background(), f.db)
+	teams, err := syncTestTeams(context.Background(), f.db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func TestIntakeRequiresStarterAndCanceller(t *testing.T) {
 }
 
 // switchableTeams is a TeamSource whose polling Team the test changes, as
-// changing linear.teamId (or however the Team is chosen, dcj.10) would.
+// re-resolving the uslab Team to another ID (Q216) would.
 type switchableTeams struct{ id string }
 
 func (s *switchableTeams) LinearPollTeamID(context.Context) (string, error) { return s.id, nil }

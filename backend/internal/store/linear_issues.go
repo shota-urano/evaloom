@@ -119,8 +119,8 @@ func HasActiveLinearTask(ctx context.Context, tx *sql.Tx, issueID string) (bool,
 }
 
 // IsLinearTeamPolled reports whether teamID is one of the Teams polled this
-// round (a row of linear_poll_teams, kept in step with the registered
-// Projects by SyncLinearPollTeams).
+// round (a row of linear_poll_teams, kept in step with the polling Team by
+// SyncLinearPollTeam).
 func IsLinearTeamPolled(ctx context.Context, tx *sql.Tx, teamID string) (bool, error) {
 	var polled bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM linear_poll_teams WHERE team_id = ?)`,
