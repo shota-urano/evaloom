@@ -3,6 +3,8 @@ package securitytest
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -346,5 +348,36 @@ func TestStoreProbeSecretsForDeclaredStages(t *testing.T) {
 	// The store itself refuses probe_write for prepare (registered as write).
 	if _, err := store.ForStage(ProbeHarnessID, model.StagePrepare, []contract.Secret{{Slot: ProbeWriteSlot, Access: "read"}}); err == nil {
 		t.Fatal("probe_write resolved for prepare")
+	}
+}
+
+// The publish stage takes the content identifier it sends to authorize after
+// its plan ran, right before asking: a change made while the plan holds the
+// stage (the approval acceptance tests' gate) is what authorize compares.
+func TestProbePublishTakesContentIDRightBeforeAuthorize(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := NewDestination(listener)
+	defer destination.Close()
+	h := ProbeHarness{
+		Plans:     map[string]json.RawMessage{"publish": json.RawMessage(`[{"id":"change","kind":"write","path":"{{workspace}}/probe-prepared.txt","value":"changed during the plan\n"}]`)},
+		Authorize: &ProbeAuthorize{Operation: ProbeOperation, Destination: destination.URL(DestinationOperationPath)},
+	}
+	r := newStageRun(t, h)
+	r.run("prepare")
+	checked, _ := r.run("check")
+	approval := "01JZ0000000000000000000001"
+	r.checkedContent, r.approvalID = checked.ContentID, &approval
+	r.run("publish")
+	ask := <-r.replies
+	data, err := os.ReadFile(filepath.Join(r.workspace, "probe-prepared.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if want := hex.EncodeToString(sum[:]); ask.ContentID != want || ask.ContentID == *checked.ContentID {
+		t.Fatalf("authorize contentId %s; want %s (the content after the plan), checked was %s", ask.ContentID, want, *checked.ContentID)
 	}
 }
