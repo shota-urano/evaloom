@@ -131,7 +131,9 @@ func ReportRouteProposalResultTx(ctx context.Context, tx *sql.Tx, in RoutePropos
 
 // OpenRouteDecisionTx opens the kind=route decision of a proposed or failed
 // proposal (spec 04 3.7, 02 3.4): subject_id and basis are the proposal ID,
-// and the proposal records the decision.
+// and the proposal records the decision. A Linear task gets the
+// "管理画面で判断待ち" comment (spec 15 3.6.4 step 5, 16 3.2) without an
+// Execution (16 3.4.2).
 func OpenRouteDecisionTx(ctx context.Context, tx *sql.Tx, taskID, proposalID string) error {
 	id := ulid.Make().String()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO owner_decisions (id, kind, task_id, subject_id, basis, detail, status, created_at)
@@ -140,7 +142,56 @@ func OpenRouteDecisionTx(ctx context.Context, tx *sql.Tx, taskID, proposalID str
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE route_proposals SET decision_id = ? WHERE id = ? AND task_id = ?`, id, proposalID, taskID)
-	return expectOneRow(result, err)
+	if err := expectOneRow(result, err); err != nil {
+		return err
+	}
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: taskID, Kind: linearoutbox.KindDecisionOpen, TargetID: id})
+}
+
+// DefaultRouteProposer is the default of the global setting routing.proposer
+// (spec 02 3.8).
+const DefaultRouteProposer = `{"microHarness":"claude_code","model":null}`
+
+// RouteProposerJSON is the routing.proposer setting, or its default.
+func RouteProposerJSON(settings map[string]string) json.RawMessage {
+	if raw, ok := settings["routing.proposer"]; ok && json.Valid([]byte(raw)) {
+		return json.RawMessage(raw)
+	}
+	return json.RawMessage(DefaultRouteProposer)
+}
+
+// RouteProposerModelIsNull reports whether routing.proposer has no model, in
+// which case no proposal is made (spec 15 3.6.4 step 2, 02 3.4).
+func RouteProposerModelIsNull(settings map[string]string) bool {
+	var proposer struct {
+		Model *string `json:"model"`
+	}
+	if err := json.Unmarshal(RouteProposerJSON(settings), &proposer); err != nil {
+		return true
+	}
+	return proposer.Model == nil
+}
+
+// FailRouteProposalWithoutProposerTx makes a queued proposal failed without
+// handing it to a Runner, because routing.proposer has no model (spec 15
+// 3.6.4 step 2): error_class stays NULL. While the task is routing, a route
+// decision without a proposal is opened (step 5).
+func FailRouteProposalWithoutProposerTx(ctx context.Context, tx *sql.Tx, proposalID string) error {
+	var taskID string
+	var taskStatus model.TaskStatus
+	if err := tx.QueryRowContext(ctx, `SELECT rp.task_id, t.status FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id
+		WHERE rp.id = ?`, proposalID).Scan(&taskID, &taskStatus); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE route_proposals SET status = 'failed', error_class = NULL, finished_at = ?
+		WHERE id = ? AND status = 'queued'`, time.Now().UTC().Format(time.RFC3339Nano), proposalID)
+	if err := expectOneRow(result, err); err != nil {
+		return err
+	}
+	if taskStatus != model.TaskRouting {
+		return nil
+	}
+	return OpenRouteDecisionTx(ctx, tx, taskID, proposalID)
 }
 
 // ApplyRouteAnswerTx performs the route rows of spec 04 3.6 and 3.7. The

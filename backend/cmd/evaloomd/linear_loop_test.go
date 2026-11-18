@@ -371,7 +371,10 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 			}
 			wantStatus, wantComments, wantDecision := "blocked", 1, "held"
 			if tc.name == "routing" {
-				wantStatus, wantComments, wantDecision = "routing", 0, "routing"
+				// No hold comment; with the default routing.proposer (model
+				// null) the proposal fails at once and the route decision's
+				// decision_open comment is the one comment (spec 15 3.6.4).
+				wantStatus, wantComments, wantDecision = "routing", 1, "routing"
 			}
 			if status != wantStatus || (tc.cause != "" && cause != tc.cause) {
 				t.Fatalf("held task = %s/%s", status, cause)
@@ -407,8 +410,12 @@ func TestLinearHoldCommentDoesNotRepeatOnRecheck(t *testing.T) {
 			if err := h.db.QueryRow(`SELECT count(*) FROM linear_outbox WHERE kind = ?`, tc.kind).Scan(&rows); err != nil {
 				t.Fatal(err)
 			}
-			if rows != wantComments {
-				t.Fatalf("%s outbox rows = %d, want 1", tc.kind, rows)
+			wantRows := wantComments
+			if tc.name == "routing" {
+				wantRows = 0 // Routing writes no hold comment.
+			}
+			if rows != wantRows {
+				t.Fatalf("%s outbox rows = %d, want %d", tc.kind, rows, wantRows)
 			}
 			if comments, _ := h.fake.snapshot(); len(comments) != wantComments {
 				t.Fatalf("comments after polls = %d, want 1", len(comments))

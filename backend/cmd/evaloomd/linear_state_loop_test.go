@@ -301,7 +301,9 @@ func TestLinearHeldIssueStateUpdateDoesNotRepeatTaskOrComment(t *testing.T) {
 			}
 			wantStatus, wantCause, wantComments, wantDecision := "blocked", hold.cause, 1, "held"
 			if hold.cause == "routing_unknown_label" {
-				wantStatus, wantCause, wantComments, wantDecision = "routing", "", 0, "routing"
+				// The route decision's decision_open comment (default
+				// routing.proposer has no model, spec 15 3.6.4).
+				wantStatus, wantCause, wantComments, wantDecision = "routing", "", 1, "routing"
 			}
 			if status != wantStatus || cause != wantCause {
 				t.Fatalf("held task = %s / %s, want blocked / %s", status, cause, hold.cause)

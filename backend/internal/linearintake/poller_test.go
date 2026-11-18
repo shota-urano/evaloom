@@ -90,7 +90,17 @@ func openDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	exec(t, db, `INSERT INTO runners (id, name, token_hash, status, last_heartbeat_at, created_at) VALUES ('r1', 'r1', 'h', 'online', '2026-11-08T00:00:00Z', '2026-11-08T00:00:00Z')`)
+	// A proposer model keeps route proposals queued for a Runner; the
+	// default null model fails them at once (spec 15 3.6.4 step 2).
+	setProposerModel(t, db, `"model-x"`)
 	return db
+}
+
+// setProposerModel writes routing.proposer with the given model JSON.
+func setProposerModel(t *testing.T, db *sql.DB, model string) {
+	t.Helper()
+	exec(t, db, `INSERT INTO settings (key, value, updated_at) VALUES ('routing.proposer', ?, '2026-11-08T00:00:00Z')
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, `{"microHarness":"claude_code","model":`+model+`}`)
 }
 
 func exec(t *testing.T, db *sql.DB, query string, args ...any) {

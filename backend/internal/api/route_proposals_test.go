@@ -50,6 +50,18 @@ func routeDecisionOf(t *testing.T, f *authFixture, proposalID string) string {
 	return id
 }
 
+// requireDecisionOpenComment checks the "管理画面で判断待ち" comment of a route
+// decision (spec 15 3.6.4 step 5, 16 3.2): one comment row without an
+// Execution (16 3.4.2), deduplicated by the decision ID.
+func requireDecisionOpenComment(t *testing.T, f *authFixture, taskID, decisionID string) {
+	t.Helper()
+	if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND kind='decision_open' AND action='comment'
+		AND dedupe_key=? AND execution_id IS NULL AND status='pending' AND body LIKE '%'||?||'%'`,
+		taskID, taskID+":decision_open:"+decisionID, decisionID); n != 1 {
+		t.Fatalf("decision_open comments for %s = %d", decisionID, n)
+	}
+}
+
 func requireProposal(t *testing.T, f *authFixture, id, status string, label, errorClass any) {
 	t.Helper()
 	var gotStatus string
@@ -70,6 +82,7 @@ func TestRouteProposalProposedThenApproveQueuesTask(t *testing.T) {
 	}
 	requireProposal(t, f, proposalID, "proposed", "route:a", nil)
 	decisionID := routeDecisionOf(t, f, proposalID)
+	requireDecisionOpenComment(t, f, taskID, decisionID)
 	// The same result again is accepted without a second decision; another is a conflict.
 	status, body = proposalResult(t, f, token, proposalID, `{"label":"route:a","reason":"fits A","errorClass":null}`)
 	if status != 200 {
@@ -126,6 +139,7 @@ func TestRouteProposalFailedStillOpensDecision(t *testing.T) {
 			}
 			requireProposal(t, f, proposalID, "failed", nil, tc.errorClass)
 			decisionID := routeDecisionOf(t, f, proposalID)
+			requireDecisionOpenComment(t, f, taskID, decisionID)
 			status, body = approvalRequest(t, f, "POST", "/api/decisions/"+decisionID+"/answer", `{"action":"approve","label":"route:a","basis":"`+proposalID+`"}`)
 			if status != 200 {
 				t.Fatalf("approve=%d %s", status, body)
@@ -176,7 +190,7 @@ func TestRouteDecisionApproveNeedsRoutingTask(t *testing.T) {
 		t.Fatal("conflicting answer changed decision")
 	}
 	requireProposal(t, f, proposalID, "proposed", "route:a", nil)
-	if n := stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID) + stageCount(t, f, `SELECT count(*) FROM linear_outbox`); n != 0 {
+	if n := stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID) + stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE kind<>'decision_open'`); n != 0 {
 		t.Fatal("conflicting answer wrote rows")
 	}
 }
@@ -224,4 +238,58 @@ func TestRouteProposalResultRejectsInvalidRequests(t *testing.T) {
 	stageExec(t, f, `UPDATE route_proposals SET status='queued', runner_id=NULL WHERE id=?`, proposalID)
 	status, raw = proposalResult(t, f, token, proposalID, `{"label":null,"reason":null,"errorClass":"timeout"}`)
 	assertAuthError(t, status, raw, 403, Forbidden)
+}
+
+// spec 15 3.6.4 (Q112): the approved label must be in routes at the time of
+// the decision; otherwise 422 and nothing changes.
+func TestRouteDecisionApproveRejectsLabelOutsideRoutes(t *testing.T) {
+	f, token, proposalID, taskID := routeProposalFixture(t)
+	if status, body := proposalResult(t, f, token, proposalID, `{"label":"route:a","reason":"fits A","errorClass":null}`); status != 200 {
+		t.Fatalf("result=%d %s", status, body)
+	}
+	decisionID := routeDecisionOf(t, f, proposalID)
+	// route:b was a candidate but is no longer in routes; route:zzz never was.
+	stageExec(t, f, `DELETE FROM routes WHERE label='route:b'`)
+	for _, label := range []string{"route:b", "route:zzz"} {
+		status, body := approvalRequest(t, f, "POST", "/api/decisions/"+decisionID+"/answer",
+			`{"action":"approve","label":"`+label+`","basis":"`+proposalID+`"}`)
+		assertAuthError(t, status, body, 422, PreconditionFailed)
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id=? AND status='open' AND answer IS NULL`, decisionID); n != 1 {
+		t.Fatal("rejected approval answered the decision")
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id=? AND status='routing' AND project_id IS NULL`, taskID); n != 1 {
+		t.Fatal("rejected approval changed the task")
+	}
+	requireProposal(t, f, proposalID, "proposed", "route:a", nil)
+	if n := stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID) +
+		stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND kind<>'decision_open'`, taskID); n != 0 {
+		t.Fatal("rejected approval wrote rows")
+	}
+}
+
+// spec 15 3.6.4 step 2: with routing.proposer.model null, claim never hands
+// the queued proposal to the Runner; it fails with error_class NULL and a
+// route decision without a proposal is opened.
+func TestClaimFailsProposalWithoutProposerModel(t *testing.T) {
+	f, token, profiles := claimFixture(t)
+	enableDirectRouting(t, f, profiles[0].ID, "claim-runner")
+	stageExec(t, f, `UPDATE settings SET value='{"microHarness":"claude_code","model":null}' WHERE key='routing.proposer'`)
+	insertRouteProposal(t, f, "proposal-1", "task-901", "2026-12-01T00:00:00Z")
+	stageExec(t, f, `INSERT INTO linear_issue_links (id, linear_issue_id, issue_identifier, issue_url, team_id, task_id, attach_seq, created_at)
+		VALUES ('link-1', 'issue-1', 'ENG-1', 'https://linear.app/x/issue/ENG-1', 'team-a', 'task-901', 1, 't')`)
+	status, body := requestClaim(t, f, token)
+	if kind := claimJobKind(t, status, body); kind != "" {
+		t.Fatalf("claim handed %q: %s", kind, body)
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM route_proposals WHERE id='proposal-1' AND status='failed'
+		AND error_class IS NULL AND runner_id IS NULL AND proposed_label IS NULL AND finished_at IS NOT NULL`); n != 1 {
+		t.Fatal("proposal not failed without a Runner")
+	}
+	decisionID := routeDecisionOf(t, f, "proposal-1")
+	requireDecisionOpenComment(t, f, "task-901", decisionID)
+	if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id='task-901' AND status='routing'`) -
+		stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id='task-901'`); n != 1 {
+		t.Fatal("task left routing or got an Execution")
+	}
 }

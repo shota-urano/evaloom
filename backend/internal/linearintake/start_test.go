@@ -174,6 +174,48 @@ func TestStartLinearTaskRoutesUnroutableIssueToProposal(t *testing.T) {
 	}
 }
 
+// spec 15 3.6.4 steps 2 and 5: with routing.proposer.model null (also the
+// default), the proposal is failed at once without a Runner (error_class
+// NULL) and a route decision without a proposal is opened, with its
+// "管理画面で判断待ち" comment that has no Execution (16 3.2, 3.4.2).
+func TestStartLinearTaskWithoutProposerModelOpensDecision(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, *sql.DB)
+	}{
+		{"model null", func(t *testing.T, db *sql.DB) { setProposerModel(t, db, "null") }},
+		{"default setting", func(t *testing.T, db *sql.DB) { exec(t, db, `DELETE FROM settings WHERE key = 'routing.proposer'`) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := startDB(t)
+			test.setup(t, db)
+			d, err := start(t, db, routedIssue("1", "bug"), 1)
+			if err != nil || d != DecisionRouting {
+				t.Fatalf("decision = %q, err = %v", d, err)
+			}
+			got := readStarted(t, db, "1", 1)
+			if got.status != "routing" || got.executions != 0 {
+				t.Fatalf("task = %+v", got)
+			}
+			var proposalID, decisionID string
+			if err := db.QueryRow(`SELECT p.id, d.id FROM route_proposals p JOIN owner_decisions d ON d.id = p.decision_id
+				WHERE p.task_id = ? AND p.status = 'failed' AND p.error_class IS NULL AND p.runner_id IS NULL
+				AND p.proposed_label IS NULL AND p.finished_at IS NOT NULL
+				AND d.kind = 'route' AND d.status = 'open' AND d.subject_id = p.id AND d.basis = p.id
+				AND d.execution_id IS NULL`, got.id).Scan(&proposalID, &decisionID); err != nil {
+				t.Fatalf("failed proposal with decision: %v", err)
+			}
+			comments := outboxKeys(t, db, got.id)
+			if len(comments) != 1 || len(comments["decision_open"]) != 1 || comments["decision_open"][0] != got.id+":decision_open:"+decisionID {
+				t.Fatalf("comments = %v", comments)
+			}
+			if n := countRows(t, db, `SELECT count(*) FROM linear_outbox WHERE task_id = ? AND execution_id IS NULL AND action = 'comment'`, got.id); n != 1 {
+				t.Fatalf("decision_open row with an Execution: %d", n)
+			}
+		})
+	}
+}
+
 // 受け入れ基準: Project にもスペシャルハーネスにも振り分けられる。A direct
 // special-harness route queues a task whose destination is the harness.
 func TestStartLinearTaskQueuesDirectHarnessRoute(t *testing.T) {

@@ -204,6 +204,33 @@ func claimRouteProposal(ctx context.Context, tx *sql.Tx, runnerID string, settin
 	job := RouteProposalJob{Kind: "route_proposal"}
 	p := &job.Proposal
 	var candidates string
+	if RouteProposerModelIsNull(settings) {
+		// Spec 15 3.6.4 step 2: without a model the proposals are never
+		// handed to a Runner. The setting may have been cleared after they
+		// were queued.
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM route_proposals WHERE status = 'queued' ORDER BY created_at, id`)
+		if err != nil {
+			return nil, err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			if err := FailRouteProposalWithoutProposerTx(ctx, tx, id); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}
 	err := tx.QueryRowContext(ctx, `SELECT rp.id, rp.task_id, rp.trigger, rp.candidates, t.title, t.body
 		FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id
 		WHERE rp.status = 'queued' ORDER BY rp.created_at, rp.id LIMIT 1`).
@@ -220,11 +247,7 @@ func claimRouteProposal(ctx context.Context, tx *sql.Tx, runnerID string, settin
 		return nil, err
 	}
 	p.Candidates = json.RawMessage(candidates)
-	// routing.proposer default (spec 02 3.8).
-	p.Proposer = json.RawMessage(`{"microHarness":"claude_code","model":null}`)
-	if raw, ok := settings["routing.proposer"]; ok && json.Valid([]byte(raw)) {
-		p.Proposer = json.RawMessage(raw)
-	}
+	p.Proposer = RouteProposerJSON(settings)
 	p.TimeoutSec = RouteProposalTimeoutSec
 	return &job, nil
 }

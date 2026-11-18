@@ -146,6 +146,7 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		detail["harnessId"] = r.HarnessID
 	}
 	decision := DecisionStarted
+	var proposalID string
 	switch {
 	case r.Trigger != "":
 		decision = DecisionRouting
@@ -155,19 +156,11 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		if err := store.InsertLinearTask(ctx, tx, &created, ""); err != nil {
 			return "", fmt.Errorf("linearintake: insert routing task: %w", err)
 		}
-		candidates, err := store.RouteCandidatesTx(ctx, tx)
-		if err != nil {
-			return "", err
-		}
-		proposalID, err := newID(now)
-		if err != nil {
+		if proposalID, err = newID(now); err != nil {
 			return "", err
 		}
 		detail["routeProposalId"] = proposalID
-		if err := store.InsertRouteProposalTx(ctx, tx, store.NewRouteProposal{ID: proposalID, TaskID: created.ID,
-			Trigger: string(r.Trigger), SeenLabels: r.SeenLabels, Candidates: candidates, CreatedAt: stamp}); err != nil {
-			return "", err
-		}
+		// The proposal itself is written after the link (below).
 	case r.Cause != "":
 		decision = DecisionHeld
 		created.Status = model.TaskBlocked
@@ -205,7 +198,12 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		AttachSeq: attachSeq, CreatedAt: stamp}); err != nil {
 		return "", err
 	}
-	// After the link: the outbox row needs the linked Issue.
+	// After the link: the outbox rows need the linked Issue.
+	if r.Trigger != "" {
+		if err := insertRouteProposal(ctx, tx, created.ID, proposalID, r, stamp); err != nil {
+			return "", err
+		}
+	}
 	if r.Cause != "" {
 		if err := enqueueHold(ctx, tx, created.ID, r.Cause, s.routingLabelPrefix(ctx)); err != nil {
 			return "", err
@@ -216,6 +214,29 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 		return "", err
 	}
 	return decision, nil
+}
+
+// insertRouteProposal writes the queued proposal of spec 15 3.6.4 step 1
+// with the routes table of now as candidates. Without a routing.proposer
+// model it is failed at once without a Runner and a route decision without a
+// proposal is opened (steps 2 and 5).
+func insertRouteProposal(ctx context.Context, tx *sql.Tx, taskID, proposalID string, r Routing, stamp string) error {
+	candidates, err := store.RouteCandidatesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := store.InsertRouteProposalTx(ctx, tx, store.NewRouteProposal{ID: proposalID, TaskID: taskID,
+		Trigger: string(r.Trigger), SeenLabels: r.SeenLabels, Candidates: candidates, CreatedAt: stamp}); err != nil {
+		return err
+	}
+	settings, err := store.ReadSettings(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if store.RouteProposerModelIsNull(settings) {
+		return store.FailRouteProposalWithoutProposerTx(ctx, tx, proposalID)
+	}
+	return nil
 }
 
 // enqueueHold writes the hold comment of spec 16 3.2 for a held task in the
