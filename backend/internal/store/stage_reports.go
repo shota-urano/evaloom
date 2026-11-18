@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
@@ -727,6 +728,12 @@ func requestApproval(ctx context.Context, tx *sql.Tx, e *reportExecution, stage 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
 		approvalID, e.taskID, e.id, decisionID, stage, a.Operation, string(targetJSON), a.Summary, a.ContentID,
 		hex.EncodeToString(sum[:]), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	// Spec 17 3.3 step 7, spec 16 3.2: a Linear task gets one "管理画面で判断待ち"
+	// comment per approval decision; a manual task writes nothing.
+	if err := linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: e.taskID, Kind: linearoutbox.KindDecisionOpen,
+		TargetID: decisionID, ExecutionID: e.id}); err != nil {
 		return err
 	}
 	return appendEvent(ctx, tx, e.id, model.EventApprovalRequested, map[string]any{

@@ -31,6 +31,9 @@ const (
 	KindCancelled                 Kind = "cancelled"
 	KindStarted                   Kind = "started"
 	KindCompleted                 Kind = "completed"
+	// KindDecisionOpen is the "管理画面で判断待ち" comment of spec 16 3.2:
+	// one per owner_decisions row, whose ID is the trigger's TargetID (Q162).
+	KindDecisionOpen Kind = "decision_open"
 )
 
 // Trigger is one occurrence of a 3.2 trigger. TargetID is the "対象の ID" of
