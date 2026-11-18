@@ -77,6 +77,31 @@ def attempt(item):
                     if b":" not in header:
                         raise RuntimeError("invalid proxy header")
             return {"status": int(response[1])}
+    if kind == "authorize":
+        # The run channel's authorize from a stage that may not ask it. Any
+        # reply means Runner relayed it to the Control Plane; Runner refuses
+        # by closing the connection. "connected" separates that refusal from
+        # a channel that was never reached (not evidence of a refusal).
+        connected = False
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(item["timeoutSec"])
+                conn.connect(os.environ["EVALOOM_CHANNEL"])
+                connected = True
+                message = {"op": "authorize", "operation": item["operation"],
+                           "approvalId": item.get("approvalId"),
+                           "contentId": item.get("contentId", "")}
+                conn.sendall((json.dumps(message) + "\n").encode())
+                with conn.makefile("rb") as stream:
+                    line = stream.readline(65536)
+        except (OSError, KeyError) as error:
+            return {"connected": connected, "replied": False, "error": type(error).__name__}
+        try:
+            reply = json.loads(line) if line.strip() else None
+        except ValueError:
+            reply = None
+        return {"connected": connected, "replied": isinstance(reply, dict),
+                "allowed": isinstance(reply, dict) and reply.get("allowed") is True}
     if kind == "env":
         allowed = set(item["allowlist"])
         values = list(os.environ.values())
@@ -144,7 +169,8 @@ def run_plan(plan, result_path):
                     "env": ["allowlist", "secrets"],
                     "git_push": ["remote", "refspec", "timeoutSec"],
                     "command": ["argv", "timeoutSec"],
-                    "secret": ["sha256", "length"]}
+                    "secret": ["sha256", "length"],
+                    "authorize": ["operation", "timeoutSec"]}
         for field in required[item["kind"]]:
             item[field]
         if item["kind"] in ("git_push", "command"):
@@ -156,6 +182,8 @@ def run_plan(plan, result_path):
             succeeded = item["kind"] != "proxy_connect" or detail["status"] == 200
             if item["kind"] == "http" and item.get("proxy"):
                 succeeded = detail["status"] == 200
+            if item["kind"] == "authorize":
+                succeeded = detail["replied"]
             if item["kind"] == "secret":
                 # Success means the value was obtained from the environment
                 # or a file.

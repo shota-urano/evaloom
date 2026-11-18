@@ -246,6 +246,34 @@ func (e *dockerIsolation) records(f *executionFixture) st.TrustedRecords {
 		st.RowDeclaredDest: e.declared.records(), st.RowUndeclaredDest: e.undeclared.records(), st.RowModelAPI: e.model.records()}}
 }
 
+// runtimeWiring makes a fixture run on the real Docker runtime through
+// TestIsolationDockerRuntimeHelper and returns where create commands are
+// recorded.
+func (e *dockerIsolation) runtimeWiring(t *testing.T) func(*executionFixture) string {
+	return func(fixture *executionFixture) string {
+		record := filepath.Join(filepath.Dir(fixture.config.DataDir), "created")
+		if err := os.Mkdir(record, 0700); err != nil {
+			t.Fatal(err)
+		}
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapper := filepath.Join(filepath.Dir(fixture.config.DataDir), "runtime-docker")
+		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec "+shellQuote(binary)+" -test.run=^TestIsolationDockerRuntimeHelper$ -- \"$@\"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		c := &fixture.config.Container
+		c.RuntimePath, c.Image, c.ProxyImage, c.ProxyBinary = wrapper, e.image, e.proxyImage, e.proxyBinary
+		c.RuntimeEnv = map[string]string{"EVALOOM_ISOLATION_DOCKER": e.docker, "EVALOOM_ISOLATION_RECORD": record}
+		for key, value := range e.runtimeEnv {
+			c.RuntimeEnv[key] = value
+		}
+		fixture.wait = 10 * time.Minute
+		return record
+	}
+}
+
 // run executes one Execution on the real Sandbox and returns the violations.
 func (e *dockerIsolation) run(t *testing.T, loosen *st.Loosening) []st.Violation {
 	t.Helper()
@@ -256,28 +284,7 @@ func (e *dockerIsolation) run(t *testing.T, loosen *st.Loosening) []st.Violation
 			f = fixture
 			return e.targets(fixture, other)
 		},
-		runtime: func(fixture *executionFixture) string {
-			record := filepath.Join(filepath.Dir(fixture.config.DataDir), "created")
-			if err := os.Mkdir(record, 0700); err != nil {
-				t.Fatal(err)
-			}
-			binary, err := os.Executable()
-			if err != nil {
-				t.Fatal(err)
-			}
-			wrapper := filepath.Join(filepath.Dir(fixture.config.DataDir), "runtime-docker")
-			if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexec "+shellQuote(binary)+" -test.run=^TestIsolationDockerRuntimeHelper$ -- \"$@\"\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
-			c := &fixture.config.Container
-			c.RuntimePath, c.Image, c.ProxyImage, c.ProxyBinary = wrapper, e.image, e.proxyImage, e.proxyBinary
-			c.RuntimeEnv = map[string]string{"EVALOOM_ISOLATION_DOCKER": e.docker, "EVALOOM_ISOLATION_RECORD": record}
-			for key, value := range e.runtimeEnv {
-				c.RuntimeEnv[key] = value
-			}
-			fixture.wait = 10 * time.Minute
-			return record
-		}})
+		runtime: e.runtimeWiring(t)})
 	violations, stages := r.verdict(t, func() st.TrustedRecords { return e.records(f) })
 	if !slices.Equal(stages, []string{"check", "prepare", "publish", "work"}) {
 		t.Fatalf("judged stages %v", stages)

@@ -24,6 +24,9 @@ type isolationRun struct {
 	rules   map[string][]st.IsolationRule
 	wiring  st.ArgsWiring
 	runtime string // directory holding the recorded create commands
+	// breakout marks a spec 14 3.3 run: rules judge the breakout script's
+	// reports of check and prepare instead of the 3.2 stage plans.
+	breakout bool
 }
 
 // isolationOptions select one run. The make verify run uses only the fake
@@ -41,6 +44,11 @@ type isolationOptions struct {
 	// runtime replaces the runtime CLI wiring and returns the directory
 	// where create commands are recorded (default: the fake runtime's).
 	runtime func(f *executionFixture) string
+	// breakout, when set, runs spec 14 3.3 instead of the 3.2 plans: the
+	// work stage writes the breakout script into the workspace, check runs
+	// it from there, and prepare fetches it from the URL breakout returns
+	// after serving script there (the test destination).
+	breakout func(f *executionFixture, script []byte) string
 }
 
 // The fake runtime runs each stage's command on the host, so only the rows
@@ -83,11 +91,26 @@ func newIsolationRun(t *testing.T, o isolationOptions) *isolationRun {
 			if o.targets != nil {
 				targets = o.targets(f, otherTask)
 			}
-			for _, stage := range []string{st.IsolationPrepare, st.IsolationWork, st.IsolationCheck, st.IsolationPublish} {
-				plans[stage], r.rules[stage] = st.IsolationPlan(stage, r.d, targets, o.rows...)
+			if o.breakout != nil {
+				b, err := st.NewBreakout(targets, o.rows...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.breakout, r.rules = true, b.Rules
+				plans = b.StagePlans(o.breakout(f, b.Script))
+				plans[st.IsolationWork] = b.WorkPlan()
+			} else {
+				for _, stage := range []string{st.IsolationPrepare, st.IsolationWork, st.IsolationCheck, st.IsolationPublish} {
+					plans[stage], r.rules[stage] = st.IsolationPlan(stage, r.d, targets, o.rows...)
+				}
 			}
-			h := st.ProbeHarness{Plans: map[string]json.RawMessage{"prepare": plans["prepare"], "check": plans["check"], "publish": plans["publish"]},
-				Secrets: declared, Network: r.d.Network}
+			stagePlans := map[string]json.RawMessage{}
+			for _, stage := range []string{"prepare", "check", "publish"} {
+				if plan, ok := plans[stage]; ok {
+					stagePlans[stage] = plan
+				}
+			}
+			h := st.ProbeHarness{Plans: stagePlans, Secrets: declared, Network: r.d.Network}
 			if err := st.WriteProbeHarness(repo, h); err != nil {
 				t.Fatal(err)
 			}
@@ -188,6 +211,16 @@ func (r *isolationRun) verdict(t *testing.T, records func() st.TrustedRecords) (
 	}
 	slices.Sort(stages)
 	for stage, rules := range r.rules {
+		if r.breakout {
+			out := filepath.Join(f.config.DataDir, "executions", f.id, stage+"-1", "out")
+			ran, err := os.ReadFile(filepath.Join(out, "probe-"+stage+".json"))
+			if err != nil {
+				t.Fatalf("%s report: %v", stage, err)
+			}
+			report, _ := os.ReadFile(filepath.Join(out, st.BreakoutReport(stage))) // missing is judged unavailable
+			violations = append(violations, st.BreakoutVerdict(stage, ran, report, rules, r.d, trusted)...)
+			continue
+		}
 		var report string
 		if stage == st.IsolationWork {
 			_ = filepath.WalkDir(f.config.WorkspaceRoot, func(path string, entry fs.DirEntry, err error) error {

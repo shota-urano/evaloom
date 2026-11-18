@@ -22,6 +22,7 @@ fixtureのコマンドは `python3 setup.py` と `python3 test.py`。後者は�
 | `env` | `allowlist`, `secrets` | 環境変数名、許可外の名前、既知の秘密の値が含まれるかの確認 |
 | `git_push` | `remote`, `refspec`, `timeoutSec` | 明示したリモート・refへのpush |
 | `command` | `argv`, `timeoutSec` | キーチェーンやSSHエージェント等にアクセスするコマンドの実行 |
+| `authorize` | `operation`, `timeoutSec` | 通話口（`EVALOOM_CHANNEL`）への `authorize` の送信。返事があれば成功（Runner が Control Plane に中継した）とする。`detail.connected` が偽のときは通話口に届いておらず、拒否の証拠にならない |
 
 `python3 probe.py <plan> <result>` でも同じ処理を呼べる。入力例は次のとおり。
 
@@ -286,3 +287,12 @@ CLI失敗を拒否する。`TestConfigurationAccessVerdict`と
 これらはHTTP認証の境界のテストであり、上記のSandboxによる接続遮断の証明とは区別する。
 Control Planeの起動処理を通す再起動確認は、既存の
 `cmd/evaloomd.TestOwnerSessionSurvivesControlPlaneRestart`も通常検証で実行する。
+
+## 3.3 隔離突破テスト
+
+`breakout.go` の `NewBreakout(targets, rows...)` が、信頼できないスクリプト（`probe.py` に plan を埋め込んだもの、`evaloom_breakout.py STAGE RESULT`）と、確かめる段・準備の段の判定規則を作る。作業の段のプローブ Adapter が `WorkPlan` でスクリプトを作業領域に書き、確かめる段が作業領域からそれを実行し、準備の段がテスト用の外部の宛先から取り込んで実行する（`StagePlans`）。スクリプトは 3.2 のアクセスに加えて通話口の `authorize` を試す。判定は `BreakoutVerdict` で、段がスクリプトを実行したこと、スクリプトの観測、Control API のアクセスログ（`/authorize` への要求が1件でもあれば不合格）とテスト用の外部の宛先の記録を合わせて見る。
+
+| テスト | 確かめること | Docker |
+|---|---|---|
+| `cmd/evaloom-runner` の `TestBreakoutThroughRunner`（`make verify`） | 偽の CLI で製品の Runner を通し、段ごとのコンテナ作成コマンド、スクリプトが環境変数に見つけた鍵、通話口の `authorize` を Runner が拒否して Control API に要求が届かないこと。確かめる段・準備の段に鍵を渡すように緩めると該当の行が失敗すること | 不要 |
+| `TestBreakoutDocker`（タグ `security_docker`） | 3.3 の全行（Control API、管理 DB、鍵、Runner トークン、本人の HOME、Docker ソケット、外部ネットワーク、`authorize`）を実コンテナで試す。前提は `TestStageIsolationDocker` と同じで、無ければスキップせず失敗する | 必要 |
