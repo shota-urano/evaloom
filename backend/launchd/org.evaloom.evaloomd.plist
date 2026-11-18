@@ -13,6 +13,8 @@
         <string>8080</string>
         <string>-web</string>
         <string>__EVALOOM_ROOT__/frontend/dist</string>
+        <string>-evaloom-repo</string>
+        <string>__EVALOOM_ROOT__</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__EVALOOM_ROOT__</string>

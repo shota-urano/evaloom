@@ -174,10 +174,13 @@ func TestRepositoryGlobalContextSelectsAllCommonFiles(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Global=%+v err=%v; want %+v", got, err, want)
 	}
-	for _, repository := range []fstest.MapFS{{}, {"context/global/link": {Mode: fs.ModeSymlink, Data: []byte("../../private")}}} {
-		source.Repository = repository
-		if _, err := source.ReadGlobalContext(t.Context()); err == nil {
-			t.Fatal("unreadable/linked source accepted")
-		}
+	source.Repository = fstest.MapFS{"context/global/link": {Mode: fs.ModeSymlink, Data: []byte("../../private")}}
+	if _, err := source.ReadGlobalContext(t.Context()); err == nil {
+		t.Fatal("linked source accepted")
+	}
+	// Q207: an absent context/global/ is zero files, not an error.
+	source.Repository = fstest.MapFS{"context/other.md": {Data: []byte("other")}}
+	if got, err := source.ReadGlobalContext(t.Context()); err != nil || len(got) != 0 {
+		t.Fatalf("absent Global=%+v err=%v; want none", got, err)
 	}
 }
