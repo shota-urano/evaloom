@@ -252,8 +252,9 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 			if err != nil {
 				return nil, err
 			}
-			for _, record := range records {
-				_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness','record',?,?,?,NULL,?)`, ulid.Make().String(), id, record.FileName, record.ID, record.SHA256, now)
+			names := recordPlacementNames(records)
+			for i, record := range records {
+				_, err = tx.ExecContext(r.Context(), `INSERT INTO context_revisions(id,execution_id,layer,kind,source_path,source_revision,content_hash,content,created_at) VALUES (?,?,'harness','record',?,?,?,NULL,?)`, ulid.Make().String(), id, names[i], record.ID, record.SHA256, now)
 				if err != nil {
 					return nil, err
 				}
@@ -332,4 +333,26 @@ func buildExecutionContext(db *sql.DB, r *http.Request, auth *OwnerAuth, w http.
 		return nil, err
 	}
 	return reply, nil
+}
+
+// recordPlacementNames returns the records/ file name of each selected record
+// (spec 07 3.3 step 3, Q210). records run newest first: the newest record of a
+// shared file_name keeps it, and each older one becomes
+// <name without extension>-<harness_records.id>.<extension>, or
+// <name>-<harness_records.id> when there is no extension. Names that do not
+// collide are unchanged.
+func recordPlacementNames(records []store.HarnessRecord) []string {
+	names := make([]string, len(records))
+	taken := map[string]bool{}
+	for i, record := range records {
+		name := record.FileName
+		if taken[name] {
+			ext := path.Ext(name)
+			name = strings.TrimSuffix(name, ext) + "-" + record.ID + ext
+		} else {
+			taken[name] = true
+		}
+		names[i] = name
+	}
+	return names
 }
