@@ -81,6 +81,9 @@ type executionFacts struct {
 // The body shows the task ID for the management UI (3.3) and ends with the
 // dedupe_key used to match a comment whose send result is unknown (3.4).
 func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
+	if t.Kind == KindDecisionOpen {
+		return decisionOpenBody(t), nil
+	}
 	var taskStatus model.TaskStatus
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, t.TaskID).Scan(&taskStatus); err != nil {
 		return "", fmt.Errorf("linearoutbox: read task status %s: %w", t.TaskID, err)
@@ -105,6 +108,14 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 	}
 	fmt.Fprintf(&b, "\n%s", t.DedupeKey())
 	return b.String(), nil
+}
+
+// decisionOpenBody is the decision_open comment (spec 16 3.2): only that a
+// decision waits in the management UI and the decision's ID (no remote
+// host is known here, Q122). The decision's content (the approval target,
+// findings, question text) never appears.
+func decisionOpenBody(t Trigger) string {
+	return fmt.Sprintf("Evaloom: %s\n管理画面で判断待ち\n判断待ち ID: %s\n\n%s", t.Kind, t.TargetID, t.DedupeKey())
 }
 
 // holdTexts are the reason and the fix of each intake hold (spec 16 3.2,
