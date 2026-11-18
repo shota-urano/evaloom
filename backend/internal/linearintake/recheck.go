@@ -51,6 +51,22 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 	if r.HarnessID != "" {
 		detail["harnessId"] = r.HarnessID
 	}
+	from := model.TaskBlocked
+	if h.Cause == "routing" {
+		from = model.TaskRouting
+		if r.Trigger == "" {
+			// The owner labelled the Issue in Linear: ordinary routing, not
+			// an approval (本人決定 3). Open proposals are superseded and
+			// the route decision is withdrawn (superseded).
+			superseded, err := store.SupersedeRouteProposalsTx(ctx, tx, h.TaskID)
+			if err != nil {
+				return "", err
+			}
+			if len(superseded) > 0 {
+				detail["supersededRouteProposalIds"] = superseded
+			}
+		}
+	}
 	if err := store.UpdateHeldLinearTask(ctx, tx, h.TaskID, r.ProjectID, r.HarnessID, r.Criteria, comparisonCause, stamp); err != nil {
 		return "", err
 	}
@@ -69,15 +85,22 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 		if err != nil {
 			return "", err
 		}
-		detail["executionId"], detail["from"], detail["to"] = executionID, model.TaskBlocked, model.TaskQueued
+		detail["executionId"], detail["from"], detail["to"] = executionID, from, model.TaskQueued
 		if err := store.InsertInitialExecution(ctx, tx, executionID, h.TaskID, stamp); err != nil {
 			return "", fmt.Errorf("linearintake: insert execution: %w", err)
 		}
 		if err := task.QueueHeldTaskTx(ctx, tx, h.TaskID, executionID); err != nil {
 			return "", err
 		}
-		if _, err := store.AppendExecutionEvent(ctx, tx, executionID, model.EventStatusChanged,
-			json.RawMessage(`{"from":"blocked","to":"queued","reason":"intake_recheck"}`)); err != nil {
+		payload, err := json.Marshal(struct {
+			From   model.TaskStatus `json:"from"`
+			To     model.TaskStatus `json:"to"`
+			Reason string           `json:"reason"`
+		}{from, model.TaskQueued, "intake_recheck"})
+		if err != nil {
+			return "", err
+		}
+		if _, err := store.AppendExecutionEvent(ctx, tx, executionID, model.EventStatusChanged, payload); err != nil {
 			return "", err
 		}
 	}

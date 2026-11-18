@@ -376,3 +376,39 @@ func InsertRouteProposalTx(ctx context.Context, tx *sql.Tx, p NewRouteProposal) 
 	}
 	return nil
 }
+
+// SupersedeRouteProposalsTx applies spec 15 3.6.3 (本人決定 3) to a routing
+// task whose Linear labels now decide its destination: every open proposal
+// (queued, running, proposed or failed) becomes superseded and every open
+// route decision of the task is withdrawn with the reason superseded. A
+// result arriving later for a superseded proposal is only recorded (3.6.4).
+// It returns the IDs of the superseded proposals.
+func SupersedeRouteProposalsTx(ctx context.Context, tx *sql.Tx, taskID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM route_proposals
+		WHERE task_id = ? AND status IN ('queued', 'running', 'proposed', 'failed') ORDER BY id`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list open route proposals: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE route_proposals SET status = 'superseded', finished_at = coalesce(finished_at, ?)
+		WHERE task_id = ? AND status IN ('queued', 'running', 'proposed', 'failed')`, now, taskID); err != nil {
+		return nil, fmt.Errorf("store: supersede route proposals: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE owner_decisions SET status = 'withdrawn', withdrawn_reason = 'superseded'
+		WHERE task_id = ? AND kind = 'route' AND status = 'open'`, taskID); err != nil {
+		return nil, fmt.Errorf("store: withdraw route decisions: %w", err)
+	}
+	return ids, nil
+}
