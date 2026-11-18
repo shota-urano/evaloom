@@ -199,7 +199,7 @@ Project・スペシャルハーネス・Profile を消すエンドポイント�
 - Profile の改善候補の管理、ロールバック API、影響する Project の検出（requirements 4.4、評価と改善の Phase）
 - Project の登録でのローカルパス・リポジトリの検証、コピー許可リスト、setup の許可宛先、テストコマンド。software-engineer へ移した（本人決定 1・6）
 - 鍵の登録。Mac mini の CLI で Runner の保管に入れる（[`01-architecture.md`](./01-architecture.md) 3.5）
-- Linear の Team の登録。照会先は全体設定 `linear.teamId` の1つだけで、振り分けには使わない（本人決定 2）
+- Linear の Team の登録。照会先はキーまたは名前が `uslab` の Team の1つだけで（[`15-linear-intake.md`](./15-linear-intake.md) の Q216）、振り分けには使わない（本人決定 2）
 
 ## 8. 関連仕様
 

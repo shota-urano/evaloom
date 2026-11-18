@@ -261,7 +261,7 @@ Evaloom は段ごとに要求 JSON を読み取り専用のファイルとして
 ### 6.4 プログラムの段（prepare・check・publish）
 
 - `command` を、固定版を展開した `profile` を作業ディレクトリにして実行する。シェルは通さない。
-- 渡す環境変数は次だけとする。`EVALOOM_REQUEST`、`EVALOOM_RESULT`（結果を書くファイルのパス）、`EVALOOM_CHANNEL`（通話口、6.2 の表のとおり）、`EVALOOM_SECRET_<SLOT>`（宣言した鍵、11章）、`HOME`（`scratch` の中の空のディレクトリ）、`PATH`、`LANG`、`TZ=UTC`。
+- 渡す環境変数は次だけとする。`EVALOOM_REQUEST`、`EVALOOM_RESULT`（結果を書くファイルのパス）、`EVALOOM_CHANNEL`（通話口、6.2 の表のとおり）、`EVALOOM_SECRET_<SLOT>`（宣言した鍵、11章）、`HOME`（`scratch` の中の空のディレクトリ）、`PATH`、`LANG`、`TZ=UTC`。`stages.<段>.network.allow` を宣言した段に限り、外への接続に使うプロキシの環境変数（`HTTP_PROXY`・`HTTPS_PROXY`・`http_proxy`・`https_proxy` と、空の `NO_PROXY`・`no_proxy`）も渡す。宣言した宛先の名前解決はプロキシの側で行い、段の中では名前解決できなくてよい（Evaloom の要確認 Q220）。
 - 段は終了する前に、`EVALOOM_RESULT` に結果の JSON（6.5）を書く。結果のファイルが無い、または形が合わないときは、終了コードにかかわらず `contract_error` とする。
 - 標準出力と標準エラーは、Evaloom がログとして保存する（機密情報の除外を通す）。結果をログで伝えない。
 
@@ -524,4 +524,5 @@ prepare と check の段の通話口では `{ "op": "cancel_check" }` だけを�
 | 日付 | 内容 |
 |---|---|
 | 2026-11-10 | 第1版の下書きを作る（vision.md と 2026-11-10 の本人決定から） |
+| 2026-11-18 | 6.4 に、外への接続を宣言した段だけに渡すプロキシの環境変数と、名前解決をプロキシの側で行うことを書き足す（Q220、2026-11-18 本人決定。実装どおり） |
 | 2026-11-10 | 整合のため任意項目を足す。`stages.work.resume`（Q124）、`stages.<段>.runtime`（Q147）。`slot` の形（Q138）、`toolPermissions` の登録時の検査（Q145）、`network.allow` にモデルの API を書けないこと（Q146）を明記する |

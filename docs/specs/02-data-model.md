@@ -423,7 +423,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 
 #### linear_poll_teams
 
-照会先（全体設定 `linear.teamId`、本人決定 2）の照会の状況を持つ。照会先は1つだが、照会先を変えたときに最初の照会からやり直すため、Team ID ごとに行を持つ。
+照会先（キーまたは名前が `uslab` の Team、本人決定 2、[`15-linear-intake.md`](./15-linear-intake.md) の Q216）の照会の状況を持つ。照会先は1つだが、照会先の Team ID が変わったときに最初の照会からやり直すため、Team ID ごとに行を持つ。
 
 | 列 | 型 | 説明 |
 |---|---|---|
@@ -465,7 +465,6 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 
 | キー | 既定値 | 内容 | 出典 |
 |---|---|---|---|
-| `linear.teamId` | なし（未設定なら照会しない） | Evaloom が照会する Linear Team。1つだけ | 本人決定 2 |
 | `linear.triggerLabel` | `ai-ready` | 起動の合図のラベル | 15、Q48 |
 | `linear.routingLabelPrefix` | `route:` | 振り分けのラベルの接頭辞。この接頭辞で始まるラベルだけを振り分けのラベルとして数える | Q120 |
 | `routing.proposer` | `{ "microHarness": "claude_code", "model": null }` | 振り分けを提案する AI。model が null なら提案を作らず、本人が一覧から選ぶ | Q111 |
