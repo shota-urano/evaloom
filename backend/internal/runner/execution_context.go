@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
 )
@@ -66,10 +72,67 @@ func (e *executionExecutor) pinWorkContext(ctx context.Context, in StageInvocati
 	}
 	var reply workContext
 	err = json.NewDecoder(response.Body).Decode(&reply)
-	// Retrieval of record files has no Runner API in the confirmed API table.
-	// Do not invent one, or silently execute without the selected records.
-	if err == nil && len(reply.Records) > 0 {
-		err = fmt.Errorf("runner: record artifact retrieval is not specified")
-	}
 	return reply, err
+}
+
+// placeWorkRecords fetches each pinned record through the Runner API
+// (spec 07 3.3 step 3, Q208) and places it read-only in the stage's records/
+// directory, which the work Sandbox mounts read-only (spec 09). A record whose
+// file is missing (HTTP 404) is skipped and noted in the Runner log; records
+// are reference material, so work continues (spec 07 6). Any other failure is
+// returned so the stage does not silently run on a partial snapshot.
+func (e *executionExecutor) placeWorkRecords(ctx context.Context, in StageInvocation, reply workContext, log *Log) error {
+	directory := filepath.Join(in.Directory, "records")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	for _, record := range reply.Records {
+		// The Control Plane names records with one file name (contract 9).
+		if record.FileName == "" || record.FileName == "." || record.FileName == ".." ||
+			strings.ContainsAny(record.FileName, "/\\\x00") {
+			return fmt.Errorf("runner: invalid record file name")
+		}
+		if id, err := ulid.ParseStrict(record.ArtifactID); err != nil || id.String() != record.ArtifactID {
+			return fmt.Errorf("runner: invalid record artifact ID")
+		}
+		endpoint, _ := url.JoinPath(e.runner.controlPlaneURL, "api", "executions", e.claim.Execution.ID, "records", record.ArtifactID)
+		request, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+e.runner.token)
+		response, err := e.runner.client.Do(request)
+		if err != nil {
+			return err
+		}
+		if response.StatusCode == http.StatusNotFound {
+			response.Body.Close()
+			if log != nil {
+				if err := log.Read(strings.NewReader("evaloom-runner: record " + record.FileName + " (artifact " + record.ArtifactID + ") is missing; not placed in records/\n")); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			return fmt.Errorf("runner: record returned HTTP %d", response.StatusCode)
+		}
+		file, err := root.OpenFile(record.FileName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0400)
+		if err != nil {
+			response.Body.Close()
+			return err
+		}
+		_, err = io.Copy(file, response.Body)
+		err = errors.Join(err, file.Close(), response.Body.Close())
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

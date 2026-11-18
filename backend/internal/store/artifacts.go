@@ -188,3 +188,29 @@ func nullableArtifactID(id string) any {
 	}
 	return id
 }
+
+// OpenPinnedRecord opens a Harness record's artifact only through the record
+// pins of executionID (spec 07 3.3, Q208). The artifact itself belongs to an
+// earlier Execution; an artifact outside that pinned list, or a record of a
+// different Harness, is sql.ErrNoRows. A pinned record whose file is gone
+// returns an error matching fs.ErrNotExist.
+func (s *ArtifactStore) OpenPinnedRecord(ctx context.Context, executionID, artifactID string) (Artifact, *os.File, error) {
+	var artifact Artifact
+	err := s.db.QueryRowContext(ctx, `SELECT a.id, coalesce(a.execution_id,''), a.stage, a.kind, a.name, a.storage_path,
+		a.sha256, a.size_bytes, a.redacted, a.created_at
+		FROM context_revisions cr
+		JOIN executions e ON e.id = cr.execution_id
+		JOIN harness_records hr ON hr.id = cr.source_revision AND hr.harness_id = e.harness_id
+		JOIN artifacts a ON a.id = hr.artifact_id
+		WHERE cr.execution_id = ? AND cr.layer = 'harness' AND cr.kind = 'record' AND hr.artifact_id = ?
+		LIMIT 1`, executionID, artifactID).Scan(&artifact.ID, &artifact.ExecutionID, &artifact.Stage, &artifact.Kind,
+		&artifact.Name, &artifact.StoragePath, &artifact.SHA256, &artifact.SizeBytes, &artifact.Redacted, &artifact.CreatedAt)
+	if err != nil {
+		return Artifact{}, nil, err
+	}
+	file, err := s.root.Open(artifact.StoragePath)
+	if err != nil {
+		return Artifact{}, nil, err
+	}
+	return artifact, file, nil
+}

@@ -406,6 +406,9 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if err != nil {
 		return fail("config_error")
 	}
+	if err := e.placeWorkRecords(ctx, in, executionContext, log); err != nil {
+		return fail("config_error")
+	}
 	request := requestBytes
 	// The request contains the current answer; context snapshots themselves stay
 	// fixed across question resumes. Task text remains delimited JSON data.
