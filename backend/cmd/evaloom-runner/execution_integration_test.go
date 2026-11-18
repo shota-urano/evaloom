@@ -107,6 +107,11 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 			env = append(env, key+"="+translate(v))
 			index++
 		}
+		// Without a mount namespace, paths inside request.json stay guest
+		// paths. Programs that follow them (the testdata special harness) get
+		// the mount table; a real container never sets this variable.
+		table, _ := json.Marshal(mounts)
+		env = append(env, "EVALOOM_FAKE_MOUNTS="+string(table))
 		command := append([]string(nil), create[index:]...)
 		if !filepath.IsAbs(command[0]) {
 			command[0] = filepath.Join(translate(workdir), command[0])
@@ -236,7 +241,51 @@ type executionFixture struct {
 	claims       []runner.Claim
 }
 
+// fixtureHarness is the special harness repository a fixture registers.
+// populate writes its files before the commit tagged profile/v1.0.0;
+// instructions is the pinned work instruction text the work Adapter must see.
+type fixtureHarness struct {
+	populate     func(t *testing.T, repo, binary string)
+	instructions string
+	taskBody     string
+}
+
+// inlineHarness wraps this test binary as the prepare/check/publish program.
+func inlineHarness(scenario string) fixtureHarness {
+	return fixtureHarness{instructions: "fixture work instructions", taskBody: "fixture input", populate: func(t *testing.T, repo, binary string) {
+		if err := os.MkdirAll(filepath.Join(repo, "bin"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		for _, stage := range []string{"prepare", "check", "publish"} {
+			script := "#!/bin/sh\nexec " + shellQuote(binary) + " -test.run=^TestExecutionProfileProgram$ -- " + stage + " " + scenario + "\n"
+			if err := os.WriteFile(filepath.Join(repo, "bin", stage), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Mkdir(filepath.Join(repo, "evaloom"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(repo, "prompts"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, "prompts", "work.md"), []byte("fixture work instructions"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		profile := `{"contractVersion":"1","profileVersion":"1.0.0","name":"fixture","description":"integration fixture","acceptanceCriteria":"required","stages":{"prepare":{"command":["bin/prepare"],"timeoutSec":20},"work":{"microHarness":"codex","model":"fixture","instructions":["prompts/work.md"],"resume":"optional","timeoutSec":20},"check":{"command":["bin/check"],"timeoutSec":20},"publish":{"command":["bin/publish"],"timeoutSec":20}},"approvals":[{"operation":"deploy","description":"deploy fixture","waivable":false}]}`
+		if err := os.WriteFile(filepath.Join(repo, "evaloom", "profile.yaml"), []byte(profile), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}}
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+
 func newExecutionFixture(t *testing.T, scenario string) *executionFixture {
+	t.Helper()
+	return newHarnessFixture(t, scenario, inlineHarness(scenario))
+}
+
+func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *executionFixture {
 	t.Helper()
 	f := &executionFixture{t: t, output: &safeOutput{}, adapters: &adapter.Registry{}}
 	// Unix socket paths must fit sockaddr_un even after resolving /var to
@@ -322,7 +371,6 @@ func newExecutionFixture(t *testing.T, scenario string) *executionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	shellQuote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 	f.config.Container.RuntimePath = filepath.Join(root, "runtime-cli")
 	if err := os.WriteFile(f.config.Container.RuntimePath, []byte("#!/bin/sh\nexec "+shellQuote(binary)+" -test.run=^TestExecutionRuntimeHelper$ -- \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -353,7 +401,7 @@ func newExecutionFixture(t *testing.T, scenario string) *executionFixture {
 		attempt := len(f.workRequests)
 		f.mu.Unlock()
 		pinned, err := os.ReadFile(filepath.Join(env.ConfigDir, "prompts", "work.md"))
-		if err != nil || string(pinned) != "fixture work instructions" {
+		if err != nil || string(pinned) != harness.instructions {
 			return fmt.Errorf("wrong pinned work instructions: %s %v", pinned, err)
 		}
 		if _, err := os.Stat(filepath.Join(env.ConfigDir, "bin", "check")); !os.IsNotExist(err) {
@@ -388,28 +436,10 @@ func newExecutionFixture(t *testing.T, scenario string) *executionFixture {
 	response.Body.Close()
 	f.csrf = login.CSRF
 	repo := filepath.Join(root, "harness")
-	if err := os.MkdirAll(filepath.Join(repo, "bin"), 0700); err != nil {
+	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, stage := range []string{"prepare", "check", "publish"} {
-		script := "#!/bin/sh\nexec " + shellQuote(binary) + " -test.run=^TestExecutionProfileProgram$ -- " + stage + " " + scenario + "\n"
-		if err := os.WriteFile(filepath.Join(repo, "bin", stage), []byte(script), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(repo, "evaloom"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(repo, "prompts"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "prompts", "work.md"), []byte("fixture work instructions"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	profile := `{"contractVersion":"1","profileVersion":"1.0.0","name":"fixture","description":"integration fixture","acceptanceCriteria":"required","stages":{"prepare":{"command":["bin/prepare"],"timeoutSec":20},"work":{"microHarness":"codex","model":"fixture","instructions":["prompts/work.md"],"resume":"optional","timeoutSec":20},"check":{"command":["bin/check"],"timeoutSec":20},"publish":{"command":["bin/publish"],"timeoutSec":20}},"approvals":[{"operation":"deploy","description":"deploy fixture","waivable":false}]}`
-	if err := os.WriteFile(filepath.Join(repo, "evaloom", "profile.yaml"), []byte(profile), 0600); err != nil {
-		t.Fatal(err)
-	}
+	harness.populate(t, repo, binary)
 	git := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
@@ -434,7 +464,8 @@ func newExecutionFixture(t *testing.T, scenario string) *executionFixture {
 	}
 	projectData, _ := json.Marshal(map[string]any{"id": "fixture", "name": "Fixture", "runnerId": f.config.RunnerID, "harnessId": "fixture", "profileId": registered.ID})
 	f.owner("POST", "/api/projects", string(projectData), 201)
-	f.owner("POST", "/api/tasks", `{"projectId":"fixture","title":"Fixture task","body":"fixture input","acceptanceCriteria":"fixture passes"}`, 201)
+	taskInput, _ := json.Marshal(map[string]any{"projectId": "fixture", "title": "Fixture task", "body": harness.taskBody, "acceptanceCriteria": "fixture passes"})
+	f.owner("POST", "/api/tasks", string(taskInput), 201)
 	if err := f.db.QueryRow(`SELECT id FROM executions`).Scan(&f.id); err != nil {
 		t.Fatal(err)
 	}
