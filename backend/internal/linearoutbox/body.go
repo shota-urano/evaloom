@@ -95,9 +95,7 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 	switch t.Kind {
 	case KindIntakeBlocked, KindMissingAcceptanceCriteria:
 		writeHold(&b, t)
-	case KindWaitingApproval:
-		writeApproval(ctx, tx, &b, t)
-	case KindSucceeded, KindFailed, KindBlocked, KindCancelled:
+	case KindSucceeded, KindFailed, KindCancelled:
 		facts, ok, err := readExecution(ctx, tx, t)
 		if err != nil {
 			return "", err
@@ -163,24 +161,6 @@ func writeHold(b *strings.Builder, t Trigger) {
 	b.WriteString("- Issue を直すと、次の照会で Evaloom が判定をやり直す\n")
 }
 
-// writeApproval writes 必要な承認事項 (spec 16 3.3) from the Execution's
-// unused approvals: the operation. The target stays in the management UI.
-func writeApproval(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger) {
-	rows, err := tx.QueryContext(ctx, `SELECT operation
-		FROM approvals WHERE execution_id = ? AND status IN ('pending', 'approved') ORDER BY created_at, id`, t.TargetID)
-	if err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var operation string
-			if rows.Scan(&operation) != nil {
-				break
-			}
-			fmt.Fprintf(b, "- 必要な承認事項: %s\n", operation)
-		}
-	}
-	b.WriteString("- 承認・却下は管理画面で本人が行う\n")
-}
-
 func statusName(status model.TaskStatus) string {
 	if name, ok := taskStatusNames[status]; ok {
 		return name
@@ -230,9 +210,6 @@ func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigg
 			}
 			b.WriteString("\n")
 		}
-	}
-	if t.Kind == KindBlocked {
-		b.WriteString("- 続行・中止は管理画面で本人が選ぶ\n")
 	}
 	if t.Kind != KindCancelled {
 		summary, ok := readSummary(ctx, tx, t.TargetID)

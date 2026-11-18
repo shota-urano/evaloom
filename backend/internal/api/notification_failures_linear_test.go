@@ -83,7 +83,7 @@ func TestNotificationFailuresStateNotFoundAndSkipped(t *testing.T) {
 			}
 			defer tx.Rollback()
 			if err := linearoutbox.EnqueueStateTx(context.Background(), tx, linearoutbox.Trigger{TaskID: "task-state",
-				Kind: linearoutbox.KindWaitingApproval, TargetID: "trigger", ExecutionID: executionID}); err != nil {
+				Kind: linearoutbox.KindWaitingDecision, TargetID: "trigger", ExecutionID: executionID}); err != nil {
 				t.Fatal(err)
 			}
 			if err := tx.Commit(); err != nil {
@@ -111,7 +111,7 @@ func TestNotificationFailuresStateNotFoundAndSkipped(t *testing.T) {
 				t.Fatalf("status=%d body=%s", status, body)
 			}
 			item := page.Items[0]
-			if item.TaskID != "task-state" || item.Channel != "linear" || item.Reason != "state_not_found" || item.Kind != "waiting_approval" {
+			if item.TaskID != "task-state" || item.Channel != "linear" || item.Reason != "state_not_found" || item.Kind != "waiting_decision" {
 				t.Fatalf("item=%+v", item)
 			}
 			if executionID == "" {
@@ -180,7 +180,7 @@ func TestNotificationFailuresListLinearFailuresWithoutExecution(t *testing.T) {
 	insertLinearTask(t, f, "task-103", "中止した Issue", "missing_acceptance_criteria")
 	insertLinearTask(t, f, "task-104", "実行した Issue", "")
 	if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, created_at)
-		VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB4', 'task-104', 1, 'fresh', 'blocked', '2026-10-26T00:00:00Z')`); err != nil {
+		VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB4', 'task-104', 1, 'fresh', 'failed', '2026-10-26T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-101", Kind: linearoutbox.KindIntakeBlocked, TargetID: "missing_acceptance_criteria"})
@@ -197,7 +197,7 @@ func TestNotificationFailuresListLinearFailuresWithoutExecution(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-104", Kind: linearoutbox.KindBlocked,
+	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-104", Kind: linearoutbox.KindFailed,
 		TargetID: "01ARZ3NDEKTSV4RRFFQ69G5FB4", ExecutionID: "01ARZ3NDEKTSV4RRFFQ69G5FB4"})
 
 	now := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
@@ -263,7 +263,7 @@ func TestNotificationFailuresListLinearFailuresWithoutExecution(t *testing.T) {
 		}
 		if item.TaskID == "task-104" {
 			if item.EventID == nil || item.ExecutionID == nil || *item.ExecutionID != "01ARZ3NDEKTSV4RRFFQ69G5FB4" ||
-				item.OutboxID != nil || string(raw.Items[i]["outboxId"]) != "null" || item.Kind != "blocked" {
+				item.OutboxID != nil || string(raw.Items[i]["outboxId"]) != "null" || item.Kind != "failed" {
 				t.Fatalf("Execution trigger item = %s", raw.Items[i])
 			}
 			continue

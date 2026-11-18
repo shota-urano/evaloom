@@ -116,7 +116,7 @@ func recordLinearState(ctx context.Context, tx *sql.Tx, change Transition) error
 		// harness start and a resumed claim reuse the same dedupe key.
 		kind = linearoutbox.KindStarted
 	case model.ExecutionWaitingApproval:
-		kind = linearoutbox.KindWaitingApproval
+		kind = linearoutbox.KindWaitingDecision
 	case model.ExecutionSucceeded:
 		kind = linearoutbox.KindCompleted
 	case model.ExecutionCancelled:
@@ -144,6 +144,10 @@ func recordLinearState(ctx context.Context, tx *sql.Tx, change Transition) error
 // transition of a Linear task in the same transaction (3.4 step 1). Unlike
 // spec 12, cancellation is included. The Execution ID is the dedupe target,
 // so one Execution comments once per kind, as notification_requests does.
+// Entering blocked or waiting_approval writes no comment here: the owner
+// decision it opens gets the decision_open comment instead (spec 16 3.2,
+// 3.7: comment kinds are only missing_acceptance_criteria, decision_open,
+// succeeded, failed and cancelled).
 func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID string, status model.ExecutionStatus) error {
 	var kind linearoutbox.Kind
 	switch status {
@@ -151,14 +155,8 @@ func recordLinearOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID str
 		kind = linearoutbox.KindSucceeded
 	case model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut:
 		kind = linearoutbox.KindFailed
-	case model.ExecutionBlocked:
-		kind = linearoutbox.KindBlocked
 	case model.ExecutionCancelled:
 		kind = linearoutbox.KindCancelled
-	case model.ExecutionWaitingApproval:
-		// Spec 17 3.3 step 4, spec 16 3.2. A consume refused back into the
-		// wait reuses the Execution ID, so the dedupe key keeps one comment.
-		kind = linearoutbox.KindWaitingApproval
 	default:
 		return nil
 	}
