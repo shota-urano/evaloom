@@ -83,7 +83,7 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 | `expired_approval` | 承認し、出す段が claim された後に期限が切れると `expired`、承認は expired |
 | `only_management_ui_approves` | Runner のトークンで判断待ちに回答すると 403（audit_logs に記録）、待ちの間の `authorize` は 409。Linear 起因のタスクで、本人が Issue に「承認」と返信しても（コメントを読むのは結果不明の再送前のコメント Worker だけなので、その経路で読ませる）承認は pending のまま。管理画面の回答の後にだけ操作が1回届く |
 
-`ProbeAuthorize.Attempts` は同じ承認で問い合わせと操作を繰り返す回数で、応答はすべて `out/authorizations.json` に残る。出す段の plan に `command` を置くと、問い合わせの前に段を止めておける（期限切れと中身の変更は、これで「承認の後」に起こす）。期限切れは最短の `ttlSec`（60秒）を待つ代わりに、出す段が claim された後で `expires_at` を過去に書き換えて表す。偽のコンテナ実行環境はホストで段を動かすため、宛先はループバックで待ち受け、出す段はネットワークを宣言しない。Sandbox の隔離そのものは証明しない。
+`ProbeAuthorize.Attempts` は同じ承認で問い合わせと操作を繰り返す回数で、応答はすべて `out/authorizations.json` に残る。出す段は plan を実行してから、問い合わせの直前に作業領域から contentId を計算し直す（`TestProbePublishTakesContentIDRightBeforeAuthorize` が順序を固定する）。このため出す段の plan に `command` を置くと、問い合わせの前に段を止めておけて、その間に変えた中身が必ず `authorize` に届く（期限切れと中身の変更は、これで「承認の後」に起こす）。期限切れは最短の `ttlSec`（60秒）を待つ代わりに、出す段が claim された後で `expires_at` を過去に書き換えて表す。偽のコンテナ実行環境はホストで段を動かすため、宛先はループバックで待ち受け、出す段はネットワークを宣言しない。Sandbox の隔離そのものは証明しない。
 
 ## 3.2 段ごとの隔離テスト（ハーネス契約 v1 の段）
 

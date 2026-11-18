@@ -269,7 +269,10 @@ func TestApprovalAcceptance(t *testing.T) {
 	})
 
 	// Condition 22: the content changes after the approval and before the
-	// publish stage asks. The probe derives contentId from the workspace.
+	// publish stage asks. The probe takes contentId from the workspace after
+	// its plan (the gate) finished, right before authorize, so the change
+	// made while the gate holds the stage is always what authorize sees
+	// (securitytest.TestProbePublishTakesContentIDRightBeforeAuthorize).
 	t.Run("content_changed_after_approval", func(t *testing.T) {
 		d := approvalDestination(t)
 		gate := filepath.Join(t.TempDir(), "gate")
@@ -283,6 +286,19 @@ func TestApprovalAcceptance(t *testing.T) {
 		}
 		release(t, gate)
 		f.wantDenied(d, "content_changed")
+		// The gate (the plan) completed before the stage asked authorize.
+		var gateReport struct {
+			Observations []struct {
+				ID        string `json:"id"`
+				Succeeded bool   `json:"succeeded"`
+			} `json:"observations"`
+		}
+		if err := json.Unmarshal(f.stageFile("publish-1", "probe-publish.json"), &gateReport); err != nil {
+			t.Fatal(err)
+		}
+		if len(gateReport.Observations) != 1 || gateReport.Observations[0].ID != "gate" || !gateReport.Observations[0].Succeeded {
+			t.Fatalf("gate observations %+v", gateReport.Observations)
+		}
 		if a := f.oneApproval(); a.Status != "invalidated" || a.Reason != "content_changed" || a.UseCount != 0 || a.ContentID != approved.ContentID {
 			t.Fatalf("approval %+v; want invalidated (content_changed)", a)
 		}

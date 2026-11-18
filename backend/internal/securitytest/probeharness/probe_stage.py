@@ -16,7 +16,8 @@ files under probe/ in the committed Profile repository:
                                 approval, recording every reply in
                                 out/authorizations.json
 
-Strings may contain {{contentId}}, {{workspace}}, {{out}}, {{inputs}},
+Strings may contain {{contentId}} (for publish-authorize.json taken after
+the plan ran, right before authorize), {{workspace}}, {{out}}, {{inputs}},
 {{taskId}}. A result value "{{omit}}" removes that key.
 """
 import sys
@@ -122,6 +123,10 @@ def main():
     if stage == "publish":
         ask = load("publish-authorize.json")
         if ask is not None:
+            # The identifier is taken after the plan ran, right before
+            # authorize: what the stage would publish is the workspace as it
+            # is now, not as it was when the stage started.
+            variables["contentId"] = content_id(paths["workspace"])
             ask = substitute(ask, variables)
             ask.setdefault("contentId", variables["contentId"])
             attempts = int(ask.pop("attempts", 1))
