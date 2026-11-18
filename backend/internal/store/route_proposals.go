@@ -311,8 +311,10 @@ type RouteCandidate struct {
 	Description *string `json:"description"`
 }
 
-// RouteCandidatesTx reads every routes row as candidates at the time of the
-// routing decision (spec 15 3.6.4 step 1), ordered by label.
+// RouteCandidatesTx reads the routes rows as candidates at the time of the
+// routing decision (spec 15 3.6.4 step 1), ordered by label. A row routing to
+// a special harness without a default Profile (harnesses.default_profile_id)
+// is left out (spec 15 3.6.4 step 1, Q218); Project rows are always kept.
 func RouteCandidatesTx(ctx context.Context, tx *sql.Tx) ([]RouteCandidate, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT r.label,
 		CASE WHEN r.project_id IS NOT NULL THEN 'project' ELSE 'harness' END,
@@ -322,6 +324,7 @@ func RouteCandidatesTx(ctx context.Context, tx *sql.Tx) ([]RouteCandidate, error
 		LEFT JOIN projects p ON p.id = r.project_id
 		LEFT JOIN harnesses h ON h.id = r.harness_id
 		LEFT JOIN harness_profiles hp ON hp.id = coalesce(p.profile_id, h.default_profile_id)
+		WHERE r.project_id IS NOT NULL OR h.default_profile_id IS NOT NULL
 		ORDER BY r.label`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list route candidates: %w", err)
