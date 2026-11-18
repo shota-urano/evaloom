@@ -72,6 +72,7 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - HTTPヘッダー受信の上限は5秒。SIGTERM等を受けた後のHTTP終了待機も5秒とし、超過した場合は接続を閉じてエラー終了する。
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
+- Global Context（`docs/specs/07-context.md` 3.5、Q206・Q207）は`evaloomd -evaloom-repo <evaloomリポジトリの絶対パス>`で指定する。フラグ名は仕様で固定されたものではない。evaloomdは起動時にそのリポジトリのHEADのcommit SHAを1回だけ読み、以後の`context/global/`の読み出しはそのcommitから行う。作業ツリー・インデックスの未コミットの変更や、起動後のcommitは使わない。commitを変えたら再起動する。パスはリポジトリのルートの絶対パスとし、Gitリポジトリでない・サブディレクトリ・commitが無い場合は起動時にエラー終了する。`context/global/`が無いか空なら、globalの行を作らずに作業の段へ進む。`-evaloom-repo`を省略するとGlobal Contextは渡さない（globalの行を作らない）。plistは`__EVALOOM_ROOT__`を指定する。
 - Runnerは`-config <JSONファイル>`を読み、起動直後からheartbeatとclaimのpullループを動かす。設定例と通信時の動作は次節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。
 
 ## Runnerの設定と起動時heartbeat

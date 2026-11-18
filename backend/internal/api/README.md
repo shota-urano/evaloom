@@ -216,3 +216,12 @@ Taskの `source_revision` も仕様には定義がなく、既存のExecution ID
 Reportedは準備の段の結果の保存処理を再利用する。context APIの入力には含めず、
 渡す文脈と `revisionIds` にも含めない。`layer=project` はAPIから指定できず、
 DBの既存CHECK制約でも拒否する。記録の選択・整形・矛盾検出は今回変更していない。
+
+`GET /api/executions/{id}/records/{artifactId}`（仕様07 5章、Q208）はRunnerの
+Bearer認証を使い、そのExecutionを担当するRunnerだけが呼べる。そのExecutionに
+固定した記録（layer=harness・kind=record）を、Executionと同じスペシャル
+ハーネスの harness_records を通してだけ引き、成果物のファイルを返す。固定した
+一覧に無い artifactId は404を返す。固定した記録のファイルが成果物ストアに
+無いときも404を返し、Runnerはその記録を `records/` に置かずに段のログへ残して
+作業を続ける。仕様はファイルが無いときの応答コードを決めていないため、Runnerが
+「無い」と判断できる404を使った。

@@ -78,7 +78,7 @@ func TestLaunchAgents(t *testing.T) {
 			}
 			want := []string{"__EVALOOM_ROOT__/data/bin/" + process}
 			if process == "evaloomd" {
-				want = append(want, "-db", "__EVALOOM_ROOT__/data/evaloom.db", "-port", "8080", "-web", "__EVALOOM_ROOT__/frontend/dist")
+				want = append(want, "-db", "__EVALOOM_ROOT__/data/evaloom.db", "-port", "8080", "-web", "__EVALOOM_ROOT__/frontend/dist", "-evaloom-repo", "__EVALOOM_ROOT__")
 			} else {
 				want = append(want, "-config", "__EVALOOM_ROOT__/data/runner.json")
 			}

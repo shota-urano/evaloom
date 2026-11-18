@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -54,6 +55,61 @@ func getArtifact(logger *slog.Logger, config ArtifactConfig) http.HandlerFunc {
 		if _, err := io.Copy(w, file); err != nil {
 			// Headers are committed: do not append a JSON error to the file.
 			logger.Error("Artifact response failed", "artifactId", artifact.ID, "error", err)
+		}
+	}
+}
+
+// getPinnedRecord serves GET /api/executions/{id}/records/{artifactId} (spec 07
+// 5, Q208). Only the owning Runner may read, and only records pinned for this
+// Execution are served; any other artifact, including another Harness's
+// record, is 404. A pinned record whose file is gone is also 404, so the
+// Runner skips that record and continues (spec 07 6).
+func getPinnedRecord(db *sql.DB, logger *slog.Logger, auth *OwnerAuth, config ArtifactConfig) http.HandlerFunc {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, field := range []string{"id", "artifactId"} {
+			if err := ValidateID(field, r.PathValue(field), ULID); err != nil {
+				WriteError(w, logger, err)
+				return
+			}
+		}
+		var owner sql.NullString
+		err := db.QueryRowContext(r.Context(), `SELECT runner_id FROM executions WHERE id = ?`, r.PathValue("id")).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: NotFound, Message: "Execution not found"}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		runner, _ := r.Context().Value(runnerIdentityKey{}).(string)
+		if runner == "" || !owner.Valid || owner.String != runner {
+			auth.reject(w, r, Forbidden, "execution_runner_mismatch", "Runner cannot read this Execution's records")
+			return
+		}
+		if config.Store == nil {
+			WriteError(w, logger, fmt.Errorf("artifact storage must be configured"))
+			return
+		}
+		artifact, file, err := config.Store.OpenPinnedRecord(r.Context(), r.PathValue("id"), r.PathValue("artifactId"))
+		if errors.Is(err, sql.ErrNoRows) {
+			err = &Error{Code: NotFound, Message: "Record not found"}
+		} else if errors.Is(err, fs.ErrNotExist) {
+			logger.Warn("Pinned record file is missing", "executionId", r.PathValue("id"), "artifactId", r.PathValue("artifactId"))
+			err = &Error{Code: NotFound, Message: "Record file not found"}
+		}
+		if err != nil {
+			WriteError(w, logger, err)
+			return
+		}
+		defer file.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, file); err != nil {
+			logger.Error("Record response failed", "artifactId", artifact.ID, "error", err)
 		}
 	}
 }
