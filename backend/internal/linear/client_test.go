@@ -402,3 +402,66 @@ func TestIssueCommentsReadsAllPages(t *testing.T) {
 	}
 	assertNoKey(t, logs.String())
 }
+
+// The list request names exactly one Team, the teamID argument (spec 15 3.2:
+// 照会先は1つだけ). How teamID is chosen is the caller's concern; the client
+// only narrows the request to it and rejects any Issue of another Team.
+func TestListReadyIssuesRequestsOnlyTheGivenTeam(t *testing.T) {
+	t.Run("request filter", func(t *testing.T) {
+		var requests []gqlRequest
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			req := decode(t, r)
+			requests = append(requests, req)
+			if req.Variables["after"] == nil {
+				fmt.Fprint(w, page([]int{1}, "c1"))
+				return
+			}
+			fmt.Fprint(w, page([]int{2}, ""))
+		}))
+		defer server.Close()
+		var logs bytes.Buffer
+		if _, err := newClient(t, server, writeKey(t, 0o600), &logs).ListReadyIssues(context.Background(), teamID, "ai-ready"); err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 2 {
+			t.Fatalf("got %d requests, want 2", len(requests))
+		}
+		for _, req := range requests {
+			// Exactly one team condition, an equality on the single $teamId.
+			compact := strings.Join(strings.Fields(req.Query), " ")
+			if strings.Count(compact, "team:") != 1 || !strings.Contains(compact, "team: { id: { eq: $teamId } }") ||
+				strings.Contains(compact, " in:") || strings.Contains(compact, "or:") || strings.Contains(compact, "teams") {
+				t.Fatalf("list request is not narrowed to one Team: %s", compact)
+			}
+			if got, ok := req.Variables["teamId"].(string); !ok || got != teamID {
+				t.Fatalf("teamId variable = %#v, want the single string %q", req.Variables["teamId"], teamID)
+			}
+			for name := range req.Variables {
+				if name != "teamId" && name != "label" && name != "first" && name != "after" {
+					t.Fatalf("unexpected variable %q", name)
+				}
+			}
+		}
+	})
+	t.Run("issue of another team fails the whole list", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, strings.Replace(page([]int{1, 2}, ""), `"team":{"id":"`+teamID+`"}`, `"team":{"id":"team-other"}`, 1))
+		}))
+		defer server.Close()
+		var logs bytes.Buffer
+		issues, err := newClient(t, server, writeKey(t, 0o600), &logs).ListReadyIssues(context.Background(), teamID, "ai-ready")
+		if err == nil || issues != nil || linear.ClassOf(err) != linear.ClassOther {
+			t.Fatalf("issues=%v err=%v, want no list", issues, err)
+		}
+	})
+	t.Run("no team is not queried", func(t *testing.T) {
+		var calls atomic.Int32
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+		defer server.Close()
+		var logs bytes.Buffer
+		issues, err := newClient(t, server, writeKey(t, 0o600), &logs).ListReadyIssues(context.Background(), "", "ai-ready")
+		if err == nil || issues != nil || calls.Load() != 0 {
+			t.Fatalf("empty teamID: issues=%v err=%v calls=%d", issues, err, calls.Load())
+		}
+	})
+}
