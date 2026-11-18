@@ -62,7 +62,7 @@ loop:
 | 1 | claim | `claimed` | なし | 応答から版・渡す値・作業領域・再開の情報を受け取る | 04 の 3.3 |
 | 2 | 段の前の用意 | `claimed` | なし | Profile の中身の読み出し（3.4）、作業領域の用意（3.5）、鍵の有無の確認（3.6） | 3.4〜3.6 |
 | 3 | prepare（任意） | `preparing` | Profile の固定版のプログラム | Prepare Sandbox を作って `command` を動かす。読み取り用の鍵と宣言した宛先だけを渡す | 契約 6.4、09 |
-| 4 | work | `working` | ミクロハーネス | 固定した文脈を送って Execution Context を受け取り（[`07-context.md`](./07-context.md)）、Work Sandbox で Adapter を起動する。鍵は渡さない。外への接続はモデルの API だけ | 契約 6.3、08、09 |
+| 4 | work | `working` | ミクロハーネス | 固定した文脈を送って Execution Context を受け取り、記録の成果物を受け取って `records/` に置き（[`07-context.md`](./07-context.md)）、Work Sandbox で Adapter を起動する。鍵は渡さない。外への接続はモデルの API だけ | 契約 6.3、08、09 |
 | 5 | check | `checking` | Profile の固定版のプログラム | Check Sandbox を作って `command` を動かす。鍵も外への接続も渡さない | 契約 6.4、09 |
 | 6 | 承認 | `waiting_approval` | なし | 何もしない。段のプロセスは終わっている。本人の承認の後、Control Plane が Execution を `pending` に戻し、Runner は claim で publish から再開する | 04 の 3.6、17 |
 | 7 | publish | `publishing` | Profile の固定版のプログラム | Publish Sandbox を作って `command` を動かす。宣言した鍵と宛先を渡し、通話口で出す操作の許可を中継する（3.7） | 契約 6.4・7.4、09 |
@@ -250,7 +250,7 @@ heartbeat と claim の間隔、通話口の応答の待ち時間（10 秒）、
 
 ## 5. インターフェース
 
-- Runner 用 API: `POST /api/runners/{id}/claim`、`POST /api/runners/{id}/heartbeat`、`POST /api/executions/{id}/events`、`POST /api/executions/{id}/artifacts`、`POST /api/executions/{id}/result`、`POST /api/executions/{id}/context`、`POST /api/executions/{id}/authorize`、`POST /api/route-proposals/{id}/artifacts`、`POST /api/route-proposals/{id}/result`（[`01-architecture.md`](./01-architecture.md) 5.2）
+- Runner 用 API: `POST /api/runners/{id}/claim`、`POST /api/runners/{id}/heartbeat`、`POST /api/executions/{id}/events`、`POST /api/executions/{id}/artifacts`、`POST /api/executions/{id}/result`、`POST /api/executions/{id}/context`、`GET /api/executions/{id}/records/{artifactId}`、`POST /api/executions/{id}/authorize`、`POST /api/route-proposals/{id}/artifacts`、`POST /api/route-proposals/{id}/result`（[`01-architecture.md`](./01-architecture.md) 5.2）
 - イベント種別: [`02-data-model.md`](./02-data-model.md) 5.3
 - 本人用の参照: `GET /api/executions/{id}/events`（SSE）、`GET /api/executions/{id}/logs`、`GET /api/runners`
 - 段とのやり取り: 契約 6.1（要求 JSON）、6.5（結果 JSON）、7.4（通話口）

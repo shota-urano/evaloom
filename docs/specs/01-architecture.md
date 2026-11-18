@@ -235,6 +235,7 @@ Runner 用の認証は次のとおりとする（Q3 の案）。
 | POST | /api/executions/{id}/artifacts | 成果物ファイル（ログ、段の `out` のファイル、要求 JSON、結果 JSON）の登録 | 05 |
 | POST | /api/executions/{id}/result | 段の開始・終了と、段の結果 JSON（契約 6.5）の報告。Control Plane が状態を遷移させ、承認待ち・判断待ちを作る | 04、05 |
 | POST | /api/executions/{id}/context | 固定した文脈を送り、Execution Context を受け取る | 07 |
+| GET | /api/executions/{id}/records/{artifactId} | その Execution に固定した記録の成果物を受け取る。固定した一覧に無いものは 404（Q208） | 07 |
 | POST | /api/executions/{id}/authorize | 出す段の操作の直前の問い合わせ（契約 7.4）。中止の確認、承認を省く設定の読み直し、承認の照合と消費を1つの書き込みで行い、`allowed` と `reason` を返す | 17 |
 | POST | /api/route-proposals/{id}/artifacts | 振り分けの提案のログの登録 | 15 |
 | POST | /api/route-proposals/{id}/result | 振り分けの提案の結果（選んだラベル、理由、エラー分類） | 15 |
