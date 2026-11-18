@@ -209,116 +209,282 @@ func TestFiveConsecutiveFailuresAlertOncePerStreak(t *testing.T) {
 	}
 }
 
+// fakeClock drives Run without sleeping. Now returns the fake time; each
+// wait Run asks for is handed to the test, which advances the time and fires
+// it.
+type fakeClock struct {
+	mu    sync.Mutex
+	now   time.Time
+	waits chan fakeWait
+}
+
+type fakeWait struct {
+	d    time.Duration
+	fire chan time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{now: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC), waits: make(chan fakeWait, 16)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	fire := make(chan time.Time, 1)
+	c.waits <- fakeWait{d: d, fire: fire}
+	return fire
+}
+
+// nextWait returns the next wait Run asks for.
+func (c *fakeClock) nextWait(t *testing.T) fakeWait {
+	t.Helper()
+	select {
+	case w := <-c.waits:
+		return w
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not wait for the next round")
+		return fakeWait{}
+	}
+}
+
+// elapse lets the wait's whole duration pass and fires it.
+func (c *fakeClock) elapse(w fakeWait) {
+	c.Advance(w.d)
+	w.fire <- c.Now()
+}
+
+// startRun runs p.Run on the fake clock and returns a stop function.
+func startRun(t *testing.T, p *Poller, clock *fakeClock) (stop func()) {
+	t.Helper()
+	p.Now, p.After = clock.Now, clock.After
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); p.Run(ctx) }()
+	return func() { cancel(); <-done }
+}
+
+// 受け入れ基準: linear_poll_teams の last_error と consecutive_failures が失敗で
+// 更新され、成功で戻る (spec 15 6章, 3.8).
+func TestPollFailureIsRecordedAndSuccessClearsIt(t *testing.T) {
+	db := openDB(t)
+	addProject(t, db, "p1", "team-a", "route:one")
+	var next atomic.Value
+	next.Store(linear.ClassNetwork)
+	client := &stubClient{list: func(string) ([]linear.Issue, error) {
+		class := next.Load().(linear.ErrorClass)
+		if class == "" {
+			return nil, nil
+		}
+		return nil, &linear.Error{Op: "list issues", Class: class}
+	}}
+	clock := newFakeClock()
+	p := newPoller(db, client, nil)
+	p.Now = clock.Now
+
+	pollOnce(t, p)
+	if row := readTeam(t, db, "team-a"); row.lastError.String != "network" || row.failures != 1 || row.lastSuccess.Valid {
+		t.Fatalf("after first failure: %+v", row)
+	}
+	next.Store(linear.ClassOther)
+	pollOnce(t, p)
+	if row := readTeam(t, db, "team-a"); row.lastError.String != "other" || row.failures != 2 {
+		t.Fatalf("after second failure: %+v", row)
+	}
+	next.Store(linear.ErrorClass(""))
+	pollOnce(t, p)
+	row := readTeam(t, db, "team-a")
+	if row.lastError.Valid || row.failures != 0 || !row.lastSuccess.Valid {
+		t.Fatalf("after success: %+v", row)
+	}
+	if got, err := time.Parse(time.RFC3339Nano, row.lastSuccess.String); err != nil || !got.Equal(clock.Now()) {
+		t.Fatalf("last_success_at = %q (%v); want %v", row.lastSuccess.String, err, clock.Now())
+	}
+}
+
+// 受け入れ基準: API キーのファイルが無い・権限が 0600 でないとき、照会先の
+// Team の last_error が auth になる。照会は始めない (spec 15 6章).
+func TestUnusableKeyFileMarksPollTeamAuthWithoutQuery(t *testing.T) {
+	for _, problem := range []linear.KeyProblem{linear.KeyMissing, linear.KeyPermission} {
+		t.Run(string(problem), func(t *testing.T) {
+			db := openDB(t)
+			addProject(t, db, "p1", "team-a", "route:one")
+			client := &stubClient{keyErr: &linear.KeyError{Problem: problem}}
+			alerter := &recordingAlerter{}
+			p := newPoller(db, client, nil)
+			p.Alerter = alerter
+			pollOnce(t, p)
+			if calls, _, keyCalls := client.snapshot(); len(calls) != 0 || keyCalls != 1 {
+				t.Fatalf("calls=%v keyCalls=%d; want no query after one key check", calls, keyCalls)
+			}
+			if row := readTeam(t, db, "team-a"); row.lastError.String != "auth" || row.failures != 1 {
+				t.Fatalf("team-a = %+v; want last_error auth", row)
+			}
+			if alerter.count() != 1 || alerter.alerts[0].Class != linear.ClassAuth {
+				t.Fatalf("alerts = %+v; want one auth alert", alerter.alerts)
+			}
+		})
+	}
+}
+
+type fixedTeams struct{ id string }
+
+func (f fixedTeams) LinearPollTeamID(context.Context) (string, error) { return f.id, nil }
+
+// 受け入れ基準: 照会先 Team が未設定（Team を得る口が空を返す）のときは照会しない。
+// Team を決めるのは口の側で、Poller は受け取った Team だけを照会する。
+func TestPollerQueriesOnlyTheTeamItsSourceNames(t *testing.T) {
+	db := openDB(t)
+	addProject(t, db, "p1", "team-a", "route:one") // settings.linear.teamId = team-a
+	client := &stubClient{}
+	p := newPoller(db, client, nil)
+
+	p.Teams = fixedTeams{""}
+	if result := pollOnce(t, p); result.Polled {
+		t.Fatal("round reported as polled with no polling Team")
+	}
+	if calls, _, keyCalls := client.snapshot(); len(calls) != 0 || keyCalls != 0 {
+		t.Fatalf("queried with no polling Team: calls=%v keyCalls=%d", calls, keyCalls)
+	}
+
+	p.Teams = fixedTeams{"team-x"}
+	if result := pollOnce(t, p); !result.Polled {
+		t.Fatal("round with a polling Team reported as not polled")
+	}
+	if calls, _, _ := client.snapshot(); strings.Join(calls, ",") != "team-x/ai-ready" {
+		t.Fatalf("calls = %v; want only team-x", calls)
+	}
+	if row := readTeam(t, db, "team-x"); row.failures != 0 || !row.lastSuccess.Valid {
+		t.Fatalf("team-x = %+v", row)
+	}
+}
+
 func TestRateLimitStopsRoundUntilResetHint(t *testing.T) {
 	db := openDB(t)
 	addProject(t, db, "p1", "team-a", "route:one")
-
-	const wait = 400 * time.Millisecond
+	clock := newFakeClock()
+	const interval = time.Minute
 	var limited atomic.Bool
 	limited.Store(true)
-	var resetAt time.Time
-	client := &stubClient{list: func(teamID string) ([]linear.Issue, error) {
-		if teamID == "team-a" && limited.CompareAndSwap(true, false) {
-			resetAt = time.Now().Add(wait)
-			return nil, &linear.Error{Op: "list issues", Class: linear.ClassRateLimited, ResetAt: resetAt}
+	client := &stubClient{list: func(string) ([]linear.Issue, error) {
+		if limited.CompareAndSwap(true, false) {
+			return nil, &linear.Error{Op: "list issues", Class: linear.ClassRateLimited, ResetAt: clock.Now().Add(5 * interval)}
 		}
 		return nil, nil
 	}}
 	p := newPoller(db, client, nil)
-	p.Interval = 20 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); p.Run(ctx) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		calls, _, _ := client.snapshot()
-		if len(calls) >= 3 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	p.Interval = interval
+	stop := startRun(t, p, clock)
+	defer stop()
+
+	w := clock.nextWait(t)
+	if w.d != 5*interval {
+		t.Fatalf("wait after rate limit = %v; want Linear's reset hint %v", w.d, 5*interval)
 	}
-	cancel()
-	<-done
-	calls, times, _ := client.snapshot()
-	if len(calls) < 3 || calls[0] != "team-a/ai-ready" || calls[1] != "team-a/ai-ready" {
-		// team-b must not be queried in the rate-limited round.
-		t.Fatalf("calls = %v", calls)
+	if row := readTeam(t, db, "team-a"); row.lastError.String != "rate_limited" || row.failures != 1 {
+		t.Fatalf("team-a while limited = %+v", row)
 	}
-	if times[1].Before(resetAt) {
-		t.Fatalf("polling resumed %v before Linear's reset hint", resetAt.Sub(times[1]))
+	clock.elapse(w)
+	if w := clock.nextWait(t); w.d != interval {
+		t.Fatalf("wait after recovery = %v; want %v", w.d, interval)
+	}
+	if calls, _, _ := client.snapshot(); len(calls) != 2 {
+		t.Fatalf("calls = %v; want 2", calls)
 	}
 	if row := readTeam(t, db, "team-a"); row.lastError.Valid || row.failures != 0 {
 		t.Fatalf("team-a after recovery = %+v", row)
 	}
 }
 
+// 受け入れ基準: Control Plane の起動で1回照会し、その後は設定した間隔で照会する。
 func TestRunPollsAtStartupThenEachInterval(t *testing.T) {
 	db := openDB(t)
 	addProject(t, db, "p1", "team-a", "route:one")
 	client := &stubClient{}
+	clock := newFakeClock()
 	p := newPoller(db, client, nil)
-	p.Interval = 150 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	started := time.Now()
-	done := make(chan struct{})
-	go func() { defer close(done); p.Run(ctx) }()
-	time.Sleep(p.Interval / 2)
-	if calls, _, _ := client.snapshot(); len(calls) != 1 {
-		t.Fatalf("calls before the first interval = %d; want 1 (startup poll)", len(calls))
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if calls, _, _ := client.snapshot(); len(calls) >= 3 || time.Now().After(deadline) {
-			break
+	p.Interval = 3 * time.Minute
+	stop := startRun(t, p, clock)
+	defer stop()
+
+	for round := 1; round <= 3; round++ {
+		w := clock.nextWait(t)
+		// The round ran before Run waited: the first one at startup.
+		if calls, _, _ := client.snapshot(); len(calls) != round {
+			t.Fatalf("calls before wait %d = %d; want %d", round, len(calls), round)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	_, times, _ := client.snapshot()
-	if len(times) < 3 || times[0].Sub(started) > p.Interval/2 {
-		t.Fatalf("poll times = %v", times)
-	}
-	for i := 1; i < len(times); i++ {
-		if gap := times[i].Sub(times[i-1]); gap < p.Interval-10*time.Millisecond {
-			t.Fatalf("gap %d = %v; want about %v", i, gap, p.Interval)
+		if w.d != p.Interval {
+			t.Fatalf("wait %d = %v; want the configured interval %v", round, w.d, p.Interval)
 		}
+		clock.elapse(w)
 	}
 }
 
+// 受け入れ基準: 照会が間隔より長く掛かっても、2本目が同時に始まらない。
 func TestSlowRoundsNeverOverlap(t *testing.T) {
 	db := openDB(t)
 	addProject(t, db, "p1", "team-a", "route:one")
-	var active, maxActive atomic.Int32
+	clock := newFakeClock()
+	const interval = time.Minute
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	var active, overlapped atomic.Int32
 	client := &stubClient{list: func(string) ([]linear.Issue, error) {
-		n := active.Add(1)
-		for {
-			m := maxActive.Load()
-			if n <= m || maxActive.CompareAndSwap(m, n) {
-				break
-			}
+		if active.Add(1) > 1 {
+			overlapped.Add(1)
 		}
-		time.Sleep(60 * time.Millisecond) // longer than the interval
+		entered <- struct{}{}
+		<-release
+		clock.Advance(3 * interval) // the round outlasts the interval
 		active.Add(-1)
 		return nil, nil
 	}}
 	p := newPoller(db, client, nil)
-	p.Interval = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); p.Run(ctx) }()
-	// A direct call alongside Run must also wait for the running round.
-	var wg sync.WaitGroup
+	p.Interval = interval
+	stop := startRun(t, p, clock)
+	// Direct calls alongside Run must also wait for the running round.
+	var wg, launched sync.WaitGroup
 	for range 3 {
 		wg.Add(1)
-		go func() { defer wg.Done(); p.PollOnce(ctx) }()
+		launched.Add(1)
+		go func() { defer wg.Done(); launched.Done(); p.PollOnce(context.Background()) }()
 	}
-	time.Sleep(300 * time.Millisecond)
-	cancel()
-	<-done
+	for round := range 4 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d did not start", round+1)
+		}
+		if round == 0 {
+			// While the first round is held, every caller is trying to start
+			// one. None may enter before it ends.
+			launched.Wait()
+			select {
+			case <-entered:
+				t.Fatal("a second round started while the first was running")
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+		release <- struct{}{}
+	}
 	wg.Wait()
-	if calls, _, _ := client.snapshot(); len(calls) < 3 || maxActive.Load() != 1 {
-		t.Fatalf("calls = %d, max concurrent rounds = %d; want 1", len(calls), maxActive.Load())
+	// The round outlasted the interval, so the next starts without waiting,
+	// but only after Run is let through: never during the previous round.
+	if w := clock.nextWait(t); w.d != 0 {
+		t.Fatalf("wait after a slow round = %v; want 0", w.d)
+	}
+	stop()
+	if calls, _, _ := client.snapshot(); len(calls) != 4 || overlapped.Load() != 0 {
+		t.Fatalf("calls = %d, overlapping rounds = %d; want 4 and 0", len(calls), overlapped.Load())
 	}
 }
 

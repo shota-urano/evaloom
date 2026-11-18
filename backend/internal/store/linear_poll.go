@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,17 +26,34 @@ const registeredLinearTeams = `SELECT json_extract(value, '$') AS team_id FROM s
  AND json_type(CASE WHEN json_valid(value) THEN value ELSE 'null' END)='text'
  AND trim(json_extract(value, '$')) <> ''`
 
-// PruneLinearPollTeams removes baselines outside settings.linear.teamId.
-func PruneLinearPollTeams(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM linear_poll_teams WHERE team_id NOT IN (`+registeredLinearTeams+`)`); err != nil {
-		return fmt.Errorf("store: remove unregistered linear poll teams: %w", err)
+// LinearPollTeamID returns settings.linear.teamId, or "" when it is unset,
+// empty, blank or unreadable (spec 15 3.2, 6章).
+func LinearPollTeamID(ctx context.Context, db *sql.DB) (string, error) {
+	var teamID string
+	err := db.QueryRowContext(ctx, registeredLinearTeams).Scan(&teamID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	return nil
+	if err != nil {
+		return "", fmt.Errorf("store: read linear poll team: %w", err)
+	}
+	return teamID, nil
 }
 
-// SyncLinearPollTeams returns the configured polling Team, creates its baseline
-// if needed, and removes the previous Team's baseline in the same transaction.
-func SyncLinearPollTeams(ctx context.Context, db *sql.DB) (_ []LinearPollTeam, err error) {
+// SyncLinearPollTeams returns the Team named by settings.linear.teamId, as
+// SyncLinearPollTeam does.
+func SyncLinearPollTeams(ctx context.Context, db *sql.DB) ([]LinearPollTeam, error) {
+	teamID, err := LinearPollTeamID(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	return SyncLinearPollTeam(ctx, db, teamID)
+}
+
+// SyncLinearPollTeam returns the given polling Team, creates its baseline if
+// needed, and removes every other Team's baseline in the same transaction. A
+// blank teamID means no polling Team: every row is removed and none returned.
+func SyncLinearPollTeam(ctx context.Context, db *sql.DB, teamID string) (_ []LinearPollTeam, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -45,12 +63,17 @@ func SyncLinearPollTeams(ctx context.Context, db *sql.DB) (_ []LinearPollTeam, e
 			tx.Rollback()
 		}
 	}()
-	if err = PruneLinearPollTeams(ctx, tx); err != nil {
-		return nil, err
+	if strings.TrimSpace(teamID) == "" {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM linear_poll_teams`); err != nil {
+			return nil, fmt.Errorf("store: remove linear poll teams: %w", err)
+		}
+		return nil, tx.Commit()
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM linear_poll_teams WHERE team_id <> ?`, teamID); err != nil {
+		return nil, fmt.Errorf("store: remove unregistered linear poll teams: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO linear_poll_teams (team_id, consecutive_failures)
-		SELECT team_id, 0 FROM (`+registeredLinearTeams+`) WHERE true
-		ON CONFLICT (team_id) DO NOTHING`); err != nil {
+		VALUES (?, 0) ON CONFLICT (team_id) DO NOTHING`, teamID); err != nil {
 		return nil, fmt.Errorf("store: add linear poll teams: %w", err)
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT team_id, baseline_done_at IS NOT NULL,

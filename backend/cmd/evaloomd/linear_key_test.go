@@ -161,3 +161,40 @@ func TestLinearAPIKeyNeverReachesLogsOrDB(t *testing.T) {
 		}
 	}
 }
+
+// 受け入れ基準: API キーのファイルが無いとき、本番の配線（linearPoller と
+// linear.Client）は照会を送らず、照会先の Team の last_error を auth にする
+// (spec 15 6章)。権限が 0600 でない場合は TestLinearAPIKeyNeverReachesLogsOrDB。
+func TestMissingLinearKeyFileMarksPollTeamAuth(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	setupLinearProject(t, db)
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	keyPath := filepath.Join(t.TempDir(), linear.APIKeyFileName) // never created
+	client, err := linear.NewClient(server.Client(), server.URL+"/graphql", keyPath, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := linearPoller(db, client, logger).PollOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var lastError sql.NullString
+	var failures int
+	if err := db.QueryRow(`SELECT last_error, consecutive_failures FROM linear_poll_teams WHERE team_id = 'team-a'`).Scan(&lastError, &failures); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 || lastError.String != "auth" || failures != 1 || !strings.Contains(logs.String(), string(linear.KeyMissing)) {
+		t.Fatalf("missing key: calls=%d last_error=%q failures=%d logs=%q", calls.Load(), lastError.String, failures, logs.String())
+	}
+}
