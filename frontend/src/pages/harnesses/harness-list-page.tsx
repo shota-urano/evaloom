@@ -1,4 +1,4 @@
-import { registry } from '@/api/registry'
+import { registry, type Project } from '@/api/registry'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Loading, PageTitle } from '@/components/page'
@@ -6,12 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
-import { HARNESS_NEW_PATH, harnessPath, usagesOf, type HarnessUsage } from './labels'
+import { HARNESS_NEW_PATH, harnessPath, projectsUsing, versionOf } from './labels'
 
-/** 一覧で使う、Harness を使っているプロジェクトの名前。同じ Project の複数の役割は1つにまとめる。 */
-function UsageSummary({ usages }: { usages: readonly HarnessUsage[] }) {
-  if (usages.length === 0) return <span className="text-muted-foreground">なし</span>
-  const projects = [...new Map(usages.map((u) => [u.project.id, u.project])).values()]
+/** 一覧で使う、スペシャルハーネスを頼む Project の名前。 */
+function UsageSummary({ projects }: { projects: readonly Project[] }) {
+  if (projects.length === 0) return <span className="text-muted-foreground">なし</span>
   return (
     <ul className="grid gap-0.5">
       {projects.map((project) => (
@@ -25,15 +24,17 @@ function UsageSummary({ usages }: { usages: readonly HarnessUsage[] }) {
   )
 }
 
-/** Harnesses 一覧（13 3.2）。Harness、既定の Profile、使用中プロジェクト。 */
+/** スペシャルハーネス一覧（13 3.2）。ID と名前、既定の版、使っている Project。 */
 export function HarnessListPage() {
   const { api } = useSession()
   const harnesses = useResource((signal) => registry.listHarnesses(api, signal), 'harnesses')
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
-  const error = harnesses.error ?? projects.error
+  const profiles = useResource((signal) => registry.listAllHarnessProfiles(api, signal), 'harness-profiles')
+  const error = harnesses.error ?? projects.error ?? profiles.error
   const reload = () => {
     harnesses.reload()
     projects.reload()
+    profiles.reload()
   }
   return (
     <div className="grid gap-6">
@@ -46,7 +47,7 @@ export function HarnessListPage() {
         }
       />
       <ApiErrorAlert error={error} onReload={reload} />
-      {harnesses.data === undefined || projects.data === undefined ? (
+      {harnesses.data === undefined || projects.data === undefined || profiles.data === undefined ? (
         error ? null : <Loading />
       ) : harnesses.data.length === 0 ? (
         <Card>
@@ -64,13 +65,13 @@ export function HarnessListPage() {
                   Harness
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  既定の Profile
+                  既定の版
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   ハーネスリポジトリのパス
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  使用中プロジェクト
+                  使っている Project
                 </th>
               </tr>
             </thead>
@@ -83,10 +84,10 @@ export function HarnessListPage() {
                     </Link>
                     <div className="text-muted-foreground font-mono text-xs">{harness.id}</div>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">{harness.defaultProfileId ?? '未設定'}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{versionOf(profiles.data ?? [], harness.defaultProfileId) ?? <span className="font-sans">未設定</span>}</td>
                   <td className="px-4 py-3 font-mono text-xs break-all">{harness.repoPath}</td>
                   <td className="px-4 py-3">
-                    <UsageSummary usages={usagesOf(projects.data ?? [], harness.id)} />
+                    <UsageSummary projects={projectsUsing(projects.data ?? [], harness.id)} />
                   </td>
                 </tr>
               ))}
