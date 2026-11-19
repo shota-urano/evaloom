@@ -227,9 +227,13 @@ func TestContractConformanceStageResults(t *testing.T) {
 	})
 
 	// records.keep (contract 9): the probe's check and publish stages write
-	// out/probe-<stage>.json; the work stage writes a file of the same name.
+	// out/probe-<stage>.json and an unkept file; the work stage writes a file
+	// with the same name as the kept check output.
 	keep := func(h *st.ProbeHarness) {
-		plan, _ := json.Marshal([]any{map[string]any{"id": "prepared", "kind": "exists", "path": "{{workspace}}/probe-prepared.txt"}})
+		plan, _ := json.Marshal([]any{
+			map[string]any{"id": "prepared", "kind": "exists", "path": "{{workspace}}/probe-prepared.txt"},
+			map[string]any{"id": "unkept", "kind": "write", "path": "{{out}}/unkept.txt", "value": "not declared in records.keep\n"},
+		})
 		h.Plans["check"], h.Plans["publish"] = plan, plan
 		h.Profile = func(d *contract.ProfileDefinition) {
 			d.Records = &contract.ProfileRecords{Keep: []string{"check/probe-check.json", "publish/probe-publish.json"}, Pass: contract.RecordsPass{Recent: 3}}
@@ -240,6 +244,15 @@ func TestContractConformanceStageResults(t *testing.T) {
 		f := newHarnessFixture(t, "records", conformanceHarness(keep, workOut))
 		f.start()
 		f.waitStatus("succeeded")
+		for _, stage := range []string{"check", "publish"} {
+			var n int
+			if err := f.db.QueryRow(`SELECT count(*) FROM artifacts WHERE execution_id=? AND stage=? AND kind='out_file' AND name='unkept.txt'`, f.id, stage).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Fatalf("%s unkept output collected %d times; want 1", stage, n)
+			}
+		}
 		if got, want := f.records(), []string{"check/probe-check.json", "publish/probe-publish.json"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("records %v; want %v", got, want)
 		}
