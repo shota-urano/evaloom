@@ -104,8 +104,9 @@ func decodeProposer(raw json.RawMessage) (*linearintake.RouteProposer, error) {
 }
 
 // decodeSettingsPatch reads a PATCH /api/settings body. Unknown keys
-// (including linear.teamId, Q216), null and blank values are rejected
-// before anything is written (spec 15 5章, Q76).
+// (including linear.teamId, Q216) and blank values are rejected before
+// anything is written. Only routing.defaultRunnerId accepts null to clear
+// the setting (spec 15 5章, Q76, Q221).
 func decodeSettingsPatch(body map[string]json.RawMessage) (linearintake.SettingsPatch, error) {
 	var changes linearintake.SettingsPatch
 	for group, value := range body {
@@ -145,9 +146,13 @@ func decodeSettingsPatch(body map[string]json.RawMessage) (linearintake.Settings
 						return changes, err
 					}
 				case "defaultRunnerId":
-					if changes.DefaultRunnerID, err = requiredText("routing.defaultRunnerId", raw); err != nil {
-						return changes, err
+					var id *string
+					if !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+						if id, err = requiredText("routing.defaultRunnerId", raw); err != nil {
+							return changes, err
+						}
 					}
+					changes.DefaultRunnerID = &id
 				default:
 					return changes, invalid("body", "invalid_json")
 				}
