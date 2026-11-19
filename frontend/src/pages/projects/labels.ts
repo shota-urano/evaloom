@@ -4,24 +4,25 @@
  */
 export const PROJECT_NEW_PATH = '/projects/_new'
 
-// Project の各項目の表示名（13 3.2「Project 登録・編集」、02-data-model 3.2 projects）。
+// Project の6項目の表示名（13 3.5）。名前の項目は、登録時だけ Project ID（slug）も入力する。
 export const PROJECT_LABELS = {
   id: 'Project ID',
-  name: '名称',
-  runnerId: 'Runner',
-  harnessId: 'Harness ID',
-  profileId: 'Profile ID',
+  name: '名前',
+  routingLabel: '振り分けのラベル',
+  harnessId: '頼むスペシャルハーネス',
+  profileId: '版',
   params: '渡す値（JSON）',
-  approvalWaivers: '承認を省く操作',
+  approvalWaivers: '承認を省く設定',
+  runnerId: '動かすマシン',
 } as const
 
-/** 422 の前提条件の失敗（Runner が見つからないなど）が返す details[].field → フォームの項目。 */
+/** 422 の前提条件の失敗（渡す値がスキーマに合わない、Runner が無いなど）の details[].field → フォームの項目。 */
 export const PRECONDITION_FIELDS: Record<string, string> = {
+  harnessId: 'harnessId',
   runnerId: 'runnerId',
   profileId: 'profileId',
+  params: 'params',
   approvalWaivers: 'approvalWaivers',
 }
 
-/** 409 の Linear Team ID と実行先ラベルの組の重複（details は linearRoutingLabel / duplicate）→ フォームの項目。 */
-export const LINEAR_CONFLICT_FIELDS: Record<string, string> = {}
 export const ERROR_FIELD_LABELS: Record<string, string> = { ...PROJECT_LABELS }

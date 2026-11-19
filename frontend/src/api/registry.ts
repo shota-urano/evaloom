@@ -27,6 +27,8 @@ export type ProjectHarness = {
 
 export type Project = ProjectSettings & {
   id: string
+  /** 振り分けの表でこの Project を振り分け先にしたラベル。無ければ null（backend/internal/api/projects.go projectView）。 */
+  routingLabel?: string | null
   createdAt: string
   updatedAt: string
   harnesses?: ProjectHarness[]
@@ -60,7 +62,24 @@ export type HarnessProfile = {
   modelId: string
   operationStatus: string
   registeredAt: string
+  /** Profile 定義（契約 5章）。一覧・詳細の応答に入る。 */
+  definition?: ProfileDefinition
 }
+
+/** Profile 定義のうち、Project の登録画面が読む部分（契約 5.2・7.3）。 */
+export type ProfileDefinition = {
+  description?: string
+  params?: { schema?: string } | null
+  approvals?: { operation: string; description?: string; waivable?: boolean }[]
+}
+
+/** 選んだ版の Profile が waivable: true と宣言した操作（13 3.5、17 3.2）。 */
+export function waivableOperations(definition: ProfileDefinition | undefined): { operation: string; description?: string }[] {
+  return (definition?.approvals ?? []).filter((approval) => approval.waivable === true)
+}
+
+/** 振り分けの表の行（GET /api/routes、02 3.2 routes）。 */
+export type Route = { label: string; projectId: string | null; harnessId: string | null; createdAt: string; updatedAt: string }
 
 export type Assignment = { projectId: string; role: string; harnessId: string; profileId: string; assignedAt: string }
 
@@ -80,6 +99,10 @@ export async function listAll<T>(api: ApiClient, path: string, signal?: AbortSig
 
 const projectPath = (id: string) => `/api/projects/${encodeURIComponent(id)}`
 const harnessPath = (id: string) => `/api/harnesses/${encodeURIComponent(id)}`
+const routePath = (label: string) => `/api/routes/${encodeURIComponent(label)}`
+
+/** 振り分け先。Project かスペシャルハーネスのどちらか一方だけを送る（01 5.1 POST /api/routes）。 */
+export type RouteDestination = { projectId: string } | { harnessId: string }
 
 export const registry = {
   listProjects: (api: ApiClient, signal?: AbortSignal) => listAll<Project>(api, '/api/projects', signal),
@@ -96,6 +119,12 @@ export const registry = {
   /** Profile の版の登録（03 3.5）。新規は 201、同じ commit SHA の再登録は 200 で既存の行が返る。 */
   registerHarnessProfile: (api: ApiClient, input: { harnessId: string; version: string }) =>
     api.post<HarnessProfile>('/api/harness-profiles', input),
+  /** Project を振り分け先にしたラベルを登録する（13 3.5）。 */
+  createProjectRoute: (api: ApiClient, label: string, projectId: string) => api.post<Route>('/api/routes', { label, projectId }),
+  listRoutes: (api: ApiClient, signal?: AbortSignal) => listAll<Route>(api, '/api/routes', signal),
+  createRoute: (api: ApiClient, label: string, destination: RouteDestination) => api.post<Route>('/api/routes', { label, ...destination }),
+  updateRoute: (api: ApiClient, label: string, destination: RouteDestination) => api.patch<Route>(routePath(label), destination),
+  deleteRoute: (api: ApiClient, label: string) => api.delete<void>(routePath(label)),
   listHarnessProfiles: (api: ApiClient, harnessId: string, signal?: AbortSignal) =>
     listAll<HarnessProfile>(api, `/api/harness-profiles?harnessId=${encodeURIComponent(harnessId)}`, signal),
 }
