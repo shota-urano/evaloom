@@ -37,6 +37,9 @@ type ProbeAuthorize struct {
 	Destination string `json:"destination"`
 	ContentID   string `json:"contentId,omitempty"`
 	Attempts    int    `json:"attempts,omitempty"`
+	// Concurrent starts Attempts authorize calls together on separate channel
+	// connections. Operations are still sent once per allowed reply.
+	Concurrent bool `json:"concurrent,omitempty"`
 }
 
 // ProbeHarness is one test case's probe special harness (spec 14 3.0). Its
