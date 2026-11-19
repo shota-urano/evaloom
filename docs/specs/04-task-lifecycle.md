@@ -234,6 +234,7 @@ Control Plane は1つのトランザクションで次を行う。
 | 段 | 結果 | Control Plane が行うこと | 応答の `next` |
 |---|---|---|---|
 | どれでも | `runnerError` が `workspace_missing` | 再開の Execution なら `blocked`（cause=`workspace_missing`）、最初から始める Execution なら `failed`（`config_error`）にする | `stop` |
+| publish | cancel_requested_at が書かれた Execution で `runnerError` が無く `status: failed`（authorize で `cancelled` を受けて終えた場合など） | Execution を `cancelled` にする（タスクも `cancelled`。通知しない）。stage_runs の error_class は報告どおりに残す（Q230） | `stop` |
 | どれでも | ほかの `runnerError` がある、または `status: failed` | Execution を `failed`（timeout は `timed_out`、cancelled は `cancelled`）にし、error_class を書く | `stop` |
 | prepare | `succeeded` | `reportedContext` を context_revisions（layer=`reported`）に記録する（[`07-context.md`](./07-context.md)） | `work` |
 | work | `question` がある | stage_runs を `question` にし、Execution を `blocked`（owner_decisions kind=`question`）にする | `stop` |
@@ -311,7 +312,7 @@ Control Plane は1つのトランザクションで次を行う。
 | `received` / `blocked`（取り込みの保留） | タスクを `cancelled` にする |
 | `routing` | 判断待ちを `withdrawn`（`cancelled`）にし、タスクを `cancelled` にする。提案が `running` なら Runner に heartbeat で止めさせる（Q133） |
 | `queued` | Execution を `cancelled` にし、タスクを `cancelled` にする。再開待ちの Execution で `approved` のまま使っていない承認は `invalidated`（`cancelled`）にする |
-| `running` | Execution の cancel_requested_at を書く。Runner が次の heartbeat で受け取り、段を止めて `cancelled` を報告する（[`05-runner.md`](./05-runner.md) 3.10）。出す段の直前の問い合わせにも `cancelled` を返す（契約 7.4） |
+| `running` | Execution の cancel_requested_at を書く。Runner が次の heartbeat で受け取り、段を止めて `cancelled` を報告する（[`05-runner.md`](./05-runner.md) 3.10）。出す段の直前の問い合わせにも `cancelled` を返す（契約 7.4）。出す段がそれを受けて `failed` を報告しても、Execution とタスクは `cancelled` にする（3.4.1、Q230） |
 | `waiting_approval` | 承認を `invalidated`（`cancelled`）、判断待ちを `withdrawn`（`cancelled`）にし、Execution とタスクを `cancelled` にする |
 | `blocked`（判断待ち） | 判断待ちを `withdrawn`（`cancelled`）にし、Execution とタスクを `cancelled` にする。ただし cause=`publish_unknown` のときは `failed`（`publish_unknown`）にする（02 の 5.2） |
 | 上記以外 | 409 |
@@ -428,6 +429,8 @@ Runner は起動のたびに新しい起動 ID（bootId）を作り、最初の 
   - 受け入れ基準: 提案の結果が proposed でも failed でも route の判断待ちができる; approve でタスクが queued になり、seq=1 の Execution と add_label の linear_outbox の行ができる; reject でタスクが cancelled になる
 - [ ] [Backend] 中止 API（3.8 の各経路）
   - 受け入れ基準: queued は即 cancelled; running は cancel_requested_at が記録され heartbeat の応答に中止指示が載る; waiting_approval の中止で承認が invalidated になる; publish_unknown の判断待ちの中止で failed（publish_unknown）になる; completed の中止は 409; どの経路でも作業領域が残る
+- [ ] [Backend] 中止の要求の後に出す段が `failed` を報告したら Execution を `cancelled` にする（3.4.1、3.8、Q230）
+  - 受け入れ基準: 出す段の実行中に中止を要求し、authorize が cancelled を返した後に publish が failed（publish_failed）を報告すると、Execution とタスクが cancelled になる; 通知の要求ができない; 中止の要求が無いときの publish の failed は今までどおり failed（publish_failed）になる; 14 の 3.4 の「中止の要求の後に問い合わせる」のテストが Execution の cancelled まで確かめる
 - [ ] [Backend] 再起動時の回収（bootId と heartbeat 途絶）
   - 受け入れ基準: Runner が新しい bootId で heartbeat すると、その Runner の動いている Execution が interrupted、タスクが failed になる; waiting_approval と blocked の Execution は変わらない; 作業領域が retained になる; 自動で新しい Execution が作られない
 - [ ] [Backend] 再実行 API（continue / fresh）
@@ -442,3 +445,4 @@ Runner は起動のたびに新しい起動 ID（bootId）を作り、最初の 
 | Q133 | 振り分けの提案の途中で、タスクの中止や Runner の再起動が起きたときの値 | 決定（2026-11-10 本人、案を採用）: route_proposals.status に `cancelled` を、error_class に `interrupted` を足す（02 に反映済み）。中止は heartbeat の応答で Runner に止めさせて `cancelled`、再起動は `failed`（`interrupted`）にし、タスクが `routing` のままなら提案なしの route の判断待ちを作る |
 | Q134 | 作業領域のパス（task_workspaces.path）を誰が決めるか（Control Plane は Runner のルートを知らない） | 決定（2026-11-10 本人、案を採用）: claim の要求に Runner が `workspaceRoot`（絶対パス）を入れ、Control Plane が `<workspaceRoot>/<task_workspaces.id>` を書く。Runner はディレクトリを作るときに、実パスがルートの下にあることを確かめる |
 | Q135 | Profile を登録した後に全体設定 `limits.stageTimeoutMaxSec` を下げ、Profile の `timeoutSec` が上限を超えたとき | 決定（2026-11-10 本人、案を採用）: claim で `failed`（`config_error`）にする。上限を黙って縮めて Profile の宣言と違う時間で止めるより、本人に設定か版を見直してもらう |
+| Q230 | 中止の要求の後、出す段が authorize で `cancelled` を受けて `failed`（`publish_failed`）を報告したときの Execution の終端（3.4.1 の表では `failed`、3.8 と 02 の 5.2 では `cancelled` で食い違っていた。実装は `failed`。evaloom-7j6.4） | 決定（2026-11-19 本人）: `cancelled` にする。cancel_requested_at が書かれた Execution で publish が `failed` を報告したら、Execution とタスクを `cancelled` にする（通知しない）。外へ出したものは取り消さない（実装の変更が要る） |

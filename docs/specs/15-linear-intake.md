@@ -294,6 +294,7 @@ requirements 17章の event_inbox（受信イベント）は作らない（Q66�
 - settings と `PATCH /api/settings` に `linear.teamId` は無い（Q216）。ほかの4キー（`linear.triggerLabel`・`linear.routingLabelPrefix`・`routing.proposer`・`routing.defaultRunnerId`）の PATCH は残す（Q227）。
 - `linear.routingLabelPrefix` と `linear.triggerLabel` の変更は、Q160 の検証に従う。
 - `GET /api/linear/status` の応答は `{ "teams": [...], "teamProblem": {...} | null, "issues": [...] }` とする（2026-11-18 本人決定、Q225）。`teams` の各要素は `teamId`・`lastSuccessAt`・`lastError`・`consecutiveFailures`（linear_poll_teams の行。Q223 により今の照会先 Team の行だけ）。`teamProblem` は照会先 Team（uslab）が決まらないときだけ `{ "reason": "not_found" | "multiple", "message": "<画面に出す文>" }` で、決まっていれば null。`issues` の各要素は `linearIssueId`・`issueIdentifier`・`teamId`・`lastDecision`・`lastDecisionAt`。
+- `GET /api/linear/status` の応答に `routingRunnerProblem` を足す（2026-11-19 本人決定、Q229）。振り分けの提案を動かす Runner が無いときだけ `{ "reason": "unset" | "not_found" | "offline", "message": "<画面に出す文>" }` で、あれば null。`unset` は `routing.defaultRunnerId` が未設定（null で戻した場合を含む）、`not_found` は設定した ID の Runner が runners に無い、`offline` はその Runner の status が `offline`。Dashboard はこの項目で表示し、`GET /api/settings` と `GET /api/runners` から自分で導かない。
 - タスクの API（`GET /api/tasks` 等）の応答に `source`、`intakeBlockCause`、`linear`（識別子と URL）を足す。
 - Linear から Evaloom へ届く要求は無い。外から呼ばれる API は追加しない。
 
@@ -316,7 +317,7 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | 振り分けが決まらない | 振り分けの提案に回す（3.6.4）。エラーとしては扱わない |
 | 受け入れ条件・既定の版で保留 | タスクを保留にし、受け入れ条件のときはコメントを要求する。エラーとしては扱わない |
 | 振り分けの提案の失敗（`sandbox_error` / `timeout` / `contract_error` / `config_error` / `work_failed`） | 提案を `failed` にし、提案なしの判断待ちを作る（3.6.4）。本人が候補から選ぶ |
-| `routing.defaultRunnerId` が未設定（null で戻した場合を含む）・Runner が offline | 提案は `queued` のまま待つ。Dashboard に、振り分けの提案を動かす Runner が無いことを出す |
+| `routing.defaultRunnerId` が未設定（null で戻した場合を含む）・Runner が offline | 提案は `queued` のまま待つ。`GET /api/linear/status` の `routingRunnerProblem` に理由を入れ、Dashboard に、振り分けの提案を動かす Runner が無いことを出す（Q229） |
 | 同じ Issue に終端状態でないタスクがすでにある状態で付与を検出 | 新しいタスクを作らない。last_decision=`skipped_active_task` |
 
 ## 7. スコープ外
@@ -368,7 +369,7 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 - [ ] [Backend] 保留のタスクが判定のやり直しで routing に戻ったら振り分けの提案を作り直す（3.6.3、Q219）
   - 受け入れ基準: 保留中のタスクの Issue から振り分けのラベルを外して更新時刻が進むと、タスクが routing になり、queued の route_proposals と、提案が proposed か failed になった後の kind=route の判断待ちができる; 同じ Issue でラベルが変わらない照会では提案が増えない; running の提案を superseded にしても Runner に中止を求めず、後から届いた結果は記録だけ残ってタスクに使われない
 - [ ] [Backend] `routing.defaultRunnerId` を PATCH /api/settings の null で未設定に戻せるようにする（5章、Q221）
-  - 受け入れ基準: routing.defaultRunnerId を設定した後に null を PATCH すると 200 になり、settings の行が消えて GET /api/settings で未設定になる; audit_logs に settings.update の行が1つでき、detail の変更後の値が null になる; 未設定のときに null を PATCH しても audit_logs に行ができない; 未設定に戻した後に作った振り分けの提案は queued のまま待ち、Dashboard に提案を動かす Runner が無いことが出る; 空文字列・空白だけの値は 400 のまま; Linear のキー（linear.triggerLabel / linear.routingLabelPrefix）の null は今までどおり 400 になる
+  - 受け入れ基準: routing.defaultRunnerId を設定した後に null を PATCH すると 200 になり、settings の行が消えて GET /api/settings で未設定になる; audit_logs に settings.update の行が1つでき、detail の変更後の値が null になる; 未設定のときに null を PATCH しても audit_logs に行ができない; 未設定に戻した後に作った振り分けの提案は queued のまま待ち、GET /api/linear/status の routingRunnerProblem が reason=unset になる（Q229）; 設定した ID の Runner が無いと reason=not_found、その Runner が offline だと reason=offline、online なら null になる; 空文字列・空白だけの値は 400 のまま; Linear のキー（linear.triggerLabel / linear.routingLabelPrefix）の null は今までどおり 400 になる
 - [ ] [Backend] candidates が0件の振り分けの提案を Runner に渡さず failed にする（3.6.4、Q222）
   - 受け入れ基準: routes が空のとき、振り分けが決まらない Issue の route_proposals が Runner に渡されずに failed（error_class NULL）になる; routes のすべての行が既定の版の無いスペシャルハーネスへの振り分けのときも同じになる; どちらでも kind=route の提案なしの判断待ちができ、linear_outbox に decision_open の行ができる; claim の応答に job.kind=route_proposal が出ない; candidates が1件以上なら今までどおり queued で Runner に渡る
 - [ ] [Backend] `GET /api/linear/status`
@@ -399,3 +400,4 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | Q225 | `GET /api/linear/status` の応答の形（evaloom-dcj.11 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。`teams`・`teamProblem`（`reason`・`message`、決まっていれば null）・`issues`（5章の注記） |
 | Q226 | 保留のタスクを routing に戻すときの intake_block_cause と、Linear への知らせ方（evaloom-dcj.15 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。intake_block_cause を NULL にする。Linear へは判断待ちが開いたときの `decision_open` だけを返す |
 | Q227 | #115（Q216）の後の PATCH /api/settings の範囲と `routing.proposer` の検証（evaloom-dcj.10 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。`linear.teamId` だけを消し、ほかの4キーの PATCH は残す。`routing.proposer` は形だけを検証し、`microHarness` を Adapter の表と照らさない |
+| Q229 | Dashboard に「振り分けの提案を動かす Runner が無い」ことを出すための API の項目（6章は表示だけを定め、どの API から知るかが無かった。evaloom-dcj.16） | 決定（2026-11-19 本人）: `GET /api/linear/status` に `routingRunnerProblem` を足す。動かす Runner が無いときだけ `{ "reason": "unset" | "not_found" | "offline", "message": "<画面に出す文>" }` で、あれば null（`teamProblem` と同じ形）。画面は settings と runners から自分で導かない（実装の変更が要る） |

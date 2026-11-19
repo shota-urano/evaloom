@@ -223,7 +223,7 @@ Project が持つのは次の6項目だけである（vision.md 4章、本人決
 - [ ] [Frontend] タスク詳細（Execution 履歴、段の結果、SSE ログ、確かめた結果、承認、固定した文脈、成果物、中止・再実行）
   - 受け入れ基準: 実行中のログが逐次表示される; 再接続で欠けなく続きが表示される; ログを prepare・work・check・publish・runner で切り替えられる; 再実行で新しい Execution が履歴に増える; outputs の label と url が出る; 開いている判断待ちへのリンクが出る
 - [ ] [Frontend] Dashboard と Settings
-  - 受け入れ基準: Runner の online / offline、実行中・待機中のタスクの件数、判断待ちの件数（種類ごと）が表示される; Linear の照会が続けて失敗しているとき、失敗の分類と最後に成功した時刻が出る; 同時実行の上限が表示されるが変更できない; Settings で 02 の 3.8 のキーを表示・変更でき、未知のキーは送れない
+  - 受け入れ基準: Runner の online / offline、実行中・待機中のタスクの件数、判断待ちの件数（種類ごと）が表示される; Linear の照会が続けて失敗しているとき、失敗の分類と最後に成功した時刻が出る; GET /api/linear/status の routingRunnerProblem が null でないとき、振り分けの提案を動かす Runner が無いことと理由（未設定・Runner が無い・offline）が出る（15 の6章、Q229）; 同時実行の上限が表示されるが変更できない; Settings で 02 の 3.8 のキーを表示・変更でき、未知のキーは送れない
 - [ ] [Frontend] 通知失敗の一覧に linear_outbox の行（executionId が null、outboxId あり、channel=linear の reason）を表示する
   - 受け入れ基準: eventId と executionId が null で outboxId が入った項目が、タスクの件名（タスク詳細へのリンク）、kind、channel=linear、reason、記録した時刻（createdAt）とともに Dashboard の通知失敗の一覧に表示される; executionId が null の項目で、Execution の ID の欄に null や undefined の文字が出ない; eventId が null の項目が複数あり、execution_events の項目と混ざっても、どの項目も欠けず重複せずに表示される; reason の値に 16 の 3.4.2 の表に沿った説明が出る; 項目が応答の順（記録した時刻の新しい順、12 の 5章）のまま表示され、「さらに表示」で続きを読んでも欠けも重複も無い; コメントの本文とエラーの文字列を表示しない
 
@@ -233,3 +233,4 @@ Project が持つのは次の6項目だけである（vision.md 4章、本人決
 |---|---|---|
 | Q155 | 同じ Execution で承認待ちが複数あるとき（操作ごとに owner_decisions が1件ずつ）、画面でまとめて判断させるか | 決定（2026-11-10 本人、案を採用）: 1つの画面に並べ、操作ごとに承認・却下を選ばせる。「すべて承認」のボタンは作らない（操作ごとに対象と content_id を見てから判断するため）。1つでも却下すると Execution が失敗になることを画面に示す |
 | Q156 | スマートフォン向けの表示をどこまで作るか（18 で別端末から使えるようになったため、旧 7章の「スマートフォン・別端末向けの表示はスコープ外」を外した） | 決定（2026-11-10 本人、案を採用）: 本人の判断待ちの一覧と詳細だけを、幅 375px でも読めて操作できるようにする。登録や設定の画面は横幅の広い画面を前提にしたままにする |
+| Q229 | Dashboard に「振り分けの提案を動かす Runner が無い」ことを出すための API の項目（6章は表示だけを定め、どの API から知るかが無かった。evaloom-dcj.16） | 決定（2026-11-19 本人）: `GET /api/linear/status` に `routingRunnerProblem` を足す。動かす Runner が無いときだけ `{ "reason": "unset" | "not_found" | "offline", "message": "<画面に出す文>" }` で、あれば null（`teamProblem` と同じ形）。画面は settings と runners から自分で導かない（実装の変更が要る） |
