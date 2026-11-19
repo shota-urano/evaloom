@@ -322,6 +322,11 @@ func envStart(args []string) int {
 func StageOf(c CreateArgs, paths contract.RequestPaths) string {
 	for _, m := range c.Mounts {
 		if m.Target == paths.Out {
+			// ExecuteProposal uses proposals/<id>/out, without a stage-attempt
+			// directory (proposals are not Execution stages).
+			if filepath.Base(filepath.Dir(filepath.Dir(m.Source))) == "proposals" {
+				return IsolationProposal
+			}
 			attempt := filepath.Base(filepath.Dir(m.Source))
 			stage, _, _ := strings.Cut(attempt, "-")
 			return stage
