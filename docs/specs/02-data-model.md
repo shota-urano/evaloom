@@ -316,11 +316,11 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 | runner_id | TEXT NULL FK→runners | |
 | proposed_label | TEXT NULL | AI が選んだラベル。candidates の中のものでなければ捨てて `failed` にする |
 | reason | TEXT NULL | AI が書いた理由（2000 文字以内、機密情報除外済み） |
-| error_class | TEXT NULL | `sandbox_error` / `timeout` / `contract_error`（提案が一覧に無い、形が合わない）/ `config_error`（ミクロハーネスの認証ファイルが無い。5.5 と同じ値）/ `work_failed`（ミクロハーネスの CLI の異常終了。5.5 と同じ値）/ `interrupted`（Runner の再起動で中断、Q133）。`routing.proposer` の model が null で提案を作らなかったときは NULL |
+| error_class | TEXT NULL | `sandbox_error` / `timeout` / `contract_error`（提案が一覧に無い、形が合わない）/ `config_error`（ミクロハーネスの認証ファイルが無い。5.5 と同じ値）/ `work_failed`（ミクロハーネスの CLI の異常終了。5.5 と同じ値）/ `interrupted`（Runner の再起動で中断、Q133）。`routing.proposer` の model が null、または candidates が0件で提案を作らなかったときは NULL |
 | decision_id | TEXT NULL FK→owner_decisions | |
 | created_at / finished_at | TEXT | |
 
-- 全体設定 `routing.proposer` の model が null のときは、行を作って Runner に渡さずに `failed`（error_class は NULL）にする（[`15-linear-intake.md`](./15-linear-intake.md) 3.6.4）。
+- 全体設定 `routing.proposer` の model が null のとき、または candidates が0件のときは、行を作って Runner に渡さずに `failed`（error_class は NULL）にする（[`15-linear-intake.md`](./15-linear-intake.md) 3.6.4、Q222）。
 - 提案が `proposed` になっても `failed` になっても、owner_decisions（kind=`route`）を作る。`failed` のときは提案なしで、本人が一覧から選ぶ。
 - 提案の途中でタスクを中止したら、`queued` の行はそのまま `cancelled` にする。`running` の行は、heartbeat の応答の `cancelRouteProposalIds`（[`01-architecture.md`](./01-architecture.md) 5.2）で Runner に止めさせ、`cancelled` にする（Q133）。
 - 提案の途中で Runner が再起動したら、`running` の行を `failed`（`interrupted`）にする。タスクが `routing` のままなら、提案なしの owner_decisions（kind=`route`）を作る（Q133）。
@@ -423,7 +423,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 
 #### linear_poll_teams
 
-照会先（キーまたは名前が `uslab` の Team、本人決定 2、[`15-linear-intake.md`](./15-linear-intake.md) の Q216）の照会の状況を持つ。照会先は1つだが、照会先の Team ID が変わったときに最初の照会からやり直すため、Team ID ごとに行を持つ。
+照会先（キーまたは名前が `uslab` の Team、本人決定 2、[`15-linear-intake.md`](./15-linear-intake.md) の Q216）の照会の状況を持つ。照会先は1つで、行は今の照会先 Team の1行だけを残す。照会先の Team ID が変わったら、ほかの Team の行を同じトランザクションで消し、新しい Team は最初の照会からやり直す（15 の Q223）。
 
 | 列 | 型 | 説明 |
 |---|---|---|
@@ -468,7 +468,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 | `linear.triggerLabel` | `ai-ready` | 起動の合図のラベル | 15、Q48 |
 | `linear.routingLabelPrefix` | `route:` | 振り分けのラベルの接頭辞。この接頭辞で始まるラベルだけを振り分けのラベルとして数える | Q120 |
 | `routing.proposer` | `{ "microHarness": "claude_code", "model": null }` | 振り分けを提案する AI。model が null なら提案を作らず、本人が一覧から選ぶ | Q111 |
-| `routing.defaultRunnerId` | なし | スペシャルハーネスへ直接振り分けたタスクと、振り分けの提案を動かす Runner | Q111、Q113 |
+| `routing.defaultRunnerId` | なし | スペシャルハーネスへ直接振り分けたタスクと、振り分けの提案を動かす Runner。PATCH の null で未設定に戻す（行を消す） | Q111、Q113、15 の Q221 |
 | `limits.stageTimeoutMaxSec` | `{ "prepare": 1800, "work": 14400, "check": 3600, "publish": 1800 }` | Profile の `timeoutSec` の上限（契約 10.2） | 案 |
 | `approval.ttlSec` | 17 の Q55 の値 | 承認の有効時間 | 17 |
 
