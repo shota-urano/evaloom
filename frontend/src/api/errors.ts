@@ -27,6 +27,9 @@ const REASON_LABELS: Record<string, string> = {
   not_repository_root: 'Git リポジトリのルートではありません',
   remote_not_found: 'remote（origin）が設定されていません',
   out_of_range: '範囲外の値です',
+  // 17-approval 3.2: 承認を省く設定の検証（422、backend/internal/api/projects.md）
+  unknown_operation: '選んだ版の Profile に無い操作です',
+  not_waivable: '選んだ版では承認を省けない操作です',
   // 04-task-lifecycle 3.1: Project の default_role に Harness の割り当てが無い（422）
   default_harness_missing: '既定の役割に Harness が割り当てられていません。プロジェクトの詳細画面で割り当ててください',
   // 15-linear-intake 3.8: UNIQUE(linear_team_id, linear_routing_label)（409、backend/internal/api/projects.md）

@@ -22,7 +22,7 @@ export function AssignmentSummary({ harnesses }: { harnesses: readonly ProjectHa
   )
 }
 
-/** Projects 一覧（13 3.2）。登録済みプロジェクトと、割り当て中の Harness と版。 */
+/** Projects 一覧（13 3.2）。名前、振り分けのラベル、スペシャルハーネスと版、Runner。 */
 export function ProjectListPage() {
   const { api } = useSession()
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
@@ -55,10 +55,13 @@ export function ProjectListPage() {
                   プロジェクト
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  Runner
+                  振り分けのラベル
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  割り当て中の Harness と版
+                  スペシャルハーネスと版
+                </th>
+                <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
+                  Runner
                 </th>
               </tr>
             </thead>
@@ -71,10 +74,13 @@ export function ProjectListPage() {
                     </Link>
                     <div className="text-muted-foreground font-mono text-xs">{project.id}</div>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">{project.runnerId}</td>
+                  <td className="px-4 py-3 font-mono text-xs" data-testid="routing-label">
+                    {project.routingLabel ?? <span className="text-muted-foreground font-sans">ラベルなし</span>}
+                  </td>
                   <td className="px-4 py-3">
                     <AssignmentSummary harnesses={project.harnesses ?? []} />
                   </td>
+                  <td className="px-4 py-3 font-mono text-xs">{project.runnerId}</td>
                 </tr>
               ))}
             </tbody>
