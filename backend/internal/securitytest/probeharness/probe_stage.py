@@ -8,6 +8,8 @@ files under probe/ in the committed Profile repository:
   probe/<stage>-plan.json       accesses to attempt (probe_access.py plan);
                                 observations go to out/probe-<stage>.json
   probe/<stage>-result.json     values merged into the result JSON
+  probe/<stage>-no-result       when present, the stage exits 0 without
+                                writing the result JSON (spec 14 3.5)
   probe/publish-authorize.json  {"operation", "destination"[, "contentId"]
                                 [, "attempts", "concurrent"]}: ask authorize right before
                                 the operation and send it to the destination
@@ -157,6 +159,9 @@ def main():
                     result.update(status="failed", errorClass="publish_failed",
                                   message="not allowed: " + str(reply.get("reason")))
             (Path(paths["out"]) / "authorizations.json").write_text(json.dumps(replies) + "\n")
+    if (CONFIG / (stage + "-no-result")).exists():
+        print("probe finished " + stage + " without a result")
+        return
     override = load(stage + "-result.json")
     if override is not None:
         for key, value in substitute(override, variables).items():

@@ -345,6 +345,9 @@ type fixtureHarness struct {
 	populateFixture func(t *testing.T, f *executionFixture, repo string)
 	instructions    string
 	taskBody        string
+	// workOut, when set, holds extra files the deterministic work Adapter
+	// writes into its out directory next to summary.md (spec 14 3.5).
+	workOut map[string]string
 }
 
 // inlineHarness wraps this test binary as the prepare/check/publish program.
@@ -512,6 +515,11 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 		out := filepath.Join(f.config.DataDir, "executions", req.ExecutionID, fmt.Sprintf("work-%d", attempt), "out")
 		if scenario == "question" && attempt == 1 {
 			return os.WriteFile(filepath.Join(out, "question.json"), []byte(`{"question":"Keep or remove?","options":["keep","remove"]}`), 0600)
+		}
+		for name, content := range harness.workOut {
+			if err := os.WriteFile(filepath.Join(out, name), []byte(content), 0600); err != nil {
+				return err
+			}
 		}
 		return os.WriteFile(filepath.Join(out, "summary.md"), []byte("dummy work completed fixture-auth"), 0600)
 	})); err != nil {
