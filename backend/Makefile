@@ -51,3 +51,8 @@ run:
 	$(GO) run $(RUN_CMD)
 
 # artifacts（動画回収）は対象外（画面が無い）。UI を持つ場合は web テンプレの artifacts を移植する。
+
+# Spec 14 §3.1: dedicated model credentials/images required; see securitytest/README.md.
+.PHONY: security-model-test
+security-model-test:
+	$(GO) test -tags=security_model ./internal/securitytest -run '^TestModelConfigurationIsolation$$' -count=1 -timeout=16m -v

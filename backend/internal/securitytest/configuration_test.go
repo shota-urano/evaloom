@@ -25,6 +25,22 @@ func TestConfigurationCanaryPlacement(t *testing.T) {
 			personalInstructions(t, f.Home, a)
 			profile, files := configurationProfile(t, ctx, f, cli, "fixture-model", b)
 			env := configurationEnvironment(t, ctx, filepath.Join(root, "configuration"), cli, profile, files)
+			work := configurationWork(t, profile)
+			if work.MicroHarness != cli.name || work.Model != "fixture-model" || len(work.Instructions) != 1 || work.Instructions[0] != "prompts/work.md" {
+				t.Fatalf("work stage does not select the canary instruction: %+v", work)
+			}
+			if len(files) != 2 {
+				t.Fatalf("unexpected source selection: %v", files)
+			}
+			for _, file := range files {
+				if file.Path != "prompts/work.md" && file.Path != ".gitconfig" {
+					t.Fatalf("undeclared Profile file selected: %s", file.Path)
+				}
+			}
+			source, err := os.ReadFile(filepath.Join(env.ConfigDir(), "prompts/work.md"))
+			if err != nil || !strings.Contains(string(source), b) {
+				t.Fatalf("declared instruction source missing: %v", err)
+			}
 			for _, name := range personalInstructionPaths {
 				data, err := os.ReadFile(filepath.Join(f.Home, name))
 				if err != nil || !strings.Contains(string(data), a) || strings.Contains(string(data), b) {
@@ -32,11 +48,11 @@ func TestConfigurationCanaryPlacement(t *testing.T) {
 				}
 			}
 			placed, err := env.Files(ctx)
-			if err != nil || len(placed) != 2 {
+			if err != nil || len(placed) != 3 {
 				t.Fatalf("placed=%v err=%v", placed, err)
 			}
 			data, err := os.ReadFile(filepath.Join(env.ConfigDir(), cli.instruction))
-			if err != nil || !strings.Contains(string(data), b) || strings.Contains(string(data), a) || strings.Contains(string(data), "uncommitted replacement") {
+			if err != nil || string(data) != string(source) || !strings.Contains(string(data), b) || strings.Contains(string(data), a) || strings.Contains(string(data), "uncommitted replacement") {
 				t.Fatalf("dedicated instruction not pinned: %v", err)
 			}
 			if vars := env.Env(); len(vars) != 1 || vars[cli.variable] != env.ConfigDir() {
