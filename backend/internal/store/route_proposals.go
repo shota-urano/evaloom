@@ -172,11 +172,11 @@ func RouteProposerModelIsNull(settings map[string]string) bool {
 	return proposer.Model == nil
 }
 
-// FailRouteProposalWithoutProposerTx makes a queued proposal failed without
-// handing it to a Runner, because routing.proposer has no model (spec 15
-// 3.6.4 step 2): error_class stays NULL. While the task is routing, a route
-// decision without a proposal is opened (step 5).
-func FailRouteProposalWithoutProposerTx(ctx context.Context, tx *sql.Tx, proposalID string) error {
+// FailRouteProposalWithoutRunnerTx makes a queued proposal failed without
+// handing it to a Runner, because routing.proposer has no model or candidates
+// is empty (spec 15 3.6.4 step 2, Q222): error_class stays NULL. While the task
+// is routing, a route decision without a proposal is opened (step 5).
+func FailRouteProposalWithoutRunnerTx(ctx context.Context, tx *sql.Tx, proposalID string) error {
 	var taskID string
 	var taskStatus model.TaskStatus
 	if err := tx.QueryRowContext(ctx, `SELECT rp.task_id, t.status FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id

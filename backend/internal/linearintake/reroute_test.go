@@ -179,6 +179,33 @@ func TestRecheckBackToRoutingMakesOneProposal(t *testing.T) {
 	}
 }
 
+// Q222 also applies when a held task returns to routing after its routing
+// label is removed and there are no eligible destinations left.
+func TestRecheckBackToRoutingWithoutCandidates(t *testing.T) {
+	f := newRecheckFixture(t)
+	issue, held := f.heldForCriteria(t)
+	exec(t, f.db, `DELETE FROM routes`)
+	f.mustRound(t, unrouted(issue, base.Add(time.Minute)))
+	got := readStarted(t, f.db, "1", 1)
+	if got.id != held.id || got.status != "routing" || got.cause.Valid || got.executions != 0 {
+		t.Fatalf("task = %+v", got)
+	}
+	id, status, trigger, _ := proposalOf(t, f.db, held.id)
+	if status != "failed" || trigger != string(TriggerNoLabel) {
+		t.Fatalf("proposal = %s %s", status, trigger)
+	}
+	if n := countRows(t, f.db, `SELECT count(*) FROM route_proposals WHERE id=? AND candidates='[]'
+		AND error_class IS NULL AND runner_id IS NULL AND proposed_label IS NULL AND finished_at IS NOT NULL`, id); n != 1 {
+		t.Fatal("proposal did not fail without a Runner")
+	}
+	if n := openRouteDecisions(t, f.db, held.id, id); n != 1 {
+		t.Fatalf("open route decisions = %d", n)
+	}
+	if keys := outboxKeys(t, f.db, held.id); len(keys["decision_open"]) != 1 {
+		t.Fatalf("outbox = %v; want one decision_open comment", keys)
+	}
+}
+
 // 受け入れ基準: running の提案を superseded にしても Runner に中止を求めず、
 // 後から届いた結果は記録だけ残ってタスクに使われない。
 // A routing task's running proposal is superseded when a label routes it
