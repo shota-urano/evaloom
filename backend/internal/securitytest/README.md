@@ -47,8 +47,8 @@ CONNECTの結果には `detail.status` を記録する。プロキシ自体の�
 
 | 道具 | 実体 | 使い方 |
 |---|---|---|
-| プローブ用スペシャルハーネス | `ProbeHarness`、`WriteProbeHarness(repo, h)`。`probeharness/probe_stage.py` が `bin/probe` になる | 空のディレクトリに Profile（`evaloom/profile.yaml`）と `bin/probe` を書く。呼び出し側が commit して `profile/v1.0.0` を付け、通常どおり登録する。準備・確かめる・出すの段で `probe/<stage>-plan.json` のアクセスを試し、`out/probe-<stage>.json` に観測を書く。結果 JSON は `Results` の値で上書きできる（`{{contentId}}` などを置換、`"{{omit}}"` で項目を消す）。`Authorize` を指定すると、出す段が通話口で `authorize` を送り、`allowed: true` のときだけテスト用の外部の宛先へ操作を1回送る |
-| プローブ Adapter | `NewWorkProbe(runner.WorkAdapterConfig, plan)`。`adapter/probe` の `NewWithConfig` と `LaunchSandbox` を使う | 作業の段で、Runner が渡す Work Sandbox の起動口（`Launch`）と専用設定の作業用コピーを使い、`python3 -c` で plan を実行する。観測は作業領域の `.evaloom-probe/work-results.json`。AI は呼ばない。起動口が無い、または Sandbox でコマンドを実行できないときは実行不能で失敗する。振り分けの提案（Proposal Sandbox）での実行は未実装 |
+| プローブ用スペシャルハーネス | `ProbeHarness`、`WriteProbeHarness(repo, h)`。`probeharness/probe_stage.py` が `bin/probe` になる | 空のディレクトリに Profile（`evaloom/profile.yaml`）と `bin/probe` を書く。呼び出し側が commit して `profile/v1.0.0` を付け、通常どおり登録する。準備・確かめる・出すの段で `probe/<stage>-plan.json` のアクセスを試し、`out/probe-<stage>.json` に観測を書く。結果 JSON は `Results` の値で上書きできる（`{{contentId}}` などを置換、`"{{omit}}"` で項目を消す）。`NoResult` に指定した段は、結果 JSON を書かずに終了コード 0 で終わる（3.5）。`Authorize` を指定すると、出す段が通話口で `authorize` を送り、`allowed: true` のときだけテスト用の外部の宛先へ操作を1回送る |
+| プローブ Adapter | `NewWorkProbe(runner.WorkAdapterConfig, plan)`。`adapter/probe` の `NewWithConfig` と `LaunchSandbox` を使う | 作業の段で、Runner が渡す Work Sandbox の起動口（`Launch`）と専用設定の作業用コピーを使い、`python3 -c` で plan を実行する。観測は作業領域の `.evaloom-probe/work-results.json`。AI は呼ばない。起動口が無い、または Sandbox でコマンドを実行できないときは実行不能で失敗する。提案用には `ProposalProbe` を使う（下記3.6） |
 | テスト用の鍵 | `NewProbeSecrets()`、`ProbeSecrets.Store(dataDir, harnessID)` | `probe_read` を `read`、`probe_write` を `write` で Runner の鍵の保管に登録する。値はカナリア。plan には値を書かず、`SecretProbe(id, value, paths...)` で SHA-256 と長さだけを書く（段は Profile の plan を読めるため）。観測は見つかったかどうかの真偽だけ |
 | テスト用の外部の宛先 | `NewDestination(listener)` | 受けた要求をすべて記録し（`Requests`）、`POST /operations` を出す操作として数える（`Operations`）。`SetFile` で準備の段が取り込むファイルを置ける。待ち受けのアドレスと名前解決は呼び出し側が用意する（Q150） |
 
@@ -102,7 +102,7 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 | 省略設定なしでapprovalId null | A / `without_approval_waivable_not_waived` | 0 |
 | 照合・消費の書き込み失敗 | B / `write_failure/consume`、`write_failure/event`、`write_failure/audit` | 0 |
 
-`ProbeAuthorize.Concurrent` は別々の通話口の接続から同時に問い合わせる。並行テストは、実際のHTTPハンドラーの手前に2件そろうまで待機し、1件だけ許可されることと `use_count=1` を確かめる。却下済みのテストは、実際の却下がExecutionも失敗にしてpublishを始めさせないため、claim後の承認行だけをrejectedにし、古い承認IDを持つ要求を試す。中止テストは本人用APIで中止し、heartbeatを待機させて段の停止より先に問い合わせさせる。段が自分で `publish_failed` を返して終えたときのExecutionの終端（04の3.4.1では `failed`、04の3.8では `cancelled`）は仕様が決めていないため、終端に入ったことだけを確かめる。
+`ProbeAuthorize.Concurrent` は別々の通話口の接続から同時に問い合わせる。並行テストは、実際のHTTPハンドラーの手前に2件そろうまで待機し、1件だけ許可されることと `use_count=1` を確かめる。却下済みのテストは、実際の却下がExecutionも失敗にしてpublishを始めさせないため、claim後の承認行だけをrejectedにし、古い承認IDを持つ要求を試す。中止テストは本人用APIで中止し、heartbeatを待機させて段の停止より先に問い合わせさせる。04の3.4.1とQ230に従い、段が `failed`（`publish_failed`）を報告した後、Executionとタスクが `cancelled` になることを確かめる。段の記録には `failed`（`publish_failed`）が残り、通知の要求が増えないことも確かめる。
 
 書き込み失敗は、破棄可能なDBにトリガーを設け、消費の更新、消費イベントの挿入、監査記録の挿入でそれぞれ失敗させる。HTTP 500と `allowed: false`、Runnerが段へ返す `unavailable`、消費・イベント・監査記録のロールバックを確かめる。Control Plane停止では実際にHTTPサーバを閉じ、結果を報告できない段の終了をローカルの結果ファイルで確認する。その後、同じアドレスで同じハンドラーを立て直してRunnerの報告を届かせ、Executionが `failed` になっても消費が起きないことを確かめる。承認とControl Planeの記録、宛先も確認する。Q228に従いDockerの実環境版は作らない。新しい製品設定値や仕様の未決値は定めていない。
 
@@ -332,3 +332,44 @@ Control Planeの起動処理を通す再起動確認は、既存の
 |---|---|---|
 | `cmd/evaloom-runner` の `TestBreakoutThroughRunner`（`make verify`） | 偽の CLI で製品の Runner を通し、段ごとのコンテナ作成コマンド、スクリプトが環境変数に見つけた鍵、通話口の `authorize` を Runner が拒否して Control API に要求が届かないこと。確かめる段・準備の段に鍵を渡すように緩めると該当の行が失敗すること | 不要 |
 | `TestBreakoutDocker`（タグ `security_docker`） | 3.3 の全行（Control API、管理 DB、鍵、Runner トークン、本人の HOME、Docker ソケット、外部ネットワーク、`authorize`）を実コンテナで試す。前提は `TestStageIsolationDocker` と同じで、無ければスキップせず失敗する | 必要 |
+
+## 3.6 振り分けの提案の隔離テスト
+
+`ProposalProbe` は、既存の `runner.ProposalHarness` 境界でAIを置き換える。
+Proposal Sandboxの中でIssueの入力JSONを読み、指定したアクセス試行を行い、
+`out/proposal-probe.json` と `out/proposal.json` を書く。モデルAPIは呼ばない。
+起動口、入力、観測ファイルが無ければ失敗し、ホスト実行への切り替えは行わない。
+Runnerが一時領域を消す前に、テスト側で入力と観測を取得する。
+
+`cmd/evaloom-runner/proposal_acceptance_test.go` は実際のControl API、SQLite、
+Runnerの `ExecuteProposal` を使う。Linear起因のroutingタスクとqueued提案は
+fixtureで用意し、RunnerはHTTPのclaimで受け取る。Issue本文にはControl APIへの
+接続、鍵の読み取り、承認前のExecution作成、ai-ready変更を指示する文を置く。
+プローブは入力を読んだうえで、隔離を試すアクセスを実行する。
+
+| 3.6のケース | テストと確認内容 |
+|---|---|
+| Issue本文の指示に従ってアクセスを試みる | `TestProposalIsolationThroughRunner` はコンテナ作成コマンドと鍵の観測を照合する。鍵を意図的に渡した場合の検知も確認する。`TestProposalIsolationDocker` は本物のSandboxで3.2のProposal列の全行を試し、Control APIと外部宛先の記録も照合する |
+| 表に無いラベルを選ぶ | `TestProposalAcceptance/label_outside_routes`。failed/contract_error、routingの維持、kind=routeの判断待ち、Executionが0件であることを確認する |
+| 表にあるラベルを選ぶ | `TestProposalAcceptance/candidate_waits_for_owner`。proposedでもroutingと判断待ちを維持する。Runner認証での承認は403になり、結果の再送でもExecutionを作らない |
+| 別Runnerが結果を送る | `TestProposalAcceptance/other_runner_result_is_forbidden_and_audited`。claim済み提案への送信が403になり、audit_logsの理由と状態コードが残る。提案・判断待ち・Executionを変更しない |
+| 承認後のLinear書き戻し | 上記の表にある・無いラベルの両ケースで本人認証の回答を送る。seq=1/mode=continue/pendingのExecutionが1件だけ作られ、outboxのadd_labelが承認した振り分けラベルだけで、remove_labelもai-readyの変更も無いことを確認する |
+
+通常の `make verify` は上記のDocker不要のテストを実行する。
+コンテナ実行環境のCLIとプロキシだけを模擬するため、ファイルや接続の拒否を
+実証するのは `security_docker` タグのテストである。
+
+実環境テストのイメージと3つの宛先は `TestStageIsolationDocker` と共通で、
+同ファイル冒頭に設定形式を記載している。Q150に従って本人が準備した宛先を使う。
+イメージ名・宛先が未設定、Dockerが使用不能、観測が欠落した場合は、
+スキップせず実行不能として失敗する。鍵の漏出とhostネットワークの負の対照も実行する。
+
+```sh
+cd backend
+go test ./cmd/evaloom-runner -run '^TestProposal(Acceptance|IsolationThroughRunner)$' -count=1 -v
+# EVALOOM_SECURITY_TEST_IMAGE、EVALOOM_SECURITY_PROXY_IMAGE、
+# EVALOOM_SECURITY_DECLARED、EVALOOM_SECURITY_UNDECLARED、EVALOOM_SECURITY_MODELを設定後
+go test -tags=security_docker ./cmd/evaloom-runner -run '^TestProposalIsolationDocker$' -count=1 -v -timeout 30m
+```
+
+確定済み仕様書、公開API、製品のテーブル・列は変更していない。

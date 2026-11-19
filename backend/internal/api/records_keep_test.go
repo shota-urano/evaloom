@@ -53,7 +53,9 @@ func TestRecordsKeepOnlyFixedProgramOutputs(t *testing.T) {
 	attempt := runTo(t, f, token, id, "publish")
 	work := addArtifact(t, f, id, "work", "out_file", "report.md")
 	check := addArtifact(t, f, id, "check", "out_file", "report.md")
+	checkUnkept := addArtifact(t, f, id, "check", "out_file", "unkept.txt")
 	publish := addArtifact(t, f, id, "publish", "out_file", "report.md")
+	publishUnkept := addArtifact(t, f, id, "publish", "out_file", "unkept.txt")
 	finishStage(t, f, token, id, finished("publish", attempt, programResult("publish", "succeeded", map[string]any{"outputs": []any{}})))
 	requireState(t, f, id, "succeeded", "completed", "")
 	got := map[string]bool{}
@@ -72,7 +74,7 @@ func TestRecordsKeepOnlyFixedProgramOutputs(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || !got[check] || !got[publish] || got[work] {
-		t.Fatalf("records=%v; want check %s and publish %s, not work %s", got, check, publish, work)
+	if len(got) != 2 || !got[check] || !got[publish] || got[work] || got[checkUnkept] || got[publishUnkept] {
+		t.Fatalf("records=%v; want only check %s and publish %s; exclude work %s and unkept check %s / publish %s", got, check, publish, work, checkUnkept, publishUnkept)
 	}
 }

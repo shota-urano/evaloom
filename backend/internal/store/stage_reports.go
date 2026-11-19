@@ -57,17 +57,18 @@ type reportExecution struct {
 	resumeStage, profileID sql.NullString
 	routeKind, projectID   sql.NullString
 	harnessID              sql.NullString
+	cancelRequested        bool
 	latest                 bool
 }
 
 func readReportExecution(ctx context.Context, tx *sql.Tx, id string) (*reportExecution, error) {
 	e := &reportExecution{id: id}
 	err := tx.QueryRowContext(ctx, `SELECT e.task_id, COALESCE(e.runner_id, ''), e.status, t.status, e.resume_stage,
-		e.profile_id, e.route_kind, e.project_id, e.harness_id,
+		e.profile_id, e.route_kind, e.project_id, e.harness_id, e.cancel_requested_at IS NOT NULL,
 		e.seq = (SELECT max(seq) FROM executions WHERE task_id = e.task_id)
 		FROM executions e JOIN tasks t ON t.id = e.task_id WHERE e.id = ?`, id).
 		Scan(&e.taskID, &e.runnerID, &e.status, &e.taskStatus, &e.resumeStage, &e.profileID,
-			&e.routeKind, &e.projectID, &e.harnessID, &e.latest)
+			&e.routeKind, &e.projectID, &e.harnessID, &e.cancelRequested, &e.latest)
 	return e, err
 }
 
@@ -426,7 +427,7 @@ func savedFinish(ctx context.Context, tx *sql.Tx, in StageFinish) (StageNext, er
 
 func stop() StageNext { return StageNext{Next: stageStop} }
 
-// failExecution ends the Execution with class (spec 04 3.4.1, second row).
+// failExecution ends the Execution with class (spec 04 3.4.1).
 func failExecution(ctx context.Context, tx *sql.Tx, e *reportExecution, class model.ErrorClass, message *string) error {
 	to := model.ExecutionFailed
 	switch class {
@@ -573,6 +574,10 @@ func finishProgram(ctx context.Context, tx *sql.Tx, e *reportExecution, in Stage
 		}
 	}
 	switch {
+	case in.Stage == model.StagePublish && e.cancelRequested && result.Status == model.StageFailed:
+		// Spec 04 3.4.1/Q230: cancellation determines the Execution outcome,
+		// while the stage retains its reported status and error class.
+		return out, failExecution(ctx, tx, e, model.ErrorCancelled, &result.Message)
 	case result.Status == model.StageFailed:
 		class := out.errorClass
 		if in.Stage == model.StageCheck {

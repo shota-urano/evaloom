@@ -55,6 +55,9 @@ type ProbeHarness struct {
 	Authorize    *ProbeAuthorize
 	Instructions string
 	Profile      func(*contract.ProfileDefinition)
+	// NoResult names stages that exit 0 without writing the result JSON
+	// (spec 14 3.5). Their Results are ignored.
+	NoResult map[string]bool
 }
 
 // Definition is the committed evaloom/profile.yaml (JSON is valid YAML).
@@ -108,6 +111,14 @@ func WriteProbeHarness(repo string, h ProbeHarness) error {
 			return err
 		}
 		files["probe/"+stage+"-result.json"] = data
+	}
+	for stage, skip := range h.NoResult {
+		if stage != "prepare" && stage != "check" && stage != "publish" {
+			return fmt.Errorf("securitytest: no-result for unknown stage %q", stage)
+		}
+		if skip {
+			files["probe/"+stage+"-no-result"] = []byte{}
+		}
 	}
 	if h.Authorize != nil {
 		data, err := json.Marshal(h.Authorize)
