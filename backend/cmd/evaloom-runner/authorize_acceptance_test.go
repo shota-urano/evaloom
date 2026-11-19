@@ -114,13 +114,26 @@ func TestAuthorizeAcceptance(t *testing.T) {
 		var taskID string
 		f.scalar(`SELECT task_id FROM executions WHERE id=?`, &taskID)
 		f.owner("POST", "/api/tasks/"+taskID+"/cancel", `{}`, http.StatusNoContent)
+		var notificationsBefore int
+		f.scalar(`SELECT count(*) FROM notification_requests WHERE execution_id=?`, &notificationsBefore)
 		release(t, gate)
 		// The probe follows contract 7.4: a denied authorize ends the stage
-		// with failed/publish_failed. Whether the Execution then ends failed
-		// (04 3.4.1, status failed) or cancelled (04 3.8, running cancel) is
-		// not settled by the spec, so only require a terminal state here.
+		// with failed/publish_failed. Spec 04 3.4.1/Q230 requires cancellation
+		// of the Execution and Task while preserving the stage's failure.
 		f.waitProbePublishResult()
-		f.waitTerminal("failed", "cancelled")
+		f.waitTerminal("cancelled")
+		var taskStatus, executionClass, stageResult string
+		f.scalar(`SELECT status FROM tasks WHERE id=(SELECT task_id FROM executions WHERE id=?)`, &taskStatus)
+		f.scalar(`SELECT error_class FROM executions WHERE id=?`, &executionClass)
+		f.scalar(`SELECT status||'/'||error_class FROM stage_runs WHERE execution_id=? AND stage='publish' AND attempt=1`, &stageResult)
+		if taskStatus != "cancelled" || executionClass != "cancelled" || stageResult != "failed/publish_failed" {
+			t.Fatalf("task=%s execution class=%s publish=%s; want cancelled, cancelled, failed/publish_failed", taskStatus, executionClass, stageResult)
+		}
+		var notificationsAfter int
+		f.scalar(`SELECT count(*) FROM notification_requests WHERE execution_id=?`, &notificationsAfter)
+		if notificationsAfter != notificationsBefore {
+			t.Fatalf("notification requests=%d; want unchanged from %d", notificationsAfter, notificationsBefore)
+		}
 		f.wantProbeReplies(contract.AuthorizeResponse{Reason: "cancelled"})
 		if a := f.oneApproval(); a.Status != "invalidated" || a.Reason != "cancelled" || a.UseCount != 0 {
 			t.Fatalf("approval %+v; want invalidated (cancelled)", a)
