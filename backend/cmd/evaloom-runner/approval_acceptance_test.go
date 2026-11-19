@@ -44,7 +44,8 @@ type approvalProbe struct {
 	// waives nothing, so the approval stays required).
 	waivable bool
 	// attempts repeats ask-then-operate with the same approval.
-	attempts int
+	attempts   int
+	concurrent bool
 	// gate, when set, holds the publish stage before it asks authorize until
 	// the file exists, so the test can act after the approval was given and
 	// the publish stage was claimed.
@@ -56,7 +57,7 @@ const approvalProbeInstructions = "Probe work instructions. The probe Adapter ne
 func approvalProbeHarness(d *st.Destination, p approvalProbe) fixtureHarness {
 	return fixtureHarness{instructions: approvalProbeInstructions, taskBody: "approval acceptance", populate: func(t *testing.T, repo, _ string) {
 		h := st.ProbeHarness{
-			Authorize: &st.ProbeAuthorize{Operation: st.ProbeOperation, Destination: d.URL(st.DestinationOperationPath), Attempts: p.attempts},
+			Authorize: &st.ProbeAuthorize{Operation: st.ProbeOperation, Destination: d.URL(st.DestinationOperationPath), Attempts: p.attempts, Concurrent: p.concurrent},
 			Results:   map[string]map[string]any{},
 			Plans:     map[string]json.RawMessage{},
 		}
@@ -187,6 +188,7 @@ func (f *executionFixture) wantDenied(d *st.Destination, reason string) {
 	if _, err := os.Stat(filepath.Join(f.config.DataDir, "executions", f.id, "publish-1", "out", "operation.json")); !os.IsNotExist(err) {
 		f.t.Fatalf("publish stage sent the operation: %v", err)
 	}
+	f.wantConsumeRecords(d)
 }
 
 // approve answers the open approval decision through the management API,
@@ -257,15 +259,14 @@ func TestApprovalAcceptance(t *testing.T) {
 		f.waitStatus("waiting_approval")
 		approved := f.approve()
 		f.waitStatus("succeeded")
-		if replies := f.authorizations(); len(replies) != 1 || !replies[0].Allowed {
-			t.Fatalf("authorize replies %+v", replies)
-		}
+		f.wantProbeReplies(contract.AuthorizeResponse{Allowed: true})
 		if a := f.oneApproval(); a.Status != "consumed" || a.UseCount != 1 || a.ID != approved.ID {
 			t.Fatalf("approval %+v; want consumed once", a)
 		}
 		if n := d.Operations(); n != 1 {
 			t.Fatalf("destination received %d operations; want 1", n)
 		}
+		f.wantConsumeRecords(d)
 	})
 
 	// Condition 22: the content changes after the approval and before the
@@ -326,6 +327,7 @@ func TestApprovalAcceptance(t *testing.T) {
 		if len(events) != 2 || events[1]["reason"] != "already_used" || len(audits) != 2 || audits[1]["reason"] != "already_used" {
 			t.Fatalf("records events=%v audits=%v", events, audits)
 		}
+		f.wantConsumeRecords(d)
 	})
 
 	// The approval expires after it was given and the publish stage was
@@ -461,6 +463,7 @@ func TestApprovalAcceptance(t *testing.T) {
 		if n := d.Operations(); n != 1 {
 			t.Fatalf("destination received %d operations; want 1", n)
 		}
+		f.wantConsumeRecords(d)
 	})
 }
 
