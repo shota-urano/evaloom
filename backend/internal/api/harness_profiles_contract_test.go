@@ -291,3 +291,42 @@ func TestHarnessProfilesSymlinkedDefinitionIsNotRead(t *testing.T) {
 	status, body := postProfile(t, f, "1.2.0")
 	requireProjectError(t, status, body, 422, PreconditionFailed, "definition", "not_found")
 }
+
+// Spec 14 3.5 (参照するパスがサブモジュールを指す) and spec 03 3.4: a
+// reference to a submodule (Git mode 160000), or to a work directory that
+// contains one, is rejected and nothing is registered.
+func TestHarnessProfilesRejectSubmoduleReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, reason string
+		edit               func(map[string]any)
+	}{
+		{"submodule reference", "stages.work.skills[0]", "submodule", func(v map[string]any) { field(v, "stages", "work")["skills"] = []any{"evaloom/vendor"} }},
+		{"directory with submodule", "stages.work.skills[0]", "contains_submodule", func(v map[string]any) { field(v, "stages", "work")["skills"] = []any{"evaloom/work"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, repo := profileFixture(t)
+			document := contractExampleProfile(t)
+			tc.edit(document)
+			// Keep the committed tree free of the shared symbolic-link fixture so
+			// the only defect is the gitlink.
+			commitProfile(t, repo, "1.2.0", yamlOf(t, document), false)
+			projectGit(t, repo, "rm", "--quiet", "--cached", "evaloom/work/link.json")
+			sha := strings.Repeat("1", 40)
+			gitlink := "evaloom/vendor"
+			if tc.reason == "contains_submodule" {
+				gitlink = "evaloom/work/vendor"
+			}
+			projectGit(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+sha+","+gitlink)
+			projectGit(t, repo, "commit", "--quiet", "-m", "submodule")
+			projectGit(t, repo, "tag", "-f", "profile/v1.2.0")
+			status, body := postProfile(t, f, "1.2.0")
+			details := profileDetails(t, status, body)
+			if !reflect.DeepEqual(details, []Detail{{Field: tc.path, Reason: tc.reason}}) {
+				t.Fatalf("details=%+v; want %s %s", details, tc.path, tc.reason)
+			}
+			if projectCount(t, f, "harness_profiles") != 0 || projectCount(t, f, "audit_logs") != 1 {
+				t.Fatal("rejected Profile was persisted")
+			}
+		})
+	}
+}
