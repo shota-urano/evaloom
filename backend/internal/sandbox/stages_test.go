@@ -354,12 +354,17 @@ func TestEveryStageDeadlineStopsWholeWorkload(t *testing.T) {
 		t.Run(string(kind), func(t *testing.T) {
 			f := stageFixture(t, "sleep", kind)
 			f.spec.Limits.Time = time.Second
-			p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/untrusted/workload"})
+			f.config.ControlTimeout = 30 * time.Second
+			c := f.sandbox(t)
+			clock := newManualClock(c)
+			start := clock.now()
+			p, err := c.Run(context.Background(), f.spec, []string{"/untrusted/workload"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = p.Kill() })
 			waitForFile(t, filepath.Join(f.root, "runtime", "ready"))
+			clock.beforeDeadline(t, start, f.spec.Limits.Time)
 			var pids []int
 			for _, name := range []string{"workload.pid", "leaf.pid"} {
 				data, err := os.ReadFile(filepath.Join(f.root, "runtime", name))
@@ -372,6 +377,7 @@ func TestEveryStageDeadlineStopsWholeWorkload(t *testing.T) {
 				}
 				pids = append(pids, pid)
 			}
+			clock.advance(time.Nanosecond)
 			err = waitProcess(t, p)
 			requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
 			if !errors.Is(err, context.DeadlineExceeded) {

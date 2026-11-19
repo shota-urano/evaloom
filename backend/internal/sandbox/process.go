@@ -178,7 +178,7 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 		// the same instant its owner sends TERM. Honor the same fixed grace
 		// even if the owner has not yet reached its supervision loop.
 		deadline, _ := ctx.Deadline()
-		graceCtx, finishGrace := context.WithDeadline(context.WithoutCancel(ctx), deadline.Add(TerminationGrace))
+		graceCtx, finishGrace := p.container.clock.withDeadline(context.WithoutCancel(ctx), deadline.Add(TerminationGrace))
 		defer finishGrace()
 		stopped := make(chan struct{})
 		go func() { defer close(stopped); _ = p.Stop() }()

@@ -201,7 +201,8 @@ func TestRuntimeHelper(t *testing.T) {
 	case "inspect":
 		if mode == "slow-inspect" {
 			write("inspecting", "yes")
-			time.Sleep(3 * time.Second)
+			// Inspection can finish only if its context is interrupted.
+			time.Sleep(time.Hour)
 		}
 		if mode == "inspect-fail" {
 			fail()
@@ -905,12 +906,17 @@ func waitForFile(t *testing.T, path string) {
 
 func waitProcess(t *testing.T, p Process) error {
 	t.Helper()
+	return waitProcessWithin(t, p, 8*time.Second)
+}
+
+func waitProcessWithin(t *testing.T, p Process, timeout time.Duration) error {
+	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- p.Wait() }()
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(8 * time.Second):
+	case <-time.After(timeout):
 		t.Fatal("sandbox did not stop within test deadline")
 		return nil
 	}
@@ -923,13 +929,19 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 			deadline := action == "deadline" || action == "controlled-deadline"
 			if deadline {
 				f.spec.Limits.Time = time.Second
+				f.config.ControlTimeout = 30 * time.Second
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			start := time.Now()
-			run := f.sandbox(t).Run
+			c := f.sandbox(t)
+			var clock *manualClock
+			if deadline {
+				clock = newManualClock(c)
+			}
+			start := c.clock.now()
+			run := c.Run
 			if action == "controlled-deadline" {
-				run = f.sandbox(t).RunControlled
+				run = c.RunControlled
 			}
 			p, err := run(ctx, f.spec, []string{"/untrusted/workload"})
 			if err != nil {
@@ -941,6 +953,9 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 				_ = p.Kill()
 			})
 			waitForFile(t, filepath.Join(f.root, "runtime", "ready"))
+			if deadline {
+				clock.beforeDeadline(t, start, f.spec.Limits.Time)
+			}
 			var pids []int
 			for _, file := range []string{"workload.pid", "leaf.pid"} {
 				data, err := os.ReadFile(filepath.Join(f.root, "runtime", file))
@@ -957,6 +972,8 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 				t.Fatal("running process has a confirmed exit code")
 			}
 			switch action {
+			case "deadline", "controlled-deadline":
+				clock.advance(time.Nanosecond)
 			case "cancel":
 				cancel()
 			case "stop":
@@ -968,11 +985,17 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err = waitProcess(t, p)
+			if deadline {
+				// Preserve the original 5s total bound: the injected clock
+				// accounts for the execution budget, real time for cleanup.
+				err = waitProcessWithin(t, p, 5*time.Second-f.spec.Limits.Time)
+			} else {
+				err = waitProcess(t, p)
+			}
 			if deadline {
 				requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
-				if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) < f.spec.Limits.Time || time.Since(start) > 5*time.Second {
-					t.Fatalf("wall time not enforced promptly: %v (%v)", time.Since(start), err)
+				if !errors.Is(err, context.DeadlineExceeded) || clock.now().Sub(start) != f.spec.Limits.Time {
+					t.Fatalf("execution time limit not enforced: %v (%v)", clock.now().Sub(start), err)
 				}
 			}
 			if action == "cancel" {
@@ -999,7 +1022,9 @@ func TestContainerDeadlineAndCancellationStopWholeWorkload(t *testing.T) {
 func TestContainerDeadlineWhileInspectBlocks(t *testing.T) {
 	f := newFixture(t, "slow-inspect")
 	f.spec.Limits.Time = time.Second
-	f.config.ControlTimeout = 5 * time.Second
+	// Longer than the test's bound: a control-command timeout must not
+	// rescue inspection that fails to yield at the execution deadline.
+	f.config.ControlTimeout = 30 * time.Second
 	// A separate process group stands in for a daemon-owned container. This
 	// test owns the reaper so an early attach exit cannot stop/reap it for us.
 	worker := exec.Command(os.Args[0], "-test.run=^TestRuntimeHelper$", "--", "workload")
@@ -1034,26 +1059,25 @@ func TestContainerDeadlineWhileInspectBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
-	p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/untrusted/workload"})
+	c := f.sandbox(t)
+	clock := newManualClock(c)
+	start := clock.now()
+	p, err := c.Run(context.Background(), f.spec, []string{"/untrusted/workload"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = p.Kill(); _ = waitProcess(t, p) })
 	waitForFile(t, filepath.Join(runtimeDir, "inspecting"))
+	clock.beforeDeadline(t, start, f.spec.Limits.Time)
 	if syscall.Kill(worker.Process.Pid, 0) != nil || syscall.Kill(leaf, 0) != nil {
 		t.Fatal("workload must be alive while initial inspection blocks")
 	}
-	done := make(chan error, 1)
-	go func() { done <- p.Wait() }()
-	select {
-	case err := <-done:
-		requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
-		if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) < f.spec.Limits.Time {
-			t.Fatalf("lost wall-time deadline: %v (%v)", time.Since(start), err)
-		}
-	case <-time.After(time.Until(start.Add(2 * time.Second))):
-		t.Fatalf("inspection delayed workload stop beyond 1s limit: elapsed=%v", time.Since(start))
+	clock.advance(time.Nanosecond)
+	// Preserve the original 2s total bound, including the 1s execution budget.
+	err = waitProcessWithin(t, p, 2*time.Second-f.spec.Limits.Time)
+	requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
+	if !errors.Is(err, context.DeadlineExceeded) || clock.now().Sub(start) != f.spec.Limits.Time {
+		t.Fatalf("lost execution deadline: %v (%v)", clock.now().Sub(start), err)
 	}
 	for _, pid := range []int{worker.Process.Pid, leaf} {
 		if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
@@ -1065,7 +1089,46 @@ func TestContainerDeadlineWhileInspectBlocks(t *testing.T) {
 func TestContainerDeadlineDuringCreation(t *testing.T) {
 	f := newFixture(t, "slow-create")
 	f.spec.Limits.Time = 500 * time.Millisecond
-	p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
+	f.config.ControlTimeout = 30 * time.Second
+	c := f.sandbox(t)
+	clock := newManualClock(c)
+	start := clock.now()
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		process Process
+		err     error
+	}
+	done := make(chan result, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		p, err := c.Run(ctx, f.spec, []string{"/bin/true"})
+		done <- result{p, err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(8 * time.Second):
+			t.Error("container creation did not stop within test deadline")
+		}
+	})
+	waitForFile(t, filepath.Join(f.root, "runtime", "created"))
+	clock.beforeDeadline(t, start, f.spec.Limits.Time)
+	select {
+	case r := <-done:
+		t.Fatalf("creation ended before its deadline: %v", r.err)
+	default:
+	}
+	clock.advance(time.Nanosecond)
+	var p Process
+	var err error
+	select {
+	case r := <-done:
+		p, err = r.process, r.err
+	case <-time.After(8 * time.Second):
+		t.Fatal("container creation ignored execution deadline")
+	}
 	requireClass(t, err, model.ExecutionTimedOut, model.ErrorTimeout)
 	if p != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("creation deadline lost")
