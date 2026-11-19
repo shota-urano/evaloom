@@ -163,12 +163,13 @@ func TestSettingsDefaultRunnerResetLeavesNewProposalQueued(t *testing.T) {
 	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions`); n != 0 {
 		t.Fatalf("queued proposal opened %d decisions", n)
 	}
-	// The existing Dashboard status API reports routing, but its contract
-	// has no proposal Runner availability field. Do not add one under Q221.
+	// Q229: status reports the unset Runner while the proposal waits.
 	status, body = getJSON(t, f, "/api/linear/status")
 	var view linearStatusView
 	if err := json.Unmarshal(body, &view); status != 200 || err != nil || len(view.Issues) != 1 ||
-		view.Issues[0].LastDecision == nil || *view.Issues[0].LastDecision != "routing" {
+		view.Issues[0].LastDecision == nil || *view.Issues[0].LastDecision != "routing" ||
+		view.RoutingRunnerProblem == nil || view.RoutingRunnerProblem.Reason != "unset" ||
+		view.RoutingRunnerProblem.Message != "振り分けの提案を動かす Runner が未設定です" {
 		t.Fatalf("Dashboard linear status=%d body=%s err=%v", status, body, err)
 	}
 	// Positive control: setting the Runner again makes this same proposal

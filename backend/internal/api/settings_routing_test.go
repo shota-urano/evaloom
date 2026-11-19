@@ -117,7 +117,7 @@ func TestLinearStatusShowsPollTeamProblem(t *testing.T) {
 		{linearintake.TeamMultiple, `"teamProblem":{"reason":"multiple","message":"照会先 Team（uslab）が複数ある"}`},
 	} {
 		recorder := httptest.NewRecorder()
-		getLinearStatus(f.db, nil, fixedTeamProblem(test.problem))(recorder, httptest.NewRequest("GET", "/api/linear/status", nil))
+		getLinearStatus(f.db, nil, f.settings, fixedTeamProblem(test.problem))(recorder, httptest.NewRequest("GET", "/api/linear/status", nil))
 		if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), test.want) {
 			t.Fatalf("problem %q: status=%d body=%s", test.problem, recorder.Code, recorder.Body)
 		}
@@ -130,7 +130,7 @@ func TestLinearStatusShowsPollTeamProblem(t *testing.T) {
 		t.Fatalf("PollOnce = %+v, %v", result, err)
 	}
 	recorder := httptest.NewRecorder()
-	getLinearStatus(f.db, nil, status)(recorder, httptest.NewRequest("GET", "/api/linear/status", nil))
+	getLinearStatus(f.db, nil, f.settings, status)(recorder, httptest.NewRequest("GET", "/api/linear/status", nil))
 	var view struct {
 		TeamProblem *struct{ Reason, Message string } `json:"teamProblem"`
 	}

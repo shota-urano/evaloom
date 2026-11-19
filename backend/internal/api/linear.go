@@ -227,18 +227,44 @@ type linearTeamProblemView struct {
 }
 
 type linearStatusView struct {
-	Teams       []linearTeamStatusView  `json:"teams"`
-	TeamProblem *linearTeamProblemView  `json:"teamProblem"`
-	Issues      []linearIssueStatusView `json:"issues"`
+	Teams                []linearTeamStatusView          `json:"teams"`
+	TeamProblem          *linearTeamProblemView          `json:"teamProblem"`
+	RoutingRunnerProblem *linearRoutingRunnerProblemView `json:"routingRunnerProblem"`
+	Issues               []linearIssueStatusView         `json:"issues"`
+}
+
+type linearRoutingRunnerProblemView struct {
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// routingRunnerProblem uses the same resolved setting as GET /api/settings
+// and the persisted Runner status (spec 15 5章, 6章, Q229).
+func routingRunnerProblem(ctx context.Context, db *sql.DB, settings LinearSettings) (*linearRoutingRunnerProblemView, error) {
+	id := settings.Settings(ctx).Routing.DefaultRunnerID
+	if id == nil {
+		return &linearRoutingRunnerProblemView{Reason: "unset", Message: "振り分けの提案を動かす Runner が未設定です"}, nil
+	}
+	status, err := store.RunnerStatus(ctx, db, *id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &linearRoutingRunnerProblemView{Reason: "not_found", Message: "振り分けの提案を動かす Runner が見つかりません"}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status == "offline" {
+		return &linearRoutingRunnerProblemView{Reason: "offline", Message: "振り分けの提案を動かす Runner が offline です"}, nil
+	}
+	return nil, nil
 }
 
 // getLinearStatus serves GET /api/linear/status (spec 15 5章): per Team the
 // last successful poll, the failure classification and the consecutive
 // failure count, and the Issues carrying the trigger label in the last poll
-// with their last decision. It reads only linear_poll_teams and
-// linear_issue_states; neither holds the API key or Linear response bodies.
+// with their last decision. Runner availability comes from settings and
+// runners. No API keys or Linear response bodies are included.
 // The polling Team problem comes from teams when it is set.
-func getLinearStatus(db *sql.DB, logger *slog.Logger, teams LinearTeamStatus) http.HandlerFunc {
+func getLinearStatus(db *sql.DB, logger *slog.Logger, settings LinearSettings, teams LinearTeamStatus) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		polled, err := store.ListLinearPollTeams(r.Context(), db)
 		if err != nil {
@@ -253,6 +279,11 @@ func getLinearStatus(db *sql.DB, logger *slog.Logger, teams LinearTeamStatus) ht
 		view := linearStatusView{
 			Teams:  make([]linearTeamStatusView, 0, len(polled)),
 			Issues: make([]linearIssueStatusView, 0, len(issues)),
+		}
+		view.RoutingRunnerProblem, err = routingRunnerProblem(r.Context(), db, settings)
+		if err != nil {
+			WriteError(w, logger, err)
+			return
 		}
 		if teams != nil {
 			if problem := teams.PollTeamProblem(); problem != "" {
