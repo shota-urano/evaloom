@@ -55,6 +55,8 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 - 照会では Issue だけを読み、コメントと添付は読まない（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.5）。
 - 照会先 Team の ID は、evaloomd の起動時に Linear の Team の一覧から1回引いて覚える。照会がエラーになったら、次の照会の前に引き直す（Q216）。
 - キーまたは名前が `uslab` の Team が見つからない、または複数あるときは取り込みを止める（照会しない）。Dashboard と `GET /api/linear/status` に「照会先 Team（uslab）が見つからない」または「照会先 Team（uslab）が複数ある」と出す（6章、Q216）。
+- Team の一覧の取得そのものが失敗したとき（API キーのファイルが無い・読めないときを含む）は、照会先 Team の ID がすでに分かっていれば、その Team の linear_poll_teams の last_error と consecutive_failures に記録する。evaloomd の起動後にまだ一度も Team の ID を引けていないときは記録する行が無いため、ログと通知（6章）だけにする（2026-11-18 本人決定、Q224）。
+- linear_poll_teams には今の照会先 Team の行だけを残す。照会先 Team の ID が変わったら、ほかの Team の行は同じトランザクションで消す（2026-11-18 本人決定、Q223。Q158 の「行を残す」を置き換える）。linear_issue_states の行は消さない。
 - Team は照会先を決めるためだけに使い、振り分けには使わない（本人決定 2）。
 
 ### 3.3 前回の照会結果の持ち方（linear_issue_states）
@@ -153,6 +155,7 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 - 保留したタスク: 判定に通れば、そのタスクに受け入れ条件を書き、Execution を作って `queued` にする。保留の理由が変わらなければ何もしない（同じ理由のコメントを2回出さない。[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2）。理由が変わったときは、新しい理由で保留し直す。
 - 保留したタスクの判定のやり直しで振り分けが決まらなくなった（振り分けのラベルが外された、など）ときは、タスクを `routing` に戻し、3.6.4 のとおり振り分けの提案を作り直す（2026-11-18 本人決定、Q219）。
 - 開いている提案を `superseded` にしたとき、提案が Runner で実行中（`running`）でも Runner に止めさせない。結果が届いたら記録だけ残してタスクには使わない（3.6.4、Q219）。
+- 保留したタスクを `routing` に戻すときは、tasks.intake_block_cause を NULL にする。保留を解いたことを知らせる専用のコメントは Linear に返さず、提案が `proposed` か `failed` になって判断待ちが開いたときの `decision_open` だけを返す（2026-11-18 本人決定、Q226）。
 - この判定のやり直しは「`ai-ready` が付いたまま更新されても再び起動しない」（requirements 6.2）の例外になる。起動済みのタスクを二重に起動するのではなく、まだ振り分けか起動ができていないタスクを進めるためである。
 - 本人は管理画面からこのタスクを中止できる（[`04-task-lifecycle.md`](./04-task-lifecycle.md) の中止）。
 
@@ -175,7 +178,7 @@ Evaloom は Webhook を使わず、Control Plane の中の Linear Poller が Lin
 ラベルで振り分け先が決まらないタスクは、保留ではなく振り分けの提案に回す（vision.md 3章）。提案の行の形と状態は [`02-data-model.md`](./02-data-model.md) 3.4 route_proposals に従う。
 
 1. route_proposals に行を作る（status=`queued`、trigger は 3.6 の表の値、seen_labels は判定したときの振り分けのラベル、candidates は判定の時点の振り分けの表の全行と、振り分け先の種類・ID・Profile の description）。ただし、既定の版（harnesses.default_profile_id）の無いスペシャルハーネスへ振り分ける行は candidates に入れない（2026-11-18 本人決定、Q218）。
-2. 全体設定 `routing.proposer` の model が null のときは、提案を作らない。route_proposals の行は Runner に渡さずに `failed` にする（error_class は NULL）。
+2. 全体設定 `routing.proposer` の model が null のとき、または candidates が0件のとき（routes が空、すべての行が既定の版の無いスペシャルハーネスへの振り分け）は、提案を作らない。route_proposals の行は Runner に渡さずに `failed` にする（error_class は NULL）。手順 5 のとおり提案なしの判断待ちを作る（candidates が0件のときは 2026-11-18 本人決定、Q222）。
 3. それ以外は、全体設定 `routing.defaultRunnerId` の Runner が claim で提案の仕事を受け取り（`job.kind=route_proposal`、[`01-architecture.md`](./01-architecture.md) 5.2）、鍵の無い `proposal` の隔離で AI に提案を作らせる（Q111）。AI に渡すのは、Issue のタイトルと本文（外から来た文として区切る、3.6.5）と candidates だけである。
 4. AI は結果を `out/proposal.json` に書く（形は Q202）。上限時間は Q201。Runner は結果を `POST /api/route-proposals/{id}/result` で返す。選んだラベルが candidates に無い、形が合わないときは `failed`（`contract_error`）にする。隔離の失敗は `sandbox_error`、上限時間を超えたら `timeout`、ミクロハーネスの認証ファイルが無いときは `config_error`、CLI の異常終了は `work_failed` にする。
 5. 提案が `proposed` になっても `failed` になっても、owner_decisions（kind=`route`、subject_id=提案の ID、basis=提案の ID）を作り、Linear に「管理画面で判断待ち」とリンクを返す（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.2）。`failed` のときは提案なしで、本人が候補から選ぶ。
@@ -276,7 +279,7 @@ requirements 17章の event_inbox（受信イベント）は作らない（Q66�
 
 | Method | Endpoint | 認証区分 | 内容 |
 |---|---|---|---|
-| GET | /api/linear/status | 本人用 | 照会の状況（照会先の Team、最後に成功した時刻、失敗の分類、続けて失敗した回数、照会先 Team（uslab）が見つからない・複数あること）と、`ai-ready` が付いている Issue の一覧と最後の判定。管理画面で取り込みの状況を確かめるため |
+| GET | /api/linear/status | 本人用 | 照会の状況（照会先の Team、最後に成功した時刻、失敗の分類、続けて失敗した回数、照会先 Team（uslab）が見つからない・複数あること）と、`ai-ready` が付いている Issue の一覧と最後の判定。管理画面で取り込みの状況を確かめるため。応答の形は下の注記 |
 | GET / POST / PATCH / DELETE | /api/routes | 本人用 | 振り分けの表（[`01-architecture.md`](./01-architecture.md) 5.1）。変更は 3.6.3 の判定のやり直しの印を付ける |
 | GET / PATCH | /api/settings | 本人用 | 全体設定の `linear.triggerLabel` / `linear.routingLabelPrefix` / `routing.proposer` / `routing.defaultRunnerId`（[`02-data-model.md`](./02-data-model.md) 3.8）。値は settings に保存し、再起動後も保つ（Q76） |
 | GET / POST | /api/decisions、/api/decisions/{id}/answer | 本人用 | 振り分けの判断（kind=`route`）を含む本人の判断待ち（[`01-architecture.md`](./01-architecture.md) 5.1、[`02-data-model.md`](./02-data-model.md) 5.6） |
@@ -286,7 +289,11 @@ requirements 17章の event_inbox（受信イベント）は作らない（Q66�
 - 応答の形とエラー形式は [`01-architecture.md`](./01-architecture.md) 5.3 に従う。
 - `PATCH /api/settings` は指定したキーだけを置き換え、省略したキーは残す。[`02-data-model.md`](./02-data-model.md) 3.8 の表に無いキーは 400 にする。Linear のキーの値が null・空文字列・空白だけのときは 400（`<キー>` / `required`）にする。1つでも拒否したら何も変えず、settings にも audit_logs にも書かない（Q76）。
 - 値を変えたら、変わったキーごとに audit_logs へ1行書く（actor `owner`、action `settings.update`、target_type `settings`、target_id はキー、detail は変更前後の値）。settings の更新と audit_logs の書き込みは1つのトランザクションで行う（Q76）。
+- `routing.defaultRunnerId` に null を送ると、未設定に戻す（settings の行を消す）。空文字列・空白だけの値は今までどおり 400 にする。Linear のキーと違い、null は 400 にしない（2026-11-18 本人決定、Q221）。
+- `routing.proposer` は形（`microHarness` が文字列、`model` が文字列か null）だけを検証する。`microHarness` を Adapter の表と照らし合わせない（2026-11-18 本人決定、Q227）。
+- settings と `PATCH /api/settings` に `linear.teamId` は無い（Q216）。ほかの4キー（`linear.triggerLabel`・`linear.routingLabelPrefix`・`routing.proposer`・`routing.defaultRunnerId`）の PATCH は残す（Q227）。
 - `linear.routingLabelPrefix` と `linear.triggerLabel` の変更は、Q160 の検証に従う。
+- `GET /api/linear/status` の応答は `{ "teams": [...], "teamProblem": {...} | null, "issues": [...] }` とする（2026-11-18 本人決定、Q225）。`teams` の各要素は `teamId`・`lastSuccessAt`・`lastError`・`consecutiveFailures`（linear_poll_teams の行。Q223 により今の照会先 Team の行だけ）。`teamProblem` は照会先 Team（uslab）が決まらないときだけ `{ "reason": "not_found" | "multiple", "message": "<画面に出す文>" }` で、決まっていれば null。`issues` の各要素は `linearIssueId`・`issueIdentifier`・`teamId`・`lastDecision`・`lastDecisionAt`。
 - タスクの API（`GET /api/tasks` 等）の応答に `source`、`intakeBlockCause`、`linear`（識別子と URL）を足す。
 - Linear から Evaloom へ届く要求は無い。外から呼ばれる API は追加しない。
 
@@ -298,7 +305,8 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 |---|---|
 | 照会の途中（ページの途中を含む）で Linear API が失敗 | その回の照会を捨て、判定もしない。linear_poll_teams の last_error と consecutive_failures を更新し、次の間隔で照会し直す |
 | 5回続けて失敗した（1分おきの照会で5分にあたる。2026-11-08 決定） | Dashboard のエラー状況に出す。5回目の失敗の分類が `auth` 以外のときだけ、macOS 通知で本人に知らせる。5回目の失敗の分類が `auth` のときはこの通知を出さず、下の認証エラーの共通の抑止だけで扱う（2026-11-08 決定、Q86）。照会は続ける |
-| API キーのファイルが無い・読めない・権限が 0600 でない | 照会を始めない。照会先の Team の last_error を `auth` にし、Dashboard の取り込み状況に出す。理由（ファイルが無い・権限が違う）は値を含めずにログにも出す（2026-11-08 決定）。認証エラーとして扱い、下の Linear API の認証エラーと同じく共通の抑止に従って macOS 通知を出す（2026-11-08 決定、Q86） |
+| API キーのファイルが無い・読めない・権限が 0600 でない | 照会を始めない。照会先の Team の ID が分かっていれば、その Team の last_error を `auth` にし（まだ分かっていなければログと通知だけ、Q224）、Dashboard の取り込み状況に出す。理由（ファイルが無い・権限が違う）は値を含めずにログにも出す（2026-11-08 決定）。認証エラーとして扱い、下の Linear API の認証エラーと同じく共通の抑止に従って macOS 通知を出す（2026-11-08 決定、Q86） |
+| Team の一覧の取得が失敗した | 照会しない。照会先 Team の ID が分かっていれば、その Team の linear_poll_teams の last_error と consecutive_failures を更新する。evaloomd の起動後にまだ一度も引けていなければ、ログと通知（認証エラーなら下の共通の抑止に従う）だけにする。次の照会の前に引き直す（Q224） |
 | キーまたは名前が `uslab` の Team が見つからない、または複数ある | 取り込みを止める（照会しない）。Dashboard の取り込み状況と `GET /api/linear/status` に「照会先 Team（uslab）が見つからない」または「照会先 Team（uslab）が複数ある」と出す。Team の一覧は次の照会の前に引き直す（Q216） |
 | settings に保存した値が空・空白だけ、または読めない | そのキーは既定値を使い、Control Plane のログに出す（Q76） |
 | Linear API の認証エラー | last_error=`auth`。API キーの値はログに出さない。macOS 通知（[`12-notification.md`](./12-notification.md) 3.5 の Dashboard を開く通知）で本人に知らせる。通知の抑止は送信側（[`16-linear-feedback.md`](./16-linear-feedback.md) 3.4.3 の送信 Worker）と共通の1つで、照会と送信の両方が認証エラーになっても通知は1回だけ出し、照会か送信のどちらかが1回成功したら解く（2026-11-08 決定、Q84）。照会は間隔ごとに続ける |
@@ -308,7 +316,7 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | 振り分けが決まらない | 振り分けの提案に回す（3.6.4）。エラーとしては扱わない |
 | 受け入れ条件・既定の版で保留 | タスクを保留にし、受け入れ条件のときはコメントを要求する。エラーとしては扱わない |
 | 振り分けの提案の失敗（`sandbox_error` / `timeout` / `contract_error` / `config_error` / `work_failed`） | 提案を `failed` にし、提案なしの判断待ちを作る（3.6.4）。本人が候補から選ぶ |
-| `routing.defaultRunnerId` が未設定・Runner が offline | 提案は `queued` のまま待つ。Dashboard に、振り分けの提案を動かす Runner が無いことを出す |
+| `routing.defaultRunnerId` が未設定（null で戻した場合を含む）・Runner が offline | 提案は `queued` のまま待つ。Dashboard に、振り分けの提案を動かす Runner が無いことを出す |
 | 同じ Issue に終端状態でないタスクがすでにある状態で付与を検出 | 新しいタスクを作らない。last_decision=`skipped_active_task` |
 
 ## 7. スコープ外
@@ -354,11 +362,15 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 - [ ] [Backend] 削除・アーカイブした Issue の記録を残す（3.4、3.7、3.8 の removed_at、Q78）
   - 受け入れ基準: 削除・アーカイブを検出すると中止の経路に入り、linear_issue_states の行が残って ai_ready=0・removed_at が入り、attach_seq が変わらない; その Issue が ai-ready 付きのまま一覧に再び現れると、行が ai_ready=1・removed_at が NULL・last_decision=skipped_restored になり、タスクも Execution も作られない; 状態がキャンセルのまま再び現れても同じになる; その後に ai-ready を外した照会で ai_ready=0 になり、付け直した照会で attach_seq が1増えて新しい冪等キーのタスクができる
 - [ ] [Backend] 照会先 Team（uslab）の決め打ちと全体設定（linear.triggerLabel / linear.routingLabelPrefix / routing.proposer / routing.defaultRunnerId）を settings に保存する（3.2、3.4、5章、6章、Q76、Q160、Q216）
-  - 受け入れ基準: キーまたは名前が uslab（大文字小文字を区別しない）の Team がちょうど1つあれば、その Team ID で照会する; Team ID は evaloomd の起動時に1回だけ引き、照会が成功している間は引き直さない; 照会がエラーになった後の次の照会の前に Team ID を引き直す; uslab の Team が見つからない・複数あるときは照会せず、Dashboard と GET /api/linear/status に「照会先 Team（uslab）が見つからない」「照会先 Team（uslab）が複数ある」が出る; settings と GET / PATCH /api/settings に linear.teamId が無く、PATCH で linear.teamId を送ると未知のキーとして 400 になる; PATCH /api/settings で変えた値が、Control Plane を再起動した後の GET /api/settings と Linear Poller の照会に使われる; settings に行が無いキーは既定値になる; 値を変えると変わったキーごとに audit_logs に settings.update の行が1つでき、detail に変更前後の値が入る; 同じ値で PATCH しても audit_logs に行ができない; 未知のキー、null・空文字列・空白だけの値は 400 になり、settings と audit_logs が変わらない; 2つのキーのうち1つが不正な PATCH では、正しいほうのキーも変わらない; routes のラベルが合わなくなる接頭辞の変更が 422 になる
+  - 受け入れ基準: キーまたは名前が uslab（大文字小文字を区別しない）の Team がちょうど1つあれば、その Team ID で照会する; Team ID は evaloomd の起動時に1回だけ引き、照会が成功している間は引き直さない; 照会がエラーになった後の次の照会の前に Team ID を引き直す; uslab の Team が見つからない・複数あるときは照会せず、Dashboard と GET /api/linear/status に「照会先 Team（uslab）が見つからない」「照会先 Team（uslab）が複数ある」が出る; settings と GET / PATCH /api/settings に linear.teamId が無く、PATCH で linear.teamId を送ると未知のキーとして 400 になる; PATCH /api/settings で変えた値が、Control Plane を再起動した後の GET /api/settings と Linear Poller の照会に使われる; settings に行が無いキーは既定値になる; 値を変えると変わったキーごとに audit_logs に settings.update の行が1つでき、detail に変更前後の値が入る; 同じ値で PATCH しても audit_logs に行ができない; 未知のキー、Linear のキーの null・空文字列・空白だけの値は 400 になり、settings と audit_logs が変わらない; 2つのキーのうち1つが不正な PATCH では、正しいほうのキーも変わらない; routes のラベルが合わなくなる接頭辞の変更が 422 になる
 - [ ] [Backend] 既定の版の無いスペシャルハーネスを振り分けの提案の候補から外す（3.6.4、Q218）
   - 受け入れ基準: harnesses.default_profile_id が無いスペシャルハーネスへ振り分ける routes の行が route_proposals.candidates に入らない; 既定の版を設定した後に作る提案では candidates に入る; Project へ振り分ける行と既定の版のあるスペシャルハーネスの行は今までどおり入る
 - [ ] [Backend] 保留のタスクが判定のやり直しで routing に戻ったら振り分けの提案を作り直す（3.6.3、Q219）
   - 受け入れ基準: 保留中のタスクの Issue から振り分けのラベルを外して更新時刻が進むと、タスクが routing になり、queued の route_proposals と、提案が proposed か failed になった後の kind=route の判断待ちができる; 同じ Issue でラベルが変わらない照会では提案が増えない; running の提案を superseded にしても Runner に中止を求めず、後から届いた結果は記録だけ残ってタスクに使われない
+- [ ] [Backend] `routing.defaultRunnerId` を PATCH /api/settings の null で未設定に戻せるようにする（5章、Q221）
+  - 受け入れ基準: routing.defaultRunnerId を設定した後に null を PATCH すると 200 になり、settings の行が消えて GET /api/settings で未設定になる; audit_logs に settings.update の行が1つでき、detail の変更後の値が null になる; 未設定のときに null を PATCH しても audit_logs に行ができない; 未設定に戻した後に作った振り分けの提案は queued のまま待ち、Dashboard に提案を動かす Runner が無いことが出る; 空文字列・空白だけの値は 400 のまま; Linear のキー（linear.triggerLabel / linear.routingLabelPrefix）の null は今までどおり 400 になる
+- [ ] [Backend] candidates が0件の振り分けの提案を Runner に渡さず failed にする（3.6.4、Q222）
+  - 受け入れ基準: routes が空のとき、振り分けが決まらない Issue の route_proposals が Runner に渡されずに failed（error_class NULL）になる; routes のすべての行が既定の版の無いスペシャルハーネスへの振り分けのときも同じになる; どちらでも kind=route の提案なしの判断待ちができ、linear_outbox に decision_open の行ができる; claim の応答に job.kind=route_proposal が出ない; candidates が1件以上なら今までどおり queued で Runner に渡る
 - [ ] [Backend] `GET /api/linear/status`
   - 受け入れ基準: 照会先の Team の最後に成功した時刻と失敗の分類、ai-ready が付いている Issue と最後の判定が返る; 応答に API キーの値が含まれない
 - [ ] [Frontend] Settings に起動の合図のラベル名、振り分けのラベルの接頭辞、振り分けを提案する AI と Runner。Dashboard に Linear の取り込みの状況
@@ -371,7 +383,7 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | # | 内容 | 案 |
 |---|---|---|
 | Q157 | 受け入れ条件の要否は振り分け先の Profile で決まるため、振り分けが決まらないタスクの受け入れ条件をいつ判定するか | 決定（2026-11-10 本人、案を採用）: 振り分け先が決まった後（ラベルで決まったとき、本人が振り分けを承認したとき、Linear でラベルを付けて決まったとき）に判定する。振り分けを待つ間は判定しない。承認の後に受け入れ条件が無くて保留になったら、記入を求めるコメントを返す |
-| Q158 | 全体設定 `linear.teamId` を変えたとき、前の Team の Issue と、それに対応する終端でないタスクをどう扱うか | 決定（2026-11-10 本人、案を採用）: 前の Team の Issue は照会の対象から外れる。終端でないタスクは中止せず、そのまま進める（Linear への返却も続ける）。ただし以後の `ai-ready` の取り外しとキャンセルは検出しない。前の Team の linear_issue_states と linear_poll_teams の行は消さずに残す。変更の前に、終端でないタスクがあることを管理画面で示す |
+| Q158 | 全体設定 `linear.teamId` を変えたとき、前の Team の Issue と、それに対応する終端でないタスクをどう扱うか | 決定（2026-11-10 本人、案を採用）: 前の Team の Issue は照会の対象から外れる。終端でないタスクは中止せず、そのまま進める（Linear への返却も続ける）。ただし以後の `ai-ready` の取り外しとキャンセルは検出しない。前の Team の linear_issue_states と linear_poll_teams の行は消さずに残す。変更の前に、終端でないタスクがあることを管理画面で示す。2026-11-18 見直し: `linear.teamId` は Q216 で無くなった。linear_poll_teams は今の照会先 Team の行だけを残し、ほかの Team の行は消す（Q223）。linear_issue_states の行は残す |
 | Q159 | 振り分けを待つ間に本人が Linear でラベルを変えたが、まだ決まらない（2つ以上、知らないラベル）とき、提案を作り直すか | 決定（2026-11-10 本人、案を採用）: 作り直さない。開いている判断待ちをそのまま残し、本人が管理画面で選ぶ。提案は判定したときのラベル（seen_labels）で作ったことを画面に示す |
 | Q160 | 振り分けのラベルの接頭辞と起動の合図のラベル名を変えたときの整合 | 決定（2026-11-10 本人、案を採用）: 変更の後に、routes に接頭辞で始まらないラベルが残るなら 422 で拒否する（先に振り分けの表を直す）。起動の合図のラベル名が振り分けのラベルの接頭辞で始まる値は 400 で拒否する（`ai-ready` を振り分けのラベルとして数えず、Evaloom が付けないようにするため） |
 | Q201 | 振り分けの提案の上限時間（09 の 3.2 と 05 の 3.13 がこの文書に任せていたが、値が無かった。04 の 3.3.1 の claim の応答の例は 300 秒） | 決定（2026-11-10 本人、案を採用）: 300 秒の固定値（実装の定数）とする。全体設定のキーは足さない。超えたら `failed`（`timeout`）にし、提案なしの判断待ちを作る |
@@ -380,3 +392,10 @@ Linear GraphQL API で使う操作（照会先の Team の `ai-ready` 付き Iss
 | Q217 | 照会先 Team を変えた（戻した）直後の最初の照会で、前回 `ai_ready=1` のまま一覧から消えた Issue をどう扱うか（evaloom-dcj.4） | 決定（2026-11-18 本人）: 今のまま。最初の照会でも、一覧から消えた Issue は個別に取り直して中止を判定する |
 | Q218 | 既定の版の無いスペシャルハーネスを振り分けの提案の candidates に入れるか（description の値が決まっていなかった。evaloom-dcj.5） | 決定（2026-11-18 本人）: candidates から外す |
 | Q219 | 保留のタスクが判定のやり直しで routing に戻ったとき、と実行中の提案を superseded にしたときの Runner（evaloom-dcj.7） | 決定（2026-11-18 本人）: routing に戻ったら振り分けの提案を作り直す。superseded にした実行中の提案の Runner は止めさせない（今のまま。結果は記録だけ） |
+| Q221 | `routing.defaultRunnerId` を一度設定した後に未設定へ戻せるか（5章は null を 400 にするのを Linear のキーだけに定めていた。実装は null を 400 にしていた。evaloom-dcj.10） | 決定（2026-11-18 本人）: PATCH /api/settings の null で未設定に戻せる（実装の変更が要る） |
+| Q222 | 振り分けの提案の candidates が0件のとき（routes が空、すべての行が既定の版の無いスペシャルハーネス）の扱い（実装は空配列のまま Runner に渡していた。evaloom-dcj.14） | 決定（2026-11-18 本人）: Runner に渡さず `failed`（error_class NULL）にし、提案なしの判断待ちを作る。`routing.proposer` の model が null のときと同じ扱い（実装の変更が要る） |
+| Q223 | 照会先 Team 以外の Team の linear_poll_teams の行を消すか（実装の store.SyncLinearPollTeam は消しており、Q158 の「行を残す」と食い違っていた。evaloom-dcj.10） | 決定（2026-11-18 本人）: 今のまま消す。Q158 の「行を残す」を直す。linear_issue_states の行は残す |
+| Q224 | Team の一覧の取得そのものが失敗したときの記録先（evaloom-dcj.10 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。照会先 Team の ID が分かっていればその Team の last_error と consecutive_failures に記録する。起動後に一度も引けていなければ、ログと通知だけにする |
+| Q225 | `GET /api/linear/status` の応答の形（evaloom-dcj.11 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。`teams`・`teamProblem`（`reason`・`message`、決まっていれば null）・`issues`（5章の注記） |
+| Q226 | 保留のタスクを routing に戻すときの intake_block_cause と、Linear への知らせ方（evaloom-dcj.15 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。intake_block_cause を NULL にする。Linear へは判断待ちが開いたときの `decision_open` だけを返す |
+| Q227 | #115（Q216）の後の PATCH /api/settings の範囲と `routing.proposer` の検証（evaloom-dcj.10 で実装側が決めた値） | 決定（2026-11-18 本人）: 実装どおり。`linear.teamId` だけを消し、ほかの4キーの PATCH は残す。`routing.proposer` は形だけを検証し、`microHarness` を Adapter の表と照らさない |
