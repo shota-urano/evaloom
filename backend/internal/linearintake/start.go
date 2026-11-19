@@ -218,8 +218,8 @@ func (s *TaskStarter) StartLinearTask(ctx context.Context, tx *sql.Tx, issue lin
 
 // insertRouteProposal writes the queued proposal of spec 15 3.6.4 step 1
 // with the routes table of now as candidates. Without a routing.proposer
-// model it is failed at once without a Runner and a route decision without a
-// proposal is opened (steps 2 and 5).
+// model or any candidates it is failed at once without a Runner and a route
+// decision without a proposal is opened (steps 2 and 5, Q222).
 func insertRouteProposal(ctx context.Context, tx *sql.Tx, taskID, proposalID string, r Routing, stamp string) error {
 	candidates, err := store.RouteCandidatesTx(ctx, tx)
 	if err != nil {
@@ -233,8 +233,8 @@ func insertRouteProposal(ctx context.Context, tx *sql.Tx, taskID, proposalID str
 	if err != nil {
 		return err
 	}
-	if store.RouteProposerModelIsNull(settings) {
-		return store.FailRouteProposalWithoutProposerTx(ctx, tx, proposalID)
+	if len(candidates) == 0 || store.RouteProposerModelIsNull(settings) {
+		return store.FailRouteProposalWithoutRunnerTx(ctx, tx, proposalID)
 	}
 	return nil
 }

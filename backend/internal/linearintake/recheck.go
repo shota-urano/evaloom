@@ -129,8 +129,9 @@ func (s *TaskStarter) RecheckHeldTask(ctx context.Context, tx *sql.Tx, issue lin
 // proposal still open is superseded first and its route decision withdrawn
 // (superseded), so the task keeps at most one open route decision; a running
 // one is not stopped at the Runner and its later result is only recorded.
-// Without a routing.proposer model the new proposal fails at once and the
-// route decision opens (steps 2 and 5); otherwise a Runner claims it.
+// Without a routing.proposer model or any candidates the new proposal fails
+// at once and the route decision opens (steps 2 and 5); otherwise a Runner
+// claims it.
 func (s *TaskStarter) remakeRouteProposal(ctx context.Context, tx *sql.Tx, taskID string, r Routing, now time.Time, stamp string) (string, error) {
 	if _, err := store.SupersedeRouteProposalsTx(ctx, tx, taskID); err != nil {
 		return "", err

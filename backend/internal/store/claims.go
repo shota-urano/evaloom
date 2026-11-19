@@ -204,32 +204,11 @@ func claimRouteProposal(ctx context.Context, tx *sql.Tx, runnerID string, settin
 	job := RouteProposalJob{Kind: "route_proposal"}
 	p := &job.Proposal
 	var candidates string
-	if RouteProposerModelIsNull(settings) {
-		// Spec 15 3.6.4 step 2: without a model the proposals are never
-		// handed to a Runner. The setting may have been cleared after they
-		// were queued.
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM route_proposals WHERE status = 'queued' ORDER BY created_at, id`)
-		if err != nil {
-			return nil, err
-		}
-		var ids []string
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			ids = append(ids, id)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, err
-		}
-		for _, id := range ids {
-			if err := FailRouteProposalWithoutProposerTx(ctx, tx, id); err != nil {
-				return nil, err
-			}
-		}
-		return nil, nil
+	// Spec 15 3.6.4 step 2: fail proposals without a model or candidates
+	// before handing out work. The model may have been cleared after queuing;
+	// empty candidates may have been queued before Q222 was implemented.
+	if err := failUnrunnableRouteProposals(ctx, tx, settings); err != nil {
+		return nil, err
 	}
 	err := tx.QueryRowContext(ctx, `SELECT rp.id, rp.task_id, rp.trigger, rp.candidates, t.title, t.body
 		FROM route_proposals rp JOIN tasks t ON t.id = rp.task_id
@@ -250,6 +229,33 @@ func claimRouteProposal(ctx context.Context, tx *sql.Tx, runnerID string, settin
 	p.Proposer = RouteProposerJSON(settings)
 	p.TimeoutSec = RouteProposalTimeoutSec
 	return &job, nil
+}
+
+func failUnrunnableRouteProposals(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM route_proposals
+			WHERE status = 'queued' AND (? OR json_array_length(candidates) = 0)
+			ORDER BY created_at, id`, RouteProposerModelIsNull(settings))
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := FailRouteProposalWithoutRunnerTx(ctx, tx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type pendingCandidate struct {
