@@ -138,12 +138,13 @@ type Settings struct {
 }
 
 // SettingsPatch holds the keys a PATCH /api/settings supplies; nil keeps the
-// current value. The caller has already rejected null and blank values.
+// current value. DefaultRunnerID points to nil to clear the setting (Q221).
+// The caller has already rejected other null values and blank strings.
 type SettingsPatch struct {
 	TriggerLabel       *string
 	RoutingLabelPrefix *string
 	Proposer           *RouteProposer
-	DefaultRunnerID    *string
+	DefaultRunnerID    **string
 }
 
 // ErrTriggerLabelHasPrefix rejects settings in which linear.triggerLabel
@@ -202,10 +203,10 @@ func (s *LabelSettings) UpdateLinearLabels(ctx context.Context, patch LabelsPatc
 	return settings.Linear, err
 }
 
-// UpdateSettings applies patch and returns the resulting settings. Each key
-// whose value changes gets its settings row and one settings.update audit
-// row with the values before and after, all in one transaction (spec 15
-// 5章, spec 02 3.8, Q76). A value equal to the current one writes nothing.
+// UpdateSettings applies patch and returns the resulting settings. Each
+// changed key updates or removes its settings row and gets one
+// settings.update audit row with the values before and after, all in one
+// transaction (spec 15 5章, spec 02 3.8, Q76, Q221). An unchanged value writes nothing.
 // The label keys are checked against each other and the routes table as
 // Q160 decides; a rejected patch writes nothing.
 func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch) (_ Settings, err error) {
@@ -242,10 +243,12 @@ func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch)
 		next.Routing.Proposer = *patch.Proposer
 		changes = append(changes, change{SettingRouteProposer, current.Routing.Proposer, next.Routing.Proposer})
 	}
-	if patch.DefaultRunnerID != nil && (current.Routing.DefaultRunnerID == nil || *patch.DefaultRunnerID != *current.Routing.DefaultRunnerID) {
-		id := *patch.DefaultRunnerID
-		next.Routing.DefaultRunnerID = &id
-		changes = append(changes, change{SettingDefaultRunnerID, current.Routing.DefaultRunnerID, id})
+	if patch.DefaultRunnerID != nil {
+		id, before := *patch.DefaultRunnerID, current.Routing.DefaultRunnerID
+		if (id == nil) != (before == nil) || (id != nil && before != nil && *id != *before) {
+			next.Routing.DefaultRunnerID = id
+			changes = append(changes, change{SettingDefaultRunnerID, before, id})
+		}
 	}
 	if len(changes) == 0 {
 		return current, tx.Commit()
@@ -254,12 +257,18 @@ func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch)
 		return Settings{}, err
 	}
 	for _, c := range changes {
-		encoded, err := json.Marshal(c.after)
-		if err != nil {
-			return Settings{}, err
-		}
-		if err := store.PutSetting(ctx, tx, c.key, string(encoded)); err != nil {
-			return Settings{}, err
+		if c.key == SettingDefaultRunnerID && next.Routing.DefaultRunnerID == nil {
+			if err := store.DeleteSetting(ctx, tx, c.key); err != nil {
+				return Settings{}, err
+			}
+		} else {
+			encoded, err := json.Marshal(c.after)
+			if err != nil {
+				return Settings{}, err
+			}
+			if err := store.PutSetting(ctx, tx, c.key, string(encoded)); err != nil {
+				return Settings{}, err
+			}
 		}
 		if _, err := store.RecordAuditLog(ctx, tx, store.AuditLog{Actor: "owner", Action: "settings.update",
 			TargetType: "settings", TargetID: c.key,

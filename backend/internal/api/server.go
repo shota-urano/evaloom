@@ -76,7 +76,7 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("GET /api/settings", getSettings(settings))
 	mux.HandleFunc("PATCH /api/settings", patchSettings(settings, logger))
 	teams, _ := settings.(LinearTeamStatus)
-	mux.HandleFunc("GET /api/linear/status", getLinearStatus(db, logger, teams))
+	mux.HandleFunc("GET /api/linear/status", getLinearStatus(db, logger, settings, teams))
 	mux.HandleFunc("GET /api/tasks", listTasks(db, logger))
 	mux.HandleFunc("GET /api/notification-failures", listNotificationFailures(db, logger))
 	mux.HandleFunc("POST /api/tasks", createTask(db, logger))

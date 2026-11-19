@@ -45,3 +45,12 @@ func PutSetting(ctx context.Context, tx *sql.Tx, key, value string) error {
 	}
 	return nil
 }
+
+// DeleteSetting restores a setting's default by removing its row (spec 02
+// 3.8, spec 15 Q221). The caller audits the change in the same transaction.
+func DeleteSetting(ctx context.Context, tx *sql.Tx, key string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("store: delete setting %s: %w", key, err)
+	}
+	return nil
+}
