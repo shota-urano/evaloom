@@ -289,7 +289,7 @@ function StageRow({ label, stage, work }: { label: string; stage: ProfileProgram
       </th>
       <td className="px-3 py-2 whitespace-nowrap">{timeout === undefined ? '-' : `${timeout} 秒`}</td>
       <td className="px-3 py-2">
-        {work ? <span className="text-muted-foreground">外への接続なし（作業の段）</span> : <List values={stage?.network?.allow} empty="許可なし" />}
+        {work ? <span className="text-muted-foreground">モデルの API だけ（作業の段、契約 6.2）</span> : <List values={stage?.network?.allow} empty="許可なし" />}
       </td>
       <td className="px-3 py-2">
         {work || !stage?.secrets || stage.secrets.length === 0 ? (

@@ -52,7 +52,7 @@ function api(harness: Harness, onPatch?: (r: Recorded) => Response) {
 afterEach(() => window.history.pushState(null, '', '/'))
 
 it('Harness はリポジトリの情報だけを登録する', async () => {
-  const fake = renderAt('/harnesses/_new', (r) => (r.method === 'POST' ? json(201, HARNESS) : json(200, page([]))))
+  const fake = renderAt('/harnesses/_new', (r) => (r.method === 'POST' ? json(201, HARNESS) : api(HARNESS)(r)))
   await userEvent.type(await screen.findByLabelText('Harness ID'), 'engineer')
   await userEvent.type(screen.getByLabelText('名称'), 'Engineer')
   await userEvent.type(screen.getByLabelText('ハーネスリポジトリのパス'), '/repos/engineer')
@@ -81,6 +81,7 @@ it('詳細に版の宣言（段ごとの上限時間・許可宛先・鍵の名�
   expect(within(stages).getByText('120 秒')).toBeTruthy()
   expect(within(stages).getByText('api.github.com:443')).toBeTruthy()
   expect(within(stages).getByText('github_token')).toBeTruthy()
+  expect(within(stages).getByText(/モデルの API だけ/)).toBeTruthy()
   const approvals = screen.getByRole('table', { name: '承認が要る操作' })
   expect(within(approvals).getByText('省ける（waivable: true）')).toBeTruthy()
   expect(within(approvals).getByText('省けない（waivable: false）')).toBeTruthy()

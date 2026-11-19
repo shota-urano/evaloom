@@ -179,6 +179,9 @@ test('スペシャルハーネスを登録し、版の登録・409・宣言の�
   await expect(publish).toContainText('github_token')
   await expect(publish).toContainText('書き込み（write）')
   await expect(stages.locator('tr').filter({ hasText: '作業（work）' })).toContainText('600 秒')
+  // 作業の段の外への接続は契約 6.2 のとおりモデルの API だけ。
+  await expect(stages.locator('tr').filter({ hasText: '作業（work）' })).toContainText('モデルの API だけ')
+  await expect(stages.locator('tr').filter({ hasText: '作業（work）' })).not.toContainText('外への接続なし')
   await expect(stages.locator('tr').filter({ hasText: '作業（work）' })).toContainText('claude-e2e-model')
   await expect(stages.locator('tr').filter({ hasText: '確かめる（check）' })).toContainText('60 秒')
   const approvals = page.getByRole('table', { name: '承認が要る操作' })
