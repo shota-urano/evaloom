@@ -1,6 +1,6 @@
 @import 'tailwindcss';
 
-/* shadcn/ui（new-york, neutral）のテーマ変数。管理画面は Mac mini 本体のブラウザ専用（13 4節）。 */
+/* shadcn/ui（new-york, neutral）のテーマ変数。接続元は Mac mini 本体のブラウザと tailnet の中の本人の端末（13 4節）。 */
 @custom-variant dark (&:is(.dark *));
 
 :root {
