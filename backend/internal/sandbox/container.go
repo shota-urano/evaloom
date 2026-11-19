@@ -65,6 +65,7 @@ type ContainerConfig struct {
 
 type Container struct {
 	config     ContainerConfig
+	clock      executionClock
 	allow      map[string]bool
 	env        []string
 	home       string
@@ -82,7 +83,7 @@ func NewContainer(config ContainerConfig) (*Container, error) {
 		config.ControlTimeout <= 0 || config.RequiresMacOS {
 		return nil, &Error{Op: "explicit Linux runtime, image and control timeout required"}
 	}
-	c := &Container{config: config, allow: make(map[string]bool)}
+	c := &Container{config: config, clock: wallClock{}, allow: make(map[string]bool)}
 	var err error
 	if c.home, err = resolve(config.HostHome); err != nil {
 		return nil, &Error{Op: "invalid host HOME protection"}
@@ -357,8 +358,8 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		}
 		return nil, err
 	}
-	limit := time.Now().Add(spec.Limits.Time)
-	ctx, cancel := context.WithDeadline(ctx, limit)
+	limit := c.clock.now().Add(spec.Limits.Time)
+	ctx, cancel := c.clock.withDeadline(ctx, limit)
 	fail := func(op string) (Process, error) {
 		cause := ctx.Err()
 		cancel()
@@ -450,7 +451,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		// Transfer ownership at the start boundary, before supervision begins.
 		// Cancellation racing with start is handled by the caller's Stop/Kill,
 		// rather than a competing forced removal from the preparation context.
-		processCtx, processCancel := context.WithDeadline(context.WithoutCancel(ctx), limit)
+		processCtx, processCancel := c.clock.withDeadline(context.WithoutCancel(ctx), limit)
 		cancel()
 		ctx, cancel = processCtx, processCancel
 	}
