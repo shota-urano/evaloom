@@ -178,9 +178,9 @@ Docker DesktopまたはLinuxのDocker、ホストのGo・Git・Python 3、IPv4�
 ## 3.1 実CLIによる設定環境の分離テスト
 
 `TestModelConfigurationIsolation`は`security_model`タグを付けたときだけ実行する。
-通常の`make verify`には含めない。認証情報を用意したMac miniで、CLIの更新時と
-Sandbox設定の変更時に実行する。タグを付けて実行した場合は、前提の不足を
-「実行不能」として失敗させる。`t.Skip`や偽CLIへの切り替えは使わない。
+通常の`make verify`では両CLIを理由付きでスキップする。`go test -v`で理由を確認できる。
+認証情報を用意したMac miniで、CLIの更新時とSandbox設定の変更時に実行する。タグを付けて実行した場合は、前提の不足を
+「実行不能」として失敗させる。明示的に有効化した試験ではスキップせず、偽CLIへの切り替えも行わない。
 
 ### 準備と実行
 
@@ -198,7 +198,10 @@ docker build -f backend/internal/securitytest/Dockerfile.boundary \
   -t evaloom-security-proxy:local backend/internal/securitytest
 
 # DockerサーバのCPU種別に合わせ、製品のプロキシをビルドする。
-model_test_tmp=$(mktemp -d /tmp/evaloom-model.XXXXXX)
+mkdir -p .cache/model-test
+model_test_tmp=$(mktemp -d "$PWD/.cache/model-test/run.XXXXXX")
+mkdir -p "$model_test_tmp/tmp"
+export TMPDIR="$model_test_tmp/tmp"
 model_test_arch=$(docker version --format '{{.Server.Arch}}')
 cd backend
 GOOS=linux GOARCH="$model_test_arch" CGO_ENABLED=0 \
@@ -209,18 +212,14 @@ export EVALOOM_SECURITY_MODEL_IMAGE=evaloom-security-model:local
 export EVALOOM_SECURITY_MODEL_PROXY_IMAGE=evaloom-security-proxy:local
 export EVALOOM_SECURITY_MODEL_PROXY_BINARY="$model_test_tmp/proxy"
 
-# モデルIDと認証は実行環境に合わせ、DESTINATIONSはAdapter内の定数と一致させる。
+# モデルIDと認証は実行環境に合わせる。宛先はAdapterの宣言を使う。
 # AUTH_JSONには本人が普段使う認証ではなく、Evaloom専用の認証JSONを渡す。
 export EVALOOM_SECURITY_CODEX_MODEL='<正式なモデルID>'
 export EVALOOM_SECURITY_CODEX_AUTH_JSON='<専用auth.jsonの内容>'
-export EVALOOM_SECURITY_CODEX_DESTINATIONS='chatgpt.com:443,auth.openai.com:443,api.openai.com:443'
 export EVALOOM_SECURITY_CLAUDE_MODEL='<正式なモデルID>'
 export EVALOOM_SECURITY_CLAUDE_AUTH_JSON='<専用.credentials.jsonの内容>'
-export EVALOOM_SECURITY_CLAUDE_DESTINATIONS='api.anthropic.com:443,console.anthropic.com:443,claude.ai:443'
 
-GOCACHE="$model_test_tmp/go-cache" go test -tags=security_model \
-  ./internal/securitytest -run '^TestModelConfigurationIsolation$' \
-  -count=1 -timeout=16m -v
+GOCACHE="$model_test_tmp/go-cache" make security-model-test
 ```
 
 認証値をイメージやProfileのGit履歴には入れない。テストは明示したJSONだけを
@@ -239,7 +238,7 @@ CLIが別の認証形式を要求する場合は、そのまま実行不能と�
 実モデルを呼ばずにタグ付きソースの型検査を行う場合は、次を実行する。
 
 ```sh
-GOCACHE=/tmp/evaloom-model-go-cache go vet -tags=security_model ./...
+GOCACHE="$model_test_tmp/go-cache" go vet -tags=security_model ./...
 ```
 
 ### 製品を通す経路と判定
@@ -249,17 +248,18 @@ GOCACHE=/tmp/evaloom-model-go-cache go vet -tags=security_model ./...
 `.claude/CLAUDE.md`へAの出力指示を置く。テストプロセスの`HOME`、`CODEX_HOME`、
 `CLAUDE_CONFIG_DIR`もこの仮HOMEへ向け、環境変数の誤継承を検出できるようにする。
 
-Bの指示は別のProfileリポジトリの`AGENTS.md`または`CLAUDE.md`にcommitする。
-`registry.ReadProfile`で固定したSHAと`contextFiles`を使い、`harnesscontext.Read`、
-`harnessenv.Create`の順に製品実装を通す。Profileの作業ツリーを変更してから
-読み取るため、固定SHA以外の内容を誤って使う場合も検出する。
+Bの指示は既存の`WriteProbeHarness`で作るProfileリポジトリの`prompts/work.md`にcommitし、
+`stages.work.instructions`で指定する。`registry.ReadProfile`で現行契約と固定SHAを検査し、
+`harnesscontext.Read`で宣言したファイルだけを読む。`harnessenv.Create`には
+`stages.work.instructions`を渡し、Q142に従って`AGENTS.md`または`CLAUDE.md`を作る。
+Profileの作業ツリーを変更してから読み取るため、固定SHA以外の内容を誤って使う場合も検出する。
 BはTaskやExecution Contextのプロンプトには埋め込まない。
 
-実行には製品の`runner.Executor`のハーネス工程と登録表を使い、
+作業の段のAdapter境界を登録表から直接呼び、
 Codex Adapter / Claude Code Adapterの`ContainerLaunch`から本物の
 Harness Sandboxでpreflightと実CLIを起動する。Execution IDとHarnessResultを
-共通契約で渡す。ハーネス以外の工程はfixture用の処理であり、HTTPのclaim、
-Gate、push、PR作成の検証はこの試験の範囲に含めない。
+既存の内部Adapter要求で渡す。準備・確かめる・出す段、HTTPのclaim、
+push、PR作成の検証はこの試験の範囲に含めない。
 CLIの作業用設定volume、空の専用HOME、環境変数の許可リスト、
 宛先制限付きプロキシは既存Containerの実装を使う。アクセス試行用の別コンテナでは
 元設定を読み取り専用でマウントする。ホスト起動は行わない。
@@ -288,13 +288,12 @@ CLIの成功と、最終応答にBがあることを必須とする。Aは最終
 採用CLIの版で完全な一覧を取得できるようになった場合は、その出力を検証に追加する。
 現状はカナリアと同一Sandbox設定でのアクセス試行を記録する。
 
-HarnessのTool PermissionsとProfileの`toolConfiguration`からCLI設定への変換、
-このfixtureではshellまたはBashを許可する固定の設定変換を`Configure`に渡し、
-CLI設定の生成を一般化しない。モデルIDは既存Profileの`modelId`を使う。
+モデルIDとTool Permissionsは、現行Profileの`stages.work.model`と
+`stages.work.toolPermissions`から既存Adapterの内部要求・resolverへ渡す。
 認証と状態保存には製品Adapterの作業用コピーを使う。CLI停止後の認証は検査して
 一時保管ファイルへ書き戻し、元設定とProfileは変更しない。
-Runner設定ファイルの認証キー名と、認証ファイルの準備方法は確定しない。
-公開API・テーブル・列・製品既定値・確定済み仕様書・Makefileは変更していない。
+公開API・テーブル・列・製品既定値・確定済み仕様書は変更していない。
+Makefileには手動実行ターゲットだけを追加し、verify / verify-fastは変更していない。
 
 通常の`make verify`では`TestConfigurationCanaryPlacement`が実Profileの固定SHAから
 専用環境への配置、仮HOMEの指示、カナリアを含まない要求を照合する。

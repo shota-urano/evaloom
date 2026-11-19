@@ -1,5 +1,15 @@
 //go:build security_model
 
+// Spec 14 §3.1: run on a Mac mini with dedicated model credentials and Docker.
+// From backend, after the setup in README.md §3.1:
+//
+//	make security-model-test
+//
+//	Or: go test -tags=security_model ./internal/securitytest \
+//	    -run '^TestModelConfigurationIsolation$' -count=1 -timeout=16m -v
+//
+// Without the tag, configuration_model_skip_test.go logs why this is skipped.
+// Once enabled, missing credentials/runtime or CLI failures fail the test.
 package securitytest
 
 import (
@@ -17,6 +27,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter/claudecode"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/codex"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
+	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 )
 
@@ -42,10 +53,16 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	proxyImage := required("EVALOOM_SECURITY_MODEL_PROXY_IMAGE")
 	proxyBinary := required("EVALOOM_SECURITY_MODEL_PROXY_BINARY")
 	modelID, auth := required(cli.prefix+"MODEL"), required(cli.prefix+"AUTH_JSON")
-	destinations := strings.Split(required(cli.prefix+"DESTINATIONS"), ",")
-	for i := range destinations {
-		destinations[i] = strings.TrimSpace(destinations[i])
+	var network registry.ModelAPIDeclarer
+	switch cli.name {
+	case "codex":
+		network = codex.New(codex.Config{}).(registry.ModelAPIDeclarer)
+	case "claude_code":
+		network = claudecode.New(claudecode.Config{}).(registry.ModelAPIDeclarer)
+	default:
+		t.Fatalf("unwired real Adapter %s", cli.name)
 	}
+	destinations := network.ModelAPIDestinations()
 	runtime, err := exec.LookPath("docker")
 	if err != nil {
 		t.Fatalf("実行不能: Docker CLI: %v", err)
@@ -71,6 +88,7 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	t.Setenv("CODEX_HOME", filepath.Join(f.Home, ".codex"))
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(f.Home, ".claude"))
 	profile, files := configurationProfile(t, ctx, f, cli, modelID, b)
+	work := configurationWork(t, profile)
 	credential, err := configurationCredential(cli, profile.CommitSHA, auth)
 	if err != nil {
 		t.Fatal(err)
@@ -101,6 +119,9 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	env := adapter.SandboxEnv{Worktree: spec.Worktree, ConfigDir: spec.ConfigDir, Env: spec.Env}
 	resolve := func(e adapter.SandboxEnv) (sandbox.SandboxSpec, error) {
 		s := spec
+		// The Adapter replaces ConfigDir with its private working copy. Git
+		// must read that copy too, not the unmounted immutable source path.
+		e.Env["GIT_CONFIG_GLOBAL"] = filepath.Join(e.ConfigDir, ".gitconfig")
 		s.ConfigDir, s.Env = e.ConfigDir, e.Env
 		return s, nil
 	}
@@ -110,12 +131,12 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 		err = adapters.Register(cli.name, codex.New(codex.Config{ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: codex.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
 			ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil },
 			ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
-				return json.RawMessage(`{}`), nil
+				return work.ToolPermissions, nil
 			}}))
 	case "claude_code":
 		err = adapters.Register(cli.name, claudecode.New(claudecode.Config{ResolveConfig: func(adapter.SandboxEnv) (*harnessenv.Environment, error) { return settings, nil }, ResolveAuthentication: func(adapter.HarnessRequest) (string, error) { return store, nil }, Launch: claudecode.ContainerLaunch(config, resolve), CancelGrace: 3 * time.Second,
 			ResolveToolPermissions: func(context.Context, adapter.HarnessRequest) (json.RawMessage, error) {
-				return json.RawMessage(`{"deny":["Read","Edit","Write","WebFetch","WebSearch","Agent"]}`), nil
+				return work.ToolPermissions, nil
 			}}))
 	default:
 		t.Fatalf("unwired real Adapter %s", cli.name)
@@ -131,8 +152,8 @@ func modelConfigurationIsolation(t *testing.T, cli configurationCLI) {
 	request := configurationRequest(f, profile)
 	var result adapter.HarnessResult
 	var logs []adapter.LogLine
-	// The Runner's stage framework is not built yet (spec 19 3.11 removed the
-	// development stages), so the test calls the real Adapter directly.
+	// Exercise the work Adapter boundary directly; prepare/check/publish and
+	// Control Plane records are outside this configuration-isolation test.
 	run := func(ctx context.Context) error {
 		h, err := adapters.Lookup(cli.name)
 		if err != nil {

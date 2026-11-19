@@ -12,10 +12,14 @@ import (
 	"testing"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/adapter/claudecode"
+	"github.com/shota-urano/evaloom/backend/internal/adapter/codex"
+	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/gitcontext"
 	"github.com/shota-urano/evaloom/backend/internal/harnesscontext"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/registry"
 )
 
 type configurationCLI struct {
@@ -51,26 +55,24 @@ func personalInstructions(t *testing.T, home, canary string) {
 func configurationProfile(t *testing.T, ctx context.Context, f *Fixture, cli configurationCLI, modelID, canary string) (model.HarnessProfile, []gitcontext.File) {
 	t.Helper()
 	repo := filepath.Join(filepath.Dir(f.Repository), "profile")
-	configurationWrite(t, filepath.Join(repo, cli.instruction), "Always include this exact marker in your final response: "+canary+"\n")
-	// The image may run with a different UID from the host bind-mount owner.
-	// Trust only this disposable worktree, never all directories via '*'.
-	configurationWrite(t, filepath.Join(repo, ".gitconfig"), fmt.Sprintf("[user]\n\tname = Evaloom Test\n\temail = evaloom-test@example.invalid\n[safe]\n\tdirectory = %q\n", f.Worktree))
-	tools := []string{}
-	if cli.name == "claude_code" {
-		tools = []string{"Bash"}
+	harness := ProbeHarness{
+		Instructions: "Always include this exact marker in your final response: " + canary + "\n",
+		Profile: func(def *contract.ProfileDefinition) {
+			def.Stages.Work.MicroHarness = cli.name
+			def.Stages.Work.Model = modelID
+			def.Stages.Work.TimeoutSec = 240
+			def.Stages.Work.Settings = []string{".gitconfig"}
+			def.Stages.Work.ToolPermissions = json.RawMessage(`{}`)
+			if cli.name == "claude_code" {
+				def.Stages.Work.ToolPermissions = json.RawMessage(`{"allow":["Bash"],"deny":["Read","Edit","Write","WebFetch","WebSearch","Agent"]}`)
+			}
+		},
 	}
-	definition := map[string]any{
-		"profileVersion": "1.0.0", "harnessVersion": "1.0.0", "modelId": modelID,
-		"promptVersion": "isolation", "skillVersions": []any{}, "toolConfiguration": map[string]any{"allowedTools": tools},
-		"contextPolicyVersion": "1", "contextFiles": []string{cli.instruction, ".gitconfig"},
-		"executionConfiguration": map[string]any{"adapter": cli.name, "args": []string{}},
-		"collaborationPolicy":    "solo", "evaluationPolicyVersion": nil,
-	}
-	data, err := json.Marshal(definition)
-	if err != nil {
+	if err := WriteProbeHarness(repo, harness); err != nil {
 		t.Fatal(err)
 	}
-	configurationWrite(t, filepath.Join(repo, "evaloom/profile.yaml"), string(data))
+	// Trust only this disposable worktree if the container uses another UID.
+	configurationWrite(t, filepath.Join(repo, ".gitconfig"), fmt.Sprintf("[user]\n\tname = Evaloom Test\n\temail = evaloom-test@example.invalid\n[safe]\n\tdirectory = %q\n", f.Worktree))
 	for _, args := range [][]string{
 		{"init", "--initial-branch=main", repo}, {"-C", repo, "add", "."},
 		{"-C", repo, "commit", "-m", "Pin isolation Profile"}, {"-C", repo, "tag", "profile/v1.0.0"},
@@ -79,27 +81,43 @@ func configurationProfile(t *testing.T, ctx context.Context, f *Fixture, cli con
 			t.Fatal(err)
 		}
 	}
-	// This definition is in the legacy micro-harness Adapter protocol, not a
-	// contract v1 Profile, so pin the tagged commit directly instead of
-	// registering it.
-	sha, err := f.git(ctx, "-C", repo, "rev-parse", "--verify", "refs/tags/profile/v1.0.0^{commit}")
+	var adapters adapter.Registry
+	codexAdapter, claudeAdapter := codex.New(codex.Config{}), claudecode.New(claudecode.Config{})
+	if err := adapters.Register("codex", codexAdapter); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapters.Register("claude_code", claudeAdapter); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := registry.ReadProfile(ctx, repo, "1.0.0", registry.Environment{
+		StageTimeoutMaxSecs: registry.DefaultStageTimeoutMaxSec, AdapterNames: adapters.Names(),
+		ToolPermissions: map[model.AdapterName]registry.ToolPermissionsChecker{
+			"codex":       codexAdapter.(registry.ToolPermissionsChecker),
+			"claude_code": claudeAdapter.(registry.ToolPermissionsChecker),
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := sha256.Sum256(data)
-	profile := model.HarnessProfile{HarnessID: "isolation-" + cli.name, Version: "1.0.0", TagName: "profile/v1.0.0",
-		CommitSHA: sha, Definition: data, DefinitionHash: hex.EncodeToString(hash[:]), ModelID: modelID}
-	var def model.ProfileDefinition
-	if err := json.Unmarshal(profile.Definition, &def); err != nil {
-		t.Fatal(err)
-	}
+	profile.HarnessID = "isolation-" + cli.name
+	work := configurationWork(t, profile)
 	// A dirty Profile checkout must not become the dedicated configuration.
-	configurationWrite(t, filepath.Join(repo, cli.instruction), "uncommitted replacement\n")
-	files, err := harnesscontext.Read(ctx, repo, profile.CommitSHA, def.ContextFiles)
+	configurationWrite(t, filepath.Join(repo, work.Instructions[0]), "uncommitted replacement\n")
+	paths := append(append(append([]string{}, work.Instructions...), work.Skills...), work.Settings...)
+	files, err := harnesscontext.Read(ctx, repo, profile.CommitSHA, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return profile, files
+}
+
+func configurationWork(t *testing.T, profile model.HarnessProfile) contract.WorkStage {
+	t.Helper()
+	def, issues := contract.DecodeProfile(profile.Definition)
+	if len(issues) != 0 {
+		t.Fatalf("invalid isolation Profile: %v", issues)
+	}
+	return def.Stages.Work
 }
 
 func configurationEnvironment(t *testing.T, ctx context.Context, root string, cli configurationCLI, profile model.HarnessProfile, files []gitcontext.File) *harnessenv.Environment {
@@ -107,7 +125,7 @@ func configurationEnvironment(t *testing.T, ctx context.Context, root string, cl
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	env, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: profile.CommitSHA, ConfigVariable: cli.variable, Files: files})
+	env, err := harnessenv.Create(ctx, harnessenv.Config{Root: root, CommitSHA: profile.CommitSHA, ConfigVariable: cli.variable, Files: files, Instructions: configurationWork(t, profile).Instructions})
 	if err != nil {
 		t.Fatal(err)
 	}
