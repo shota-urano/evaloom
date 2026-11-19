@@ -46,6 +46,9 @@ export type HarnessInput = {
   repoUrl: string
 }
 
+/** PATCH /api/harnesses/{id} で直接振り分けの設定まで送るとき（01 5.1）。 */
+export type HarnessUpdate = Partial<HarnessInput> & { defaultProfileId?: string | null; approvalWaivers?: string[] }
+
 export type Harness = HarnessInput & {
   id: string
   defaultProfileId: string | null
@@ -59,6 +62,9 @@ export type HarnessProfile = {
   harnessId: string
   version: string
   commitSha: string
+  /** 定義が従う契約の版（02 3.2 harness_profiles.contract_version）。 */
+  contractVersion?: string
+  tagName?: string
   modelId: string
   operationStatus: string
   registeredAt: string
@@ -66,11 +72,43 @@ export type HarnessProfile = {
   definition?: ProfileDefinition
 }
 
-/** Profile 定義のうち、Project の登録画面が読む部分（契約 5.2・7.3）。 */
+/** 外へ出す段・準備の段の宣言（契約 5.1、backend/internal/contract/types.go ProgramStage）。 */
+export type ProfileProgramStage = {
+  command?: string[]
+  timeoutSec?: number
+  network?: { allow?: string[] } | null
+  /** 鍵の名前（slot）と使い方（read / write）。鍵の値は定義に入らない（01 3.5）。 */
+  secrets?: { slot: string; access: string }[]
+  runtime?: { kind: string; image: string } | null
+}
+
+/** 作業の段の宣言（契約 5.1、WorkStage）。 */
+export type ProfileWorkStage = {
+  microHarness?: string
+  model?: string
+  timeoutSec?: number
+  instructions?: string[]
+  skills?: string[]
+  settings?: string[]
+  resume?: string
+}
+
+/** Profile 定義（契約 5章）。画面は宣言を読みやすく並べるだけで、中身の検証はサーバーが行う。 */
 export type ProfileDefinition = {
+  contractVersion?: string
+  profileVersion?: string
+  name?: string
   description?: string
+  acceptanceCriteria?: string
   params?: { schema?: string } | null
+  stages?: {
+    prepare?: ProfileProgramStage | null
+    work?: ProfileWorkStage
+    check?: ProfileProgramStage
+    publish?: ProfileProgramStage
+  }
   approvals?: { operation: string; description?: string; waivable?: boolean }[]
+  records?: { keep?: string[]; pass?: { recent?: number } } | null
 }
 
 /** 選んだ版の Profile が waivable: true と宣言した操作（13 3.5、17 3.2）。 */
@@ -111,11 +149,9 @@ export const registry = {
   updateProject: (api: ApiClient, id: string, input: ProjectInput) => api.patch<Project>(projectPath(id), input),
   listRunners: (api: ApiClient, signal?: AbortSignal) => listAll<Runner>(api, '/api/runners', signal),
   listHarnesses: (api: ApiClient, signal?: AbortSignal) => listAll<Harness>(api, '/api/harnesses', signal),
-  /** 個別の GET は API に無い（backend/internal/api/harnesses.md）ので、一覧から探す。無ければ undefined。 */
-  getHarness: async (api: ApiClient, id: string, signal?: AbortSignal) =>
-    (await listAll<Harness>(api, '/api/harnesses', signal)).find((harness) => harness.id === id),
+  getHarness: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<Harness>(harnessPath(id), { signal }),
   createHarness: (api: ApiClient, id: string, input: HarnessInput) => api.post<Harness>('/api/harnesses', { id, ...input }),
-  updateHarness: (api: ApiClient, id: string, input: HarnessInput) => api.patch<Harness>(harnessPath(id), input),
+  updateHarness: (api: ApiClient, id: string, input: HarnessUpdate) => api.patch<Harness>(harnessPath(id), input),
   /** Profile の版の登録（03 3.5）。新規は 201、同じ commit SHA の再登録は 200 で既存の行が返る。 */
   registerHarnessProfile: (api: ApiClient, input: { harnessId: string; version: string }) =>
     api.post<HarnessProfile>('/api/harness-profiles', input),
@@ -127,6 +163,8 @@ export const registry = {
   deleteRoute: (api: ApiClient, label: string) => api.delete<void>(routePath(label)),
   listHarnessProfiles: (api: ApiClient, harnessId: string, signal?: AbortSignal) =>
     listAll<HarnessProfile>(api, `/api/harness-profiles?harnessId=${encodeURIComponent(harnessId)}`, signal),
+  /** すべてのスペシャルハーネスの版（一覧で既定の版の表示に使う）。 */
+  listAllHarnessProfiles: (api: ApiClient, signal?: AbortSignal) => listAll<HarnessProfile>(api, '/api/harness-profiles', signal),
 }
 
 /** 02-data-model 3.2 harness_profiles.operation_status の表示名。 */

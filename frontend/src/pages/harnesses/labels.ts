@@ -1,5 +1,5 @@
 import { ApiError } from '@/api/client'
-import type { Project, ProjectHarness } from '@/api/registry'
+import type { HarnessProfile, Project, Route } from '@/api/registry'
 
 /**
  * 登録画面のパス。Harness ID も Project ID と同じ slug（^[a-z0-9]+(-[a-z0-9]+)*$、backend/internal/api/validation.go）なので、
@@ -51,14 +51,35 @@ export const PROFILE_CHECK_LABELS: Record<string, string> = {
   'executionConfiguration.adapter': '定義ファイルの executionConfiguration.adapter',
 }
 
-/** 個別の GET が無いので、一覧に無い ID は個別 GET の 404 と同じ表示にする。 */
+/** GET /api/harnesses/{id} が返さなかったときの表示（個別 GET の 404 と同じ）。 */
 export const harnessNotFound = () => new ApiError(404, 'not_found', 'Harness not found')
 
-export type HarnessUsage = { project: Project; assignment: ProjectHarness }
+/** このスペシャルハーネスを頼む Project（02 3.2 projects.harness_id）。 */
+export function projectsUsing(projects: readonly Project[], harnessId: string): Project[] {
+  return projects.filter((project) => project.harnessId === harnessId)
+}
 
-/** Harness を割り当てている Project と役割（GET /api/projects の harnesses）。 */
-export function usagesOf(projects: readonly Project[], harnessId: string): HarnessUsage[] {
-  return projects.flatMap((project) =>
-    (project.harnesses ?? []).filter((h) => h.harnessId === harnessId).map((assignment) => ({ project, assignment })),
-  )
+/** 振り分けの表でこのスペシャルハーネスへ直接振り分けるラベル（02 3.2 routes.harness_id）。 */
+export function directRoutes(routes: readonly Route[], harnessId: string): Route[] {
+  return routes.filter((route) => route.harnessId === harnessId)
+}
+
+/** 版の ID から表示用の版を引く。見つからなければ ID をそのまま返す。 */
+export function versionOf(profiles: readonly HarnessProfile[], profileId: string | null | undefined): string | null {
+  if (!profileId) return null
+  return profiles.find((p) => p.id === profileId)?.version ?? profileId
+}
+
+/** 鍵の使い方（契約 5.1 secrets[].access）の表示名。 */
+export function secretAccessLabel(access: string): string {
+  if (access === 'read') return '読み取り（read）'
+  if (access === 'write') return '書き込み（write）'
+  return access
+}
+
+/** 受け入れ条件の要否（契約 5.2 acceptanceCriteria）の表示名。 */
+export function acceptanceCriteriaLabel(value: string | undefined): string {
+  if (value === 'required') return '必須（required）'
+  if (value === 'optional') return '任意（optional）'
+  return value ?? '宣言なし'
 }
