@@ -411,7 +411,17 @@ function ApprovalItem({ decision, open, disabled, submit, definition }: Approval
           </Field>
           <Field label="承認を求めた段">{approval?.requestedStage ?? detailText(decision.detail, 'requestedStage') ?? '-'}</Field>
           <Field label="確かめた結果">
-            {decision.detail && 'findings' in decision.detail ? <Findings findings={detailFindings(decision.detail)} /> : '記録がありません'}
+            {decision.checkResult ? (
+              <div className="grid gap-2" data-testid="approval-check-result">
+                <p>{decision.checkResult.summary ?? '-'}</p>
+                <Findings findings={decision.checkResult.findings ?? []} />
+                <span className="text-muted-foreground font-mono text-xs break-all">
+                  result: {decision.checkResult.result} · content_id: {decision.checkResult.contentId ?? '-'}
+                </span>
+              </div>
+            ) : (
+              '記録がありません'
+            )}
           </Field>
           <Field label="承認の有効期限">{formatTime(approval?.expiresAt)}</Field>
           <Field label="タスク詳細">

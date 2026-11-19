@@ -68,6 +68,9 @@ type decisionDetailView struct {
 	store.OwnerDecision
 	Approval      *approvalView   `json:"approval,omitempty"`
 	RouteProposal json.RawMessage `json:"routeProposal,omitempty"`
+	// CheckResult is the Execution's check result shown with kind=approval
+	// (spec 13 3.4, 01 5.1 "finding"); omitted when none was recorded.
+	CheckResult *store.CheckResult `json:"checkResult,omitempty"`
 }
 
 func getDecision(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
@@ -92,6 +95,15 @@ func getDecision(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 				var base approvalView
 				base, err = newApprovalView(approval)
 				view.Approval = &base
+			}
+			if err == nil {
+				var check store.CheckResult
+				check, err = store.GetDecisionCheckResult(r.Context(), tx, approval.ExecutionID, approval.ContentVersion)
+				if err == nil {
+					view.CheckResult = &check
+				} else if errors.Is(err, sql.ErrNoRows) {
+					err = nil
+				}
 			}
 		}
 		if err == nil && decision.Kind == "route" && decision.SubjectID != nil {

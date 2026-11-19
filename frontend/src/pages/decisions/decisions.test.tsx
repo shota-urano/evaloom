@@ -137,6 +137,10 @@ describe('判断待ちの詳細', () => {
         target: { label: 'PR #7', url: 'https://example.com/pr/7' }, summary: 'マージする', contentId: 'sha-123', status: 'pending',
         invalidatedReason: null, decidedAt: null, expiresAt: null, createdAt: '2026-11-19T00:00:00Z',
       },
+      checkResult: {
+        id: '01JE2ECHECK000000000000001', result: 'pass', contentId: 'sha-123', summary: '2 ファイルを確かめた',
+        findings: [{ rule: 'no_secrets', severity: 'warning', message: '鍵に見える文字列', location: { path: 'b.go', line: 9 } }], createdAt: '2026-11-19T00:00:00Z',
+      },
     })
     const fake = renderAt(`/decisions/${ID}`, (request) => {
       if (request.url === `/api/decisions/${ID}` && request.method === 'GET') return json(200, approvalDecision)
@@ -149,6 +153,10 @@ describe('判断待ちの詳細', () => {
     expect(await screen.findByTestId('approval-content-id')).toHaveTextContent('sha-123')
     expect(screen.getByTestId('approval-target')).toHaveTextContent('PR #7')
     expect(await screen.findByText('PR をマージする')).toBeVisible()
+    const check = screen.getByTestId('approval-check-result')
+    expect(check).toHaveTextContent('2 ファイルを確かめた')
+    expect(check).toHaveTextContent('鍵に見える文字列')
+    expect(check).toHaveTextContent('b.go:9')
     await userEvent.type(screen.getByLabelText(/承認の有効時間/), '3600')
     await userEvent.click(screen.getByRole('button', { name: '承認する' }))
     expect(answers(fake)).toEqual([{ action: 'approve', contentId: 'sha-123', ttlSec: 3600 }])

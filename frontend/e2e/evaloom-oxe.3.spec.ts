@@ -10,7 +10,7 @@ import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 // evaloom-oxe.3: 本人の判断待ちの一覧と詳細（13 3.4、02 5.6）。
 // - open の判断待ちが種類で絞り込める。
 // - route で提案のラベルと理由、候補が出て、候補から別のラベルを選んで承認できる。
-// - approval で操作・対象・content_id が出て、送信に表示中の contentId が含まれる。
+// - approval で操作・対象・content_id・確かめた結果が出て、送信に表示中の contentId が含まれる。
 // - check_blocked の続行の送信に表示中の contentId が含まれる。
 // - context_conflict と workspace_missing では続行ボタンが出ない。
 // - question で質問と選択肢が出て、回答を送れる。
@@ -113,6 +113,14 @@ function seed(db: string) {
   // approval: 同じ Execution で2つの操作が承認待ち（Q155）。
   const approvalTask = task('waiting_approval', '承認を待つタスク')
   const approvalExecution = execution(approvalTask, 'waiting_approval')
+  // 確かめる段の結果（needs_approval は pass、02 3.4 check_results）。承認の詳細に summary と finding が出る。
+  statements.push(
+    `INSERT INTO stage_runs (id, execution_id, stage, attempt, status, started_at, finished_at)
+      VALUES ('${ulid('S', 20)}', '${approvalExecution}', 'check', 1, 'needs_approval', '${NOW}', '${NOW}');`,
+    `INSERT INTO check_results (id, execution_id, stage_run_id, result, content_id, summary, findings, created_at)
+      VALUES ('${ulid('C', 20)}', '${approvalExecution}', '${ulid('S', 20)}', 'pass', 'sha-merge-0001', '変更した 3 ファイルを確かめた',
+        ${sqlText([{ rule: 'large_diff', severity: 'warning', message: '差分が大きい', location: { path: 'src/app.ts', line: 40 } }])}, '${NOW}');`,
+  )
   for (const [decisionId, approvalId, operation, contentId, target] of [
     [D.approvalA, APPROVAL_A, 'merge_pull_request', 'sha-merge-0001', { label: 'example/repo#12', url: 'https://example.com/example/repo/pull/12' }],
     [D.approvalB, APPROVAL_B, 'deploy', 'sha-deploy-0002', { label: '本番環境', url: 'https://example.com/deploy' }],
@@ -134,7 +142,7 @@ function seed(db: string) {
   const checkDetail = (summary: string) => ({
     message: 'check blocked',
     summary,
-    findings: [{ rule: 'no-secrets', severity: 'error', message: '鍵らしい文字列がある', location: { path: 'src/config.ts', line: 12 } }],
+    findings: [{ rule: 'no_secrets', severity: 'error', message: '鍵らしい文字列がある', location: { path: 'src/config.ts', line: 12 } }],
     approvalRequests: [],
   })
   blocked(D.checkBlocked, 'check_blocked', checkDetail('確かめる段が止まった'), 'content-check-0001')
@@ -249,7 +257,7 @@ test('route: 提案のラベルと理由、候補が出て、候補から別の�
   await expect(page.getByText('判断済み').first()).toBeVisible()
 })
 
-test('approval: 操作・対象・content_id が出て、承認の送信に表示中の contentId が含まれる', async ({ page }) => {
+test('approval: 操作・対象・content_id・確かめた結果が出て、承認の送信に表示中の contentId が含まれる', async ({ page }) => {
   await page.goto(`/decisions/${D.approvalA}`)
   // 同じ Execution の承認待ちを並べて出す（Q155）。
   await expect(page.getByTestId('approval-siblings')).toContainText('2 件')
@@ -260,6 +268,10 @@ test('approval: 操作・対象・content_id が出て、承認の送信に表�
   await expect(merge.getByText('PR を main へマージする')).toBeVisible()
   await expect(merge.getByTestId('approval-target').getByRole('link', { name: 'example/repo#12' })).toHaveAttribute('href', 'https://example.com/example/repo/pull/12')
   await expect(merge.getByTestId('approval-content-id')).toHaveText('sha-merge-0001')
+  // 確かめた結果（check_results の summary と finding）。
+  await expect(merge.getByTestId('approval-check-result')).toContainText('変更した 3 ファイルを確かめた')
+  await expect(merge.getByTestId('approval-check-result')).toContainText('差分が大きい')
+  await expect(merge.getByTestId('approval-check-result')).toContainText('src/app.ts:40')
   const deploy = page.getByRole('region', { name: '操作の承認 deploy' })
   await expect(deploy.getByTestId('approval-content-id')).toHaveText('sha-deploy-0002')
 

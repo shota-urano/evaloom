@@ -85,8 +85,18 @@ export type DecisionApproval = {
   createdAt: string
 }
 
-/** GET /api/decisions/{id}。 */
-export type DecisionDetail = Decision & { approval?: DecisionApproval; routeProposal?: RouteProposal }
+/** check_results の行（02 3.4）。kind=approval の詳細に、その Execution の確かめた結果として付く（13 3.4）。 */
+export type CheckResult = {
+  id: string
+  result: 'pass' | 'fail' | 'blocked'
+  contentId: string | null
+  summary: string | null
+  findings: Finding[]
+  createdAt: string
+}
+
+/** GET /api/decisions/{id}。checkResult は記録が無ければ省かれる。 */
+export type DecisionDetail = Decision & { approval?: DecisionApproval; routeProposal?: RouteProposal; checkResult?: CheckResult }
 
 /** 02 5.6 の回答の形。 */
 export type DecisionAnswer =
