@@ -102,7 +102,7 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 | 省略設定なしでapprovalId null | A / `without_approval_waivable_not_waived` | 0 |
 | 照合・消費の書き込み失敗 | B / `write_failure/consume`、`write_failure/event`、`write_failure/audit` | 0 |
 
-`ProbeAuthorize.Concurrent` は別々の通話口の接続から同時に問い合わせる。並行テストは、実際のHTTPハンドラーの手前に2件そろうまで待機し、1件だけ許可されることと `use_count=1` を確かめる。却下済みのテストは、実際の却下がExecutionも失敗にしてpublishを始めさせないため、claim後の承認行だけをrejectedにし、古い承認IDを持つ要求を試す。中止テストは本人用APIで中止し、heartbeatを待機させて段の停止より先に問い合わせさせる。段が自分で `publish_failed` を返して終えたときのExecutionの終端（04の3.4.1では `failed`、04の3.8では `cancelled`）は仕様が決めていないため、終端に入ったことだけを確かめる。
+`ProbeAuthorize.Concurrent` は別々の通話口の接続から同時に問い合わせる。並行テストは、実際のHTTPハンドラーの手前に2件そろうまで待機し、1件だけ許可されることと `use_count=1` を確かめる。却下済みのテストは、実際の却下がExecutionも失敗にしてpublishを始めさせないため、claim後の承認行だけをrejectedにし、古い承認IDを持つ要求を試す。中止テストは本人用APIで中止し、heartbeatを待機させて段の停止より先に問い合わせさせる。04の3.4.1とQ230に従い、段が `failed`（`publish_failed`）を報告した後、Executionとタスクが `cancelled` になることを確かめる。段の記録には `failed`（`publish_failed`）が残り、通知の要求が増えないことも確かめる。
 
 書き込み失敗は、破棄可能なDBにトリガーを設け、消費の更新、消費イベントの挿入、監査記録の挿入でそれぞれ失敗させる。HTTP 500と `allowed: false`、Runnerが段へ返す `unavailable`、消費・イベント・監査記録のロールバックを確かめる。Control Plane停止では実際にHTTPサーバを閉じ、結果を報告できない段の終了をローカルの結果ファイルで確認する。その後、同じアドレスで同じハンドラーを立て直してRunnerの報告を届かせ、Executionが `failed` になっても消費が起きないことを確かめる。承認とControl Planeの記録、宛先も確認する。Q228に従いDockerの実環境版は作らない。新しい製品設定値や仕様の未決値は定めていない。
 

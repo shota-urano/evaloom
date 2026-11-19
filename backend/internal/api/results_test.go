@@ -336,6 +336,9 @@ func TestStageFinishedTableRows(t *testing.T) {
 			t.Fatalf("next=%s", reply.Next)
 		}
 		requireState(t, f, id, "failed", "failed", "publish_failed")
+		if n := count(t, f, `SELECT count(*) FROM notification_requests WHERE execution_id = ? AND status = 'failed'`, id); n != 1 {
+			t.Fatalf("failure notification requests=%d; want 1", n)
+		}
 	})
 	t.Run("prepare_succeeded", func(t *testing.T) {
 		f, token, id, _ := reportFixture(t)
@@ -545,6 +548,50 @@ func TestStageFinishedTableRows(t *testing.T) {
 			t.Fatalf("waived events=%d", n)
 		}
 	})
+}
+
+// Spec 04 3.4.1/Q230 only converts a valid publish failed result after a
+// cancellation request. Other stages and Runner failures keep their outcomes.
+func TestStageFinishedAfterCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name, stage, runnerError, class, execution, task, executionClass string
+		notifications                                                    int
+	}{
+		{"publish_failed", "publish", "", "publish_failed", "cancelled", "cancelled", "cancelled", 0},
+		{"check_failed", "check", "", "check_failed", "failed", "failed", "check_failed", 1},
+		{"runner_timeout", "publish", "timeout", "timeout", "timed_out", "timed_out", "timeout", 1},
+		{"runner_contract_error", "publish", "contract_error", "contract_error", "failed", "failed", "contract_error", 1},
+		{"invalid_result", "publish", "", "contract_error", "failed", "failed", "contract_error", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, token, id, taskID := reportFixture(t)
+			attempt := runTo(t, f, token, id, tc.stage)
+			if status, body := requestCancellation(t, f, taskID); status != http.StatusNoContent {
+				t.Fatalf("cancel: %d %s", status, body)
+			}
+			input := finished(tc.stage, attempt, programResult(tc.stage, "failed", map[string]any{"errorClass": tc.class}))
+			if tc.runnerError != "" {
+				input["runnerError"], input["result"] = tc.runnerError, nil
+			} else if tc.name == "invalid_result" {
+				input["result"].(map[string]any)["errorClass"] = "publish_failed"
+				input["result"].(map[string]any)["unexpected"] = true
+			}
+			if reply, _ := finishStage(t, f, token, id, input); reply.Next != "stop" {
+				t.Fatalf("next=%s; want stop", reply.Next)
+			}
+			requireState(t, f, id, tc.execution, tc.task, tc.executionClass)
+			wantRun := "failed"
+			if tc.runnerError == "timeout" {
+				wantRun = "timed_out"
+			}
+			if run, class := stageRunStatus(t, f, id, tc.stage); run != wantRun || class.String != tc.class {
+				t.Fatalf("stage run=%s/%v; want %s/%s", run, class, wantRun, tc.class)
+			}
+			if s := cancellationState(t, f, id); !s.Requested.Valid || !s.Finished.Valid || s.Notifications != tc.notifications {
+				t.Fatalf("cancellation state=%+v; want request, finish and %d notifications", s, tc.notifications)
+			}
+		})
+	}
 }
 
 // spec 04 3.4.1 step 1: an undeclared approval, a classification the
