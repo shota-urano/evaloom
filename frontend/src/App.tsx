@@ -23,6 +23,8 @@ import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
 import { ProjectListPage } from '@/pages/projects/project-list-page'
 import { PROJECT_NEW_PATH } from '@/pages/projects/labels'
+import { ROUTES_PATH } from '@/pages/routes/labels'
+import { RoutePage } from '@/pages/routes/route-page'
 import { SETTINGS_PATH } from '@/pages/settings/labels'
 import { SettingsPage } from '@/pages/settings/settings-page'
 import { TASK_NEW_PATH, TASKS_PATH } from '@/pages/tasks/labels'
@@ -33,6 +35,7 @@ import { TaskListPage } from '@/pages/tasks/task-list-page'
 const NAV = [
   { to: '/', label: 'Dashboard' },
   { to: '/projects', label: 'Projects' },
+  { to: ROUTES_PATH, label: '振り分けの表' },
   { to: '/harnesses', label: 'Harnesses' },
   { to: TASKS_PATH, label: 'Tasks' },
   { to: DECISIONS_PATH, label: '判断待ち' },
@@ -47,6 +50,7 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (edit) return <ProjectEditPage key={edit.id} id={edit.id} />
   const detail = matchPath('/projects/:id', path)
   if (detail) return <ProjectDetailPage key={detail.id} id={detail.id} />
+  if (path === ROUTES_PATH) return <RoutePage />
   if (path === '/harnesses') return <HarnessListPage />
   if (path === HARNESS_NEW_PATH) return <HarnessNewPage />
   const harnessEdit = matchPath('/harnesses/:id/edit', path)

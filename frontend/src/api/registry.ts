@@ -99,6 +99,10 @@ export async function listAll<T>(api: ApiClient, path: string, signal?: AbortSig
 
 const projectPath = (id: string) => `/api/projects/${encodeURIComponent(id)}`
 const harnessPath = (id: string) => `/api/harnesses/${encodeURIComponent(id)}`
+const routePath = (label: string) => `/api/routes/${encodeURIComponent(label)}`
+
+/** 振り分け先。Project かスペシャルハーネスのどちらか一方だけを送る（01 5.1 POST /api/routes）。 */
+export type RouteDestination = { projectId: string } | { harnessId: string }
 
 export const registry = {
   listProjects: (api: ApiClient, signal?: AbortSignal) => listAll<Project>(api, '/api/projects', signal),
@@ -117,6 +121,10 @@ export const registry = {
     api.post<HarnessProfile>('/api/harness-profiles', input),
   /** Project を振り分け先にしたラベルを登録する（13 3.5）。 */
   createProjectRoute: (api: ApiClient, label: string, projectId: string) => api.post<Route>('/api/routes', { label, projectId }),
+  listRoutes: (api: ApiClient, signal?: AbortSignal) => listAll<Route>(api, '/api/routes', signal),
+  createRoute: (api: ApiClient, label: string, destination: RouteDestination) => api.post<Route>('/api/routes', { label, ...destination }),
+  updateRoute: (api: ApiClient, label: string, destination: RouteDestination) => api.patch<Route>(routePath(label), destination),
+  deleteRoute: (api: ApiClient, label: string) => api.delete<void>(routePath(label)),
   listHarnessProfiles: (api: ApiClient, harnessId: string, signal?: AbortSignal) =>
     listAll<HarnessProfile>(api, `/api/harness-profiles?harnessId=${encodeURIComponent(harnessId)}`, signal),
 }
