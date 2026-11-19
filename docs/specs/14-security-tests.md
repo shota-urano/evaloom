@@ -112,12 +112,14 @@ Evaloom から起動したミクロハーネスが、本人のグローバル設
 | 同じ承認で並行に2回問い合わせる | `allowed: true` は1回だけ | 同上 |
 | 承認が無い、却下された操作を問い合わせる | `allowed: false`（`not_approved`） | 外部の宛先に操作が届かない |
 | 有効期限が切れた承認で問い合わせる | `allowed: false`（`expired`） | 同上 |
-| 中止の要求の後に問い合わせる | `allowed: false`（`cancelled`） | 同上 |
+| 中止の要求の後に問い合わせる | `allowed: false`（`cancelled`） | 同上。出す段が `failed` を報告して終えると、Execution とタスクが `cancelled` になる（04 の 3.4.1、Q230） |
 | Control Plane を止めて問い合わせる | Runner が `allowed: false`（`unavailable`） | 同上 |
 | Project の承認を省く設定にある操作（`waivable: true`）を `approvalId: null` で問い合わせる | `allowed: true` | approvals の行を作らない。execution_events に `approval_waived` が残る |
 | 省く設定にあった操作を、問い合わせの前に本人が設定から外す | `allowed: false`（`not_approved`） | 外部の宛先に操作が届かない |
 | 省く設定に無い操作を `approvalId: null` で問い合わせる | `allowed: false`（`not_approved`） | 同上 |
 | 承認の照合と消費の書き込みを失敗させる | `allowed: false` | 承認が consumed にならない（Fail Closed） |
+
+「却下された操作を問い合わせる」は、実際に却下すると Execution が `failed`（`approval_rejected`）になって出す段が始まらない（[`17-approval.md`](./17-approval.md) 3.6）。通常の経路では起きないが、authorize が承認の行を改めて確かめる守りとして確かめる。テストでは出す段の claim の後に approvals の行だけを `rejected` に書き換えて表す（Q231）。
 
 ### 3.5 契約への適合テスト
 
@@ -241,3 +243,5 @@ Evaloom が契約の Evaloom の義務（15章）と検査の規則を守って�
 | Q150 | テスト用の外部の宛先をどう用意するか（ループバックは遮断するため使えない） | 決定（2026-11-10 本人、案を採用）: Mac mini の上に、Sandbox のネットワークから見える別のアドレス（コンテナ方式ではテスト用のコンテナ、macOS VM では Softnet で許可した IP）でテスト用のサーバを動かし、テストのときだけ宣言した宛先の名前をそのアドレスに解決させる。本物の外部のサービスには接続しない。2026-11-18 本人: 実環境テスト（Docker を使うもの）の宛先は本人が自分で立てる。名前が決まったらこの文書に書く |
 | Q151 | 契約への適合テストで、実際のスペシャルハーネス（software-engineer など）も流すか | 決定（2026-11-10 本人、案を採用）: Evaloom のリポジトリでは、プローブ用スペシャルハーネスで Evaloom の義務（契約 15章）と検査の規則だけを確かめる。スペシャルハーネスの義務（契約 12章）は各スペシャルハーネスのリポジトリで確かめる。software-engineer へ移した requirements 20章の条件12・15・18 は、software-engineer の受け入れ条件として書き直す |
 | Q220 | 宛先を宣言した段で Sandbox が入れるプロキシの環境変数（`HTTP_PROXY` など）が契約 6.4 の許可リストに無かったこと、と名前解決の「宣言した宛先だけ」の読み方（evaloom-7j6.2） | 決定（2026-11-18 本人）: 今のまま。プロキシの環境変数（`HTTP_PROXY`・`HTTPS_PROXY`・`http_proxy`・`https_proxy`、`NO_PROXY`・`no_proxy` は空）は、外への接続（`network.allow`）を宣言した段だけに許す。名前解決は、プロキシの側で宣言した宛先だけを解決する |
+| Q230 | 中止の要求の後、出す段が authorize で `cancelled` を受けて `failed`（`publish_failed`）を報告したときの Execution の終端（3.4.1 の表では `failed`、3.8 と 02 の 5.2 では `cancelled` で食い違っていた。実装は `failed`。evaloom-7j6.4） | 決定（2026-11-19 本人）: `cancelled` にする。cancel_requested_at が書かれた Execution で publish が `failed` を報告したら、Execution とタスクを `cancelled` にする（通知しない）。外へ出したものは取り消さない（実装の変更が要る） |
+| Q231 | 14 の 3.4 の「却下された承認で問い合わせる」は、実際に却下すると Execution が `failed`（`approval_rejected`）になって出す段が始まらない（17 の 3.6）。テストでこの状況をどう作るか（evaloom-7j6.4 で実装側が決めた値） | 決定（2026-11-19 本人）: 実装どおり。通常の経路では起きないが、authorize が承認の行を改めて確かめる守りとして残す。テストは出す段の claim の後に approvals の行だけを `rejected` に書き換えて表す（Q228 の有効期限切れと同じ扱い） |
