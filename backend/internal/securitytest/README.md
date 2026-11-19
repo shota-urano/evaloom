@@ -85,6 +85,27 @@ Adapterは `probe.Sandbox` の注入を必須とする。`Check`、`Run`、`Read
 
 `ProbeAuthorize.Attempts` は同じ承認で問い合わせと操作を繰り返す回数で、応答はすべて `out/authorizations.json` に残る。出す段は plan を実行してから、問い合わせの直前に作業領域から contentId を計算し直す（`TestProbePublishTakesContentIDRightBeforeAuthorize` が順序を固定する）。このため出す段の plan に `command` を置くと、問い合わせの前に段を止めておけて、その間に変えた中身が必ず `authorize` に届く（期限切れと中身の変更は、これで「承認の後」に起こす）。期限切れは最短の `ttlSec`（60秒）を待つ代わりに、出す段が claim された後で `expires_at` を過去に書き換えて表す。偽のコンテナ実行環境はホストで段を動かすため、宛先はループバックで待ち受け、出す段はネットワークを宣言しない。Sandbox の隔離そのものは証明しない。
 
+`cmd/evaloom-runner/authorize_acceptance_test.go` の `TestAuthorizeAcceptance` が、上のテストを再利用して仕様14の3.4の不足分を補う。下表のAは `approval_acceptance_test.go:TestApprovalAcceptance`、Bは `authorize_acceptance_test.go:TestAuthorizeAcceptance` を表す。全ケースで、段が受けた `allowed: true` の件数と宛先の操作件数を照合する。Control Planeが応答できるケースでは、応答と `approval_consumed` イベント・`approval.consume` 監査記録も照合する。
+
+| 3.4のケース | テスト関数 / サブテスト | 宛先の操作件数 |
+|---|---|---|
+| 承認と同じcontentId | A / `approved` | 1 |
+| 承認と異なるcontentId | A / `content_changed_after_approval` | 0 |
+| 同じ承認で2回 | A / `used_approval_second_time` | 1 |
+| 同じ承認で並行に2回 | B / `concurrent_same_approval` | 1 |
+| 承認なし・却下済み | A / `without_approval`、B / `rejected_approval` | 0 |
+| 期限切れ | A / `expired_approval` | 0 |
+| 中止要求後 | B / `cancelled_before_authorize` | 0 |
+| Control Plane停止 | B / `control_plane_stopped` | 0 |
+| Projectで承認を省略 | B / `project_waived` | 1 |
+| 省略設定を問い合わせ前に解除 | B / `project_waiver_removed` | 0 |
+| 省略設定なしでapprovalId null | A / `without_approval_waivable_not_waived` | 0 |
+| 照合・消費の書き込み失敗 | B / `write_failure/consume`、`write_failure/event`、`write_failure/audit` | 0 |
+
+`ProbeAuthorize.Concurrent` は別々の通話口の接続から同時に問い合わせる。並行テストは、実際のHTTPハンドラーの手前に2件そろうまで待機し、1件だけ許可されることと `use_count=1` を確かめる。却下済みのテストは、実際の却下がExecutionも失敗にしてpublishを始めさせないため、claim後の承認行だけをrejectedにし、古い承認IDを持つ要求を試す。中止テストは本人用APIで中止し、heartbeatを待機させて段の停止より先に問い合わせさせる。段が自分で `publish_failed` を返して終えたときのExecutionの終端（04の3.4.1では `failed`、04の3.8では `cancelled`）は仕様が決めていないため、終端に入ったことだけを確かめる。
+
+書き込み失敗は、破棄可能なDBにトリガーを設け、消費の更新、消費イベントの挿入、監査記録の挿入でそれぞれ失敗させる。HTTP 500と `allowed: false`、Runnerが段へ返す `unavailable`、消費・イベント・監査記録のロールバックを確かめる。Control Plane停止では実際にHTTPサーバを閉じ、結果を報告できない段の終了をローカルの結果ファイルで確認する。その後、同じアドレスで同じハンドラーを立て直してRunnerの報告を届かせ、Executionが `failed` になっても消費が起きないことを確かめる。承認とControl Planeの記録、宛先も確認する。Q228に従いDockerの実環境版は作らない。新しい製品設定値や仕様の未決値は定めていない。
+
 ## 3.2 段ごとの隔離テスト（ハーネス契約 v1 の段）
 
 判定の基準（3.2 の表）は `stage_isolation.go` にある。`IsolationDeclarations.Expected(row, stage)` が表の各セル、`EnvAllowlist` が環境変数の行、`IsolationPlan` が段ごとのプローブの plan と判定規則である。証拠は2種類あり、どちらも製品の配線から導かずにテスト側が持つ。

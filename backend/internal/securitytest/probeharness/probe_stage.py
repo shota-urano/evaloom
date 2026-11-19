@@ -9,7 +9,7 @@ files under probe/ in the committed Profile repository:
                                 observations go to out/probe-<stage>.json
   probe/<stage>-result.json     values merged into the result JSON
   probe/publish-authorize.json  {"operation", "destination"[, "contentId"]
-                                [, "attempts"]}: ask authorize right before
+                                [, "attempts", "concurrent"]}: ask authorize right before
                                 the operation and send it to the destination
                                 only when allowed; "attempts" (default 1)
                                 repeats ask-then-operate with the same
@@ -25,9 +25,11 @@ import sys
 sys.dont_write_bytecode = True
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import socket
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -130,9 +132,21 @@ def main():
             ask = substitute(ask, variables)
             ask.setdefault("contentId", variables["contentId"])
             attempts = int(ask.pop("attempts", 1))
+            concurrent = ask.pop("concurrent", False)
+            if concurrent:
+                barrier = threading.Barrier(attempts, timeout=10)
+
+                def query(_):
+                    barrier.wait()
+                    return authorize(request, ask)
+
+                with ThreadPoolExecutor(max_workers=attempts) as pool:
+                    lines = list(pool.map(query, range(attempts)))
+            else:
+                # Keep sequential attempts interleaved with their operations.
+                lines = (authorize(request, ask) for _ in range(attempts))
             replies = []
-            for _ in range(attempts):
-                line = authorize(request, ask)
+            for line in lines:
                 if not replies:
                     (Path(paths["out"]) / "authorization.json").write_bytes(line)
                 reply = json.loads(line)
