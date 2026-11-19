@@ -67,3 +67,29 @@ func GetRouteProposalJSON(ctx context.Context, reader projectReader, id string) 
 		'createdAt',created_at,'finishedAt',finished_at) FROM route_proposals WHERE id=?`, id).Scan(&value)
 	return json.RawMessage(value), err
 }
+
+// CheckResult is one check_results row (spec 02 3.4) as the owner decision
+// detail shows it (spec 13 3.4, kind=approval).
+type CheckResult struct {
+	ID        string          `json:"id"`
+	Result    string          `json:"result"`
+	ContentID *string         `json:"contentId"`
+	Summary   *string         `json:"summary"`
+	Findings  json.RawMessage `json:"findings"`
+	CreatedAt string          `json:"createdAt"`
+}
+
+// GetDecisionCheckResult reads the check result an approval decision is shown
+// with: the newest check_results row of the Execution whose content_id equals
+// the approval's content_id, or else the newest row of the Execution. Spec 02
+// does not link check_results to approvals, so the content_id match is a
+// preference rather than a requirement. sql.ErrNoRows means none was recorded.
+func GetDecisionCheckResult(ctx context.Context, reader projectReader, executionID, contentID string) (CheckResult, error) {
+	var r CheckResult
+	var findings string
+	err := reader.QueryRowContext(ctx, `SELECT id, result, content_id, summary, findings, created_at FROM check_results
+		WHERE execution_id = ? ORDER BY (content_id IS NOT NULL AND content_id = ?) DESC, created_at DESC, id DESC LIMIT 1`,
+		executionID, contentID).Scan(&r.ID, &r.Result, &r.ContentID, &r.Summary, &findings, &r.CreatedAt)
+	r.Findings = json.RawMessage(findings)
+	return r, err
+}

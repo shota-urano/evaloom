@@ -11,6 +11,9 @@ import { ApprovalDetailPage } from '@/pages/approvals/approval-detail-page'
 import { ApprovalListPage } from '@/pages/approvals/approval-list-page'
 import { APPROVALS_PATH } from '@/pages/approvals/labels'
 import { DashboardPage } from '@/pages/dashboard/dashboard-page'
+import { DecisionDetailPage } from '@/pages/decisions/decision-detail-page'
+import { DecisionListPage } from '@/pages/decisions/decision-list-page'
+import { DECISIONS_PATH } from '@/pages/decisions/labels'
 import { LoginPage } from '@/pages/login-page'
 import { HarnessDetailPage } from '@/pages/harnesses/harness-detail-page'
 import { HarnessEditPage, HarnessNewPage } from '@/pages/harnesses/harness-form-page'
@@ -32,6 +35,7 @@ const NAV = [
   { to: '/projects', label: 'Projects' },
   { to: '/harnesses', label: 'Harnesses' },
   { to: TASKS_PATH, label: 'Tasks' },
+  { to: DECISIONS_PATH, label: '判断待ち' },
   { to: APPROVALS_PATH, label: 'Approvals' },
   { to: SETTINGS_PATH, label: 'Settings' },
 ]
@@ -53,6 +57,9 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (path === TASK_NEW_PATH) return <TaskNewPage />
   const task = matchPath('/tasks/:id', path)
   if (task) return <TaskDetailPage key={task.id} id={task.id} />
+  if (path === DECISIONS_PATH) return <DecisionListPage />
+  const decision = matchPath('/decisions/:id', path)
+  if (decision) return <DecisionDetailPage key={decision.id} id={decision.id} />
   if (path === APPROVALS_PATH) return <ApprovalListPage />
   const approval = matchPath('/approvals/:id', path)
   if (approval) return <ApprovalDetailPage key={approval.id} id={approval.id} />
@@ -100,12 +107,12 @@ function AppShell() {
   return (
     <div className="min-h-svh">
       <header className="border-b">
-        <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-6">
+        <div className="mx-auto flex min-h-14 max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 sm:px-6">
           <div className="flex items-baseline">
             <span className="font-semibold">Evaloom</span>
             <span className="text-muted-foreground ml-3 text-sm">管理画面</span>
           </div>
-          <nav aria-label="画面" className="flex gap-1">
+          <nav aria-label="画面" className="flex flex-wrap gap-1">
             {NAV.map((item) => (
               <Link
                 key={item.to}
@@ -123,7 +130,7 @@ function AppShell() {
           <LogoutButton onError={setLogoutError} />
         </div>
       </header>
-      <main className="mx-auto max-w-6xl p-6">
+      <main className="mx-auto max-w-6xl p-4 sm:p-6">
         {logoutError ? (
           <div className="mb-6">
             <ApiErrorAlert error={logoutError} title="ログアウトできませんでした" />
