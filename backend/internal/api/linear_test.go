@@ -141,9 +141,11 @@ func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {
 		{"linear.teamId beside a valid key", map[string]any{"linear": map[string]any{"triggerLabel": "new", "teamId": "team-a"}}, "body", "invalid_json"},
 		{"unknown top-level key", map[string]any{"concurrency": map[string]any{}}, "body", "invalid_json"},
 		{"unknown routing key", map[string]any{"routing": map[string]any{"teamId": "x"}}, "body", "invalid_json"},
-		{"null runner", map[string]any{"routing": map[string]any{"defaultRunnerId": nil}}, "routing.defaultRunnerId", "required"},
 		{"empty runner", map[string]any{"routing": map[string]any{"defaultRunnerId": ""}}, "routing.defaultRunnerId", "required"},
 		{"blank runner", map[string]any{"routing": map[string]any{"defaultRunnerId": "  "}}, "routing.defaultRunnerId", "required"},
+		{"whitespace runner", map[string]any{"routing": map[string]any{"defaultRunnerId": "\t\r\n　"}}, "routing.defaultRunnerId", "required"},
+		{"number runner", map[string]any{"routing": map[string]any{"defaultRunnerId": 1}}, "routing.defaultRunnerId", "invalid"},
+		{"object runner", map[string]any{"routing": map[string]any{"defaultRunnerId": map[string]any{}}}, "routing.defaultRunnerId", "invalid"},
 		{"null proposer", map[string]any{"routing": map[string]any{"proposer": nil}}, "routing.proposer", "required"},
 		{"proposer not an object", map[string]any{"routing": map[string]any{"proposer": "codex"}}, "routing.proposer", "invalid"},
 		{"blank micro harness", map[string]any{"routing": map[string]any{"proposer": map[string]any{"microHarness": " ", "model": nil}}}, "routing.proposer.microHarness", "required"},
@@ -192,7 +194,7 @@ func TestSettingsEmptyStoredValueIsServedAsDefault(t *testing.T) {
 func TestLinearStatusListsTeamsAndAttachedIssues(t *testing.T) {
 	f := newAuthFixture(t)
 	status, body := getJSON(t, f, "/api/linear/status")
-	if status != 200 || string(body) != `{"teams":[],"teamProblem":null,"issues":[]}`+"\n" {
+	if status != 200 || string(body) != `{"teams":[],"teamProblem":null,"routingRunnerProblem":{"reason":"unset","message":"振り分けの提案を動かす Runner が未設定です"},"issues":[]}`+"\n" {
 		t.Fatalf("empty status=%d body=%s", status, body)
 	}
 	if _, err := f.db.Exec(`INSERT INTO linear_poll_teams (team_id, baseline_done_at, last_success_at, last_error, consecutive_failures)
@@ -211,7 +213,7 @@ func TestLinearStatusListsTeamsAndAttachedIssues(t *testing.T) {
 	want := `{"teams":[` +
 		`{"teamId":"team-a","lastSuccessAt":"2026-11-08T09:00:00.5Z","lastError":null,"consecutiveFailures":0},` +
 		`{"teamId":"team-b","lastSuccessAt":null,"lastError":"rate_limited","consecutiveFailures":3}],` +
-		`"teamProblem":null,"issues":[` +
+		`"teamProblem":null,"routingRunnerProblem":{"reason":"unset","message":"振り分けの提案を動かす Runner が未設定です"},"issues":[` +
 		`{"linearIssueId":"i-1","issueIdentifier":"ENG-1","teamId":"team-a","lastDecision":null,"lastDecisionAt":null},` +
 		`{"linearIssueId":"i-2","issueIdentifier":"ENG-2","teamId":"team-a","lastDecision":"held","lastDecisionAt":"2026-11-08T09:01:00Z"}]}` + "\n"
 	if status != 200 || string(body) != want {

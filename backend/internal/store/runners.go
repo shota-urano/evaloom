@@ -176,6 +176,14 @@ type RunnerSummary struct {
 	LastHeartbeatAt             *string
 }
 
+// RunnerStatus reads the persisted liveness status of a Runner. A missing
+// Runner returns sql.ErrNoRows.
+func RunnerStatus(ctx context.Context, db *sql.DB, id string) (string, error) {
+	var status string
+	err := db.QueryRowContext(ctx, `SELECT status FROM runners WHERE id = ?`, id).Scan(&status)
+	return status, err
+}
+
 // ListRunners reads IDs in SQLite's binary ascending order, strictly after the
 // supplied boundary. The boundary need not still exist. Callers may request an
 // extra row to detect continuation without a count query or offset scan.
