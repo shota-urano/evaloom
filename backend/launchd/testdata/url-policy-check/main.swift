@@ -8,6 +8,7 @@ import UserNotifications
 //   launch <arg>...              treats the args as helper arguments after argv[0]
 //   click default|dismiss <URL>  "open <URL>" or "none"
 //   click-non-string             stored value is not a String
+//   click-missing-url            stored URL is absent
 let args = Array(CommandLine.arguments.dropFirst())
 func show(_ url: URL?, _ yes: String, _ no: String) {
     if let url = url { print("\(yes) \(url.absoluteString)") } else { print(no) }
@@ -22,6 +23,8 @@ case "click" where args.count == 3:
     show(clickURL(actionIdentifier: action, userInfo: [notificationURLKey: args[2]]), "open", "none")
 case "click-non-string":
     show(clickURL(actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: [notificationURLKey: 1]), "open", "none")
+case "click-missing-url":
+    show(clickURL(actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: [:]), "open", "none")
 default:
     FileHandle.standardError.write(Data("usage\n".utf8))
     exit(2)

@@ -56,9 +56,11 @@ func buildPolicyChecker(t *testing.T) string {
 
 func runChecker(t *testing.T, checker string, args ...string) []string {
 	t.Helper()
-	output, err := exec.Command(checker, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, checker, args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("checker %q: %v", args, err)
+		t.Fatalf("checker %q: %v\n%s", args, err, output)
 	}
 	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
 }
@@ -76,6 +78,8 @@ var (
 		"http://127.0.0.1:49123/decisions/decision-001",
 		"http://127.0.0.1:49123/decisions/decision%20%2F%3F%23%E6%97%A5%E6%9C%AC%E8%AA%9E",
 		"http://127.0.0.1:8080/",
+		"http://127.0.0.1:1/",
+		"http://127.0.0.1:65535/",
 		// The exact task URL evaloomd builds for an escaped task ID
 		// (internal/notification TestMacOSOpenArgumentsAndResult).
 		"http://127.0.0.1:49123/tasks/task%20%2F%3F%23%E6%97%A5%E6%9C%AC%E8%AA%9E",
@@ -83,53 +87,51 @@ var (
 		// (internal/notification TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard).
 		"http://127.0.0.1:49123/",
 	}
-	rejectedURLs = []string{
+	rejectedURLs = notificationRejectedURLs()
+)
+
+// Apply every origin/credential/query restriction to all three allowed paths.
+// These same cases exercise the policy, launch, click and helper result below.
+func notificationRejectedURLs() []string {
+	urls := []string{
 		"http://127.0.0.1:8080/decisions/",          // empty decisionId
 		"http://127.0.0.1:8080/decisions",           // other path
 		"http://127.0.0.1:8080/decisions/a/b",       // other path
-		"https://127.0.0.1:8080/decisions/d",        // scheme
-		"http://localhost:8080/decisions/d",         // host alias
-		"http://127.0.0.2:8080/decisions/d",         // other host
-		"http://127.0.0.1/decisions/d",              // no port
-		"http://127.0.0.1:0/decisions/d",            // port 0
-		"http://127.0.0.1:65536/decisions/d",        // port 65536
-		"http://owner@127.0.0.1:8080/decisions/d",   // user name
-		"http://127.0.0.1:8080/decisions/d?x=1",     // query
-		"http://127.0.0.1:8080/decisions/d#frag",    // fragment
 		"http://127.0.0.1:8080/tasks/",              // empty taskId
 		"http://127.0.0.1:8080/tasks",               // other path
 		"http://127.0.0.1:8080/tasks/a/b",           // other path
 		"http://127.0.0.1:8080/settings",            // other path
 		"http://127.0.0.1:8080/api/settings",        // other path
 		"http://127.0.0.1:8080",                     // empty path
-		"https://127.0.0.1:8080/",                   // scheme
-		"https://127.0.0.1:8080/tasks/t",            // scheme
 		"file:///tasks/t",                           // scheme
-		"http://localhost:8080/",                    // host alias
-		"http://localhost:8080/tasks/t",             // host alias
-		"http://127.0.0.2:8080/tasks/t",             // other host
-		"http://[::1]:8080/",                        // other host
-		"http://127.0.0.1/",                         // no port
-		"http://127.0.0.1/tasks/t",                  // no port
-		"http://127.0.0.1:/tasks/t",                 // empty port
-		"http://127.0.0.1:0/tasks/t",                // port 0
-		"http://127.0.0.1:65536/tasks/t",            // port 65536
-		"http://owner@127.0.0.1:8080/tasks/t",       // user name
-		"http://owner:secret@127.0.0.1:8080/",       // user name and password
-		"http://@127.0.0.1:8080/",                   // empty user name
-		"http://127.0.0.1:8080/tasks/t?x=1",         // query
-		"http://127.0.0.1:8080/?",                   // empty query
-		"http://127.0.0.1:8080/tasks/t#frag",        // fragment
-		"http://127.0.0.1:8080/#",                   // empty fragment
 		"",                                          // empty
 		"not a url",                                 // not a URL
 		"http://127.0.0.1:8080/tasks/t\nhttps://x/", // trailing garbage
 	}
-)
+	for _, path := range []string{"/", "/tasks/t", "/decisions/d"} {
+		for _, origin := range []string{
+			"https://127.0.0.1:8080",
+			"http://localhost:8080", "http://127.0.0.2:8080", "http://[::1]:8080",
+			"http://127.0.0.1", "http://127.0.0.1:",
+			"http://127.0.0.1:0", "http://127.0.0.1:65536",
+			"http://owner@127.0.0.1:8080", "http://owner:secret@127.0.0.1:8080",
+			"http://:secret@127.0.0.1:8080", "http://@127.0.0.1:8080",
+		} {
+			urls = append(urls, origin+path)
+		}
+		for _, suffix := range []string{"?x=1", "?", "#frag", "#"} {
+			urls = append(urls, "http://127.0.0.1:8080"+path+suffix)
+		}
+	}
+	return urls
+}
 
 func TestNotificationHelperURLAllowlist(t *testing.T) {
 	checker := buildPolicyChecker(t)
 	got := runChecker(t, checker, append([]string{"url"}, acceptedURLs...)...)
+	if len(got) != len(acceptedURLs) {
+		t.Fatalf("checker output %q", got)
+	}
 	for i, url := range acceptedURLs {
 		if got[i] != "accept "+url {
 			t.Errorf("%q = %q; want accepted unchanged", url, got[i])
@@ -195,6 +197,9 @@ func TestNotificationHelperClickRechecksStoredURL(t *testing.T) {
 	if got := runChecker(t, checker, "click-non-string"); got[0] != "none" {
 		t.Errorf("non-string stored URL = %q; want nothing opened", got)
 	}
+	if got := runChecker(t, checker, "click-missing-url"); got[0] != "none" {
+		t.Errorf("missing stored URL = %q; want nothing opened", got)
+	}
 }
 
 // Builds the deployed helper exactly as backend/launchd/README.md does (minus
@@ -220,13 +225,7 @@ func TestNotificationHelperRejectsInvalidURLWithoutNotifying(t *testing.T) {
 	swiftc(t, helper, []string{"AppKit", "UserNotifications"},
 		filepath.Join("notification-helper", "URLPolicy.swift"),
 		filepath.Join("notification-helper", "main.swift"))
-	for _, url := range []string{
-		"http://127.0.0.1:8080/decisions/", "http://127.0.0.1:8080/decisions/a/b",
-		"http://127.0.0.1:8080/tasks/", "http://127.0.0.1:8080/settings", "https://127.0.0.1:8080/",
-		"http://localhost:8080/", "http://127.0.0.2:8080/", "http://127.0.0.1/", "http://127.0.0.1:0/",
-		"http://127.0.0.1:65536/", "http://owner@127.0.0.1:8080/", "http://127.0.0.1:8080/?x=1",
-		"http://127.0.0.1:8080/#x",
-	} {
+	for _, url := range rejectedURLs {
 		t.Run(url, func(t *testing.T) {
 			result := filepath.Join(t.TempDir(), "result")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
