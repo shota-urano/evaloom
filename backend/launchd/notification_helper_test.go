@@ -68,6 +68,13 @@ var (
 		"http://127.0.0.1:8080/tasks/task-001",
 		"http://127.0.0.1:1/tasks/t",
 		"http://127.0.0.1:65535/tasks/t",
+		"http://127.0.0.1:8080/decisions/decision-001",
+		"http://127.0.0.1:1/decisions/d",
+		"http://127.0.0.1:65535/decisions/d",
+		// Exact URL passed by TestMacOSDecisionOpenArguments. Run it through
+		// the helper's compiled launch and click policy, without posting to macOS.
+		"http://127.0.0.1:49123/decisions/decision-001",
+		"http://127.0.0.1:49123/decisions/decision%20%2F%3F%23%E6%97%A5%E6%9C%AC%E8%AA%9E",
 		"http://127.0.0.1:8080/",
 		// The exact task URL evaloomd builds for an escaped task ID
 		// (internal/notification TestMacOSOpenArgumentsAndResult).
@@ -77,6 +84,18 @@ var (
 		"http://127.0.0.1:49123/",
 	}
 	rejectedURLs = []string{
+		"http://127.0.0.1:8080/decisions/",          // empty decisionId
+		"http://127.0.0.1:8080/decisions",           // other path
+		"http://127.0.0.1:8080/decisions/a/b",       // other path
+		"https://127.0.0.1:8080/decisions/d",        // scheme
+		"http://localhost:8080/decisions/d",         // host alias
+		"http://127.0.0.2:8080/decisions/d",         // other host
+		"http://127.0.0.1/decisions/d",              // no port
+		"http://127.0.0.1:0/decisions/d",            // port 0
+		"http://127.0.0.1:65536/decisions/d",        // port 65536
+		"http://owner@127.0.0.1:8080/decisions/d",   // user name
+		"http://127.0.0.1:8080/decisions/d?x=1",     // query
+		"http://127.0.0.1:8080/decisions/d#frag",    // fragment
 		"http://127.0.0.1:8080/tasks/",              // empty taskId
 		"http://127.0.0.1:8080/tasks",               // other path
 		"http://127.0.0.1:8080/tasks/a/b",           // other path
@@ -129,6 +148,16 @@ func TestNotificationHelperURLAllowlist(t *testing.T) {
 
 func TestNotificationHelperLaunchArguments(t *testing.T) {
 	checker := buildPolicyChecker(t)
+	for _, url := range acceptedURLs {
+		if got := runChecker(t, checker, "launch", "件名", "本文", url); len(got) != 1 || got[0] != "accept "+url {
+			t.Errorf("launch %q = %q; want accepted unchanged", url, got)
+		}
+	}
+	for _, url := range rejectedURLs {
+		if got := runChecker(t, checker, "launch", "件名", "本文", url); len(got) != 1 || got[0] != "invalid_arguments" {
+			t.Errorf("launch %q = %q; want invalid_arguments", url, got)
+		}
+	}
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -192,6 +221,7 @@ func TestNotificationHelperRejectsInvalidURLWithoutNotifying(t *testing.T) {
 		filepath.Join("notification-helper", "URLPolicy.swift"),
 		filepath.Join("notification-helper", "main.swift"))
 	for _, url := range []string{
+		"http://127.0.0.1:8080/decisions/", "http://127.0.0.1:8080/decisions/a/b",
 		"http://127.0.0.1:8080/tasks/", "http://127.0.0.1:8080/settings", "https://127.0.0.1:8080/",
 		"http://localhost:8080/", "http://127.0.0.2:8080/", "http://127.0.0.1/", "http://127.0.0.1:0/",
 		"http://127.0.0.1:65536/", "http://owner@127.0.0.1:8080/", "http://127.0.0.1:8080/?x=1",

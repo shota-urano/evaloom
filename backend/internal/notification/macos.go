@@ -41,7 +41,11 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	if m.port < 1 || m.port > 65535 || n.TaskID == "" {
 		return fmt.Errorf("notification: invalid macOS port or task ID")
 	}
-	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + "/tasks/" + url.PathEscape(n.TaskID)
+	path := "/tasks/" + url.PathEscape(n.TaskID)
+	if n.DecisionID != "" {
+		path = "/decisions/" + url.PathEscape(n.DecisionID)
+	}
+	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + path
 	return m.launch(ctx, title, body, taskURL)
 }
 
@@ -141,9 +145,32 @@ func (m *MacOS) launch(ctx context.Context, title, body, openURL string) error {
 	}
 }
 
-// Construct visible content from an allowlist. Free-form reasons,
-// execution IDs and stage descriptions must never reach desktop notifications.
+// Construct visible content from an allowlist. Decision detail and output URLs
+// are absent from Notification; free-form stage descriptions are never used.
 func macOSContent(n Notification) (string, string, error) {
+	if n.DecisionKind != "" {
+		kind := map[model.DecisionKind]string{
+			model.DecisionRoute: "振り分け", model.DecisionApproval: "承認",
+			model.DecisionBlocked: "続行", model.DecisionQuestion: "質問",
+		}[n.DecisionKind]
+		if kind == "" || n.DecisionID == "" {
+			return "", "", errors.New("notification: invalid decision notification")
+		}
+		body := n.Title + "\n" + n.TaskID + "\n" + kind
+		if n.DecisionKind == model.DecisionBlocked {
+			cause := map[model.DecisionCause]string{
+				model.CauseCheckBlocked:     "確かめた結果に本人の判断が必要",
+				model.CausePublishUnknown:   "出す操作の結果がわからない",
+				model.CauseContextConflict:  "固定した文脈に解決できない矛盾",
+				model.CauseWorkspaceMissing: "再開に要る作業領域がない",
+			}[n.DecisionCause]
+			if cause == "" {
+				return "", "", errors.New("notification: invalid decision cause")
+			}
+			body += "\n" + cause
+		}
+		return "evaloom: 判断待ち", body, nil
+	}
 	var title string
 	switch n.Status {
 	case model.ExecutionSucceeded:
@@ -161,5 +188,21 @@ func macOSContent(n Notification) (string, string, error) {
 	if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
 		classification = string(n.ErrorClass)
 	}
-	return title, n.Title + "\n" + n.TaskID + "\n" + classification, nil
+	body := n.Title + "\n" + n.TaskID + "\n" + classification
+	if n.Status == model.ExecutionSucceeded && n.OutputLabel != "" {
+		body += "\n" + n.OutputLabel
+		if n.OutputRemaining > 0 {
+			body += fmt.Sprintf(" ほか%d件", n.OutputRemaining)
+		}
+	}
+	if n.Status == model.ExecutionFailed || n.Status == model.ExecutionInterrupted || n.Status == model.ExecutionTimedOut {
+		stage := map[model.ExecutionStatus]string{
+			model.ExecutionPreparing: "prepare", model.ExecutionRunning: "work",
+			model.ExecutionVerifying: "check", model.ExecutionPublishing: "publish",
+		}[n.Stage]
+		if stage != "" {
+			body += "\n" + stage
+		}
+	}
+	return title, body, nil
 }

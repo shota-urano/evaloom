@@ -13,11 +13,14 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-// Dispatcher consumes only committed requests. Multiple dispatchers sharing
-// the DB serialize reservations through the store's BEGIN IMMEDIATE setting.
+// Dispatcher consumes only committed requests. Lifecycle reservations use the
+// store's BEGIN IMMEDIATE setting; decision receipts follow spec 12 3.4/Q148.
 type Dispatcher struct {
 	DB       *sql.DB
 	Channels []Channel
+	// Suppress retry loops after failed sends or receipt writes by this worker.
+	// This is not durable: only DB receipts suppress sends after a restart.
+	attemptedDecisions map[string]bool
 }
 
 // Run checks at startup and every 250ms, like the persisted SSE event reader.
@@ -57,9 +60,13 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 	var errs error
 	for range 100 {
 		n, err := d.reserve(ctx)
-		if err != nil || n == nil {
+		if err != nil {
 			return errors.Join(errs, err)
 		}
+		if n == nil {
+			return errors.Join(errs, d.dispatchDecisions(ctx))
+		}
+		_, n.Body, _ = macOSContent(*n)
 		for _, channel := range d.Channels {
 			kind := model.EventNotificationSent
 			fields := map[string]string{
@@ -83,7 +90,7 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 			}
 		}
 	}
-	return errs
+	return errors.Join(errs, d.dispatchDecisions(ctx))
 }
 
 func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
@@ -100,13 +107,15 @@ func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
 		coalesce(e.error_class, ''), coalesce(e.error_message, ''),
 		coalesce((SELECT json_extract(payload, '$.from') FROM execution_events
 			WHERE execution_id = e.id AND type = 'status_changed' AND json_extract(payload, '$.to') = r.status
-			ORDER BY id LIMIT 1), '')
+			ORDER BY id LIMIT 1), ''),
+		coalesce(json_extract(e.outputs, '$[0].label'), ''), max(coalesce(json_array_length(e.outputs), 0) - 1, 0)
 		FROM notification_requests r JOIN executions e ON e.id = r.execution_id JOIN tasks t ON t.id = e.task_id
-		WHERE r.attempted_at IS NULL AND NOT EXISTS (
+		WHERE r.status IN ('succeeded', 'failed', 'interrupted', 'timed_out')
+		AND r.attempted_at IS NULL AND NOT EXISTS (
 			SELECT 1 FROM execution_events s WHERE s.execution_id = r.execution_id AND s.type = 'notification_sent'
-			AND json_extract(s.payload, '$.status') = r.status)
+			AND coalesce(json_extract(s.payload, '$.status'), json_extract(s.payload, '$.kind')) = r.status)
 		ORDER BY r.created_at, r.execution_id, r.status LIMIT 1`).Scan(
-		&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.ErrorClass, &n.Reason, &n.Stage)
+		&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.ErrorClass, &n.Reason, &n.Stage, &n.OutputLabel, &n.OutputRemaining)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

@@ -454,7 +454,7 @@ func TestStageFinishedTableRows(t *testing.T) {
 					t.Fatalf("%s events=%d", event, n)
 				}
 			}
-			if n := count(t, f, `SELECT count(*) FROM notification_requests WHERE execution_id = ? AND status = 'waiting_approval'`, id); n != 1 {
+			if n := count(t, f, `SELECT count(*) FROM owner_decisions WHERE execution_id = ? AND kind = 'approval' AND status = 'open'`, id); n != 1 {
 				t.Fatalf("notification requests=%d", n)
 			}
 		})
@@ -932,7 +932,13 @@ func TestStageFinishedRollsBackAllWritesOnStorageFailure(t *testing.T) {
 			attempt := runTo(t, f, token, id, "check")
 			before := readReportSnapshot(t, f, id)
 			execSQL(t, f, `CREATE TRIGGER reject_result `+trigger+` BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END`)
-			status, body := postReport(t, f, token, id, finished("check", attempt, programResult("check", "blocked", nil)))
+			result := programResult("check", "blocked", nil)
+			if i == 4 {
+				// Only terminal transitions enqueue notification_requests now;
+				// a blocked decision is itself the durable notification request.
+				result = programResult("check", "failed", map[string]any{"errorClass": "check_failed"})
+			}
+			status, body := postReport(t, f, token, id, finished("check", attempt, result))
 			assertAuthError(t, status, body, 500, Internal)
 			if after := readReportSnapshot(t, f, id); after != before {
 				t.Fatalf("partial result survived failure: before=%+v after=%+v", before, after)

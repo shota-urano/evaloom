@@ -168,7 +168,7 @@ func TestClaimResumeCleanedWorkspaceBlocks(t *testing.T) {
 		t.Fatalf("decision_opened=%s err=%v", opened, err)
 	}
 	var notifications int
-	if err := f.db.QueryRow(`SELECT count(*) FROM notification_requests WHERE execution_id = ? AND status = 'blocked'`,
+	if err := f.db.QueryRow(`SELECT count(*) FROM owner_decisions WHERE execution_id = ? AND kind = 'blocked' AND status = 'open'`,
 		first.Execution.ID).Scan(&notifications); err != nil || notifications != 1 {
 		t.Fatalf("notifications=%d err=%v", notifications, err)
 	}

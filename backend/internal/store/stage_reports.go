@@ -52,6 +52,7 @@ var RunnerErrors = []string{
 
 type reportExecution struct {
 	id, taskID, runnerID   string
+	notificationBatch      string
 	status                 model.ExecutionStatus
 	taskStatus             model.TaskStatus
 	resumeStage, profileID sql.NullString
@@ -531,7 +532,8 @@ func finishWork(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFin
 }
 
 // openDecision creates an owner decision and its decision_opened event
-// (spec 04 3.5). Notification follows the Execution transition.
+// (spec 04 3.5). The committed decision requests its notification. Approvals
+// created by this report/answer share a batch, even though their timestamps differ.
 func openDecision(ctx context.Context, tx *sql.Tx, e *reportExecution, kind model.DecisionKind, cause model.DecisionCause,
 	subjectID, basis *string, detail any) (string, error) {
 	var raw []byte
@@ -553,7 +555,14 @@ func openDecision(ctx context.Context, tx *sql.Tx, e *reportExecution, kind mode
 		time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return "", err
 	}
-	return id, appendEvent(ctx, tx, e.id, model.EventDecisionOpened, map[string]any{"decisionId": id, "kind": kind, "cause": causeValue})
+	fields := map[string]any{"decisionId": id, "kind": kind, "cause": causeValue}
+	if kind == model.DecisionApproval {
+		if e.notificationBatch == "" {
+			e.notificationBatch = ulid.Make().String()
+		}
+		fields["notificationBatch"] = e.notificationBatch
+	}
+	return id, appendEvent(ctx, tx, e.id, model.EventDecisionOpened, fields)
 }
 
 func finishProgram(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFinish, result contract.Result,
