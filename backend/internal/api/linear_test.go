@@ -63,10 +63,11 @@ func readSettingsState(t *testing.T, db *sql.DB) settingsState {
 }
 
 // settingsJSON is a GET/PATCH /api/settings body with the given labels and
-// the default routing settings.
+// the default routing, limits and approval settings.
 func settingsJSON(trigger, prefix string) string {
 	return `{"linear":{"triggerLabel":"` + trigger + `","routingLabelPrefix":"` + prefix + `"},` +
-		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null}}` + "\n"
+		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null},` +
+		`"limits":{"stageTimeoutMaxSec":{"prepare":1800,"work":14400,"check":3600,"publish":1800}},"approval":{"ttlSec":86400}}` + "\n"
 }
 
 func TestSettingsLinearLabelsDefaultsAndPatch(t *testing.T) {

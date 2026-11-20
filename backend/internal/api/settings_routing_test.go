@@ -21,7 +21,8 @@ func TestSettingsRoutingPatchStoresAndAudits(t *testing.T) {
 	status, body := projectRequest(t, f, "PATCH", "/api/settings", map[string]any{"routing": map[string]any{
 		"proposer": map[string]any{"microHarness": "codex", "model": "model-x"}, "defaultRunnerId": "runner-1"}})
 	want := `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"route:"},` +
-		`"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"runner-1"}}` + "\n"
+		`"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"runner-1"},` +
+		`"limits":{"stageTimeoutMaxSec":{"prepare":1800,"work":14400,"check":3600,"publish":1800}},"approval":{"ttlSec":86400}}` + "\n"
 	if status != 200 || string(body) != want {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}

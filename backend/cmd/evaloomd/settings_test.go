@@ -221,9 +221,10 @@ func TestSettingsSurviveRestartForAPIAndPoller(t *testing.T) {
 		t.Fatalf("PATCH with a prefix outside routes: status=%d body=%s", status, body)
 	}
 	const patched = `{"linear":{"triggerLabel":"go","routingLabelPrefix":"route:"},` +
-		`"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"}}` + "\n"
+		`"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"},` +
+		`"limits":{"stageTimeoutMaxSec":{"prepare":1800,"work":14400,"check":3600,"publish":1800}},"approval":{"ttlSec":600}}` + "\n"
 	status, body = first.request(t, "PATCH", "/api/settings",
-		`{"linear":{"triggerLabel":"go"},"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"}}`)
+		`{"linear":{"triggerLabel":"go"},"routing":{"proposer":{"microHarness":"codex","model":"model-x"},"defaultRunnerId":"r1"},"approval":{"ttlSec":600}}`)
 	if status != 200 || body != patched {
 		t.Fatalf("PATCH status=%d body=%s", status, body)
 	}
@@ -270,7 +271,8 @@ func TestStartupWithEmptyStoredSettingPollsWithDefaultAndLogs(t *testing.T) {
 	}
 	status, body := d.request(t, "GET", "/api/settings", "")
 	if status != 200 || body != `{"linear":{"triggerLabel":"ai-ready","routingLabelPrefix":"to:"},`+
-		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null}}`+"\n" {
+		`"routing":{"proposer":{"microHarness":"claude_code","model":null},"defaultRunnerId":null},`+
+		`"limits":{"stageTimeoutMaxSec":{"prepare":1800,"work":14400,"check":3600,"publish":1800}},"approval":{"ttlSec":86400}}`+"\n" {
 		t.Fatalf("GET status=%d body=%s", status, body)
 	}
 	d.stop()

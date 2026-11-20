@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
@@ -129,12 +131,67 @@ type RoutingSettings struct {
 	DefaultRunnerID *string       `json:"defaultRunnerId"`
 }
 
-// Settings are the global settings served by GET/PATCH /api/settings (spec
-// 15 5章): linear.triggerLabel, linear.routingLabelPrefix, routing.proposer
-// and routing.defaultRunnerId. The polling Team is not a setting (Q216).
+// Keys of the limits and approval settings rows (spec 02 3.8). Profile
+// registration and the approval decision read the same rows.
+const (
+	SettingStageTimeoutMaxSec = "limits.stageTimeoutMaxSec"
+	SettingApprovalTTLSec     = "approval.ttlSec"
+)
+
+// DefaultApprovalTTLSec is the default of approval.ttlSec: 24 hours (spec 17
+// Q55).
+const DefaultApprovalTTLSec int64 = 86400
+
+// StageTimeoutMaxSec is the global setting limits.stageTimeoutMaxSec: the
+// upper limit of a Profile's timeoutSec per stage (spec 02 3.8). It is stored
+// as the JSON object {"prepare":..,"work":..,"check":..,"publish":..}.
+type StageTimeoutMaxSec struct {
+	Prepare int `json:"prepare"`
+	Work    int `json:"work"`
+	Check   int `json:"check"`
+	Publish int `json:"publish"`
+}
+
+func stageTimeoutMaxSecFrom(limits map[model.Stage]int) StageTimeoutMaxSec {
+	return StageTimeoutMaxSec{
+		Prepare: limits[model.StagePrepare], Work: limits[model.StageWork],
+		Check: limits[model.StageCheck], Publish: limits[model.StagePublish],
+	}
+}
+
+// DefaultStageTimeoutMaxSec is the default of limits.stageTimeoutMaxSec
+// (spec 02 3.8).
+func DefaultStageTimeoutMaxSec() StageTimeoutMaxSec {
+	return stageTimeoutMaxSecFrom(registry.DefaultStageTimeoutMaxSec)
+}
+
+// LimitsSettings are the limits.* settings.
+type LimitsSettings struct {
+	StageTimeoutMaxSec StageTimeoutMaxSec `json:"stageTimeoutMaxSec"`
+}
+
+// ApprovalSettings are the approval.* settings.
+type ApprovalSettings struct {
+	TTLSec int64 `json:"ttlSec"`
+}
+
+// Settings are the global settings served by GET/PATCH /api/settings: the
+// six keys of spec 02 3.8, grouped by their prefix. The polling Team is not
+// a setting (Q216).
 type Settings struct {
-	Linear  Labels          `json:"linear"`
-	Routing RoutingSettings `json:"routing"`
+	Linear   Labels           `json:"linear"`
+	Routing  RoutingSettings  `json:"routing"`
+	Limits   LimitsSettings   `json:"limits"`
+	Approval ApprovalSettings `json:"approval"`
+}
+
+func defaultSettings() Settings {
+	return Settings{
+		Linear:   DefaultLabels(),
+		Routing:  RoutingSettings{Proposer: DefaultRouteProposer()},
+		Limits:   LimitsSettings{StageTimeoutMaxSec: DefaultStageTimeoutMaxSec()},
+		Approval: ApprovalSettings{TTLSec: DefaultApprovalTTLSec},
+	}
 }
 
 // SettingsPatch holds the keys a PATCH /api/settings supplies; nil keeps the
@@ -145,6 +202,8 @@ type SettingsPatch struct {
 	RoutingLabelPrefix *string
 	Proposer           *RouteProposer
 	DefaultRunnerID    **string
+	StageTimeoutMaxSec *StageTimeoutMaxSec
+	ApprovalTTLSec     *int64
 }
 
 // ErrTriggerLabelHasPrefix rejects settings in which linear.triggerLabel
@@ -171,9 +230,41 @@ func (s *LabelSettings) Settings(ctx context.Context) Settings {
 	rows, err := store.ReadSettings(ctx, s.DB)
 	if err != nil {
 		s.logger().Error("settings could not be read; using the defaults", "error", err)
-		return Settings{Linear: DefaultLabels(), Routing: RoutingSettings{Proposer: DefaultRouteProposer()}}
+		return defaultSettings()
 	}
-	return Settings{Linear: s.resolve(rows), Routing: s.resolveRouting(rows)}
+	return s.resolveAll(rows)
+}
+
+func (s *LabelSettings) resolveAll(rows map[string]string) Settings {
+	return Settings{Linear: s.resolve(rows), Routing: s.resolveRouting(rows),
+		Limits: s.resolveLimits(rows), Approval: s.resolveApproval(rows)}
+}
+
+// resolveLimits reads limits.stageTimeoutMaxSec the way Profile registration
+// does (registry.ParseStageTimeoutMaxSec): a stage without a positive integer
+// is shown as 0, the stage that allows no timeout (Fail Closed).
+func (s *LabelSettings) resolveLimits(rows map[string]string) LimitsSettings {
+	raw, present := rows[SettingStageTimeoutMaxSec]
+	limits := registry.ParseStageTimeoutMaxSec(raw, present)
+	if present && len(limits) < len(registry.DefaultStageTimeoutMaxSec) {
+		s.logger().Warn("setting lacks a positive limit for some stage; those stages allow no timeout", "key", SettingStageTimeoutMaxSec)
+	}
+	return LimitsSettings{StageTimeoutMaxSec: stageTimeoutMaxSecFrom(limits)}
+}
+
+// resolveApproval reads approval.ttlSec as the approval decision does (a
+// JSON integer). An unusable row is logged and shown as the default.
+func (s *LabelSettings) resolveApproval(rows map[string]string) ApprovalSettings {
+	approval := ApprovalSettings{TTLSec: DefaultApprovalTTLSec}
+	if raw, ok := rows[SettingApprovalTTLSec]; ok {
+		var ttl int64
+		if err := json.Unmarshal([]byte(raw), &ttl); err != nil {
+			s.logger().Warn("setting is unusable; using the default", "key", SettingApprovalTTLSec)
+		} else {
+			approval.TTLSec = ttl
+		}
+	}
+	return approval
 }
 
 func (s *LabelSettings) resolveRouting(rows map[string]string) RoutingSettings {
@@ -223,7 +314,7 @@ func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch)
 	if err != nil {
 		return Settings{}, err
 	}
-	current := Settings{Linear: s.resolve(rows), Routing: s.resolveRouting(rows)}
+	current := s.resolveAll(rows)
 	next := current
 	type change struct {
 		key           string
@@ -249,6 +340,14 @@ func (s *LabelSettings) UpdateSettings(ctx context.Context, patch SettingsPatch)
 			next.Routing.DefaultRunnerID = id
 			changes = append(changes, change{SettingDefaultRunnerID, before, id})
 		}
+	}
+	if patch.StageTimeoutMaxSec != nil && *patch.StageTimeoutMaxSec != current.Limits.StageTimeoutMaxSec {
+		next.Limits.StageTimeoutMaxSec = *patch.StageTimeoutMaxSec
+		changes = append(changes, change{SettingStageTimeoutMaxSec, current.Limits.StageTimeoutMaxSec, next.Limits.StageTimeoutMaxSec})
+	}
+	if patch.ApprovalTTLSec != nil && *patch.ApprovalTTLSec != current.Approval.TTLSec {
+		next.Approval.TTLSec = *patch.ApprovalTTLSec
+		changes = append(changes, change{SettingApprovalTTLSec, current.Approval.TTLSec, next.Approval.TTLSec})
 	}
 	if len(changes) == 0 {
 		return current, tx.Commit()
