@@ -26,7 +26,7 @@ func claimedLinearExecution(t *testing.T, db *sql.DB, summary string) {
 	mustExec(t, db, `INSERT INTO harnesses (id, name, repo_path, repo_url, created_at, updated_at) VALUES ('h', 'Harness', '/repos/h', '', ?, ?)`, testTime, testTime)
 	mustExec(t, db, `INSERT INTO harness_profiles (id, harness_id, version, commit_sha, tag_name, definition, definition_hash, model_id, operation_status, registered_at, contract_version) VALUES ('p', 'h', '1.0.0', ?, 'v1', '{}', 'hash', 'model', 'provisional', ?, '1')`, sha40, testTime)
 	mustExec(t, db, `UPDATE executions SET runner_id = 'runner', harness_id = 'h', profile_id = 'p',
-		profile_version = '1.0.0', profile_commit_sha = ? WHERE id = 'linear-1-e1'`, sha40)
+		route_kind = 'project', project_id = 'project', profile_version = '1.0.0', profile_commit_sha = ? WHERE id = 'linear-1-e1'`, sha40)
 	files, err := store.NewArtifactStore(db, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +79,7 @@ func TestCommentBodyHasTheItemsOfItsTrigger(t *testing.T) {
 		checkBody(t, onlyBody(t, db), []string{
 			"管理画面のタスク ID: linear-1\n",
 			"- 実行ステータス: Completed\n",
+			"- 振り分け先 Project: Project\n",
 			"- 実行担当ハーネス: h（Profile 1.0.0）\n",
 			"\n作業概要:\nテストを1件足した\n",
 		}, []string{"エラー情報", "承認", "PR URL", "検証結果", "Gate"})
@@ -138,6 +139,86 @@ func TestCommentBodyRedactsSecretFormsInFreeText(t *testing.T) {
 		"curl -H 'Authorization: [REDACTED]\n[REDACTED]\n\n\n終わり",
 		"- エラー情報: work_failed（Proxy-Authorization: [REDACTED]）\n",
 	}, []string{"hdr-secret-1", "pem-secret-2", "hdr-secret-3"})
+}
+
+func TestCommentBodyChecksAndOutputs(t *testing.T) {
+	for _, status := range []model.ExecutionStatus{model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionTimedOut} {
+		t.Run(string(status), func(t *testing.T) {
+			db := outboxDB(t)
+			claimedLinearExecution(t, db, "作業の要約")
+			mustExec(t, db, `UPDATE executions SET outputs = ? WHERE id = 'linear-1-e1'`,
+				`[{"kind":"draft","label":"文書","url":"https://example.test/draft?q=opaque#part"},{"kind":"custom","label":"任意の成果","url":"https://example.test/other"},{"kind":"custom","label":"Authorization: Bearer output-secret","url":"file:///runner/private/output"}]`)
+			mustExec(t, db, `INSERT INTO stage_runs (id, execution_id, stage, attempt, status, started_at)
+				VALUES ('check-run', 'linear-1-e1', 'check', 1, 'succeeded', ?)`, testTime)
+			mustExec(t, db, `INSERT INTO check_results (id, execution_id, stage_run_id, result, summary, findings, created_at)
+				VALUES ('check', 'linear-1-e1', 'check-run', 'pass', ?, ?, ?)`,
+				"確かめた概要\nAuthorization: Bearer check-secret\npath=/runner/private/check file:///runner/private/summary",
+				`[{"severity":"error","message":"FINDING-BODY-CANARY","location":{"path":"FINDING-PATH-CANARY","line":1}},{"severity":"error"},{"severity":"warning"},{"severity":"info"},{"severity":"info"},{"severity":"info"}]`, testTime)
+			mustExec(t, db, `INSERT INTO stage_runs (id, execution_id, stage, attempt, status, started_at)
+				VALUES ('check-run-2', 'linear-1-e1', 'check', 2, 'succeeded', ?)`, testTime)
+			mustExec(t, db, `INSERT INTO check_results (id, execution_id, stage_run_id, result, summary, findings, created_at)
+				VALUES ('check-2', 'linear-1-e1', 'check-run-2', 'pass', NULL, '[]', ?)`, testTime)
+			// Another Execution's check and outputs must never be mixed in.
+			mustExec(t, db, `UPDATE executions SET outputs = '[{"label":"OTHER-OUTPUT","url":"https://other.test"}]' WHERE id = 'manual-1-e1'`)
+			mustExec(t, db, `INSERT INTO stage_runs (id, execution_id, stage, attempt, status, started_at)
+				VALUES ('other-run', 'manual-1-e1', 'check', 1, 'succeeded', ?)`, testTime)
+			mustExec(t, db, `INSERT INTO check_results (id, execution_id, stage_run_id, result, summary, findings, created_at)
+				VALUES ('other-check', 'manual-1-e1', 'other-run', 'pass', 'OTHER-CHECK', '[]', ?)`, testTime)
+			setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+			transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, status)
+			checkBody(t, onlyBody(t, db), []string{
+				"作業の要約", "確かめた結果:\n確かめた概要\nAuthorization: [REDACTED]",
+				"path=[REDACTED] [REDACTED]", "finding 件数: error=2, warning=1, info=3",
+				"finding 件数: error=0, warning=0, info=0", "- Authorization: [REDACTED]: [REDACTED]",
+				"外に出したもの:\n- 文書: https://example.test/draft?q=opaque#part\n- 任意の成果: https://example.test/other",
+			}, []string{"check-secret", "output-secret", "/runner/private", "FINDING-BODY-CANARY", "FINDING-PATH-CANARY", "OTHER-CHECK", "OTHER-OUTPUT"})
+		})
+	}
+}
+
+func TestCommentBodyDirectHarnessWithoutOptionalResults(t *testing.T) {
+	db := outboxDB(t)
+	claimedLinearExecution(t, db, "")
+	mustExec(t, db, `UPDATE tasks SET project_id = NULL, harness_id = 'h' WHERE id = 'linear-1'`)
+	mustExec(t, db, `UPDATE executions SET project_id = NULL, route_kind = 'harness' WHERE id = 'linear-1-e1'`)
+	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded)
+	checkBody(t, onlyBody(t, db), []string{"実行担当ハーネス: h（Profile 1.0.0）"},
+		[]string{"振り分け先 Project", "作業概要", "確かめた結果", "外に出したもの", "エラー情報"})
+}
+
+func TestCommentBodyManagementReferences(t *testing.T) {
+	for _, host := range []string{"", "orionmac-mini.tailb76d84.ts.net"} {
+		t.Run("host="+host, func(t *testing.T) {
+			t.Cleanup(linearoutbox.SetRemoteHost(host))
+			db := outboxDB(t)
+			for _, status := range []string{"open", "answered", "withdrawn"} {
+				mustExec(t, db, `INSERT INTO owner_decisions (id, kind, task_id, execution_id, cause, detail, status, created_at)
+					VALUES (?, 'question', 'linear-1', 'linear-1-e1', 'question', '{"question":"DECISION-CONTENT-CANARY"}', ?, ?)`, status+"-decision", status, testTime)
+			}
+			setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
+			transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded)
+			want := []string{"管理画面のタスク ID: linear-1", "判断待ち ID: open-decision"}
+			if host != "" {
+				want = []string{"管理画面のタスク ID: https://" + host + "/tasks/linear-1", "判断待ち ID: https://" + host + "/decisions/open-decision"}
+			}
+			absent := []string{"DECISION-CONTENT-CANARY", "answered-decision", "withdrawn-decision", "127.0.0.1", "localhost"}
+			if host == "" {
+				absent = append(absent, "https://", "http://")
+			}
+			checkBody(t, onlyBody(t, db), want, absent)
+			tx, err := db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			body, err := linearoutbox.Body(t.Context(), tx, linearoutbox.Trigger{TaskID: "linear-1", Kind: linearoutbox.KindDecisionOpen, TargetID: "open-decision"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkBody(t, body, []string{"管理画面で判断待ち", want[1]}, []string{"DECISION-CONTENT-CANARY", "実行ステータス", "作業概要"})
+		})
+	}
 }
 
 // 受け入れ基準: ログの本文と Runner のパスが本文に入らない。
@@ -203,5 +284,5 @@ func TestCommentBodyWithoutSummarySource(t *testing.T) {
 	db := outboxDB(t)
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded)
-	checkBody(t, onlyBody(t, db), []string{"- 実行ステータス: Completed\n", "\n作業概要: 取得できなかった\n"}, nil)
+	checkBody(t, onlyBody(t, db), []string{"- 実行ステータス: Completed\n"}, []string{"作業概要"})
 }

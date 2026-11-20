@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +16,55 @@ import (
 	"testing"
 	"time"
 )
+
+func TestHarnessSummaryTxAfterWorkResumes(t *testing.T) {
+	for _, sameTime := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same timestamp=%t", sameTime), func(t *testing.T) {
+			db := openTaskTables(t)
+			if _, err := insertExecution(db, "execution-2", "task-001", 2, "pending"); err != nil {
+				t.Fatal(err)
+			}
+			files := openArtifactStore(t, db, t.TempDir())
+			read := func(want string, available bool) {
+				t.Helper()
+				tx, err := db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if got, ok := files.HarnessSummaryTx(t.Context(), tx, "execution-1"); got != want || ok != available {
+					t.Fatalf("summary = %q, %t; want %q, %t", got, ok, want, available)
+				}
+			}
+			read("", false)
+			save := func(id, executionID, stage, summary, created string) {
+				t.Helper()
+				if _, err := files.Save(t.Context(), Artifact{ID: id, ExecutionID: executionID, Stage: stage,
+					Kind: "work_summary", Name: "summary.md", Redacted: true}, strings.NewReader(summary)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`UPDATE artifacts SET created_at=? WHERE id=?`, created, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const firstTime = "2026-11-20T00:00:00Z"
+			secondTime := "2026-11-20T00:00:01Z"
+			if sameTime {
+				secondTime = firstTime
+			}
+			save("z-before", "execution-1", "work", "質問前の概要", firstTime)
+			read("質問前の概要", true)
+			// IDs are opaque; even within one second, the later registration wins.
+			save("a-after", "execution-1", "work", "回答後の概要", secondTime)
+			save("other-stage", "execution-1", "check", "別の段", secondTime)
+			save("other-execution", "execution-2", "work", "別の実行", secondTime)
+			read("回答後の概要", true)
+			// Never fall back to an obsolete summary if the latest is unreadable.
+			save("invalid", "execution-1", "work", "\xff", secondTime)
+			read("", false)
+		})
+	}
+}
 
 func TestArtifactFilesRoundTripOutsideGitTracking(t *testing.T) {
 	// Reproduce local use with this repository's actual ignore rules, rather

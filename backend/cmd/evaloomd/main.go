@@ -237,6 +237,7 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	if err != nil {
 		return err
 	}
+	defer linearoutbox.SetRemoteHost(*remoteHost)()
 	// The settings API and the Linear Poller share the label settings stored
 	// in the settings table, so they survive a restart (spec 15 5章, Q48, Q76).
 	linearSettings := linearintake.NewLabelSettings(db, logger)
