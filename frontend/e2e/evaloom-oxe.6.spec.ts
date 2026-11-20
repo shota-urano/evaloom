@@ -139,9 +139,9 @@ async function registerVersion(page: Page, version: string) {
 test('スペシャルハーネスを登録し、版の登録・409・宣言の表示・既定の版の設定ができる', async ({ page, server }) => {
   // 登録
   await page.goto('/harnesses')
-  await expect(page.getByText('登録済みの Harness はありません。')).toBeVisible()
-  await page.getByRole('link', { name: 'Harness を登録' }).click()
-  await page.getByLabel('Harness ID').fill(HARNESS)
+  await expect(page.getByText('登録済みのスペシャルハーネスはありません。')).toBeVisible()
+  await page.getByRole('link', { name: 'スペシャルハーネスを登録' }).click()
+  await page.getByLabel('スペシャルハーネス ID').fill(HARNESS)
   await page.getByLabel('名称').fill(HARNESS_NAME)
   await page.getByLabel('ハーネスリポジトリのパス').fill(server.harness.path)
   await page.getByLabel('ハーネスリポジトリ URL').fill('https://example.com/engineer.git')

@@ -11,7 +11,7 @@ export const harnessPath = (id: string) => `/harnesses/${encodeURIComponent(id)}
 
 // Harness の各項目の表示名（13 3.2「Harness 登録・編集」、02-data-model 3.2 harnesses）。
 export const HARNESS_LABELS = {
-  id: 'Harness ID',
+  id: 'スペシャルハーネス ID',
   name: '名称',
   specialty: '専門分野',
   adapter: 'Adapter',

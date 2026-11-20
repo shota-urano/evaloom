@@ -51,9 +51,9 @@ function api(harness: Harness, onPatch?: (r: Recorded) => Response) {
 }
 afterEach(() => window.history.pushState(null, '', '/'))
 
-it('Harness はリポジトリの情報だけを登録する', async () => {
+it('スペシャルハーネスはリポジトリの情報だけを登録する', async () => {
   const fake = renderAt('/harnesses/_new', (r) => (r.method === 'POST' ? json(201, HARNESS) : api(HARNESS)(r)))
-  await userEvent.type(await screen.findByLabelText('Harness ID'), 'engineer')
+  await userEvent.type(await screen.findByLabelText('スペシャルハーネス ID'), 'engineer')
   await userEvent.type(screen.getByLabelText('名称'), 'Engineer')
   await userEvent.type(screen.getByLabelText('ハーネスリポジトリのパス'), '/repos/engineer')
   await userEvent.type(screen.getByLabelText('ハーネスリポジトリ URL'), 'https://example.invalid/h.git')
