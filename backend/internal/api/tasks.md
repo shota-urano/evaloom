@@ -42,10 +42,12 @@
 `GET /api/tasks` は管理画面の Tasks 一覧（`13-management-ui.md` 3.2）のために追加した。
 仕様は一覧 API の存在（`01-architecture.md` 5.1）だけを定めるので、次を実装判断とする。
 
-- 絞り込みは `?status=`（`02-data-model.md` 5.1 の値）と `?projectId=` の完全一致。
-  どちらも省略または空文字なら絞り込まない。不正な値と複数指定は400。
+- 絞り込みは `?status=`（`02-data-model.md` 5.1 の値）、`?projectId=`、`?harnessId=` の完全一致。
+  省略または空文字なら絞り込まない。不正な値と複数指定は400。指定した条件はすべて AND で組み合わせる。
+  `harnessId` は `tasks.harness_id`（直接の振り分け先）を照合し、Project の割り当ては含めない。
 - 並びはタスクIDの数値部分の降順（新しい順）。`task-1000` は `task-999` より前に来る。
   ページングは共通の `limit` / `cursor`。カーソルは直前ページ最後のタスクIDを持つ。
 - 各要素はタスクの列に加えて `latestExecution`（seqが最大のExecutionの
-  `id`・`seq`・`mode`・`status`・`errorClass`。無ければnull）を返す。
+  `id`・`seq`・`mode`・`status`・`errorClass`・`outputs`。Execution が無ければnull）を返す。
+  `outputs` は保存済みの JSON 配列をそのまま返し、未保存のときは `[]` を返す。
   PR URL は software-engineer へ移したため返さない（`docs/specs/19-routing-and-stages.md` 3.11）。

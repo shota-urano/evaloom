@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -108,11 +109,13 @@ type ExecutionSummary struct {
 	Mode       string
 	Status     string
 	ErrorClass *string
+	Outputs    json.RawMessage
 }
 
 type TaskFilter struct {
 	Status    string
 	ProjectID string
+	HarnessID string
 }
 
 // ListTasks returns tasks newest first. Task IDs are task-<number> with a
@@ -122,13 +125,15 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 	rows, err := db.QueryContext(ctx, `SELECT t.id, coalesce(t.project_id, ''), coalesce(t.harness_id, ''), t.title, t.body, t.acceptance_criteria,
 		t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
-		e.id, e.seq, e.mode, e.status, e.error_class
+		e.id, e.seq, e.mode, e.status, e.error_class, coalesce(e.outputs, '[]')
 		FROM tasks t
 		LEFT JOIN executions e ON e.task_id = t.id AND e.seq = (SELECT max(seq) FROM executions WHERE task_id = t.id)
 		WHERE (? = '' OR t.status = ?) AND (? = '' OR t.project_id = ?)
+		AND (? = '' OR t.harness_id = ?)
 		AND (? <= 0 OR CAST(substr(t.id, 6) AS INTEGER) < ?)
 		ORDER BY CAST(substr(t.id, 6) AS INTEGER) DESC LIMIT ?`,
-		filter.Status, filter.Status, filter.ProjectID, filter.ProjectID, before, before, limit)
+		filter.Status, filter.Status, filter.ProjectID, filter.ProjectID,
+		filter.HarnessID, filter.HarnessID, before, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -139,14 +144,15 @@ func ListTasks(ctx context.Context, db *sql.DB, filter TaskFilter, before int64,
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
 		var errorClass sql.NullString
+		var outputs string
 		if err := rows.Scan(&s.ID, &s.ProjectID, &s.HarnessID, &s.Title, &s.Body, &s.AcceptanceCriteria,
 			&s.CollaborationMode, &s.Status, &s.CreatedAt, &s.UpdatedAt,
 			&s.Source, &s.IntakeBlockCause, &s.LinearIdentifier, &s.LinearURL,
-			&executionID, &seq, &mode, &status, &errorClass); err != nil {
+			&executionID, &seq, &mode, &status, &errorClass, &outputs); err != nil {
 			return nil, err
 		}
 		if executionID.Valid {
-			s.LatestExecution = &ExecutionSummary{ID: executionID.String, Seq: int(seq.Int64), Mode: mode.String, Status: status.String}
+			s.LatestExecution = &ExecutionSummary{ID: executionID.String, Seq: int(seq.Int64), Mode: mode.String, Status: status.String, Outputs: json.RawMessage(outputs)}
 			if errorClass.Valid {
 				s.LatestExecution.ErrorClass = &errorClass.String
 			}

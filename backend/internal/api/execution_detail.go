@@ -46,7 +46,7 @@ func getExecution(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		view := executionDetailView{
 			taskExecutionView: taskExecutionView{
-				executionSummaryView: executionSummaryView{detail.ID, detail.Seq, detail.Mode, detail.Status, detail.ErrorClass},
+				executionSummaryView: newExecutionSummaryView(detail.ExecutionSummary),
 				ProfileVersion:       detail.ProfileVersion, ProfileCommitSHA: detail.ProfileCommitSHA,
 			},
 			TaskID: detail.TaskID, RunnerID: detail.RunnerID, Role: detail.Role,
