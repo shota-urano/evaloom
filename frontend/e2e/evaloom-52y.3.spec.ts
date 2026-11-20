@@ -92,8 +92,8 @@ function profileRow(page: Page, version: string) {
 
 async function openHarness(page: Page) {
   await page.goto('/')
-  await page.getByRole('navigation', { name: '画面' }).getByRole('link', { name: 'Harnesses' }).click()
-  await expect(page.getByRole('heading', { name: 'Harnesses' })).toBeVisible()
+  await page.getByRole('navigation', { name: '画面' }).getByRole('link', { name: 'スペシャルハーネス', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネス' })).toBeVisible()
   await page.getByRole('link', { name: HARNESS_NAME }).click()
   await expect(page).toHaveURL(`/harnesses/${HARNESS}`)
   await expect(page.getByRole('heading', { name: HARNESS_NAME })).toBeVisible()
@@ -149,7 +149,7 @@ test('Profile の版を登録すると commit SHA と「暫定運用」が表示
   await screenshot(page, 'harness-detail')
 
   await page.getByRole('link', { name: '一覧へ戻る' }).click()
-  const listRow = page.getByRole('table', { name: '登録済み Harness' }).locator('tbody tr').filter({ hasText: HARNESS_NAME })
+  const listRow = page.getByRole('table', { name: '登録済みスペシャルハーネス' }).locator('tbody tr').filter({ hasText: HARNESS_NAME })
   await expect(listRow).toContainText('claude_code')
   await expect(listRow).toContainText(server.harness.path)
   await expect(listRow).toContainText('Alpha アプリ')
@@ -198,17 +198,17 @@ test('SemVer でない版は送らず、タグが無い版は前提条件の失�
 
 test('登録画面 /harnesses/_new は Harness ID「new」の詳細と衝突せず、登録・編集のエラーは項目に出る', async ({ page, server }) => {
   await page.goto('/harnesses')
-  await page.getByRole('link', { name: 'Harness を登録' }).click()
+  await page.getByRole('link', { name: 'スペシャルハーネスを登録' }).click()
   await expect(page).toHaveURL('/harnesses/_new')
-  await expect(page.getByRole('heading', { name: 'Harness の登録' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの登録' })).toBeVisible()
 
   // 必須項目が空なら送信しない。
   await page.getByRole('button', { name: '登録' }).click()
-  await expect(field(page, 'Harness ID').locator('[data-slot=field-error]')).toHaveText('入力してください')
+  await expect(field(page, 'スペシャルハーネス ID').locator('[data-slot=field-error]')).toHaveText('入力してください')
   await expect(field(page, 'Adapter').locator('[data-slot=field-error]')).toHaveText('選択してください')
 
   // evaloomd は Adapter を登録していないので、サーバーは adapter を 400 で拒否する。その details が Adapter の項目に出る。
-  await page.getByLabel('Harness ID').fill('codex-developer')
+  await page.getByLabel('スペシャルハーネス ID').fill('codex-developer')
   await page.getByLabel('名称').fill('Codex Developer')
   await page.getByLabel('Adapter').selectOption('codex')
   await page.getByLabel('ハーネスリポジトリのパス').fill(server.project.path)
@@ -230,9 +230,9 @@ test('登録画面 /harnesses/_new は Harness ID「new」の詳細と衝突せ�
   // 編集画面は登録済みの値を出し、ID は変えられない。
   await page.goto(`/harnesses/${HARNESS}`)
   await page.getByRole('link', { name: '編集' }).click()
-  await expect(page.getByRole('heading', { name: 'Harness の編集' })).toBeVisible()
-  await expect(page.getByLabel('Harness ID')).toBeDisabled()
-  await expect(page.getByLabel('Harness ID')).toHaveValue(HARNESS)
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの編集' })).toBeVisible()
+  await expect(page.getByLabel('スペシャルハーネス ID')).toBeDisabled()
+  await expect(page.getByLabel('スペシャルハーネス ID')).toHaveValue(HARNESS)
   await expect(page.getByLabel('Adapter')).toHaveValue('claude_code')
   await expect(page.getByLabel('ハーネスリポジトリのパス')).toHaveValue(server.harness.path)
   await expect(page.getByLabel('対応モデル')).toHaveValue('claude-e2e-model')

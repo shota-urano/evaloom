@@ -37,7 +37,7 @@ const NAV = [
   { to: '/', label: 'Dashboard' },
   { to: '/projects', label: 'Projects' },
   { to: ROUTES_PATH, label: '振り分けの表' },
-  { to: '/harnesses', label: 'Harnesses' },
+  { to: '/harnesses', label: 'スペシャルハーネス' },
   { to: TASKS_PATH, label: 'Tasks' },
   { to: DECISIONS_PATH, label: '判断待ち' },
   { to: APPROVALS_PATH, label: 'Approvals' },

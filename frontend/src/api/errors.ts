@@ -35,7 +35,7 @@ const REASON_LABELS: Record<string, string> = {
   default_profile_missing: 'このスペシャルハーネスには既定の版がありません。スペシャルハーネスの詳細画面で既定の版を設定してください',
   // 04 3.1・13 3.6: 振り分け先は Project かスペシャルハーネスのどちらか一方（400）
   exactly_one_destination: 'Project かスペシャルハーネスのどちらか一方を選んでください',
-  default_harness_missing: '既定の役割に Harness が割り当てられていません。プロジェクトの詳細画面で割り当ててください',
+  default_harness_missing: '既定の役割にスペシャルハーネスが割り当てられていません。プロジェクトの詳細画面で割り当ててください',
   // 15-linear-intake 3.8: UNIQUE(linear_team_id, linear_routing_label)（409、backend/internal/api/projects.md）
   duplicate: 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています',
 }

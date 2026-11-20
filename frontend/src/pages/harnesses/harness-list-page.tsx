@@ -39,10 +39,10 @@ export function HarnessListPage() {
   return (
     <div className="grid gap-6">
       <PageTitle
-        title="Harnesses"
+        title="スペシャルハーネス"
         actions={
           <Button asChild>
-            <Link to={HARNESS_NEW_PATH}>Harness を登録</Link>
+            <Link to={HARNESS_NEW_PATH}>スペシャルハーネスを登録</Link>
           </Button>
         }
       />
@@ -52,17 +52,17 @@ export function HarnessListPage() {
       ) : harnesses.data.length === 0 ? (
         <Card>
           <CardContent className="text-muted-foreground text-sm">
-            登録済みの Harness はありません。「Harness を登録」から追加してください。
+            登録済みのスペシャルハーネスはありません。「スペシャルハーネスを登録」から追加してください。
           </CardContent>
         </Card>
       ) : (
         <div className="overflow-x-auto rounded-xl border">
           <table className="w-full text-sm">
-            <caption className="sr-only">登録済み Harness</caption>
+            <caption className="sr-only">登録済みスペシャルハーネス</caption>
             <thead className="bg-muted/50 text-left">
               <tr>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  Harness
+                  スペシャルハーネス
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   既定の版

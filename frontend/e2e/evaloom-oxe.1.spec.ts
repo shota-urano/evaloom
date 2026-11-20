@@ -67,7 +67,7 @@ test('evaloomd が配信したビルド成果物で管理画面が表示され�
 
   // 拡張子の無いパスは index.html に戻され、クライアント側のルーティングで画面が出る。
   await page.goto('/harnesses/_new')
-  await expect(page.getByRole('heading', { name: 'Harness の登録' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの登録' })).toBeVisible()
 })
 
 test('状態を変える要求には X-CSRF-Token が付き、読み取りの要求には付かない', async ({ page }) => {
@@ -82,7 +82,7 @@ test('状態を変える要求には X-CSRF-Token が付き、読み取りの要
 
   // 登録の送信（POST）。サーバーは 400 で拒否するが、要求にはトークンが付いている。
   await page.goto('/harnesses/_new')
-  await page.getByLabel('Harness ID').fill('Bad_ID')
+  await page.getByLabel('スペシャルハーネス ID').fill('Bad_ID')
   await page.getByLabel('名称').fill('CSRF の確認')
   await page.getByLabel('ハーネスリポジトリのパス').fill('/nonexistent/harness')
   await page.getByLabel('ハーネスリポジトリ URL').fill('git@example.invalid:harness.git')
@@ -124,10 +124,10 @@ test('トークンの無い状態を変える要求は evaloomd が 403 で拒�
 test('400 の details がフォームの該当する項目に表示され、直して送り直すと別の項目に移る', async ({ page }) => {
   await page.goto('/harnesses/_new')
   await loginFromScreen(page)
-  await expect(page.getByRole('heading', { name: 'Harness の登録' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの登録' })).toBeVisible()
 
   // Harness ID が slug でない → details: [{ field: "id", reason: "invalid_format" }]
-  await page.getByLabel('Harness ID').fill('Bad_ID')
+  await page.getByLabel('スペシャルハーネス ID').fill('Bad_ID')
   await page.getByLabel('名称').fill('details の確認')
   await page.getByLabel('ハーネスリポジトリのパス').fill('/nonexistent/harness')
   await page.getByLabel('ハーネスリポジトリ URL').fill('git@example.invalid:harness.git')
@@ -138,21 +138,21 @@ test('400 の details がフォームの該当する項目に表示され、直�
   expect((await firstResponse.json()).error.details).toContainEqual({ field: 'id', reason: 'invalid_format' })
 
   await expect(page.getByTestId('api-error')).toContainText('入力内容を確認してください')
-  await expect(field(page, 'Harness ID').locator('[data-slot=field-error]')).toHaveText('形式が正しくありません')
-  await expect(page.getByLabel('Harness ID')).toHaveAttribute('aria-invalid', 'true')
+  await expect(field(page, 'スペシャルハーネス ID').locator('[data-slot=field-error]')).toHaveText('形式が正しくありません')
+  await expect(page.getByLabel('スペシャルハーネス ID')).toHaveAttribute('aria-invalid', 'true')
   await expect(field(page, 'ハーネスリポジトリ URL').locator('[data-slot=field-error]')).toHaveCount(0)
   // 入力は消さずに残す。
   await expect(page.getByLabel('名称')).toHaveValue('details の確認')
   await screenshot(page, 'form-error')
 
   // ID を直し、URL を形式の正しくない値にして送り直す → details: [{ field: "repoUrl", reason: "invalid_format" }]
-  await page.getByLabel('Harness ID').fill('details-check')
+  await page.getByLabel('スペシャルハーネス ID').fill('details-check')
   await page.getByLabel('ハーネスリポジトリ URL').fill('not a url')
   const second = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/harnesses')
   await page.getByRole('button', { name: '登録' }).click()
   expect((await second).status()).toBe(400)
   await expect(field(page, 'ハーネスリポジトリ URL').locator('[data-slot=field-error]')).toHaveText('形式が正しくありません')
   await expect(page.getByLabel('ハーネスリポジトリ URL')).toHaveAttribute('aria-invalid', 'true')
-  await expect(field(page, 'Harness ID').locator('[data-slot=field-error]')).toHaveCount(0)
-  await expect(page.getByLabel('Harness ID')).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(field(page, 'スペシャルハーネス ID').locator('[data-slot=field-error]')).toHaveCount(0)
+  await expect(page.getByLabel('スペシャルハーネス ID')).not.toHaveAttribute('aria-invalid', 'true')
 })

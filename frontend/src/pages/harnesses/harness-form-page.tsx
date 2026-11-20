@@ -96,12 +96,12 @@ function HarnessForm({ harness, profiles = [], onReload }: FormProps) {
     })
 
   return (
-    <form className="grid gap-6" noValidate onSubmit={handleSubmit} aria-label={create ? 'Harness の登録' : 'Harness の編集'}>
+    <form className="grid gap-6" noValidate onSubmit={handleSubmit} aria-label={create ? 'スペシャルハーネスの登録' : 'スペシャルハーネスの編集'}>
       <ApiErrorAlert error={error} unmatchedDetails={unmatched} onReload={reload} fieldLabels={HARNESS_REPOSITORY_LABELS} />
 
       <Card>
         <CardHeader>
-          <CardTitle>Harness</CardTitle>
+          <CardTitle>スペシャルハーネス</CardTitle>
           <CardDescription>
             登録時に、パスが Git リポジトリのルートであること、origin がハーネスリポジトリ URL と一致することを確かめます。Profile
             の版は、登録後に詳細画面から登録します。
@@ -232,7 +232,7 @@ function HarnessForm({ harness, profiles = [], onReload }: FormProps) {
 export function HarnessNewPage() {
   return (
     <div className="grid gap-6">
-      <PageTitle title="Harness の登録" />
+      <PageTitle title="スペシャルハーネスの登録" />
       <HarnessForm />
     </div>
   )
@@ -249,7 +249,7 @@ export function HarnessEditPage({ id }: { id: string }) {
   }
   return (
     <div className="grid gap-6">
-      <PageTitle title="Harness の編集" subtitle={id} />
+      <PageTitle title="スペシャルハーネスの編集" subtitle={id} />
       {error ? <ApiErrorAlert error={error} /> : null}
       {harness.data && !harness.loading && profiles.data ? (
         // 読み直したら入力欄を最新の値で作り直す。
