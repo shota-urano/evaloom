@@ -39,7 +39,7 @@ const task = (id: string, status: TaskSummary['status'], executionStatus: string
 
 const TASKS = [
   task('task-001', 'running', 'running'),
-  task('task-002', 'verifying', 'verifying'),
+  task('task-002', 'running', 'checking'),
   task('task-003', 'queued', 'pending'),
   task('task-004', 'blocked', 'blocked'),
   task('task-005', 'failed', 'failed', 'test_failed'),

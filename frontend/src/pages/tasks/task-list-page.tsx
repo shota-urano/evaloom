@@ -21,9 +21,10 @@ import { LinearIssueLink } from './linear-issue-link'
 
 // 状態は色だけでなく文字でも示す（13 3.5）。色は補助。
 const STATUS_TONES: Record<string, string> = {
+  routing: 'border-violet-300 bg-violet-50 text-violet-900',
   queued: 'border-sky-300 bg-sky-50 text-sky-900',
   running: 'border-blue-300 bg-blue-50 text-blue-900',
-  verifying: 'border-indigo-300 bg-indigo-50 text-indigo-900',
+  waiting_approval: 'border-amber-300 bg-amber-50 text-amber-900',
   blocked: 'border-amber-300 bg-amber-50 text-amber-900',
   completed: 'border-emerald-300 bg-emerald-50 text-emerald-900',
   failed: 'border-red-300 bg-red-50 text-red-900',
@@ -48,7 +49,10 @@ const NO_FILTER: ListFilter = { status: '', projectId: '', harnessId: '' }
 function readFilter(): ListFilter {
   const params = new URLSearchParams(window.location.search)
   const projectId = params.get('projectId') ?? ''
-  return { status: params.get('status') ?? '', projectId, harnessId: projectId ? '' : (params.get('harnessId') ?? '') }
+  // 02 5.1 に無い状態（廃止済みの verifying など）はサーバーが 400 にするので、絞り込みに使わない。
+  const status = params.get('status') ?? ''
+  const known = (TASK_STATUS_FILTERS as readonly string[]).includes(status)
+  return { status: known ? status : '', projectId, harnessId: projectId ? '' : (params.get('harnessId') ?? '') }
 }
 
 function writeFilter(filter: ListFilter) {
@@ -181,9 +185,6 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                 {taskStatusLabel(status)}
               </option>
             ))}
-            {filter.status && !TASK_STATUS_FILTERS.includes(filter.status as never) ? (
-              <option value={filter.status}>{taskStatusLabel(filter.status)}</option>
-            ) : null}
           </NativeSelect>
         </div>
         <div className="grid gap-2">

@@ -3,13 +3,12 @@ import { listAll } from './registry'
 
 // タスクの本人用 API（01-architecture 5.1、04-task-lifecycle 3.1、backend/internal/api/tasks.go・tasks.md）の形。
 
-/** 02-data-model 5.1 のタスク状態。 */
+/** 02-data-model 5.1 のタスク状態（10個）。requirements 8.3 の planning・verifying は使わない（02 Q119）。 */
 export type TaskStatus =
   | 'received'
-  | 'planning'
+  | 'routing'
   | 'queued'
   | 'running'
-  | 'verifying'
   | 'waiting_approval'
   | 'completed'
   | 'failed'

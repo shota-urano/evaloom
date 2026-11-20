@@ -289,6 +289,51 @@ describe('Tasks 一覧', () => {
     expect(window.location.search).toBe('')
   })
 
+  it('状態の選択肢は 02 5.1 の10状態で、廃止済みの状態は出ない', async () => {
+    renderAt('/tasks')
+    await screen.findByRole('table', { name: 'タスク' })
+    const options = within(screen.getByLabelText('状態')).getAllByRole('option').map((o) => o.textContent)
+    expect(options).toEqual([
+      'すべて',
+      'Received',
+      'Routing',
+      'Queued',
+      'Running',
+      'Waiting Approval',
+      'Blocked',
+      'Completed',
+      'Failed',
+      'Cancelled',
+      'Timed Out',
+    ])
+    expect(options).not.toContain('Verifying')
+    expect(options).not.toContain('Planning')
+  })
+
+  it('Routing と Waiting Approval で絞り込める', async () => {
+    TASKS = [task('task-009', '', 'routing', { latestExecution: null }), task('task-008', 'alpha', 'waiting_approval'), ...TASKS]
+    const fake = renderAt('/tasks')
+    await screen.findByText('件名 task-009')
+    await userEvent.selectOptions(screen.getByLabelText('状態'), 'Routing')
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(rows()[0]).toHaveTextContent('件名 task-009')
+    expect(rows()[0]).toHaveTextContent('Routing')
+    expect(fake.calls.at(-1)?.url).toBe('/api/tasks?status=routing&limit=200')
+
+    await userEvent.selectOptions(screen.getByLabelText('状態'), 'Waiting Approval')
+    await screen.findByText('件名 task-008')
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]).toHaveTextContent('Waiting Approval')
+    expect(fake.calls.at(-1)?.url).toBe('/api/tasks?status=waiting_approval&limit=200')
+  })
+
+  it('URL に廃止済みの状態があっても API へ送らない', async () => {
+    const fake = renderAt('/tasks?status=verifying')
+    await screen.findByText('件名 task-001')
+    expect(screen.getByLabelText('状態')).toHaveValue('')
+    expect(fake.calls.filter((c) => c.url.startsWith('/api/tasks')).every((c) => !c.url.includes('verifying'))).toBe(true)
+  })
+
   it('スペシャルハーネスの振り分け先で絞り込める', async () => {
     TASKS = [task('task-007', '', 'queued', { harnessId: 'engineer' }), ...TASKS]
     const fake = renderAt('/tasks')

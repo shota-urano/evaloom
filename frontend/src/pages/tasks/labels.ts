@@ -11,30 +11,19 @@ export function taskDetailPath(id: string) {
 /** 02-data-model 5.1 の表示名。 */
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   received: 'Received',
-  planning: 'Planning',
+  routing: 'Routing',
   queued: 'Queued',
   running: 'Running',
-  verifying: 'Verifying',
   waiting_approval: 'Waiting Approval',
+  blocked: 'Blocked',
   completed: 'Completed',
   failed: 'Failed',
   cancelled: 'Cancelled',
   timed_out: 'Timed Out',
-  blocked: 'Blocked',
 }
 
-/** 絞り込みの選択肢。Phase 1 で起こらない planning・waiting_approval（02 5.1）は出さない。 */
-export const TASK_STATUS_FILTERS: readonly TaskStatus[] = [
-  'received',
-  'queued',
-  'running',
-  'verifying',
-  'blocked',
-  'completed',
-  'failed',
-  'cancelled',
-  'timed_out',
-]
+/** 絞り込みの選択肢。02-data-model 5.1 の10状態をその順に出す（バックエンドはこれ以外の値を 400 にする）。 */
+export const TASK_STATUS_FILTERS: readonly TaskStatus[] = Object.keys(TASK_STATUS_LABELS) as TaskStatus[]
 
 export function taskStatusLabel(status: string): string {
   return TASK_STATUS_LABELS[status as TaskStatus] ?? status
@@ -53,7 +42,7 @@ export const TASK_LABELS = {
 /** 04 3.7 の再実行の種類の表示名。 */
 export const RETRY_MODE_LABELS: Record<string, string> = { continue: '継続', fresh: '最初から' }
 
-/** 中止できるタスク状態（04 3.2 の遷移表・3.5）。判定の正本はサーバー（対象外は 409）。 */
-export const CANCELLABLE_TASK_STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'verifying', 'blocked'])
+/** 中止できるタスク状態（04 3.2 の遷移表、本人が中止）。判定の正本はサーバー（対象外は 409）。 */
+export const CANCELLABLE_TASK_STATUSES: ReadonlySet<string> = new Set(['received', 'routing', 'queued', 'running', 'waiting_approval', 'blocked'])
 /** 再実行できるタスク状態（04 3.2 の遷移表・3.7）。判定の正本はサーバー（対象外は 409）。 */
 export const RETRYABLE_TASK_STATUSES: ReadonlySet<string> = new Set(['failed', 'timed_out', 'cancelled', 'completed', 'blocked'])

@@ -329,3 +329,49 @@ test('一覧に outputs のリンクと Linear の識別子が出る', async ({ 
   await expect(other.getByRole('link', { name: /^ENG-/ })).toHaveCount(0)
   await screenshot(page, 'tasks')
 })
+
+test('状態の選択肢は 02 5.1 の10状態で、Routing と Waiting Approval で絞り込める', async ({ page, server }) => {
+  const routing = await createTask(server, { harnessId: ENGINEER.id }, '振り分けを待つタスク')
+  const waiting = await createTask(server, { projectId: PROJECT.id }, '承認を待つタスク')
+  // 振り分けの提案待ち（15 3.6）と操作の承認待ち（17）は、Control Plane が状態を進めた後と同じ値を DB に入れる。
+  run('sqlite3', [
+    server.db,
+    `UPDATE tasks SET status = 'routing' WHERE id = '${routing.id}';
+     UPDATE tasks SET status = 'waiting_approval' WHERE id = '${waiting.id}';
+     UPDATE executions SET status = 'waiting_approval' WHERE task_id = '${waiting.id}';`,
+  ])
+
+  await page.goto('/tasks')
+  const options = await page.getByLabel('状態').locator('option').allTextContents()
+  expect(options).toEqual(['すべて', 'Received', 'Routing', 'Queued', 'Running', 'Waiting Approval', 'Blocked', 'Completed', 'Failed', 'Cancelled', 'Timed Out'])
+
+  // 選択肢の値はどれも本物の API が受け付ける（廃止済みの状態は 400 になる）。
+  for (const value of await page.getByLabel('状態').locator('option').evaluateAll((os) => os.map((o) => o.getAttribute("value") ?? ""))) {
+    expect((await page.request.get(`/api/tasks?status=${value}`)).status(), value).toBe(200)
+  }
+
+  await page.getByLabel('状態').selectOption({ label: 'Routing' })
+  await expect(page).toHaveURL('/tasks?status=routing')
+  await expect(taskRows(page)).toHaveCount((await listTasks(server, '&status=routing')).length)
+  await expect(taskRows(page).filter({ hasText: routing.title })).toContainText('Routing')
+  await expect(taskRows(page).filter({ hasText: waiting.title })).toHaveCount(0)
+
+  await page.getByLabel('状態').selectOption({ label: 'Waiting Approval' })
+  await expect(page).toHaveURL('/tasks?status=waiting_approval')
+  await expect(taskRows(page)).toHaveCount((await listTasks(server, '&status=waiting_approval')).length)
+  await expect(taskRows(page).filter({ hasText: waiting.title })).toContainText('Waiting Approval')
+  await expect(taskRows(page).filter({ hasText: routing.title })).toHaveCount(0)
+  await screenshot(page, 'tasks-waiting-approval')
+
+  // URL に廃止済みの状態があっても、API へ送らずすべてを出す。
+  const sent: string[] = []
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/tasks') sent.push(request.url())
+  })
+  await page.goto('/tasks?status=verifying')
+  await expect(taskRows(page).filter({ hasText: routing.title })).toHaveCount(1)
+  await expect(page.getByLabel('状態')).toHaveValue('')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(sent.length).toBeGreaterThan(0)
+  expect(sent.every((url) => !url.includes('verifying'))).toBe(true)
+})
