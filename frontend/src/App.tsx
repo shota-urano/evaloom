@@ -18,6 +18,7 @@ import { LoginPage } from '@/pages/login-page'
 import { HarnessDetailPage } from '@/pages/harnesses/harness-detail-page'
 import { HarnessEditPage, HarnessNewPage } from '@/pages/harnesses/harness-form-page'
 import { HarnessListPage } from '@/pages/harnesses/harness-list-page'
+import { HarnessRecordsPage } from '@/pages/harnesses/harness-records-page'
 import { HARNESS_NEW_PATH } from '@/pages/harnesses/labels'
 import { ProjectDetailPage } from '@/pages/projects/project-detail-page'
 import { ProjectEditPage, ProjectNewPage } from '@/pages/projects/project-form-page'
@@ -55,6 +56,8 @@ function Routes({ path, state }: ReturnType<typeof useLocation>) {
   if (path === HARNESS_NEW_PATH) return <HarnessNewPage />
   const harnessEdit = matchPath('/harnesses/:id/edit', path)
   if (harnessEdit) return <HarnessEditPage key={harnessEdit.id} id={harnessEdit.id} />
+  const harnessRecords = matchPath('/harnesses/:id/records', path)
+  if (harnessRecords) return <HarnessRecordsPage key={harnessRecords.id} id={harnessRecords.id} />
   const harness = matchPath('/harnesses/:id', path)
   if (harness) return <HarnessDetailPage key={harness.id} id={harness.id} />
   if (path === TASKS_PATH) return <TaskListPage state={state} />
