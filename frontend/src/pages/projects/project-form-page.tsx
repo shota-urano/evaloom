@@ -141,6 +141,7 @@ function ProjectForm({ project, runners, harnesses, prefix, onReload }: FormProp
   // 選んだ版で waivable でない操作が残っていれば、外すよう促す（13 3.5、17 3.2）。
   const leftover = profile ? waivers.filter((operation) => !waivable.some((w) => w.operation === operation)) : []
   const schema = profile?.definition?.params?.schema ?? null
+  const pendingDescription = waivable.find((w) => w.operation === pendingWaiver)?.description
 
   const errorsFor = (field: string) => {
     const messages = [...(localErrors[field] ?? []), ...(fieldErrors[field] ?? []), ...(preconditionErrors[field] ?? [])]
@@ -369,9 +370,12 @@ function ProjectForm({ project, runners, harnesses, prefix, onReload }: FormProp
             setPendingWaiver(null)
           }}
         >
+          {/* 省く操作の名前と Profile の description と、本人の承認なしに行うことを示す（17 3.2、Q165）。 */}
           <p>
-            <span className="font-mono">{pendingWaiver}</span> を足すと、この Project のタスクではこの操作の承認を待たずに実行します。
+            <span className="font-mono">{pendingWaiver}</span>
+            {pendingDescription ? <span>（{pendingDescription}）</span> : null}
           </p>
+          <p>この Project では、この操作を本人の承認なしにスペシャルハーネスが行います。</p>
         </ConfirmDialog>
       ) : null}
     </form>
