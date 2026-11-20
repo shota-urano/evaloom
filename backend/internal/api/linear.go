@@ -103,9 +103,10 @@ func decodeProposer(raw json.RawMessage) (*linearintake.RouteProposer, error) {
 	return &proposer, nil
 }
 
-// decodeSettingsPatch reads a PATCH /api/settings body. Unknown keys
-// (including linear.teamId, Q216) and blank values are rejected before
-// anything is written. Only routing.defaultRunnerId accepts null to clear
+// decodeSettingsPatch reads a PATCH /api/settings body: the six keys of spec
+// 02 3.8 under linear, routing, limits and approval. Unknown keys
+// (including linear.teamId, Q216), blank values and numbers that are not
+// positive integers are rejected before anything is written. Only routing.defaultRunnerId accepts null to clear
 // the setting (spec 15 5章, Q76, Q221).
 func decodeSettingsPatch(body map[string]json.RawMessage) (linearintake.SettingsPatch, error) {
 	var changes linearintake.SettingsPatch
@@ -157,11 +158,91 @@ func decodeSettingsPatch(body map[string]json.RawMessage) (linearintake.Settings
 					return changes, invalid("body", "invalid_json")
 				}
 			}
+		case "limits":
+			limits, err := settingsObject(group, value)
+			if err != nil {
+				return changes, err
+			}
+			for name, raw := range limits {
+				if name != "stageTimeoutMaxSec" {
+					return changes, invalid("body", "invalid_json")
+				}
+				if changes.StageTimeoutMaxSec, err = decodeStageTimeoutMaxSec(raw); err != nil {
+					return changes, err
+				}
+			}
+		case "approval":
+			approval, err := settingsObject(group, value)
+			if err != nil {
+				return changes, err
+			}
+			for name, raw := range approval {
+				if name != "ttlSec" {
+					return changes, invalid("body", "invalid_json")
+				}
+				ttl, err := positiveInteger("approval.ttlSec", raw)
+				if err != nil {
+					return changes, err
+				}
+				changes.ApprovalTTLSec = &ttl
+			}
 		default:
 			return changes, invalid("body", "invalid_json")
 		}
 	}
 	return changes, nil
+}
+
+// positiveInteger decodes a settings number that must be a JSON integer
+// greater than 0. Spec 02 3.8 sets no other range, so none is applied here.
+func positiveInteger(field string, raw json.RawMessage) (int64, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return 0, invalid(field, "required")
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, invalid(field, "invalid")
+	}
+	if n <= 0 {
+		return 0, invalid(field, "out_of_range")
+	}
+	return n, nil
+}
+
+// decodeStageTimeoutMaxSec decodes limits.stageTimeoutMaxSec, which replaces
+// the whole value like routing.proposer: every stage of spec 02 3.8 is
+// required and must be a positive integer, and no other key is accepted.
+func decodeStageTimeoutMaxSec(raw json.RawMessage) (*linearintake.StageTimeoutMaxSec, error) {
+	const field = "limits.stageTimeoutMaxSec"
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, invalid(field, "required")
+	}
+	object, err := settingsObject(field, raw)
+	if err != nil {
+		return nil, err
+	}
+	var limits linearintake.StageTimeoutMaxSec
+	targets := map[string]*int{"prepare": &limits.Prepare, "work": &limits.Work, "check": &limits.Check, "publish": &limits.Publish}
+	for name := range object {
+		if _, ok := targets[name]; !ok {
+			return nil, invalid("body", "invalid_json")
+		}
+	}
+	for _, name := range []string{"prepare", "work", "check", "publish"} {
+		value, ok := object[name]
+		if !ok {
+			return nil, invalid(field+"."+name, "required")
+		}
+		n, err := positiveInteger(field+"."+name, value)
+		if err != nil {
+			return nil, err
+		}
+		if int64(int(n)) != n {
+			return nil, invalid(field+"."+name, "out_of_range")
+		}
+		*targets[name] = int(n)
+	}
+	return &limits, nil
 }
 
 // patchSettings replaces the supplied keys and keeps the omitted ones. One
