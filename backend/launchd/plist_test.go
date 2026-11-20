@@ -19,32 +19,7 @@ func TestLaunchAgents(t *testing.T) {
 	for _, process := range []string{"evaloomd", "evaloom-runner"} {
 		t.Run(process, func(t *testing.T) {
 			label := "org.evaloom." + process
-			content, err := os.ReadFile(label + ".plist")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var root plistNode
-			if err := xml.Unmarshal(content, &root); err != nil {
-				t.Fatal(err)
-			}
-			if root.XMLName.Local != "plist" || len(root.Children) != 1 || root.Children[0].XMLName.Local != "dict" {
-				t.Fatal("want a plist containing one dictionary")
-			}
-			entries := root.Children[0].Children
-			if len(entries)%2 != 0 {
-				t.Fatal("plist dictionary has an unmatched key")
-			}
-			values := make(map[string]plistNode)
-			for i := 0; i < len(entries); i += 2 {
-				if entries[i].XMLName.Local != "key" {
-					t.Fatalf("dictionary entry %d is not a key", i)
-				}
-				key := entries[i].Text
-				if _, exists := values[key]; exists {
-					t.Fatalf("duplicate key %q", key)
-				}
-				values[key] = entries[i+1]
-			}
+			values := readPlist(t, label+".plist")
 			for _, key := range []string{"RunAtLoad", "KeepAlive"} {
 				if values[key].XMLName.Local != "true" {
 					t.Errorf("%s must be true", key)
@@ -86,5 +61,59 @@ func TestLaunchAgents(t *testing.T) {
 				t.Errorf("ProgramArguments = %q; want %q", got, want)
 			}
 		})
+	}
+}
+
+func readPlist(t *testing.T, path string) map[string]plistNode {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root plistNode
+	if err := xml.Unmarshal(content, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root.XMLName.Local != "plist" || len(root.Children) != 1 || root.Children[0].XMLName.Local != "dict" {
+		t.Fatal("want a plist containing one dictionary")
+	}
+	entries := root.Children[0].Children
+	if len(entries)%2 != 0 {
+		t.Fatal("plist dictionary has an unmatched key")
+	}
+	values := make(map[string]plistNode)
+	for i := 0; i < len(entries); i += 2 {
+		if entries[i].XMLName.Local != "key" {
+			t.Fatalf("dictionary entry %d is not a key", i)
+		}
+		key := entries[i].Text
+		if _, exists := values[key]; exists {
+			t.Fatalf("duplicate key %q", key)
+		}
+		values[key] = entries[i+1]
+	}
+	return values
+}
+
+// LaunchServices and Notification Center need an identifiable app bundle that
+// runs as an agent without a Dock icon. These settings are part of Q17.
+func TestNotificationHelperAppBundle(t *testing.T) {
+	values := readPlist(t, filepath.Join("notification-helper", "Info.plist"))
+	for key, want := range map[string]string{
+		"CFBundleIdentifier":  "org.evaloom.notification-helper",
+		"CFBundleName":        "Evaloom Notifications",
+		"CFBundleDisplayName": "Evaloom Notifications",
+		"CFBundleExecutable":  "evaloom-notification-helper",
+		"CFBundlePackageType": "APPL",
+	} {
+		if got := values[key]; got.XMLName.Local != "string" || got.Text != want {
+			t.Errorf("%s = %q; want %q", key, got.Text, want)
+		}
+	}
+	if values["LSUIElement"].XMLName.Local != "true" {
+		t.Error("LSUIElement must be true so the helper stays out of the Dock")
+	}
+	if values["LSBackgroundOnly"].XMLName.Local == "true" {
+		t.Error("LSBackgroundOnly prevents an AppKit agent from opening the browser")
 	}
 }

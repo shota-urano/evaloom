@@ -66,7 +66,7 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 		if n == nil {
 			return errors.Join(errs, d.dispatchDecisions(ctx))
 		}
-		_, n.Body, _ = macOSContent(*n)
+		_, n.Body, _ = notificationContent(*n)
 		for _, channel := range d.Channels {
 			kind := model.EventNotificationSent
 			fields := map[string]string{
