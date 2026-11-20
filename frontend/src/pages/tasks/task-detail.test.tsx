@@ -31,6 +31,7 @@ function taskWith(status: TaskDetail['status'], executions: ExecutionHistoryItem
   return {
     id: 'task-001',
     projectId: 'alpha',
+    harnessId: '',
     title: 'ログイン画面',
     body: 'ログイン画面を作る',
     acceptanceCriteria: 'ログインできる',

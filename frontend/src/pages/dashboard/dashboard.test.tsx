@@ -24,6 +24,7 @@ const PROJECTS = [{ id: 'alpha', name: 'Alpha', harnesses: [] }] as unknown as P
 const task = (id: string, status: TaskSummary['status'], executionStatus: string, errorClass: string | null = null): TaskSummary => ({
   id,
   projectId: 'alpha',
+  harnessId: '',
   title: `件名 ${id}`,
   body: '本文',
   acceptanceCriteria: '条件',

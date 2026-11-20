@@ -40,17 +40,15 @@ export function taskStatusLabel(status: string): string {
   return TASK_STATUS_LABELS[status as TaskStatus] ?? status
 }
 
-// タスク作成の各項目の表示名（13 3.2「タスク作成」、04 3.1）。
+// タスク作成の各項目の表示名（13 3.2「タスク作成」、04 3.1）。サーバーの details[].field に合わせる。
 export const TASK_LABELS = {
-  projectId: 'プロジェクト',
+  destination: '振り分け先',
+  projectId: '振り分け先（Project）',
+  harnessId: '振り分け先（スペシャルハーネス）',
   title: '件名',
   body: '本文',
   acceptanceCriteria: '受け入れ条件',
-  shortName: '短い名前',
 } as const
-
-/** 04 3.1 の短い名前（backend/internal/api/tasks.go の shortNamePattern）。 */
-export const SHORT_NAME_PATTERN = /^[a-z0-9-]{1,40}$/
 
 /** 04 3.7 の再実行の種類の表示名。 */
 export const RETRY_MODE_LABELS: Record<string, string> = { continue: '継続', fresh: '最初から' }

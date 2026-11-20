@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { registry } from '@/api/registry'
-import { tasks, type TaskFilter, type TaskSummary } from '@/api/tasks'
+import { tasks, type ExecutionOutput, type TaskFilter, type TaskSummary } from '@/api/tasks'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Loading, PageTitle } from '@/components/page'
@@ -13,6 +13,7 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import type { NavigationState } from '@/lib/router'
 import { cn } from '@/lib/utils'
+import { DESTINATION_KIND_LABELS, decodeDestination, destinationPath, encodeDestination, taskDestination } from './destination'
 import { useLiveTaskList } from './live'
 import { heldCause, intakeBlockCauseLabel } from './intake'
 import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskDetailPath, taskStatusLabel } from './labels'
@@ -40,16 +41,21 @@ export function TaskStatusBadge({ status }: { status: string }) {
   )
 }
 
-/** 絞り込みは URL の ?status=&projectId= にも残し、再読み込みしても保つ。 */
-function readFilter(): Required<TaskFilter> {
+type ListFilter = Required<TaskFilter>
+const NO_FILTER: ListFilter = { status: '', projectId: '', harnessId: '' }
+
+/** 絞り込みは URL の ?status=&projectId=（または &harnessId=）にも残し、再読み込みしても保つ。振り分け先はどちらか一方だけ。 */
+function readFilter(): ListFilter {
   const params = new URLSearchParams(window.location.search)
-  return { status: params.get('status') ?? '', projectId: params.get('projectId') ?? '' }
+  const projectId = params.get('projectId') ?? ''
+  return { status: params.get('status') ?? '', projectId, harnessId: projectId ? '' : (params.get('harnessId') ?? '') }
 }
 
-function writeFilter(filter: Required<TaskFilter>) {
+function writeFilter(filter: ListFilter) {
   const params = new URLSearchParams()
   if (filter.status) params.set('status', filter.status)
   if (filter.projectId) params.set('projectId', filter.projectId)
+  if (filter.harnessId) params.set('harnessId', filter.harnessId)
   const query = params.toString()
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}`)
 }
@@ -65,6 +71,43 @@ function LatestExecution({ task }: { task: TaskSummary }) {
   )
 }
 
+/** 振り分け先（Project かスペシャルハーネス）。種類も文字で出す。 */
+function Destination({ task, names }: { task: TaskSummary; names: Record<'project' | 'harness', Map<string, string>> }) {
+  const ref = taskDestination(task)
+  if (!ref) return <span className="text-muted-foreground">なし</span>
+  return (
+    <div>
+      <div className="text-muted-foreground text-xs">{DESTINATION_KIND_LABELS[ref.kind]}</div>
+      <Link to={destinationPath(ref)} className="underline-offset-4 hover:underline">
+        {names[ref.kind].get(ref.id) ?? ref.id}
+      </Link>
+    </div>
+  )
+}
+
+/** 外に出したもの（最新の Execution の outputs、13 3.2）。label と url はサーバーの値をそのまま出す（13 3.1）。 */
+function Outputs({ outputs }: { outputs: ExecutionOutput[] | undefined }) {
+  if (!outputs || outputs.length === 0) return <span className="text-muted-foreground">なし</span>
+  return (
+    <ul className="grid gap-1" aria-label="外に出したもの">
+      {outputs.map((output, index) => (
+        <li key={`${index}:${output.url}`}>
+          {/^https?:\/\//i.test(output.url) ? (
+            <a href={output.url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-4">
+              {output.label || output.url}
+            </a>
+          ) : (
+            // http(s) 以外の URL はリンクにしない（javascript: などを開かせない）。値はそのまま出す。
+            <span>
+              {output.label} <span className="text-muted-foreground font-mono text-xs">{output.url}</span>
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** 取り込みで保留しているタスクの理由（15-linear-intake 3.6）。状態は色でなく文字で示す。 */
 function HeldReason({ task }: { task: TaskSummary }) {
   const cause = heldCause(task)
@@ -76,30 +119,40 @@ function HeldReason({ task }: { task: TaskSummary }) {
   )
 }
 
-/** Tasks 一覧（13 3.2）。タスク、状態、プロジェクト、最新 Execution。状態とプロジェクトで絞り込む。 */
+/** Tasks 一覧（13 3.2）。タスク、状態、振り分け先、最新 Execution、外に出したもの、Linear の識別子。状態と振り分け先で絞り込む。 */
 export function TaskListPage({ state }: { state?: NavigationState }) {
   const { api } = useSession()
   const [filter, setFilter] = useState(readFilter)
-  const list = useResource((signal) => tasks.list(api, filter, signal), `tasks:${filter.status}:${filter.projectId}`)
+  const list = useResource((signal) => tasks.list(api, filter, signal), `tasks:${filter.status}:${filter.projectId}:${filter.harnessId}`)
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
+  const harnesses = useResource((signal) => registry.listHarnesses(api, signal), 'harnesses')
   useLiveTaskList(api, list.data, list.reload)
-  const projectName = new Map((projects.data ?? []).map((p) => [p.id, p.name]))
-  const filtered = filter.status !== '' || filter.projectId !== ''
+  const names = {
+    project: new Map((projects.data ?? []).map((p) => [p.id, p.name])),
+    harness: new Map((harnesses.data ?? []).map((h) => [h.id, h.name])),
+  }
+  const filtered = filter.status !== '' || filter.projectId !== '' || filter.harnessId !== ''
+  const destinationValue = filter.projectId
+    ? encodeDestination({ kind: 'project', id: filter.projectId })
+    : filter.harnessId
+      ? encodeDestination({ kind: 'harness', id: filter.harnessId })
+      : ''
 
-  const change = (key: keyof TaskFilter) => (event: { target: { value: string } }) => {
-    const next = { ...filter, [key]: event.target.value }
+  const apply = (next: ListFilter) => {
     writeFilter(next)
     setFilter(next)
   }
-  const reset = () => {
-    const next = { status: '', projectId: '' }
-    writeFilter(next)
-    setFilter(next)
+  const changeStatus = (event: { target: { value: string } }) => apply({ ...filter, status: event.target.value })
+  const changeDestination = (event: { target: { value: string } }) => {
+    const ref = decodeDestination(event.target.value)
+    apply({ ...filter, projectId: ref?.kind === 'project' ? ref.id : '', harnessId: ref?.kind === 'harness' ? ref.id : '' })
   }
-  const error = list.error ?? projects.error
+  const reset = () => apply(NO_FILTER)
+  const error = list.error ?? projects.error ?? harnesses.error
   const reload = () => {
     list.reload()
     projects.reload()
+    harnesses.reload()
   }
 
   return (
@@ -121,7 +174,7 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
       <form role="search" aria-label="タスクの絞り込み" className="flex flex-wrap items-end gap-4" onSubmit={(e) => e.preventDefault()}>
         <div className="grid gap-2">
           <Label htmlFor="task-filter-status">状態</Label>
-          <NativeSelect id="task-filter-status" className="w-48" value={filter.status} onChange={change('status')}>
+          <NativeSelect id="task-filter-status" className="w-48" value={filter.status} onChange={changeStatus}>
             <option value="">すべて</option>
             {TASK_STATUS_FILTERS.map((status) => (
               <option key={status} value={status}>
@@ -134,15 +187,25 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
           </NativeSelect>
         </div>
         <div className="grid gap-2">
-          <Label htmlFor="task-filter-project">プロジェクト</Label>
-          <NativeSelect id="task-filter-project" className="w-60" value={filter.projectId} onChange={change('projectId')}>
+          <Label htmlFor="task-filter-destination">振り分け先</Label>
+          <NativeSelect id="task-filter-destination" className="w-60" value={destinationValue} onChange={changeDestination}>
             <option value="">すべて</option>
-            {(projects.data ?? []).map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-            {filter.projectId && !projectName.has(filter.projectId) ? <option value={filter.projectId}>{filter.projectId}</option> : null}
+            <optgroup label="Project">
+              {(projects.data ?? []).map((project) => (
+                <option key={project.id} value={encodeDestination({ kind: 'project', id: project.id })}>
+                  {project.name}
+                </option>
+              ))}
+              {filter.projectId && !names.project.has(filter.projectId) ? <option value={destinationValue}>{filter.projectId}</option> : null}
+            </optgroup>
+            <optgroup label="スペシャルハーネス">
+              {(harnesses.data ?? []).map((harness) => (
+                <option key={harness.id} value={encodeDestination({ kind: 'harness', id: harness.id })}>
+                  {harness.name}
+                </option>
+              ))}
+              {filter.harnessId && !names.harness.has(filter.harnessId) ? <option value={destinationValue}>{filter.harnessId}</option> : null}
+            </optgroup>
           </NativeSelect>
         </div>
         {filtered ? (
@@ -174,10 +237,13 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                   状態
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
-                  プロジェクト
+                  振り分け先
                 </th>
                 <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
                   最新 Execution
+                </th>
+                <th scope="col" className="px-4 py-2 font-medium whitespace-nowrap">
+                  外に出したもの
                 </th>
               </tr>
             </thead>
@@ -189,7 +255,8 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                       {task.title}
                     </Link>
                     <div className="text-muted-foreground font-mono text-xs">
-                      {task.id} · {task.shortName}
+                      {task.id}
+                      {task.shortName ? ` · ${task.shortName}` : null}
                     </div>
                     {task.source === 'linear' && task.linear ? (
                       <div className="text-xs">
@@ -203,16 +270,13 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                     <HeldReason task={task} />
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    {task.projectId ? (
-                      <Link to={`/projects/${encodeURIComponent(task.projectId)}`} className="underline-offset-4 hover:underline">
-                        {projectName.get(task.projectId) ?? task.projectId}
-                      </Link>
-                    ) : (
-                      <span className="text-muted-foreground">なし</span>
-                    )}
+                    <Destination task={task} names={names} />
                   </td>
                   <td className="px-4 py-3">
                     <LatestExecution task={task} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <Outputs outputs={task.latestExecution?.outputs} />
                   </td>
                 </tr>
               ))}

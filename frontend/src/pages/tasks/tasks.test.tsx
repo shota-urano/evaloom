@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient } from '@/api/client'
-import type { Project } from '@/api/registry'
+import type { Harness, HarnessProfile, Project } from '@/api/registry'
 import type { TaskSummary } from '@/api/tasks'
 import { fakeEvents } from '@/test/fake-events'
 import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
@@ -12,14 +12,24 @@ import { MAX_TASK_SUBSCRIPTIONS, TASK_LIST_POLL_MS } from './live'
 
 const page = <T,>(items: T[]) => json(200, { items, nextCursor: '' })
 
+// alpha の Profile は受け入れ条件を必須にしない。スペシャルハーネス engineer の既定の版は必須にする（契約 5.2）。
 const PROJECTS = [
-  { id: 'alpha', name: 'Alpha', harnesses: [] },
-  { id: 'beta', name: 'Beta', harnesses: [] },
+  { id: 'alpha', name: 'Alpha', profileId: 'p-optional' },
+  { id: 'beta', name: 'Beta', profileId: 'p-required' },
 ] as unknown as Project[]
+const HARNESSES = [
+  { id: 'engineer', name: 'エンジニア', defaultProfileId: 'p-required' },
+  { id: 'draft', name: '下書き', defaultProfileId: null },
+] as unknown as Harness[]
+const PROFILES = [
+  { id: 'p-optional', harnessId: 'writer', version: '1.0.0', definition: { acceptanceCriteria: 'optional' } },
+  { id: 'p-required', harnessId: 'engineer', version: '1.0.0', definition: { acceptanceCriteria: 'required' } },
+] as unknown as HarnessProfile[]
 
 const task = (id: string, projectId: string, status: TaskSummary['status'], extra: Partial<TaskSummary> = {}): TaskSummary => ({
   id,
   projectId,
+  harnessId: '',
   title: `件名 ${id}`,
   body: '本文',
   acceptanceCriteria: '条件',
@@ -42,7 +52,7 @@ const INITIAL_TASKS = [
   task('task-001', 'alpha', 'queued'),
 ]
 
-/** GET /api/tasks の status・projectId を本物の API と同じく完全一致で絞り込む。 */
+/** GET /api/tasks の status・projectId・harnessId を本物の API と同じく完全一致で絞り込む。 */
 beforeEach(() => {
   TASKS = INITIAL_TASKS.map((t) => ({ ...t }))
 })
@@ -52,7 +62,12 @@ function serveTasks(request: Recorded) {
   if (url.pathname !== '/api/tasks' || request.method !== 'GET') return undefined
   const status = url.searchParams.get('status')
   const projectId = url.searchParams.get('projectId')
-  return page(TASKS.filter((t) => (!status || t.status === status) && (!projectId || t.projectId === projectId)))
+  const harnessId = url.searchParams.get('harnessId')
+  return page(
+    TASKS.filter(
+      (t) => (!status || t.status === status) && (!projectId || t.projectId === projectId) && (!harnessId || t.harnessId === harnessId),
+    ),
+  )
 }
 
 function renderAt(path: string, handler: (request: Recorded) => Response | Promise<Response> | undefined = () => undefined) {
@@ -62,6 +77,8 @@ function renderAt(path: string, handler: (request: Recorded) => Response | Promi
     const handled = handler(request)
     if (handled) return handled
     if (request.url.startsWith('/api/projects')) return page(PROJECTS)
+    if (request.url.startsWith('/api/harnesses')) return page(HARNESSES)
+    if (request.url.startsWith('/api/harness-profiles')) return page(PROFILES)
     return serveTasks(request) ?? json(500, {})
   })
   const events = fakeEvents()
@@ -73,8 +90,8 @@ function fieldOf(label: string) {
   return screen.getByLabelText(label).closest('[data-field]') as HTMLElement
 }
 
-async function fillForm(acceptanceCriteria: string) {
-  await userEvent.selectOptions(await screen.findByLabelText('プロジェクト'), 'alpha')
+async function fillForm(acceptanceCriteria: string, destination = 'harness:engineer') {
+  await userEvent.selectOptions(await screen.findByLabelText('振り分け先'), destination)
   await userEvent.type(screen.getByLabelText('件名'), 'ログイン画面')
   await userEvent.type(screen.getByLabelText('本文'), 'ログインフォームを作る')
   if (acceptanceCriteria) await userEvent.type(screen.getByLabelText('受け入れ条件'), acceptanceCriteria)
@@ -85,9 +102,10 @@ const posts = (fake: { calls: Recorded[] }) => fake.calls.filter((c) => c.method
 afterEach(() => window.history.pushState(null, '', '/'))
 
 describe('タスク作成', () => {
-  it('受け入れ条件が空なら送信せず、項目にエラーを出す', async () => {
+  it('振り分け先の Profile が required のとき、受け入れ条件が空なら送信せず、項目にエラーを出す', async () => {
     const fake = renderAt('/tasks/_new')
     await fillForm('')
+    expect(screen.getByLabelText('受け入れ条件')).toBeRequired()
     await userEvent.click(screen.getByRole('button', { name: '作成' }))
     expect(within(fieldOf('受け入れ条件')).getByText('入力してください')).toBeVisible()
     expect(screen.getByLabelText('受け入れ条件')).toHaveAttribute('aria-invalid', 'true')
@@ -100,22 +118,36 @@ describe('タスク作成', () => {
     expect(posts(fake)).toHaveLength(0)
   })
 
+  it('振り分け先の Profile が required でなければ、受け入れ条件が空でも送れる', async () => {
+    const fake = renderAt('/tasks/_new', (request) => (request.method === 'POST' ? json(201, task('task-004', 'alpha', 'queued')) : undefined))
+    await fillForm('', 'project:alpha')
+    expect(screen.getByLabelText('受け入れ条件')).not.toBeRequired()
+    await userEvent.click(screen.getByRole('button', { name: '作成' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('タスク task-004')
+    expect(JSON.parse(posts(fake)[0].body ?? '')).toEqual({ projectId: 'alpha', title: 'ログイン画面', body: 'ログインフォームを作る', acceptanceCriteria: '' })
+  })
+
+  it('既定の版の無いスペシャルハーネスは選べない', async () => {
+    renderAt('/tasks/_new')
+    const option = await screen.findByRole('option', { name: /下書き/ })
+    expect(option).toBeDisabled()
+  })
+
   it('サーバーが受け入れ条件を 400 で拒否したら details を項目に出す', async () => {
     renderAt('/tasks/_new', (request) =>
       request.method === 'POST' ? apiError(400, 'validation_failed', 'invalid request', [{ field: 'acceptanceCriteria', reason: 'required' }]) : undefined,
     )
-    await fillForm('条件')
+    await fillForm('', 'project:alpha')
     await userEvent.click(screen.getByRole('button', { name: '作成' }))
     expect(await within(fieldOf('受け入れ条件')).findByText('入力してください')).toBeVisible()
   })
 
-  it('二重クリックしても POST は1回だけで、Idempotency-Key を付けて API の項目名で送る', async () => {
+  it('二重クリックしても POST は1回だけで、Idempotency-Key を付けてスペシャルハーネスの振り分け先で送る', async () => {
     let resolve: (response: Response) => void = () => {}
     const fake = renderAt('/tasks/_new', (request) =>
       request.method === 'POST' ? new Promise<Response>((r) => (resolve = r)) : undefined,
     )
     await fillForm('ログインのテストが通る')
-    await userEvent.type(screen.getByLabelText('短い名前'), 'add-login')
     await userEvent.dblClick(screen.getByRole('button', { name: '作成' }))
     expect(screen.getByRole('button', { name: '作成しています…' })).toBeDisabled()
     expect(posts(fake)).toHaveLength(1)
@@ -123,14 +155,13 @@ describe('タスク作成', () => {
     expect(post.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/)
     expect(post.headers['X-CSRF-Token']).toBe('t')
     expect(JSON.parse(post.body ?? '')).toEqual({
-      projectId: 'alpha',
+      harnessId: 'engineer',
       title: 'ログイン画面',
       body: 'ログインフォームを作る',
       acceptanceCriteria: 'ログインのテストが通る',
-      shortName: 'add-login',
     })
 
-    resolve(json(201, task('task-004', 'alpha', 'queued')))
+    resolve(json(201, task('task-004', '', 'queued', { harnessId: 'engineer' })))
     expect(await screen.findByRole('status')).toHaveTextContent('タスク task-004（件名 task-004）を作成しました。')
     expect(window.location.pathname).toBe('/tasks')
     expect(posts(fake)).toHaveLength(1)
@@ -152,22 +183,22 @@ describe('タスク作成', () => {
     expect(keys[2]).not.toBe(keys[0])
   })
 
-  it('Default Harness の割り当てが無い 422 はプロジェクトの項目に出す', async () => {
+  it('既定の版の無いスペシャルハーネスの 422 は振り分け先の項目に出す', async () => {
     renderAt('/tasks/_new', (request) =>
       request.method === 'POST'
-        ? apiError(422, 'precondition_failed', 'Project has no Default Harness assignment', [{ field: 'projectId', reason: 'default_harness_missing' }])
+        ? apiError(422, 'precondition_failed', 'Harness has no default Profile version', [{ field: 'harnessId', reason: 'default_profile_missing' }])
         : undefined,
     )
     await fillForm('条件')
     await userEvent.click(screen.getByRole('button', { name: '作成' }))
-    expect(await within(fieldOf('プロジェクト')).findByText(/既定の役割に Harness が割り当てられていません/)).toBeVisible()
+    expect(await within(fieldOf('振り分け先')).findByText(/既定の版がありません/)).toBeVisible()
   })
 })
 
 describe('Tasks 一覧', () => {
   const rows = () => within(screen.getByRole('table', { name: 'タスク' })).getAllByRole('row').slice(1)
 
-  it('タスク、状態、プロジェクト、最新 Execution を出す', async () => {
+  it('タスク、状態、振り分け先、最新 Execution を出す', async () => {
     renderAt('/tasks')
     await screen.findByRole('table', { name: 'タスク' })
     expect(rows()).toHaveLength(3)
@@ -177,6 +208,36 @@ describe('Tasks 一覧', () => {
     expect(done).toHaveTextContent('Beta')
     expect(done).toHaveTextContent('#2 succeeded')
     expect(rows()[2]).toHaveTextContent('Queued')
+  })
+
+  it('最新の Execution の outputs を label のリンクで出し、http(s) 以外の URL はリンクにしない', async () => {
+    TASKS = [
+      task('task-006', '', 'completed', {
+        harnessId: 'engineer',
+        latestExecution: {
+          id: 'e6',
+          seq: 1,
+          mode: 'continue',
+          status: 'succeeded',
+          errorClass: null,
+          outputs: [
+            { kind: 'pull_request', label: 'PR #12', url: 'https://github.com/acme/app/pull/12' },
+            { kind: 'note', label: '怪しい', url: 'javascript:alert(1)' },
+          ],
+        },
+      }),
+      task('task-001', 'alpha', 'queued', { latestExecution: { id: 'e1', seq: 1, mode: 'continue', status: 'pending', errorClass: null, outputs: [] } }),
+    ]
+    renderAt('/tasks')
+    await screen.findByRole('table', { name: 'タスク' })
+    const [done, queued] = rows()
+    expect(within(done).getByRole('link', { name: 'PR #12' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/12')
+    expect(within(done).queryByRole('link', { name: '怪しい' })).not.toBeInTheDocument()
+    expect(done).toHaveTextContent('javascript:alert(1)')
+    // 振り分け先はスペシャルハーネスの名前で出す。
+    expect(within(done).getByRole('link', { name: 'エンジニア' })).toHaveAttribute('href', '/harnesses/engineer')
+    expect(done).toHaveTextContent('スペシャルハーネス')
+    expect(queued.querySelectorAll('td')[4]).toHaveTextContent('なし')
   })
 
   it('Linear 起因のタスクに Issue の識別子とリンクを出し、保留中のタスクには理由を文字で出す', async () => {
@@ -196,7 +257,7 @@ describe('Tasks 一覧', () => {
     expect(within(held).getByRole('link', { name: 'ENG-9' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-9')
     expect(held).toHaveTextContent('Blocked')
     expect(within(held).getByTestId('held-reason')).toHaveTextContent('保留の理由: 実行先ラベルが2つ以上ある')
-    // Project が決まっていない保留のタスクは、プロジェクトを「なし」と出す。
+    // 振り分け先が決まっていない保留のタスクは、振り分け先を「なし」と出す。
     expect(held.querySelectorAll('td')[2]).toHaveTextContent('なし')
     expect(within(held).queryByRole('link', { name: /^\/projects/ })).not.toBeInTheDocument()
     expect(within(started).getByRole('link', { name: 'ENG-8' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-8')
@@ -204,10 +265,10 @@ describe('Tasks 一覧', () => {
     expect(within(manual).queryByTestId('linear-issue-link')).not.toBeInTheDocument()
   })
 
-  it('状態とプロジェクトで絞り込め、条件は URL に残る', async () => {
+  it('状態と振り分け先で絞り込め、条件は URL に残る', async () => {
     const fake = renderAt('/tasks')
     await screen.findByRole('table', { name: 'タスク' })
-    await userEvent.selectOptions(screen.getByLabelText('プロジェクト'), 'alpha')
+    await userEvent.selectOptions(screen.getByLabelText('振り分け先'), 'project:alpha')
     expect(await screen.findByText('件名 task-003')).toBeVisible()
     expect(rows()).toHaveLength(2)
     expect(window.location.search).toBe('?projectId=alpha')
@@ -219,13 +280,24 @@ describe('Tasks 一覧', () => {
     expect(fake.calls.at(-1)?.url).toBe('/api/tasks?status=queued&projectId=alpha&limit=200')
     expect(window.location.search).toBe('?status=queued&projectId=alpha')
 
-    await userEvent.selectOptions(screen.getByLabelText('プロジェクト'), 'beta')
+    await userEvent.selectOptions(screen.getByLabelText('振り分け先'), 'project:beta')
     expect(await screen.findByText('条件に合うタスクはありません。')).toBeVisible()
 
     await userEvent.click(screen.getByRole('button', { name: '絞り込みを解除' }))
     await screen.findByText('件名 task-002')
     expect(rows()).toHaveLength(3)
     expect(window.location.search).toBe('')
+  })
+
+  it('スペシャルハーネスの振り分け先で絞り込める', async () => {
+    TASKS = [task('task-007', '', 'queued', { harnessId: 'engineer' }), ...TASKS]
+    const fake = renderAt('/tasks')
+    await screen.findByText('件名 task-007')
+    await userEvent.selectOptions(screen.getByLabelText('振り分け先'), 'harness:engineer')
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(rows()[0]).toHaveTextContent('件名 task-007')
+    expect(fake.calls.at(-1)?.url).toBe('/api/tasks?harnessId=engineer&limit=200')
+    expect(window.location.search).toBe('?harnessId=engineer')
   })
 
   it('URL の絞り込み条件で開ける', async () => {
