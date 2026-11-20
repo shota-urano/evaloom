@@ -7,20 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-// Dispatcher consumes only committed requests. Lifecycle reservations use the
-// store's BEGIN IMMEDIATE setting; decision receipts follow spec 12 3.4/Q148.
+// Serialize receipt checks, delivery and recording within this process.
+// A crash after delivery but before recording may resend (spec 12 3.4).
+var lifecycleDispatchMu sync.Mutex
+
+// Dispatcher consumes only committed requests and records results after sending.
 type Dispatcher struct {
 	DB       *sql.DB
 	Channels []Channel
 	// Suppress retry loops after failed sends or receipt writes by this worker.
 	// This is not durable: only DB receipts suppress sends after a restart.
-	attemptedDecisions map[string]bool
+	attemptedDecisions  map[string]bool
+	attemptedExecutions map[string]bool
 }
 
 // Run checks at startup and every 250ms, like the persisted SSE event reader.
@@ -45,7 +50,8 @@ func (d *Dispatcher) Run(ctx context.Context, logger *slog.Logger) {
 
 // DispatchPending processes a bounded batch, attempting every registered
 // transport even if another fails. With no transports, requests stay pending.
-// Errors never roll back a lifecycle transition or cause delivery retries.
+// Errors never roll back a lifecycle transition. This worker does not retry;
+// after a restart, an unrecorded send may be delivered again.
 func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 	if len(d.Channels) == 0 {
 		return nil
@@ -57,15 +63,25 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 		}
 		names[channel.Name] = true
 	}
+	return errors.Join(d.dispatchLifecycle(ctx), d.dispatchDecisions(ctx))
+}
+
+func (d *Dispatcher) dispatchLifecycle(ctx context.Context) error {
+	lifecycleDispatchMu.Lock()
+	defer lifecycleDispatchMu.Unlock()
+	if d.attemptedExecutions == nil {
+		d.attemptedExecutions = make(map[string]bool)
+	}
 	var errs error
 	for range 100 {
-		n, err := d.reserve(ctx)
+		n, err := d.pendingExecution(ctx)
 		if err != nil {
 			return errors.Join(errs, err)
 		}
 		if n == nil {
-			return errors.Join(errs, d.dispatchDecisions(ctx))
+			return errs
 		}
+		d.attemptedExecutions[n.ExecutionID+"/"+string(n.Status)] = true
 		_, n.Body, _ = notificationContent(*n)
 		for _, channel := range d.Channels {
 			kind := model.EventNotificationSent
@@ -86,24 +102,20 @@ func (d *Dispatcher) DispatchPending(ctx context.Context) error {
 			_, err := store.AppendExecutionEvent(eventCtx, d.DB, n.ExecutionID, kind, payload)
 			cancel()
 			if err != nil {
-				errs = errors.Join(errs, err)
+				errs = errors.Join(errs, fmt.Errorf("notification: persist %s/%s via %s result (send_succeeded=%t): %w",
+					n.ExecutionID, n.Status, channel.Name, kind == model.EventNotificationSent, err))
 			}
 		}
 	}
-	return errors.Join(errs, d.dispatchDecisions(ctx))
+	return errs
 }
 
-func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
-	tx, err := d.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	var n Notification
+func (d *Dispatcher) pendingExecution(ctx context.Context) (*Notification, error) {
 	// Read metadata after the producer commits, including recovery paths
 	// which write classification rows after transitioning. Use the request's
-	// status: the Execution may already have moved on.
-	err = tx.QueryRowContext(ctx, `SELECT r.execution_id, r.status, t.id, t.title,
+	// status: the Execution may already have moved on. Linear feedback has its
+	// own worker and receipts, which must not suppress desktop notifications.
+	rows, err := d.DB.QueryContext(ctx, `SELECT r.execution_id, r.status, t.id, t.title,
 		coalesce(e.error_class, ''), coalesce(e.error_message, ''),
 		coalesce((SELECT json_extract(payload, '$.from') FROM execution_events
 			WHERE execution_id = e.id AND type = 'status_changed' AND json_extract(payload, '$.to') = r.status
@@ -111,25 +123,24 @@ func (d *Dispatcher) reserve(ctx context.Context) (*Notification, error) {
 		coalesce(json_extract(e.outputs, '$[0].label'), ''), max(coalesce(json_array_length(e.outputs), 0) - 1, 0)
 		FROM notification_requests r JOIN executions e ON e.id = r.execution_id JOIN tasks t ON t.id = e.task_id
 		WHERE r.status IN ('succeeded', 'failed', 'interrupted', 'timed_out')
-		AND r.attempted_at IS NULL AND NOT EXISTS (
-			SELECT 1 FROM execution_events s WHERE s.execution_id = r.execution_id AND s.type = 'notification_sent'
+		AND NOT EXISTS (
+			SELECT 1 FROM execution_events s WHERE s.execution_id = r.execution_id
+			AND s.type IN ('notification_sent', 'notification_failed')
+			AND json_extract(s.payload, '$.channel') != 'linear'
 			AND coalesce(json_extract(s.payload, '$.status'), json_extract(s.payload, '$.kind')) = r.status)
-		ORDER BY r.created_at, r.execution_id, r.status LIMIT 1`).Scan(
-		&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.ErrorClass, &n.Reason, &n.Stage, &n.OutputLabel, &n.OutputRemaining)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+		ORDER BY r.created_at, r.execution_id, r.status`)
 	if err != nil {
 		return nil, err
 	}
-	// The reservation commits before the side effect. A crash between these
-	// steps can lose a notification, but can never send it twice after restart.
-	if _, err := tx.ExecContext(ctx, `UPDATE notification_requests SET attempted_at = ?
-		WHERE execution_id = ? AND status = ?`, time.Now().UTC().Format(time.RFC3339Nano), n.ExecutionID, n.Status); err != nil {
-		return nil, err
+	defer rows.Close()
+	for rows.Next() {
+		var n Notification
+		if err := rows.Scan(&n.ExecutionID, &n.Status, &n.TaskID, &n.Title, &n.ErrorClass, &n.Reason, &n.Stage, &n.OutputLabel, &n.OutputRemaining); err != nil {
+			return nil, err
+		}
+		if !d.attemptedExecutions[n.ExecutionID+"/"+string(n.Status)] {
+			return &n, nil
+		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return &n, nil
+	return nil, rows.Err()
 }
