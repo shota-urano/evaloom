@@ -7,17 +7,22 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
-// Notification contains persisted task metadata, not task bodies, Context or
-// logs. Each transport must choose what it may display; macOS must restrict its
-// visible content to the title, task ID and classification (spec 12, 3.3).
+// Notification contains only the metadata allowed by spec 12 3.1, never output
+// URLs, decision detail, approval targets, findings, Context or logs.
 type Notification struct {
-	ExecutionID string
-	TaskID      string
-	Title       string
-	Status      model.ExecutionStatus
-	ErrorClass  model.ErrorClass
-	Reason      string
-	Stage       model.ExecutionStatus
+	ExecutionID     string
+	TaskID          string
+	Title           string
+	Status          model.ExecutionStatus
+	ErrorClass      model.ErrorClass
+	Reason          string
+	Stage           model.ExecutionStatus
+	DecisionID      string
+	DecisionKind    model.DecisionKind
+	DecisionCause   model.DecisionCause
+	OutputLabel     string
+	OutputRemaining int
+	Body            string
 }
 
 type Notifier interface {

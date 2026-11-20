@@ -79,6 +79,23 @@ func TestMacOSOpenArgumentsAndResult(t *testing.T) {
 	}
 }
 
+func TestMacOSDecisionOpenArguments(t *testing.T) {
+	n := Notification{TaskID: "task-001", Title: "件名", DecisionID: "decision-001",
+		DecisionKind: model.DecisionBlocked, DecisionCause: model.CausePublishUnknown}
+	m := NewMacOS("/Applications/helper.app", 49123)
+	m.run = func(cmd *exec.Cmd) error {
+		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: 判断待ち",
+			"件名\ntask-001\n続行\n出す操作の結果がわからない", "http://127.0.0.1:49123/decisions/decision-001"}
+		if !reflect.DeepEqual(cmd.Args, want) {
+			t.Fatalf("command=%q; want %q", cmd.Args, want)
+		}
+		return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+	}
+	if err := m.Notify(context.Background(), n); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func helperResultPath(t *testing.T, cmd *exec.Cmd) string {
 	t.Helper()
 	var path string

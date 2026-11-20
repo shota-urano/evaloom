@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -76,8 +77,13 @@ func TestApprovalRequestNotifiesOnceAndWritesDecisionOpenForLinearTask(t *testin
 		WHERE a.execution_id = ? AND a.status = 'pending' AND d.kind = 'approval' AND d.status = 'open' AND d.basis = a.content_id`, id); n != 2 {
 		t.Fatalf("pending approvals with decisions=%d", n)
 	}
-	if n := count(t, f, `SELECT count(*) FROM notification_requests WHERE execution_id = ?`, id); n != 1 {
-		t.Fatalf("notification requests=%d", n)
+	fake := &recordingNotifier{}
+	dispatcher := notificationDispatcher(f, fake)
+	if err := dispatcher.DispatchPending(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fake.recorded(); len(calls) != 1 {
+		t.Fatalf("approval notifications=%+v", calls)
 	}
 	rows, err := f.db.Query(`SELECT d.id, o.dedupe_key, o.body, o.execution_id, o.action, o.status FROM owner_decisions d
 		JOIN linear_outbox o ON o.kind = 'decision_open' AND o.dedupe_key = d.task_id || ':decision_open:' || d.id
