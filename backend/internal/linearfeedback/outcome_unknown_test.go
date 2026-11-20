@@ -272,3 +272,28 @@ func TestCheckDecidedByColumnOnly(t *testing.T) {
 		}
 	})
 }
+
+// 3.4.1 step 3: a 200 response whose body cannot be read leaves the result
+// unknown, like a cut connection. Linear kept the comment, so the restarted
+// Worker finds it and does not send it again.
+func TestUnreadableResponseBodyKeepsOutcomeUnknown(t *testing.T) {
+	fake := &fakeLinear{commentStatus: http.StatusOK, issueBody: issueJSON(false),
+		commentBody: `{"data":{"commentCreate":{"success":true,"comment":{"id":"comm`}
+	db, worker, c, _ := setup(t, fake)
+
+	sendDue(t, worker)
+	if r := outboxRow(t, db, dedupeKey); r.status != "pending" || r.attempts != 1 || r.outcomeUnknown != 1 {
+		t.Fatalf("after the unreadable response: row = %+v; want pending, 1 attempt, outcome_unknown 1", r)
+	}
+
+	c.advance(time.Minute)
+	if err := restart(worker, c).SendDue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(fake.log, ",") != "create,read" || fake.commentCount() != 1 {
+		t.Fatalf("requests = %v; want a read and no resend", fake.log)
+	}
+	if r := outboxRow(t, db, dedupeKey); r.status != "sent" || r.commentID.String != "comment-1" || r.outcomeUnknown != 0 {
+		t.Fatalf("row = %+v; want sent with the found comment ID", r)
+	}
+}
