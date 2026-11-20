@@ -75,10 +75,10 @@ test('操作の途中でセッションが切れるとログイン画面へ移�
   await page.goto('/harnesses/_new')
   await expectLoginScreen(page)
   await submitLogin(page, testOwner.id, testOwner.password)
-  await expect(page.getByRole('heading', { name: 'Harness の登録' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの登録' })).toBeVisible()
 
   // 入力の途中で、サーバー側だけでこのセッションを無効にする（期限切れと同じく、ブラウザには Cookie が残る）。
-  await page.getByLabel('Harness ID').fill('session-expired')
+  await page.getByLabel('スペシャルハーネス ID').fill('session-expired')
   await page.getByLabel('名称').fill('セッション切れの確認')
   const cookies = await page.context().cookies()
   const session = await page.request.get('/api/session')
@@ -100,7 +100,7 @@ test('操作の途中でセッションが切れるとログイン画面へ移�
 
   // ログインし直すと、Dashboard ではなく元の画面（Harness の登録）が出る。
   await submitLogin(page, testOwner.id, testOwner.password)
-  await expect(page.getByRole('heading', { name: 'Harness の登録' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'スペシャルハーネスの登録' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toHaveCount(0)
   expect(new URL(page.url()).pathname).toBe('/harnesses/_new')
 })
@@ -115,12 +115,12 @@ test('画面の移動でセッション切れが分かったときも、ログ�
   expect((await page.request.post('/auth/logout', { headers: { Origin: baseURL!, 'X-CSRF-Token': csrfToken } })).status()).toBe(204)
   await page.context().addCookies(cookies)
 
-  await page.getByRole('navigation', { name: '画面' }).getByRole('link', { name: 'Harnesses' }).click()
+  await page.getByRole('navigation', { name: '画面' }).getByRole('link', { name: 'スペシャルハーネス', exact: true }).click()
   await expectLoginScreen(page)
   expect(new URL(page.url()).pathname).toBe('/harnesses')
 
   await submitLogin(page, testOwner.id, testOwner.password)
-  await expect(page.getByRole('link', { name: 'Harnesses' })).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('link', { name: 'スペシャルハーネス', exact: true })).toHaveAttribute('aria-current', 'page')
   expect(new URL(page.url()).pathname).toBe('/harnesses')
 })
 
