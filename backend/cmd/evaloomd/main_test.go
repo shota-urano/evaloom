@@ -73,10 +73,17 @@ func TestListenLoopbackBindsOnlyIPv4Loopback(t *testing.T) {
 	}
 }
 
+// startupOutput keeps the first lines up to its buffer and drops the rest.
+// evaloomd also writes its logs (Linear Poller, notification dispatch) to
+// the same writer; a blocking send would stop those goroutines forever once
+// the test has read the line it waits for, and run would never return.
 type startupOutput chan string
 
 func (output startupOutput) Write(p []byte) (int, error) {
-	output <- string(p)
+	select {
+	case output <- string(p):
+	default:
+	}
 	return len(p), nil
 }
 

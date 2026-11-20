@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { ApiClient } from '@/api/client'
 
-import { approvals, type Approval } from '@/api/approvals'
+import { DECISION_KIND_LABELS, DECISION_KINDS, decisions, type Decision, type DecisionKind } from '@/api/decisions'
 import { linearStatus } from '@/api/linear'
 import { registry } from '@/api/registry'
 import {
@@ -21,7 +21,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { cn } from '@/lib/utils'
-import { APPROVALS_PATH, approvalDetailPath, approvalTargetLabel } from '@/pages/approvals/labels'
+import { DECISIONS_PATH } from '@/pages/decisions/labels'
 import { useLiveTaskList } from '@/pages/tasks/live'
 import { taskDetailPath } from '@/pages/tasks/labels'
 import { TaskStatusBadge } from '@/pages/tasks/task-list-page'
@@ -173,47 +173,39 @@ function NotificationFailures({ state }: { state: NotificationState }) {
   )
 }
 
-/** 承認待ち（17 3.3・3.4、13 3.10 の追加）。件数と、詳細へのリンク。 */
-function PendingApprovals({ items, error, onReload }: { items: Approval[] | undefined; error: unknown; onReload: () => void }) {
+const KIND_TONES: Record<DecisionKind, string> = {
+  route: 'border-violet-300 bg-violet-50',
+  approval: 'border-sky-300 bg-sky-50',
+  blocked: 'border-amber-300 bg-amber-50',
+  question: 'border-emerald-300 bg-emerald-50',
+}
+
+/** 本人の判断待ち（13 3.2・3.9）。open の判断待ちの件数を種類ごとに出し、判断待ちの画面へのリンクにする。 */
+function PendingDecisions({ items, error, onReload }: { items: Decision[] | undefined; error: unknown; onReload: () => void }) {
+  const counts = Object.fromEntries(DECISION_KINDS.map((kind) => [kind, 0])) as Record<DecisionKind, number>
+  for (const decision of items ?? []) if (decision.kind in counts) counts[decision.kind] += 1
   return (
-    <section aria-labelledby="dashboard-approvals" className="grid gap-3">
-      <h2 id="dashboard-approvals" className="font-semibold">
-        承認
+    <section aria-labelledby="dashboard-decisions" className="grid gap-3" data-testid="dashboard-decisions">
+      <h2 id="dashboard-decisions" className="font-semibold">
+        本人の判断待ち
       </h2>
       <ApiErrorAlert error={error} onReload={onReload} />
       {items === undefined ? (
         error ? null : <Loading />
       ) : (
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,12rem)_1fr]">
-          <dl>
-            <Stat testId="approval-count-pending" label="承認待ち" value={items.length} tone="border-sky-300 bg-sky-50" />
+        <>
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <Stat testId="decision-count-total" label="合計" value={items.length} tone="border-sky-300 bg-sky-50" />
+            {DECISION_KINDS.map((kind) => (
+              <Stat key={kind} testId={`decision-count-${kind}`} label={DECISION_KIND_LABELS[kind]} value={counts[kind]} tone={KIND_TONES[kind]} />
+            ))}
           </dl>
-          <Card>
-            <CardContent className="grid gap-2">
-              {items.length === 0 ? (
-                <p className="text-muted-foreground text-sm">承認待ちはありません。</p>
-              ) : (
-                <ul className="divide-y" aria-label="承認待ち">
-                  {items.map((approval) => (
-                    <li key={approval.id} className="py-2">
-                      <Link to={approvalDetailPath(approval.id)} className="font-medium underline-offset-4 hover:underline">
-                        {approvalTargetLabel(approval)}
-                      </Link>
-                      <div className="text-muted-foreground font-mono text-xs">
-                        {approval.contentVersion.slice(0, 12)} · {approval.taskId}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div>
-                <Link to={APPROVALS_PATH} className="text-sm underline underline-offset-4">
-                  Approvals 画面を開く
-                </Link>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+          <div>
+            <Link to={DECISIONS_PATH} className="text-sm underline underline-offset-4">
+              判断待ちの画面を開く
+            </Link>
+          </div>
+        </>
       )}
     </section>
   )
@@ -272,7 +264,7 @@ function TaskGroupCard({
   )
 }
 
-/** Dashboard（13 3.2）。Runner 状態、実行中・待機中・Blocked のタスク、エラー状況、Linear の取り込みの状況（15 5章）。 */
+/** Dashboard（13 3.2）。Runner 状態、本人の判断待ちの件数（種類ごと）、実行中・待機中・Blocked のタスク、エラー状況、Linear の取り込みの状況（15 5章）。 */
 export function DashboardPage() {
   const { api } = useSession()
   const runners = useResource((signal) => registry.listRunners(api, signal), 'runners')
@@ -281,10 +273,10 @@ export function DashboardPage() {
   useLiveTaskList(api, list.data, list.reload)
   const notifications = useNotificationFailures(api)
   const linear = useResource((signal) => linearStatus.get(api, signal), 'linear-status')
-  const pendingApprovals = useResource((signal) => approvals.list(api, 'pending', signal), 'approvals:pending')
+  const openDecisions = useResource((signal) => decisions.list(api, 'open', undefined, signal), 'decisions:open')
 
   const reload = () => {
-    pendingApprovals.reload()
+    openDecisions.reload()
     linear.reload()
     runners.reload()
     list.reload()
@@ -321,7 +313,7 @@ export function DashboardPage() {
             <RunnerTable runners={runners.data ?? []} />
           </section>
 
-          <PendingApprovals items={pendingApprovals.data} error={pendingApprovals.error} onReload={pendingApprovals.reload} />
+          <PendingDecisions items={openDecisions.data} error={openDecisions.error} onReload={openDecisions.reload} />
 
           <section aria-labelledby="dashboard-tasks" className="grid gap-3">
             <h2 id="dashboard-tasks" className="font-semibold">

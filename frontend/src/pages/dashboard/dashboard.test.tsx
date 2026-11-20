@@ -7,6 +7,7 @@ import type { Project, Runner } from '@/api/registry'
 import type { TaskSummary } from '@/api/tasks'
 import type { NotificationFailure } from '@/api/notification-failures'
 import type { LinearStatus } from '@/api/linear'
+import type { Decision } from '@/api/decisions'
 import { fakeEvents } from '@/test/fake-events'
 import { apiError, fakeFetch, json, type Recorded } from '@/test/fake-fetch'
 import App from '@/App'
@@ -85,7 +86,7 @@ function renderDashboard(handler: (request: Recorded) => Response | undefined = 
     if (request.url.startsWith('/api/tasks')) return page(TASKS)
     if (request.url.startsWith('/api/notification-failures')) return failurePage([])
     if (request.url === '/api/linear/status') return json(200, { teams: [], issues: [] })
-    if (request.url.startsWith('/api/approvals')) return page([])
+    if (request.url.startsWith('/api/decisions')) return page([])
     return json(500, {})
   })
   render(<App api={new ApiClient(fake.fetch, fakeEvents().factory)} />)
@@ -126,6 +127,23 @@ describe('Dashboard（13 3.2）', () => {
     expect(within(screen.getByRole('list', { name: '失敗したタスク' })).getByText(/test_failed/)).toBeVisible()
     expect(fake.calls.some((c) => c.url.startsWith('/api/runners'))).toBe(true)
     expect(fake.calls.some((c) => c.url.startsWith('/api/tasks'))).toBe(true)
+  })
+
+  it('open の判断待ちの件数を種類ごとに出し、判断待ちの画面へのリンクにする（13 3.2・3.9）', async () => {
+    const decision = (id: string, kind: Decision['kind']) => ({ id, kind, taskId: 'task-004', status: 'open' }) as Decision
+    const fake = renderDashboard((request) =>
+      request.url.startsWith('/api/decisions')
+        ? page([decision('d1', 'route'), decision('d2', 'approval'), decision('d3', 'approval'), decision('d4', 'blocked'), decision('d5', 'blocked'), decision('d6', 'blocked')])
+        : undefined,
+    )
+    expect(await screen.findByTestId('decision-count-total')).toHaveTextContent('合計6件')
+    expect(screen.getByTestId('decision-count-route')).toHaveTextContent('振り分けの承認1件')
+    expect(screen.getByTestId('decision-count-approval')).toHaveTextContent('操作の承認2件')
+    expect(screen.getByTestId('decision-count-blocked')).toHaveTextContent('止まった仕事の続行3件')
+    expect(screen.getByTestId('decision-count-question')).toHaveTextContent('作業中の AI の質問0件')
+    expect(within(screen.getByTestId('dashboard-decisions')).getByRole('link', { name: '判断待ちの画面を開く' })).toHaveAttribute('href', '/decisions')
+    expect(fake.calls.find((c) => c.url.startsWith('/api/decisions'))?.url).toContain('status=open')
+    expect(fake.calls.some((c) => c.url.startsWith('/api/approvals'))).toBe(false)
   })
 
   it('タスクも Runner も無ければ 0 件と空の案内を出す', async () => {

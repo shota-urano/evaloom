@@ -188,21 +188,3 @@ describe('isExpired', () => {
     expect(isExpired(approval({ status: 'pending' }), now)).toBe(false)
   })
 })
-
-describe('Dashboard の承認待ち', () => {
-  it('承認待ちの件数と詳細へのリンクを出す', async () => {
-    const fake = renderAt('/', (request) => {
-      if (request.url.startsWith('/api/approvals?status=pending')) {
-        return page([approval(), approval({ id: '01JE2EAPPROVAL000000000003', target: { repository: 'example/other', prNumber: 3 } })])
-      }
-      if (request.url === '/api/linear/status') return json(200, { teams: [], issues: [] })
-      if (request.url.startsWith('/api/notification-failures')) return json(200, { items: [], nextCursor: null })
-      return undefined
-    })
-    expect(await screen.findByTestId('approval-count-pending')).toHaveTextContent('承認待ち2件')
-    const list = screen.getByRole('list', { name: '承認待ち' })
-    expect(within(list).getByRole('link', { name: 'example/repo#12' })).toHaveAttribute('href', `/approvals/${ID}`)
-    expect(within(list).getByRole('link', { name: 'example/other#3' })).toBeVisible()
-    expect(fake.calls.some((c) => c.url.startsWith('/api/approvals?status=pending'))).toBe(true)
-  })
-})
