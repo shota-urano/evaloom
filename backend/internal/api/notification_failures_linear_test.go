@@ -391,3 +391,102 @@ func TestNotificationFailuresMixedSourcesOrderAndCursor(t *testing.T) {
 		t.Fatalf("response exposes a comment body or error: %s", body)
 	}
 }
+
+// 受け入れ基準 (spec 16 3.4.2, 3.6.5, Q82, Q85): 振り分けの判断待ちの
+// decision_open と route_approved の行は execution_id が NULL で、上限や
+// 送らずに failed になると一覧に outboxId 付きで出る（eventId・executionId
+// は null）。reason は linear_outbox.failure_reason（other を含む）をその
+// まま返し、notification_failed は書かれない。
+//
+// The Worker does not send add_label rows yet (spec 16 9章, 振り分けの
+// ラベルの追加), so the route_approved row is marked failed the way spec 16
+// 6章 describes for a label not in routes (reason=other).
+func TestNotificationFailuresListRouteTriggersWithoutExecution(t *testing.T) {
+	f := newAuthFixture(t)
+	seedStreamExecutions(t, f)
+	insertLinearTask(t, f, "task-201", "振り分けを待つ Issue", "")
+	insertLinearTask(t, f, "task-202", "振り分けを承認した Issue", "")
+	if _, err := f.db.Exec(`UPDATE tasks SET status = 'routing' WHERE id = 'task-201'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`DELETE FROM routes`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(`INSERT INTO routes VALUES ('route:a', 'project-a', NULL, 't', 't')`); err != nil {
+		t.Fatal(err)
+	}
+	// The route decision_open comment, as store.OpenRouteDecisionTx writes it.
+	enqueueTrigger(t, f, linearoutbox.Trigger{TaskID: "task-201", Kind: linearoutbox.KindDecisionOpen, TargetID: "route-decision"})
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := linearoutbox.EnqueueRouteLabelTx(context.Background(), tx, "task-202", "approved-decision", "route:a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLinearRows(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id IN ('task-201', 'task-202')
+		AND kind IN ('decision_open', 'route_approved') AND execution_id IS NULL`); n != 2 {
+		t.Fatalf("rows without an Execution = %d; want 2", n)
+	}
+
+	now := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+	client := &failingLinear{}
+	worker := &linearfeedback.Worker{DB: f.db, Client: client, Now: func() time.Time { return now }}
+	for range linearfeedback.MaxAttempts {
+		if err := worker.SendDue(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Hour)
+	}
+	if client.creates != linearfeedback.MaxAttempts {
+		t.Fatalf("comment sends = %d; want %d", client.creates, linearfeedback.MaxAttempts)
+	}
+	if _, err := f.db.Exec(`UPDATE linear_outbox SET status = 'failed', failure_reason = ?, failed_at = ?
+		WHERE kind = 'route_approved'`, linearfeedback.ReasonOther, "2026-11-09T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := projectRequest(t, f, "GET", notificationFailurePath, nil)
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	for _, private := range []string{"PRIVATE-", "Evaloom:", ":decision_open:", ":label:"} {
+		if strings.Contains(string(body), private) {
+			t.Fatalf("response contains %q: %s", private, body)
+		}
+	}
+	var raw struct{ Items []map[string]json.RawMessage }
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var page notificationFailurePage
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("items = %s; want 2 outbox rows", body)
+	}
+	type want struct{ task, title, kind, reason string }
+	wants := []want{ // newest failed_at first
+		{"task-202", "振り分けを承認した Issue", "route_approved", "other"},
+		{"task-201", "振り分けを待つ Issue", "decision_open", "retries_exhausted"},
+	}
+	for i, w := range wants {
+		item := page.Items[i]
+		var outboxID string
+		if err := f.db.QueryRow(`SELECT id FROM linear_outbox WHERE task_id = ?`, w.task).Scan(&outboxID); err != nil {
+			t.Fatal(err)
+		}
+		if item.TaskID != w.task || item.TaskTitle != w.title || item.Kind != w.kind || item.Channel != "linear" ||
+			item.Reason != w.reason || item.OutboxID == nil || *item.OutboxID != outboxID ||
+			string(raw.Items[i]["eventId"]) != "null" || string(raw.Items[i]["executionId"]) != "null" {
+			t.Fatalf("item %d = %s; want %+v", i, raw.Items[i], w)
+		}
+	}
+	if n := countLinearRows(t, f, `SELECT count(*) FROM execution_events WHERE type = 'notification_failed'`); n != 0 {
+		t.Fatalf("notification_failed events = %d; want none", n)
+	}
+}
