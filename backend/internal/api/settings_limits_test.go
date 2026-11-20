@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestSettingsLimitsAndApprovalPatchStoresAndAudits(t *testing.T) {
 	}
 }
 
-// A value of the wrong type, a non-positive number, a missing or unknown
+// A value of the wrong type, an out-of-range number, a missing or unknown
 // stage, or null is 400, and nothing of the request (other keys included)
 // is written.
 func TestSettingsLimitsAndApprovalRejectInvalidValues(t *testing.T) {
@@ -111,6 +112,7 @@ func TestSettingsLimitsAndApprovalRejectInvalidValues(t *testing.T) {
 		{"ttl bool", map[string]any{"approval": map[string]any{"ttlSec": true}}, "approval.ttlSec", "invalid"},
 		{"ttl zero", map[string]any{"approval": map[string]any{"ttlSec": 0}}, "approval.ttlSec", "out_of_range"},
 		{"ttl negative", map[string]any{"approval": map[string]any{"ttlSec": -1}}, "approval.ttlSec", "out_of_range"},
+		{"ttl below minimum", map[string]any{"approval": map[string]any{"ttlSec": 59}}, "approval.ttlSec", "out_of_range"},
 		{"ttl null", map[string]any{"approval": map[string]any{"ttlSec": nil}}, "approval.ttlSec", "required"},
 		{"approval unknown key", map[string]any{"approval": map[string]any{"ttl": 600}}, "body", "invalid_json"},
 		{"approval not object", map[string]any{"approval": 600}, "approval", "invalid"},
@@ -134,6 +136,48 @@ func TestSettingsLimitsAndApprovalRejectInvalidValues(t *testing.T) {
 			requireProjectError(t, status, response, 400, ValidationFailed, test.field, test.reason)
 			if got := readSettingsState(t, f.db); len(got.rows) != 0 || len(got.audits) != 0 {
 				t.Fatalf("rejected PATCH wrote %+v", got)
+			}
+		})
+	}
+}
+
+// Q200 also applies to the default TTL (owner decision 2026-11-20).
+// Rejecting a mixed PATCH preserves existing settings and audit rows;
+// 60 seconds and larger integers retain the existing storage range.
+func TestSettingsApprovalTTLMinimum(t *testing.T) {
+	for _, ttl := range []int64{59, 60, 61, 9223372036854775807} {
+		t.Run(strconv.FormatInt(ttl, 10), func(t *testing.T) {
+			f := newAuthFixture(t)
+			status, body := projectRequest(t, f, "PATCH", "/api/settings", map[string]any{
+				"approval": map[string]any{"ttlSec": 600},
+			})
+			if status != 200 {
+				t.Fatalf("seed PATCH status=%d body=%s", status, body)
+			}
+			want := readSettingsState(t, f.db)
+			status, body = projectRequest(t, f, "PATCH", "/api/settings", map[string]any{
+				"linear":   map[string]any{"triggerLabel": "go"},
+				"approval": map[string]any{"ttlSec": ttl},
+			})
+			if ttl < 60 {
+				requireProjectError(t, status, body, 400, ValidationFailed, "approval.ttlSec", "out_of_range")
+			} else {
+				if status != 200 {
+					t.Fatalf("PATCH status=%d body=%s", status, body)
+				}
+				encoded := strconv.FormatInt(ttl, 10)
+				want.rows["approval.ttlSec"] = encoded
+				want.rows["linear.triggerLabel"] = `"go"`
+				want.audits = append(want.audits,
+					`owner settings linear.triggerLabel {"after":"go","before":"ai-ready"}`,
+					`owner settings approval.ttlSec {"after":`+encoded+`,"before":600}`)
+				getStatus, response := getJSON(t, f, "/api/settings")
+				if getStatus != 200 || !strings.Contains(string(response), `"ttlSec":`+encoded+`}`) {
+					t.Fatalf("GET status=%d body=%s", getStatus, response)
+				}
+			}
+			if got := readSettingsState(t, f.db); !reflect.DeepEqual(got, want) {
+				t.Fatalf("state = %+v; want %+v", got, want)
 			}
 		})
 	}

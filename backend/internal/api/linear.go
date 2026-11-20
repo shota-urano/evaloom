@@ -184,6 +184,11 @@ func decodeSettingsPatch(body map[string]json.RawMessage) (linearintake.Settings
 				if err != nil {
 					return changes, err
 				}
+				// Q200's minimum also applies to the default TTL (owner
+				// decision 2026-11-20). Validate before storing any key.
+				if ttl < 60 {
+					return changes, invalid("approval.ttlSec", "out_of_range")
+				}
 				changes.ApprovalTTLSec = &ttl
 			}
 		default:
