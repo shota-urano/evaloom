@@ -528,6 +528,9 @@ export function HarnessDetailPage({ id }: { id: string }) {
             <Button asChild variant="outline">
               <Link to="/harnesses">一覧へ戻る</Link>
             </Button>
+            <Button asChild variant="outline">
+              <Link to={`${harnessPath(id)}/records`}>記録の一覧</Link>
+            </Button>
             {data ? (
               <Button asChild>
                 <Link to={`${harnessPath(id)}/edit`}>編集</Link>
