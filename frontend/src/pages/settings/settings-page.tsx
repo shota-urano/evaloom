@@ -1,16 +1,25 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 
-import { registry } from '@/api/registry'
-import { settingsApi, settingsSource, type LinearLabelSettings, type SettingsSource } from '@/api/settings'
+import { registry, type Runner } from '@/api/registry'
+import {
+  settingsApi,
+  settingsSource,
+  STAGES,
+  type GlobalSettings,
+  type SettingsPatch,
+  type SettingsSource,
+  type SettingsView,
+  type Stage,
+} from '@/api/settings'
 import { useSession } from '@/auth/session'
 import { ApiErrorAlert } from '@/components/api-error-alert'
-import { TextField } from '@/components/form-field'
+import { SelectField, TextField } from '@/components/form-field'
 import { Loading, PageTitle } from '@/components/page'
 import { RunnerTable } from '@/components/runner-table'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
-import { useResource } from '@/hooks/use-resource'
+import { useResource, type Resource } from '@/hooks/use-resource'
 
 function Row({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
   return (
@@ -21,51 +30,138 @@ function Row({ label, children, testId }: { label: string; children: ReactNode; 
   )
 }
 
-/** GET /api/settings の応答に無いため表示できない項目（13 3.2 の Settings。応答は 15 5章の linear だけ）。 */
-const UNAVAILABLE = ['全体の既定タイムアウト', '通知先', 'Global Context'] as const
+// 入力欄の名前。サーバーの details[].field と同じ名前（backend/internal/api/linear.go の decodeSettingsPatch）。
+type StageField = `limits.stageTimeoutMaxSec.${Stage}`
+const STAGE_FIELDS: readonly StageField[] = STAGES.map((stage) => `limits.stageTimeoutMaxSec.${stage}` as const)
+const FIELDS = [
+  'linear.triggerLabel',
+  'linear.routingLabelPrefix',
+  'routing.proposer.microHarness',
+  'routing.proposer.model',
+  'routing.defaultRunnerId',
+  ...STAGE_FIELDS,
+  'approval.ttlSec',
+] as const
+type Field = (typeof FIELDS)[number]
 
-// サーバーの details[].field と同じ名前（backend/internal/api/linear.go の patchSettings）。
-const LINEAR_FIELDS = ['linear.triggerLabel', 'linear.routingLabelPrefix'] as const
-type LinearField = (typeof LINEAR_FIELDS)[number]
-const LINEAR_LABELS: Record<LinearField, string> = {
-  'linear.triggerLabel': 'トリガーのラベル名',
-  'linear.routingLabelPrefix': '実行先ラベルの接頭辞',
+const LABELS: Record<string, string> = {
+  'linear.triggerLabel': '起動の合図のラベル（linear.triggerLabel）',
+  'linear.routingLabelPrefix': '振り分けのラベルの接頭辞（linear.routingLabelPrefix）',
+  'routing.proposer': '振り分けを提案する AI（routing.proposer）',
+  'routing.proposer.microHarness': '提案に使うミクロハーネス（routing.proposer）',
+  'routing.proposer.model': '提案に使うモデル（routing.proposer）',
+  'routing.defaultRunnerId': '提案と直接振り分けたタスクを動かす Runner（routing.defaultRunnerId）',
+  'limits.stageTimeoutMaxSec': '段の上限時間の上限（limits.stageTimeoutMaxSec）',
+  ...Object.fromEntries(STAGES.map((stage) => [`limits.stageTimeoutMaxSec.${stage}`, `${stage}（秒）`])),
+  'approval.ttlSec': '承認の有効時間（approval.ttlSec、秒）',
 }
 
-/** トリガーのラベル名と実行先ラベルの接頭辞（15-linear-intake 3.4・5章、Q48）の編集。 */
-function LinearLabelsForm({ initial }: { initial: LinearLabelSettings }) {
+/** 02 4.2 のミクロハーネスの列挙値。 */
+const MICRO_HARNESSES = [
+  { value: 'claude_code', label: 'Claude Code CLI（claude_code）' },
+  { value: 'codex', label: 'Codex CLI（codex）' },
+]
+
+type Values = Record<Field, string>
+
+function toValues(view: SettingsView): Values {
+  const values = {
+    'linear.triggerLabel': view.linear.triggerLabel,
+    'linear.routingLabelPrefix': view.linear.routingLabelPrefix,
+    'routing.proposer.microHarness': view.routing.proposer.microHarness,
+    'routing.proposer.model': view.routing.proposer.model ?? '',
+    'routing.defaultRunnerId': view.routing.defaultRunnerId ?? '',
+    'approval.ttlSec': String(view.approval.ttlSec),
+  } as Values
+  for (const stage of STAGES) values[`limits.stageTimeoutMaxSec.${stage}`] = String(view.limits.stageTimeoutMaxSec[stage])
+  return values
+}
+
+const isPositiveInteger = (text: string) => /^[1-9][0-9]*$/.test(text.trim())
+
+/** 画面で確かめる（正本はサーバー、13 3.1）。空欄と正の整数でない値は送らない。 */
+function localErrors(values: Values): Partial<Record<Field, string[]>> {
+  const errors: Partial<Record<Field, string[]>> = {}
+  for (const field of ['linear.triggerLabel', 'linear.routingLabelPrefix', 'routing.proposer.microHarness'] as const) {
+    if (values[field].trim() === '') errors[field] = ['入力してください']
+  }
+  for (const field of [...STAGE_FIELDS, 'approval.ttlSec'] as const) {
+    if (values[field].trim() === '') errors[field] = ['入力してください']
+    else if (!isPositiveInteger(values[field])) errors[field] = ['1 以上の整数を入力してください']
+  }
+  return errors
+}
+
+/**
+ * 変えたキーだけを PATCH の本文にする。routing.proposer と limits.stageTimeoutMaxSec は値全体の置き換えなので、
+ * 一部を変えたときも全項目を送る。
+ */
+function changes(before: Values, after: Values): SettingsPatch {
+  const patch: SettingsPatch = {}
+  const changed = (field: Field) => before[field] !== after[field]
+  if (changed('linear.triggerLabel') || changed('linear.routingLabelPrefix')) {
+    patch.linear = {}
+    // 値の前後の空白も Linear のラベル名の一部として扱われうるので、入力のまま送る。
+    if (changed('linear.triggerLabel')) patch.linear.triggerLabel = after['linear.triggerLabel']
+    if (changed('linear.routingLabelPrefix')) patch.linear.routingLabelPrefix = after['linear.routingLabelPrefix']
+  }
+  const proposerChanged = changed('routing.proposer.microHarness') || changed('routing.proposer.model')
+  if (proposerChanged || changed('routing.defaultRunnerId')) {
+    patch.routing = {}
+    if (proposerChanged) {
+      const model = after['routing.proposer.model'].trim()
+      patch.routing.proposer = { microHarness: after['routing.proposer.microHarness'], model: model === '' ? null : model }
+    }
+    if (changed('routing.defaultRunnerId')) {
+      patch.routing.defaultRunnerId = after['routing.defaultRunnerId'] === '' ? null : after['routing.defaultRunnerId']
+    }
+  }
+  if (STAGE_FIELDS.some(changed)) {
+    const limits = {} as Record<Stage, number>
+    for (const stage of STAGES) limits[stage] = Number(after[`limits.stageTimeoutMaxSec.${stage}`].trim())
+    patch.limits = { stageTimeoutMaxSec: limits }
+  }
+  if (changed('approval.ttlSec')) patch.approval = { ttlSec: Number(after['approval.ttlSec'].trim()) }
+  return patch
+}
+
+/** 全体設定（02 3.8 の6キー）の表示と変更。 */
+function GlobalSettingsForm({ initial, runners }: { initial: SettingsView; runners: Runner[] | undefined }) {
   const { api } = useSession()
-  const [values, setValues] = useState<Record<LinearField, string>>({
-    'linear.triggerLabel': initial.triggerLabel,
-    'linear.routingLabelPrefix': initial.routingLabelPrefix,
-  })
-  const [localErrors, setLocalErrors] = useState<Record<string, string[]>>({})
+  const [saved, setSaved] = useState<Values>(() => toValues(initial))
+  const [values, setValues] = useState<Values>(saved)
+  const [local, setLocal] = useState<Partial<Record<Field, string[]>>>({})
   const [submitting, setSubmitting] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(LINEAR_FIELDS)
-  const errorsFor = (field: LinearField) => {
-    const messages = [...(localErrors[field] ?? []), ...(fieldErrors[field] ?? [])]
+  const [message, setMessage] = useState<string | null>(null)
+  const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
+  const errorsFor = (field: Field) => {
+    const messages = [...(local[field] ?? []), ...(fieldErrors[field] ?? [])]
     return messages.length > 0 ? messages : undefined
+  }
+  const set = (field: Field) => (event: { target: { value: string } }) => {
+    setMessage(null)
+    setValues((previous) => ({ ...previous, [field]: event.target.value }))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (submitting) return
     clear()
-    setSaved(false)
-    const errors: Record<string, string[]> = {}
-    for (const field of LINEAR_FIELDS) if (values[field].trim() === '') errors[field] = ['入力してください']
-    setLocalErrors(errors)
+    setMessage(null)
+    const errors = localErrors(values)
+    setLocal(errors)
     if (Object.keys(errors).length > 0) return
+    const patch = changes(saved, values)
+    if (Object.keys(patch).length === 0) {
+      setMessage('変更はありません。')
+      return
+    }
     setSubmitting(true)
     try {
-      // 値の前後の空白も Linear のラベル名の一部として扱われうるので、入力のまま送る。
-      const response = await settingsApi.updateLinear(api, {
-        triggerLabel: values['linear.triggerLabel'],
-        routingLabelPrefix: values['linear.routingLabelPrefix'],
-      })
-      setValues({ 'linear.triggerLabel': response.linear.triggerLabel, 'linear.routingLabelPrefix': response.linear.routingLabelPrefix })
-      setSaved(true)
+      const next = toValues(await settingsApi.update(api, patch))
+      setSaved(next)
+      setValues(next)
+      setMessage('保存しました。')
     } catch (cause) {
       setError(cause)
     } finally {
@@ -73,29 +169,93 @@ function LinearLabelsForm({ initial }: { initial: LinearLabelSettings }) {
     }
   }
 
+  // 保存されている Runner が一覧に無いとき（削除済みなど）も、その ID を選択肢に残して表示する。
+  const runnerOptions = runners ?? []
+  const currentRunner = values['routing.defaultRunnerId']
+  const missingRunner = currentRunner !== '' && !runnerOptions.some((runner) => runner.id === currentRunner)
+  const microHarness = values['routing.proposer.microHarness']
+
+  const text = (field: Field, extra: { hint?: string; numeric?: boolean } = {}) => (
+    <TextField
+      key={field}
+      name={field}
+      label={LABELS[field]}
+      hint={extra.hint}
+      inputMode={extra.numeric ? 'numeric' : undefined}
+      value={values[field]}
+      autoComplete="off"
+      spellCheck={false}
+      errors={errorsFor(field)}
+      onChange={set(field)}
+    />
+  )
+
   return (
-    <form className="grid gap-4" noValidate onSubmit={handleSubmit} aria-label="Linear のラベルの設定">
-      <ApiErrorAlert error={error} unmatchedDetails={unmatched} fieldLabels={LINEAR_LABELS} />
-      <div className="grid gap-4 md:grid-cols-2">
-        {LINEAR_FIELDS.map((field) => (
-          <TextField
-            key={field}
-            name={field}
-            label={LINEAR_LABELS[field]}
-            value={values[field]}
-            autoComplete="off"
-            spellCheck={false}
-            errors={errorsFor(field)}
-            onChange={(event) => {
-              setSaved(false)
-              setValues((previous) => ({ ...previous, [field]: event.target.value }))
-            }}
-          />
-        ))}
-      </div>
-      {saved ? (
+    <form className="grid gap-6" noValidate onSubmit={handleSubmit} aria-label="全体設定">
+      <ApiErrorAlert error={error} unmatchedDetails={unmatched} fieldLabels={LABELS} />
+
+      <fieldset className="grid gap-4" data-testid="settings-linear">
+        <legend className="mb-2 text-sm font-semibold">Linear の取り込み</legend>
+        <div className="grid gap-4 md:grid-cols-2">
+          {text('linear.triggerLabel')}
+          {text('linear.routingLabelPrefix')}
+        </div>
+      </fieldset>
+
+      <fieldset className="grid gap-4" data-testid="settings-routing">
+        <legend className="mb-2 text-sm font-semibold">振り分けの提案</legend>
+        <div className="grid gap-4 md:grid-cols-2">
+          <SelectField
+            name="routing.proposer.microHarness"
+            label={LABELS['routing.proposer.microHarness']}
+            value={microHarness}
+            errors={errorsFor('routing.proposer.microHarness')}
+            onChange={set('routing.proposer.microHarness')}
+          >
+            {MICRO_HARNESSES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+            {MICRO_HARNESSES.some((option) => option.value === microHarness) ? null : <option value={microHarness}>{microHarness}</option>}
+          </SelectField>
+          {text('routing.proposer.model', { hint: '空欄にすると提案を作らず、本人が判断待ちの画面で一覧から選びます。' })}
+          <SelectField
+            name="routing.defaultRunnerId"
+            label={LABELS['routing.defaultRunnerId']}
+            value={currentRunner}
+            errors={errorsFor('routing.defaultRunnerId')}
+            onChange={set('routing.defaultRunnerId')}
+          >
+            <option value="">未設定</option>
+            {runnerOptions.map((runner) => (
+              <option key={runner.id} value={runner.id}>
+                {runner.name}（{runner.id}・{runner.status}）
+              </option>
+            ))}
+            {missingRunner ? <option value={currentRunner}>{currentRunner}（登録されていない Runner）</option> : null}
+          </SelectField>
+        </div>
+      </fieldset>
+
+      <fieldset className="grid gap-4" data-testid="settings-limits">
+        <legend className="mb-2 text-sm font-semibold">{LABELS['limits.stageTimeoutMaxSec']}</legend>
+        <p className="text-muted-foreground text-xs">
+          Profile が段ごとに宣言する上限時間（timeoutSec）は、この値を超えられません。4段をまとめて保存します。
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{STAGE_FIELDS.map((field) => text(field, { numeric: true }))}</div>
+      </fieldset>
+
+      <fieldset className="grid gap-4" data-testid="settings-approval">
+        <legend className="mb-2 text-sm font-semibold">承認</legend>
+        <div className="grid gap-4 md:grid-cols-2">
+          {text('approval.ttlSec', { numeric: true, hint: '承認するときに有効時間を指定しなかった場合に使います。' })}
+        </div>
+      </fieldset>
+
+      {message ? (
         <p role="status" className="text-sm">
-          保存しました。次の照会から使います。
+          {message}
         </p>
       ) : null}
       <div>
@@ -107,8 +267,37 @@ function LinearLabelsForm({ initial }: { initial: LinearLabelSettings }) {
   )
 }
 
+/** 同時実行の上限。表示だけで、変更する入力欄は置かない（13 4節）。Dashboard でも使う。 */
+export function ConcurrencyLimitsCard({ origin, state }: { origin: string; state: Resource<GlobalSettings> }) {
+  return (
+    <Card data-testid="settings-concurrency">
+      <CardHeader>
+        <CardTitle>
+          <h2>同時実行の上限</h2>
+        </CardTitle>
+        <CardDescription>表示のみです。画面からは変更できません。値の出どころ: {origin}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ApiErrorAlert error={state.error} onReload={state.reload} />
+        {state.data === undefined ? (
+          state.error ? null : <Loading />
+        ) : (
+          <dl className="divide-y">
+            <Row label="全体" testId="concurrency-global">
+              <span className="font-semibold tabular-nums">{state.data.concurrency.global}</span> 本
+            </Row>
+            <Row label="振り分け先ごと" testId="concurrency-per-project">
+              <span className="font-semibold tabular-nums">{state.data.concurrency.perProject}</span> 本
+            </Row>
+          </dl>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 /**
- * Settings（13 3.2）。同時実行の上限は表示だけで、変更する入力欄は置かない（13 4節）。
+ * Settings（13 3.2）。全体設定（02 3.8 のキー）の表示と変更、同時実行の上限（表示のみ、13 4節）、Runner 一覧。
  * source はテストで差し替えられるようにする。
  */
 export function SettingsPage({ source = settingsSource }: { source?: SettingsSource }) {
@@ -121,29 +310,20 @@ export function SettingsPage({ source = settingsSource }: { source?: SettingsSou
     <div className="grid gap-6">
       <PageTitle title="Settings" />
 
-      <Card data-testid="settings-concurrency">
+      <Card data-testid="settings-global">
         <CardHeader>
           <CardTitle>
-            <h2>同時実行の上限</h2>
+            <h2>全体設定</h2>
           </CardTitle>
-          <CardDescription>表示のみです。画面からは変更できません。値の出どころ: {source.origin}</CardDescription>
+          <CardDescription>変えた項目だけを保存します。1つでも受け付けられなかったときは、どの項目も変わりません。</CardDescription>
         </CardHeader>
         <CardContent>
-          <ApiErrorAlert error={settings.error} onReload={settings.reload} />
-          {settings.data === undefined ? (
-            settings.error ? null : <Loading />
-          ) : (
-            <dl className="divide-y">
-              <Row label="全体" testId="concurrency-global">
-                <span className="font-semibold tabular-nums">{settings.data.concurrency.global}</span> 本
-              </Row>
-              <Row label="同一プロジェクト" testId="concurrency-per-project">
-                <span className="font-semibold tabular-nums">{settings.data.concurrency.perProject}</span> 本
-              </Row>
-            </dl>
-          )}
+          <ApiErrorAlert error={global.error} onReload={global.reload} />
+          {global.data === undefined ? global.error ? null : <Loading /> : <GlobalSettingsForm initial={global.data} runners={runners.data} />}
         </CardContent>
       </Card>
+
+      <ConcurrencyLimitsCard origin={source.origin} state={settings} />
 
       <Card>
         <CardHeader>
@@ -157,38 +337,13 @@ export function SettingsPage({ source = settingsSource }: { source?: SettingsSou
         </CardContent>
       </Card>
 
-      <Card data-testid="settings-linear">
-        <CardHeader>
-          <CardTitle>
-            <h2>Linear の取り込み</h2>
-          </CardTitle>
-          <CardDescription>
-            トリガーのラベルが付いた Issue からタスクを作り、実行先ラベル（接頭辞で始まるラベル）でプロジェクトを決めます。evaloomd
-            を再起動すると既定値（ai-ready・repo:）に戻ります。
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ApiErrorAlert error={global.error} onReload={global.reload} />
-          {global.data === undefined ? global.error ? null : <Loading /> : <LinearLabelsForm initial={global.data.linear} />}
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader>
           <CardTitle>
-            <h2>その他の全体設定</h2>
+            <h2>Global Context</h2>
           </CardTitle>
-          <CardDescription>全体設定の API（GET /api/settings）は Linear の項目だけを返すため、次の項目はまだ表示できません。</CardDescription>
+          <CardDescription>Global Context を読む本人用の API が無いため、まだ表示できません。</CardDescription>
         </CardHeader>
-        <CardContent>
-          <dl className="divide-y">
-            {UNAVAILABLE.map((label) => (
-              <Row key={label} label={label}>
-                <span className="text-muted-foreground">取得できません</span>
-              </Row>
-            ))}
-          </dl>
-        </CardContent>
       </Card>
     </div>
   )
