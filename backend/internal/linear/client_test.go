@@ -367,6 +367,40 @@ func TestCreateCommentOutcomeUnknownOnlyAfterConnecting(t *testing.T) {
 	assertNoKey(t, logs.String(), err.Error())
 }
 
+// Spec 16 3.4.1 step 3: a 200 response whose body cannot be read leaves the
+// result unknown; a failure Linear answered with another status does not.
+func TestCreateCommentOutcomeUnknownWhenBodyUnreadable(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		unknown bool
+	}{
+		{"truncated 200", http.StatusOK, `{"data":{"commentCreate":{"success":true,`, true},
+		{"not json 200", http.StatusOK, `<html>gateway</html>`, true},
+		{"data of the wrong shape 200", http.StatusOK, `{"data":{"commentCreate":"x"}}`, true},
+		{"graphql error 200", http.StatusOK, `{"errors":[{"message":"bad","extensions":{"code":"INVALID_INPUT"}}]}`, false},
+		{"not json 500", http.StatusInternalServerError, `<html>error</html>`, false},
+		{"not json 502", http.StatusBadGateway, ``, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				decode(t, r)
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			var logs bytes.Buffer
+			_, err := newClient(t, server, writeKey(t, 0o600), &logs).CreateComment(context.Background(), "issue-1", "body")
+			if err == nil || linear.OutcomeUnknown(err) != tc.unknown {
+				t.Fatalf("err = %v, unknown = %v; want unknown %v", err, linear.OutcomeUnknown(err), tc.unknown)
+			}
+			assertNoKey(t, logs.String(), err.Error())
+		})
+	}
+}
+
 func TestIssueCommentsReadsAllPages(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := decode(t, r)

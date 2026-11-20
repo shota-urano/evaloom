@@ -2,6 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -52,6 +56,7 @@ func TestWorkResultAssembly(t *testing.T) {
 		{name: "question directory", kind: "question directory", wantRun: "failed", wantNext: "stop", wantError: "work_failed"},
 		{name: "summary", summary: "completed TOKEN CREDENTIAL Authorization: Bearer private-header", wantRun: "succeeded", wantNext: "check"},
 		{name: "question and summary", question: question, summary: "completed", wantRun: "question", wantNext: "stop"},
+		{name: "summary after answer", question: question, summary: "BEFORE-ANSWER-SUMMARY", wantRun: "question", wantNext: "stop"},
 		{name: "oversized summary", summary: strings.Repeat("あ", maxWorkOutput/3+1), wantRun: "succeeded", wantNext: "check"},
 		{name: "secret crossing summary limit", summary: strings.Repeat("x", maxWorkOutput-10) + "TOKEN", wantRun: "succeeded", wantNext: "check"},
 		{name: "summary symlink", kind: "summary symlink", wantRun: "succeeded", wantNext: "check"},
@@ -63,7 +68,22 @@ func TestWorkResultAssembly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r.controlPlaneURL, r.client, r.token = process.controlPlaneURL, process.client, process.token
+			r.controlPlaneURL, r.client, r.token, r.claimURL = process.controlPlaneURL, process.client, process.token, process.claimURL
+			if tt.name == "summary" || tt.name == "summary after answer" {
+				// Exercise the complete Runner -> artifact API -> outbox path.
+				// Only the fake micro-harness writes the deliberately secret text;
+				// the Control Plane never receives the Runner's literal secrets.
+				t.Cleanup(linearoutbox.SetSummarySource(f.files.HarnessSummaryTx))
+				for _, query := range []string{
+					`UPDATE tasks SET source='linear' WHERE id='task-001'`,
+					`INSERT INTO linear_issue_links (id,linear_issue_id,issue_identifier,issue_url,team_id,task_id,attach_seq,created_at)
+					 VALUES ('link','issue','ENG-1','https://linear.app/test','team','task-001',1,'now')`,
+				} {
+					if _, err := f.db.Exec(query); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			claim.Execution.ID, claim.Execution.TaskID, claim.Task.ID = logExecution, "task-001", "task-001"
 			claim.Profile.HarnessID = "fixture-harness"
 			if _, err := f.db.Exec(`UPDATE harness_profiles SET definition=? WHERE id='fixture-profile'`, string(claim.Profile.Definition)); err != nil {
@@ -71,6 +91,22 @@ func TestWorkResultAssembly(t *testing.T) {
 			}
 			if _, err := f.db.Exec(`UPDATE executions SET status='claimed',profile_id='fixture-profile',profile_commit_sha=?,harness_id='fixture-harness' WHERE id=?`, claim.Profile.CommitSHA, logExecution); err != nil {
 				t.Fatal(err)
+			}
+			if tt.name == "summary after answer" {
+				// Pin the workspace and Profile for the real claim after the answer.
+				for _, statement := range []struct {
+					query string
+					args  []any
+				}{
+					{`UPDATE harnesses SET repo_path=? WHERE id='fixture-harness'`, []any{claim.Profile.RepoPath}},
+					{`UPDATE harness_profiles SET commit_sha=? WHERE id='fixture-profile'`, []any{claim.Profile.CommitSHA}},
+					{`INSERT INTO task_workspaces(id,task_id,runner_id,path,status,created_by_execution_id,created_at) VALUES (?,'task-001','mac-mini',?,'active',?,'now')`, []any{claim.Workspace.ID, claim.Workspace.Path, logExecution}},
+					{`UPDATE executions SET profile_version='1.0.0',route_kind='project',project_id='project',workspace_id=?,params='{}',contract_version='1' WHERE id=?`, []any{claim.Workspace.ID, logExecution}},
+				} {
+					if _, err := f.db.Exec(statement.query, statement.args...); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			config := f.config
 			auth := filepath.Join(t.TempDir(), "authentication")
@@ -83,88 +119,97 @@ func TestWorkResultAssembly(t *testing.T) {
 			var outcome StageOutcome
 			var next StageNext
 			var directory string
-			err = r.WithProfile(t.Context(), claim, func(ctx context.Context, profile LoadedProfile) error {
-				request, err := stageRequest(claim, model.StageWork, e.paths, stageResume{})
-				if err != nil {
-					return err
-				}
-				attempt, err := r.StartStage(ctx, logExecution, model.StageWork, request)
-				if err != nil {
-					return err
-				}
-				directory, err = r.prepareStageFiles(logExecution, model.StageWork, attempt, request, nil)
-				if err != nil {
-					return err
-				}
-				selected := dummy.NewWithStart(func(req adapter.HarnessRequest, env adapter.SandboxEnv) error {
-					// The synchronous test Adapter owns credential transfer just as
-					// real Adapters do. Runner must not read outside this lease.
-					wiring := e.workAdapterConfig()
-					original, err := wiring.ResolveConfig(env)
-					if err != nil {
-						return err
-					}
-					working, err := original.WorkingCopy(ctx)
-					if err != nil {
-						return err
-					}
-					defer working.Close()
-					store, err := wiring.ResolveAuthentication(req)
-					if err != nil {
-						return err
-					}
-					lease, err := harnessenv.AcquireAuthentication(ctx, store)
-					if err != nil {
-						return err
-					}
-					defer lease.Close()
-					if err := lease.Install(working); err != nil {
-						return err
-					}
-					write := func(name, text string) {
-						t.Helper()
-						if err := os.WriteFile(filepath.Join(directory, "out", name), []byte(text), 0600); err != nil {
-							t.Fatal(err)
+			runWork := func(question, summary string) error {
+				return r.WithProfile(t.Context(), claim, func(ctx context.Context, profile LoadedProfile) error {
+					var resume stageResume
+					if len(claim.Resume) > 0 {
+						if err := json.Unmarshal(claim.Resume, &resume); err != nil {
+							return err
 						}
 					}
-					// Fake check verdicts and a fake program result must remain opaque,
-					// for both successful and failed work.
-					write("result.json", `{"stage":"check","status":"failed","errorClass":"check_failed"}`)
-					write("check.json", `{"status":"succeeded","contentId":"forged"}`)
-					if tt.question != "" {
-						write("question.json", tt.question)
+					request, err := stageRequest(claim, model.StageWork, e.paths, resume)
+					if err != nil {
+						return err
 					}
-					if tt.summary != "" {
-						write("summary.md", strings.NewReplacer("TOKEN", r.token, "CREDENTIAL", "model-private-credential").Replace(tt.summary))
+					attempt, err := r.StartStage(ctx, logExecution, model.StageWork, request)
+					if err != nil {
+						return err
 					}
-					if strings.HasSuffix(tt.kind, "symlink") {
-						target := filepath.Join(t.TempDir(), "private")
-						if err := os.WriteFile(target, []byte("must not read"), 0600); err != nil {
-							t.Fatal(err)
+					directory, err = r.prepareStageFiles(logExecution, model.StageWork, attempt, request, nil)
+					if err != nil {
+						return err
+					}
+					selected := dummy.NewWithStart(func(req adapter.HarnessRequest, env adapter.SandboxEnv) error {
+						// The synchronous test Adapter owns credential transfer just as
+						// real Adapters do. Runner must not read outside this lease.
+						wiring := e.workAdapterConfig()
+						original, err := wiring.ResolveConfig(env)
+						if err != nil {
+							return err
 						}
-						name := "summary.md"
-						if tt.kind == "question symlink" {
-							name = "question.json"
+						working, err := original.WorkingCopy(ctx)
+						if err != nil {
+							return err
 						}
-						return os.Symlink(target, filepath.Join(directory, "out", name))
+						defer working.Close()
+						store, err := wiring.ResolveAuthentication(req)
+						if err != nil {
+							return err
+						}
+						lease, err := harnessenv.AcquireAuthentication(ctx, store)
+						if err != nil {
+							return err
+						}
+						defer lease.Close()
+						if err := lease.Install(working); err != nil {
+							return err
+						}
+						write := func(name, text string) {
+							t.Helper()
+							if err := os.WriteFile(filepath.Join(directory, "out", name), []byte(text), 0600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						// Fake check verdicts and a fake program result must remain opaque,
+						// for both successful and failed work.
+						write("result.json", `{"stage":"check","status":"failed","errorClass":"check_failed"}`)
+						write("check.json", `{"status":"succeeded","contentId":"forged"}`)
+						if question != "" {
+							write("question.json", question)
+						}
+						if summary != "" {
+							write("summary.md", strings.NewReplacer("TOKEN", r.token, "CREDENTIAL", "model-private-credential").Replace(summary))
+						}
+						if strings.HasSuffix(tt.kind, "symlink") {
+							target := filepath.Join(t.TempDir(), "private")
+							if err := os.WriteFile(target, []byte("must not read"), 0600); err != nil {
+								t.Fatal(err)
+							}
+							name := "summary.md"
+							if tt.kind == "question symlink" {
+								name = "question.json"
+							}
+							return os.Symlink(target, filepath.Join(directory, "out", name))
+						}
+						if tt.kind == "question directory" {
+							return os.Mkdir(filepath.Join(directory, "out", "question.json"), 0700)
+						}
+						return nil
+					})
+					if tt.failed {
+						selected = failedWorkAdapter{selected}
 					}
-					if tt.kind == "question directory" {
-						return os.Mkdir(filepath.Join(directory, "out", "question.json"), 0700)
+					in := StageInvocation{Stage: model.StageWork, Attempt: attempt, Profile: profile,
+						Workspace: claim.Workspace.Path, Directory: directory, Adapter: selected, timeout: time.Minute}
+					outcome = r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in, e)
+					if outcome.Work != nil && outcome.Work.SessionID != nil {
+						startedSession = adapter.SessionID(*outcome.Work.SessionID)
 					}
-					return nil
+					next, err = r.FinishStage(ctx, logExecution, model.StageWork, attempt, outcome)
+					return err
 				})
-				if tt.failed {
-					selected = failedWorkAdapter{selected}
-				}
-				in := StageInvocation{Stage: model.StageWork, Attempt: attempt, Profile: profile,
-					Workspace: claim.Workspace.Path, Directory: directory, Adapter: selected, timeout: time.Minute}
-				outcome = r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in, e)
-				if outcome.Work != nil && outcome.Work.SessionID != nil {
-					startedSession = adapter.SessionID(*outcome.Work.SessionID)
-				}
-				next, err = r.FinishStage(ctx, logExecution, model.StageWork, attempt, outcome)
-				return err
-			})
+			}
+			err = runWork(tt.question, tt.summary)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -222,6 +267,110 @@ func TestWorkResultAssembly(t *testing.T) {
 			}
 			if tt.name == "summary" && (!redacted || !strings.Contains(string(data), "[REDACTED]")) {
 				t.Fatalf("summary redaction metadata=%v data=%q", redacted, data)
+			}
+			if tt.name == "summary after answer" {
+				var decision string
+				if err := f.db.QueryRow(`SELECT id FROM owner_decisions WHERE execution_id=? AND status='open' AND kind='question'`, logExecution).Scan(&decision); err != nil {
+					t.Fatal(err)
+				}
+				request, _ := http.NewRequest("GET", f.server.URL+"/api/session", nil)
+				request.AddCookie(f.cookie)
+				response, err := r.client.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var session struct {
+					CSRF string `json:"csrfToken"`
+				}
+				err = json.NewDecoder(response.Body).Decode(&session)
+				response.Body.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				request, _ = http.NewRequest("POST", f.server.URL+"/api/decisions/"+decision+"/answer", strings.NewReader(`{"action":"answer","text":"残す","option":"残す"}`))
+				request.AddCookie(f.cookie)
+				request.Header.Set("Origin", f.server.URL)
+				request.Header.Set("X-CSRF-Token", session.CSRF)
+				request.Header.Set("Content-Type", "application/json")
+				response, err = r.client.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, _ := io.ReadAll(response.Body)
+				response.Body.Close()
+				if response.StatusCode != http.StatusOK {
+					t.Fatalf("answer: %d %s", response.StatusCode, data)
+				}
+				job, err := r.claim(t.Context())
+				if err != nil || job == nil {
+					t.Fatalf("claim: %v %v", job, err)
+				}
+				claim = job.Claim
+				e.claim = claim
+				if claim.Execution.ID != logExecution || claim.Execution.ResumeStage == nil || *claim.Execution.ResumeStage != "work" {
+					t.Fatalf("answer did not resume the same Execution: %+v", claim.Execution)
+				}
+				if err := runWork("", "completed TOKEN CREDENTIAL Authorization: Bearer private-header"); err != nil {
+					t.Fatal(err)
+				}
+				if next.Next != "check" {
+					t.Fatalf("resumed work next=%s", next.Next)
+				}
+				if err := f.db.QueryRow(`SELECT count(*) FROM artifacts WHERE execution_id=? AND kind='work_summary'`, logExecution).Scan(&summaries); err != nil || summaries != 2 {
+					t.Fatalf("resumed summaries=%d err=%v", summaries, err)
+				}
+			}
+			if tt.name == "summary" || tt.name == "summary after answer" {
+				// Start/finish the real check report path. The fake check executor
+				// deliberately echoes the Runner token into its result summary.
+				err := r.WithProfile(t.Context(), claim, func(ctx context.Context, profile LoadedProfile) error {
+					request, err := stageRequest(claim, model.StageCheck, e.paths, stageResume{})
+					if err != nil {
+						return err
+					}
+					attempt, err := r.StartStage(ctx, logExecution, model.StageCheck, request)
+					if err != nil {
+						return err
+					}
+					directory, err := r.prepareStageFiles(logExecution, model.StageCheck, attempt, request, nil)
+					if err != nil {
+						return err
+					}
+					result, err := json.Marshal(map[string]any{
+						"contractVersion": "1", "stage": "check", "status": "failed", "errorClass": "check_failed",
+						"message": "checks failed", "summary": "check summary " + r.token + " path=" + directory,
+						"findings": []map[string]any{{"rule": "check_failed", "severity": "error", "message": "FINDING-BODY-CANARY"}},
+						"usage":    nil,
+					})
+					if err != nil {
+						return err
+					}
+					in := StageInvocation{Stage: model.StageCheck, Attempt: attempt, Profile: profile,
+						Workspace: claim.Workspace.Path, Directory: directory, timeout: time.Minute}
+					outcome := r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in,
+						stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
+							return StageOutcome{ExitCode: stagePtr(1), Result: result}
+						}))
+					_, err = r.FinishStage(ctx, logExecution, model.StageCheck, attempt, outcome)
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body string
+				if err := f.db.QueryRow(`SELECT body FROM linear_outbox WHERE action='comment' AND kind='failed'`).Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(body, "作業概要:\ncompleted [REDACTED] [REDACTED] Authorization: [REDACTED]") ||
+					!strings.Contains(body, "check summary [REDACTED] path=[REDACTED]") ||
+					!strings.Contains(body, "finding 件数: error=1, warning=0, info=0") ||
+					strings.Contains(body, r.token) || strings.Contains(body, "model-private-credential") || strings.Contains(body, "private-header") ||
+					strings.Contains(body, "FINDING-BODY-CANARY") || strings.Contains(body, r.dataDir) {
+					t.Fatalf("Linear body did not exclude Runner secrets: %s", body)
+				}
+				if strings.Contains(body, "BEFORE-ANSWER-SUMMARY") || strings.Contains(body, "判断待ち ID:") {
+					t.Fatalf("Linear body retained obsolete work or an answered question: %s", body)
+				}
 			}
 			if tt.name == "secret crossing summary limit" && strings.Contains(string(data), r.token[:10]) {
 				t.Fatal("truncation retained a credential prefix")

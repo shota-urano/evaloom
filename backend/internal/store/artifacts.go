@@ -161,16 +161,19 @@ func (s *ArtifactStore) Open(ctx context.Context, executionID, id string) (Artif
 	return artifact, file, nil
 }
 
-// HarnessSummaryTx reads out/summary.md from the work_summary artifact inside tx
-// (linearoutbox.SummarySource). Several or no artifacts, an unreadable file or
+// HarnessSummaryTx reads the latest work_summary inside tx
+// (linearoutbox.SummarySource). Answering a question resumes the same Execution
+// and may register another summary. Registration order breaks ties because
+// created_at has second precision. No artifact, an unreadable latest file or
 // invalid UTF-8 make the summary unavailable rather than failing tx.
 func (s *ArtifactStore) HarnessSummaryTx(ctx context.Context, tx *sql.Tx, executionID string) (string, bool) {
-	var path sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN count(*)=1 THEN min(storage_path) END
-		FROM artifacts WHERE execution_id=? AND kind='work_summary'`, executionID).Scan(&path); err != nil || !path.Valid {
+	var path string
+	if err := tx.QueryRowContext(ctx, `SELECT storage_path FROM artifacts
+		WHERE execution_id=? AND stage='work' AND kind='work_summary'
+		ORDER BY created_at DESC, rowid DESC LIMIT 1`, executionID).Scan(&path); err != nil {
 		return "", false
 	}
-	file, err := s.root.Open(path.String)
+	file, err := s.root.Open(path)
 	if err != nil {
 		return "", false
 	}

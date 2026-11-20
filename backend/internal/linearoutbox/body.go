@@ -3,8 +3,10 @@ package linearoutbox
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ type SummarySource func(ctx context.Context, tx *sql.Tx, executionID string) (su
 var (
 	summaryMu     sync.RWMutex
 	summarySource SummarySource
+	remoteHost    string
 )
 
 // SetSummarySource installs the artifact reader used for 作業概要. evaloomd
@@ -38,6 +41,30 @@ func SetSummarySource(source SummarySource) (restore func()) {
 	}
 }
 
+// SetRemoteHost supplies evaloomd's validated -remote-host for management UI
+// links (spec 16 3.3, Q122). An empty host leaves only IDs in the body.
+func SetRemoteHost(host string) (restore func()) {
+	summaryMu.Lock()
+	previous := remoteHost
+	remoteHost = host
+	summaryMu.Unlock()
+	return func() {
+		summaryMu.Lock()
+		remoteHost = previous
+		summaryMu.Unlock()
+	}
+}
+
+func managementReference(kind, id string) string {
+	summaryMu.RLock()
+	host := remoteHost
+	summaryMu.RUnlock()
+	if host == "" {
+		return id
+	}
+	return "https://" + host + "/" + kind + "/" + url.PathEscape(id)
+}
+
 func readSummary(ctx context.Context, tx *sql.Tx, executionID string) (string, bool) {
 	summaryMu.RLock()
 	source := summarySource
@@ -50,8 +77,8 @@ func readSummary(ctx context.Context, tx *sql.Tx, executionID string) (string, b
 
 // taskStatusNames are the display names of spec 02 5.1.
 var taskStatusNames = map[model.TaskStatus]string{
-	model.TaskReceived: "Received", model.TaskPlanning: "Planning", model.TaskQueued: "Queued",
-	model.TaskRunning: "Running", model.TaskVerifying: "Verifying", model.TaskWaitingApproval: "Waiting Approval",
+	model.TaskReceived: "Received", model.TaskRouting: "Routing", model.TaskQueued: "Queued",
+	model.TaskRunning: "Running", model.TaskWaitingApproval: "Waiting Approval",
 	model.TaskCompleted: "Completed", model.TaskFailed: "Failed", model.TaskCancelled: "Cancelled",
 	model.TaskTimedOut: "Timed Out", model.TaskBlocked: "Blocked",
 }
@@ -60,21 +87,18 @@ var taskStatusNames = map[model.TaskStatus]string{
 type executionFacts struct {
 	harnessID, profileVersion sql.NullString
 	errorClass, errorMessage  sql.NullString
+	projectName, outputs      sql.NullString
 }
 
 // Body builds linear_outbox.body for t inside tx (spec 16 3.3).
 //
-// It carries the requirements 6.4 items that apply to the trigger (3.2):
-// 実行ステータス, 実行担当ハーネス, 作業概要, エラー情報.
-// The waiting_approval body carries 必要な承認事項: the operation and the
-// target of the Execution's pending approval (spec 17 3.4), and that the
-// owner approves in the management UI (3.2). An intake hold carries the
-// reason and the fix instead (3.2); the missing-criteria hold also asks for
-// the criteria.
+// It carries the applicable routing, work summary, check summaries and finding
+// counts, outputs, error information and management UI references. A decision
+// comment contains only a notice and its reference; no decision content.
 //
 // It never reads log events, log artifacts or test output, and never writes
 // a path column. Free text written by the harness or the Runner (summary,
-// error message) passes the log exclusion of spec 05 3.5 (logredact.Text);
+// error message) passes the log exclusion of spec 05 3.9 (logredact.Text);
 // the summary was already excluded with the Runner's own secrets before the
 // Runner stored it. Absolute local paths are excluded without persisting
 // Runner directory configuration in the Control Plane.
@@ -89,7 +113,7 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 		return "", fmt.Errorf("linearoutbox: read task status %s: %w", t.TaskID, err)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Evaloom: %s\n管理画面のタスク ID: %s\n\n", t.Kind, t.TaskID)
+	fmt.Fprintf(&b, "Evaloom: %s\n管理画面のタスク ID: %s\n\n", t.Kind, managementReference("tasks", t.TaskID))
 	fmt.Fprintf(&b, "- 実行ステータス: %s\n", statusName(taskStatus))
 
 	switch t.Kind {
@@ -101,19 +125,24 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 			return "", err
 		}
 		if ok {
-			writeExecution(ctx, tx, &b, t, facts)
+			if err := writeExecution(ctx, tx, &b, t, facts); err != nil {
+				return "", err
+			}
 		}
+	}
+	if err := writeOpenDecisions(ctx, tx, &b, t.TaskID); err != nil {
+		return "", err
 	}
 	fmt.Fprintf(&b, "\n%s", t.DedupeKey())
 	return b.String(), nil
 }
 
 // decisionOpenBody is the decision_open comment (spec 16 3.2): only that a
-// decision waits in the management UI and the decision's ID (no remote
-// host is known here, Q122). The decision's content (the approval target,
+// decision waits in the management UI and the decision's reference (Q122).
+// The decision's content (the approval target,
 // findings, question text) never appears.
 func decisionOpenBody(t Trigger) string {
-	return fmt.Sprintf("Evaloom: %s\n管理画面で判断待ち\n判断待ち ID: %s\n\n%s", t.Kind, t.TargetID, t.DedupeKey())
+	return fmt.Sprintf("管理画面で判断待ち\n%s\n\n%s", managementReference("decisions", t.TargetID), t.DedupeKey())
 }
 
 // holdTexts are the reason and the fix of each intake hold (spec 16 3.2,
@@ -173,9 +202,10 @@ func statusName(status model.TaskStatus) string {
 func readExecution(ctx context.Context, tx *sql.Tx, t Trigger) (executionFacts, bool, error) {
 	var f executionFacts
 	err := tx.QueryRowContext(ctx, `SELECT e.harness_id, e.profile_version,
-		e.error_class, e.error_message
-		FROM executions e WHERE e.id = ? AND e.task_id = ?`, t.TargetID, t.TaskID).Scan(
-		&f.harnessID, &f.profileVersion, &f.errorClass, &f.errorMessage)
+		e.error_class, e.error_message, p.name, e.outputs
+		FROM executions e LEFT JOIN projects p ON p.id = e.project_id
+		WHERE e.id = ? AND e.task_id = ?`, t.TargetID, t.TaskID).Scan(
+		&f.harnessID, &f.profileVersion, &f.errorClass, &f.errorMessage, &f.projectName, &f.outputs)
 	if errors.Is(err, sql.ErrNoRows) {
 		if t.Kind == KindCancelled && t.TargetID == t.TaskID {
 			return f, false, nil
@@ -188,19 +218,23 @@ func readExecution(ctx context.Context, tx *sql.Tx, t Trigger) (executionFacts, 
 	return f, true, nil
 }
 
-func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger, f executionFacts) {
-	clean := func(text string) string {
-		out, _ := logredact.Text(text, nil)
-		out = localPathPattern.ReplaceAllStringFunc(out, func(match string) string {
-			if strings.HasPrefix(match, "/") {
-				return "[REDACTED]"
-			}
-			return match
-		})
-		return strings.TrimSpace(out)
+func clean(text string) string {
+	out, _ := logredact.Text(text, nil)
+	out = localPathPattern.ReplaceAllStringFunc(out, func(match string) string {
+		if strings.HasPrefix(match, "/") || strings.HasPrefix(strings.ToLower(match), "file://") {
+			return "[REDACTED]"
+		}
+		return match
+	})
+	return strings.TrimSpace(out)
+}
+
+func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigger, f executionFacts) error {
+	if f.projectName.Valid {
+		fmt.Fprintf(b, "- 振り分け先 Project: %s\n", clean(f.projectName.String))
 	}
 	if f.harnessID.Valid {
-		fmt.Fprintf(b, "- 実行担当ハーネス: %s（Profile %s）\n", f.harnessID.String, f.profileVersion.String)
+		fmt.Fprintf(b, "- 実行担当ハーネス: %s（Profile %s）\n", clean(f.harnessID.String), clean(f.profileVersion.String))
 	}
 	if t.Kind == KindFailed || t.Kind == KindCancelled {
 		if f.errorClass.Valid && f.errorClass.String != "" {
@@ -216,13 +250,81 @@ func writeExecution(ctx context.Context, tx *sql.Tx, b *strings.Builder, t Trigg
 		if ok {
 			summary = clean(summary)
 		}
-		switch {
-		case ok && summary != "":
+		if ok && summary != "" {
 			fmt.Fprintf(b, "\n作業概要:\n%s\n", summary)
-		case t.Kind == KindSucceeded:
-			b.WriteString("\n作業概要: 取得できなかった\n")
+		}
+		if err := writeChecks(ctx, tx, b, t.TargetID); err != nil {
+			return err
+		}
+		var outputs []struct {
+			Label string `json:"label"`
+			URL   string `json:"url"`
+		}
+		if f.outputs.Valid {
+			if err := json.Unmarshal([]byte(f.outputs.String), &outputs); err != nil {
+				return fmt.Errorf("linearoutbox: invalid outputs of execution %s", t.TargetID)
+			}
+		}
+		if len(outputs) > 0 {
+			b.WriteString("\n外に出したもの:\n")
+			for _, output := range outputs {
+				fmt.Fprintf(b, "- %s: %s\n", clean(output.Label), clean(output.URL))
+			}
 		}
 	}
+	return nil
+}
+
+// Only summaries and severity counts cross this boundary. Never copy the
+// finding messages/locations, result JSON, or check-stage logs into comments.
+func writeChecks(ctx context.Context, tx *sql.Tx, b *strings.Builder, executionID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT c.summary, c.findings FROM check_results c
+		JOIN stage_runs s ON s.id = c.stage_run_id WHERE c.execution_id = ?
+		ORDER BY s.attempt, c.id`, executionID)
+	if err != nil {
+		return fmt.Errorf("linearoutbox: read check results: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var summary sql.NullString
+		var raw string
+		if err := rows.Scan(&summary, &raw); err != nil {
+			return err
+		}
+		var findings []struct {
+			Severity string `json:"severity"`
+		}
+		if err := json.Unmarshal([]byte(raw), &findings); err != nil {
+			return fmt.Errorf("linearoutbox: invalid findings of execution %s", executionID)
+		}
+		counts := make(map[string]int)
+		for _, finding := range findings {
+			counts[finding.Severity]++
+		}
+		b.WriteString("\n確かめた結果:\n")
+		if text := clean(summary.String); text != "" {
+			fmt.Fprintf(b, "%s\n", text)
+		}
+		fmt.Fprintf(b, "finding 件数: error=%d, warning=%d, info=%d\n", counts["error"], counts["warning"], counts["info"])
+	}
+	return rows.Err()
+}
+
+func writeOpenDecisions(ctx context.Context, tx *sql.Tx, b *strings.Builder, taskID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM owner_decisions
+		WHERE task_id = ? AND status = 'open' ORDER BY created_at, id`, taskID)
+	if err != nil {
+		return fmt.Errorf("linearoutbox: read open decisions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		fmt.Fprintf(b, "- 判断待ち ID: %s\n", managementReference("decisions", id))
+	}
+	return rows.Err()
 }
 
 // Runner directories are local configuration. Without a DB copy, exclude
