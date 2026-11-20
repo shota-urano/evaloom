@@ -11,6 +11,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
@@ -272,6 +273,9 @@ func blockWorkspaceMissing(ctx context.Context, tx *sql.Tx, c *pendingCandidate,
 	if err != nil {
 		return err
 	}
-	_, err = AppendExecutionEvent(ctx, tx, c.executionID, model.EventDecisionOpened, payload)
-	return err
+	if _, err := AppendExecutionEvent(ctx, tx, c.executionID, model.EventDecisionOpened, payload); err != nil {
+		return err
+	}
+	return linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: c.taskID,
+		Kind: linearoutbox.KindDecisionOpen, TargetID: decisionID, ExecutionID: c.executionID})
 }
