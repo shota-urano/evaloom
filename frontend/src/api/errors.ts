@@ -38,6 +38,10 @@ const REASON_LABELS: Record<string, string> = {
   default_harness_missing: '既定の役割にスペシャルハーネスが割り当てられていません。プロジェクトの詳細画面で割り当ててください',
   // 15-linear-intake 3.8: UNIQUE(linear_team_id, linear_routing_label)（409、backend/internal/api/projects.md）
   duplicate: 'ほかのプロジェクトに同じ Linear Team ID と実行先ラベルの組が登録されています',
+  // 15-linear-intake Q160: 起動の合図のラベルが振り分けのラベルの接頭辞で始まる（400、backend/internal/api/linear.go patchSettings）
+  starts_with_routing_label_prefix: '起動の合図のラベルが振り分けのラベルの接頭辞で始まっています。どちらかを変えてください',
+  // 15 Q160: 新しい接頭辞で始まらないラベルが振り分けの表に残る（422、details[].field は routes.<ラベル>）
+  outside_routing_label_prefix: '振り分けのラベルの接頭辞で始まりません。先に振り分けの表のラベルを直してください',
 }
 
 /** details の reason（機械向けの語）を画面の文言にする。未知の語は原文を添えて出す。 */
