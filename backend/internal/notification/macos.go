@@ -74,10 +74,10 @@ func (m *MacOS) NotifyLinearPollFailing(ctx context.Context, class string, conse
 
 // NotifyLinearCommentFailing tells the owner that a Linear comment could not
 // be sent (spec 16 3.4.3, spec 12 3.5, Q84). Only an authentication error
-// alerts, so the only accepted classification is auth. The body is the
-// classification alone: never the API key, a Linear response, the Issue
-// identifier or the comment body. A click opens the Dashboard, because the
-// alert has no task.
+// alerts, so the only accepted classification is auth. The body names the
+// send failure and its classification: never the API key, a Linear response,
+// the Issue identifier or the comment body. A click opens the Dashboard,
+// because the alert has no task.
 func (m *MacOS) NotifyLinearCommentFailing(ctx context.Context, class string) error {
 	if class != "auth" {
 		return errors.New("notification: unsupported Linear comment classification")
@@ -88,7 +88,7 @@ func (m *MacOS) NotifyLinearCommentFailing(ctx context.Context, class string) er
 	if m.port < 1 || m.port > 65535 {
 		return fmt.Errorf("notification: invalid macOS port")
 	}
-	return m.launch(ctx, "evaloom: Linear コメントの送信が失敗", class, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
+	return m.launch(ctx, "evaloom: Linear への送信が失敗", "Linear への送信が失敗\n"+class, "http://127.0.0.1:"+strconv.Itoa(m.port)+"/")
 }
 
 // launch runs the helper with the three fixed arguments and waits for its

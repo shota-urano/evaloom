@@ -322,13 +322,13 @@ func TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard(t *testing.
 // （http://127.0.0.1:<port>/）を開く通知が出る。本文は送信の失敗であることと
 // 分類 auth だけで、API キー・応答の本文・Issue の識別子・コメントの本文が
 // 入らない（spec 16 3.4.3、12 3.5）。
-func TestMacOSLinearCommentAlertShowsOnlyAuthAndOpensDashboard(t *testing.T) {
+func TestMacOSLinearCommentAlertShowsOnlyFailureAndAuthAndOpensDashboard(t *testing.T) {
 	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
 	var launched bool
 	m.run = func(cmd *exec.Cmd) error {
 		launched = true
-		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear コメントの送信が失敗",
-			"auth", "http://127.0.0.1:49123/"}
+		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear への送信が失敗",
+			"Linear への送信が失敗\nauth", "http://127.0.0.1:49123/"}
 		if !reflect.DeepEqual(cmd.Args, want) {
 			t.Fatalf("command = %q; want %q", cmd.Args, want)
 		}
