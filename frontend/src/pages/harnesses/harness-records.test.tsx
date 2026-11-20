@@ -38,8 +38,8 @@ function renderRecords(records: HarnessRecord[]) {
 }
 afterEach(() => window.history.pushState(null, '', '/'))
 
-it('記録を新しい順に出し、タスクと成果物へのリンクを付ける', async () => {
-  renderRecords([record('r1', '2026-11-01T00:00:00Z', 'old.md', 'ENG-1'), record('r2', '2026-11-03T00:00:00Z', 'new.md', null), record('r3', '2026-11-02T00:00:00Z', 'mid.md', 'ENG-3')])
+it('記録をサーバーの応答の順（新しい順）のまま出し、タスクと成果物へのリンクを付ける', async () => {
+  renderRecords([record('r2', '2026-11-03T00:00:00Z', 'new.md', null), record('r3', '2026-11-02T00:00:00.5Z', 'mid.md', 'ENG-3'), record('r1', '2026-11-02T00:00:00Z', 'old.md', 'ENG-1')])
   const table = await screen.findByRole('table', { name: '記録の一覧' })
   const rows = within(table).getAllByRole('row').slice(1)
   expect(rows.map((row) => row.getAttribute('data-record'))).toEqual(['r2', 'r3', 'r1'])

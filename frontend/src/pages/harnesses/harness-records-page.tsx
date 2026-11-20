@@ -13,11 +13,6 @@ import { useResource } from '@/hooks/use-resource'
 import { Link } from '@/lib/link'
 import { harnessNotFound, harnessPath } from './labels'
 
-/** 記録した日付の新しい順（02 3.2 harness_records.created_at、同時刻は ID の降順。store の選び方と同じ並び）。 */
-export function newestFirst(records: readonly HarnessRecord[]): HarnessRecord[] {
-  return [...records].sort((a, b) => (a.createdAt === b.createdAt ? b.id.localeCompare(a.id) : b.createdAt.localeCompare(a.createdAt)))
-}
-
 const formatTime = (value: string) => new Date(value).toLocaleString('ja-JP')
 
 type TableProps = {
@@ -82,7 +77,11 @@ function RecordsTable({ records, deleting, onDelete }: TableProps) {
   )
 }
 
-/** 記録の一覧（13 3.8、契約 9章）。スペシャルハーネスごとの記録を新しい順に出し、確認ダイアログを経て消す。 */
+/**
+ * 記録の一覧（13 3.8、契約 9章）。スペシャルハーネスごとの記録を新しい順に出し、確認ダイアログを経て消す。
+ * 並びはサーバーの応答の順のまま（GET /api/harnesses/{id}/records は created_at の新しい順、同時刻は ID の降順。
+ * 秒の端数の桁が揃わない時刻もサーバーが正しく並べるので、画面で並べ替えない）。
+ */
 export function HarnessRecordsPage({ id }: { id: string }) {
   const { api } = useSession()
   const harness = useResource((signal) => registry.getHarness(api, id, signal), `harness:${id}`)
@@ -147,7 +146,7 @@ export function HarnessRecordsPage({ id }: { id: string }) {
                 {message}
               </p>
             ) : null}
-            <RecordsTable records={newestFirst(records.data)} deleting={deleting} onDelete={setConfirming} />
+            <RecordsTable records={records.data} deleting={deleting} onDelete={setConfirming} />
           </CardContent>
         </Card>
       ) : error ? null : (

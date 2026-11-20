@@ -3,37 +3,25 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { expect, test as base, type Page, type Route } from '@playwright/test'
+import { expect, test as base, type Page } from '@playwright/test'
 
-import { loginOwner, setupOwner, startEvaloomd } from './evaloomd.ts'
+import { loginOwner, run, setupOwner, startEvaloomd } from './evaloomd.ts'
 import { createRepo, type Repo } from '../../scripts/fixtures.mts'
 
 // evaloom-oxe.7: 記録の一覧と削除（13 3.8、契約 9章）。
 // - スペシャルハーネスごとに記録が新しい順に出る。
 // - 確認ダイアログを経て消すと「削除済み」になる。
 //
-// スペシャルハーネスは本物の evaloomd に登録する。記録の API（GET /api/harnesses/{id}/records、
-// DELETE /api/harness-records/{id}、01 5.1）は evaloomd にまだ無い（仕様の穴として報告済み）ため、
-// この2本だけを page.route で 02 3.2 harness_records の形（camelCase、01 5.3）の応答に差し替える。
+// スペシャルハーネスは本物の API で登録する。記録は Runner の出す段の報告の後に Control Plane が作る行なので、
+// その後と同じ形の行（tasks・executions・artifacts・harness_records）を DB へ直接入れ、本物の
+// GET /api/harnesses/{id}/records と DELETE /api/harness-records/{id} を通して確かめる。
 // 追跡ファイルはスクリーンショットだけを書く。
 
 const SCREENSHOTS = fileURLToPath(new URL('../../docs/design/screenshots/', import.meta.url))
 const HARNESS = 'engineer'
 const HARNESS_NAME = 'エンジニア'
 
-type Server = { origin: string; cookie: string; harness: Repo }
-
-type HarnessRecord = {
-  id: string
-  harnessId: string
-  artifactId: string
-  executionId: string
-  taskId: string
-  sourceIdentifier: string | null
-  fileName: string
-  createdAt: string
-  deletedAt: string | null
-}
+type Server = { origin: string; cookie: string; harness: Repo; db: string }
 
 async function login(origin: string): Promise<string> {
   const response = await loginOwner(origin)
@@ -54,7 +42,7 @@ const test = base.extend<{ server: Server }, { worker: Server }>({
       setupOwner(binary, db)
       const evaloomd = await startEvaloomd(binary, db, '0')
       try {
-        await provide({ origin: evaloomd.origin, cookie: await login(evaloomd.origin), harness })
+        await provide({ origin: evaloomd.origin, cookie: await login(evaloomd.origin), harness, db })
       } finally {
         await evaloomd.stop()
         rmSync(temp, { recursive: true, force: true })
@@ -80,36 +68,32 @@ async function ownerPost(page: Page, origin: string, path: string, body: unknown
   expect(response.ok(), `${path}: ${response.status()} ${await response.text()}`).toBe(true)
 }
 
-const record = (n: number, createdAt: string, fileName: string, sourceIdentifier: string | null): HarnessRecord => ({
-  id: `01JE2E0R00000000000000000${n}`,
-  harnessId: HARNESS,
-  artifactId: `01JE2E0A00000000000000000${n}`,
-  executionId: `01JE2E0X00000000000000000${n}`,
-  taskId: `01JE2E0T00000000000000000${n}`,
-  sourceIdentifier,
-  fileName,
-  createdAt,
-  deletedAt: null,
-})
+const NOW = '2026-11-20T00:00:00Z'
+const sqlText = (value: string | null) => (value === null ? 'NULL' : `'${value.replaceAll("'", "''")}'`)
+/** ULID の形（01 3.1）の ID。 */
+const ulid = (kind: string, n: number) => `01JE2E${kind}${String(n).padStart(19, '0')}`
 
-/** 記録の API 2本だけを差し替える。DELETE を受けたら deletedAt を入れ、以後の一覧に「消した記録」として返す。 */
-async function stubRecordsApi(page: Page, records: HarnessRecord[]) {
-  const deletes: { id: string; csrf: string | undefined }[] = []
-  // サーバーの並びに頼らないことも確かめるため、応答は古い順のまま返す。
-  await page.route(`**/api/harnesses/${HARNESS}/records*`, (route: Route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: records, nextCursor: '' }) }),
-  )
-  await page.route('**/api/harness-records/*', (route: Route) => {
-    const request = route.request()
-    if (request.method() !== 'DELETE') return route.fallback()
-    const id = decodeURIComponent(new URL(request.url()).pathname.split('/').pop() ?? '')
-    deletes.push({ id, csrf: request.headers()['x-csrf-token'] })
-    const target = records.find((r) => r.id === id)
-    if (!target) return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'not_found', message: 'record not found', details: [] } }) })
-    target.deletedAt = '2026-11-20T03:00:00Z'
-    return route.fulfill({ status: 204 })
+type Seeded = { id: string; taskId: string; executionId: string; artifactId: string; sourceIdentifier: string | null; createdAt: string }
+
+/** 出す段まで成功した Execution の記録（02 3.2 harness_records、19 3.8）と同じ形の行を入れる。 */
+function seedRecords(db: string, rows: { n: number; createdAt: string; sourceIdentifier: string | null }[]): Seeded[] {
+  const statements: string[] = []
+  const seeded = rows.map(({ n, createdAt, sourceIdentifier }) => {
+    const r: Seeded = { id: ulid('R', n), taskId: `task-${n}`, executionId: ulid('X', n), artifactId: ulid('A', n), sourceIdentifier, createdAt }
+    statements.push(
+      `INSERT INTO tasks (id, source, project_id, harness_id, title, body, acceptance_criteria, collaboration_mode, status, idempotency_key, created_at, updated_at)
+        VALUES ('${r.taskId}', ${sourceIdentifier ? "'linear'" : "'manual'"}, NULL, '${HARNESS}', 'タスク ${n}', '本文', '条件', 'solo', 'completed', 'idem-${n}', '${NOW}', '${NOW}');`,
+      `INSERT INTO executions (id, task_id, seq, mode, status, route_kind, created_at)
+        VALUES ('${r.executionId}', '${r.taskId}', 1, 'continue', 'succeeded', 'harness', '${NOW}');`,
+      `INSERT INTO artifacts (id, execution_id, stage, kind, name, storage_path, sha256, size_bytes, redacted, created_at)
+        VALUES ('${r.artifactId}', '${r.executionId}', 'check', 'out_file', 'check/report.md', 'e2e/${r.artifactId}', '${'0'.repeat(64)}', 0, 1, '${createdAt}');`,
+      `INSERT INTO harness_records (id, harness_id, artifact_id, execution_id, task_id, source_identifier, file_name, created_at, deleted_at)
+        VALUES ('${r.id}', '${HARNESS}', '${r.artifactId}', '${r.executionId}', '${r.taskId}', ${sqlText(sourceIdentifier)}, 'check/report.md', '${createdAt}', NULL);`,
+    )
+    return r
   })
-  return deletes
+  run('sqlite3', [db, statements.join('\n')])
+  return seeded
 }
 
 async function screenshot(page: Page, screen: string) {
@@ -124,12 +108,12 @@ test('スペシャルハーネスの記録が新しい順に出て、確認ダ�
     repoPath: server.harness.path,
     repoUrl: 'https://example.com/engineer.git',
   })
-  const records = [
-    record(1, '2026-11-18T09:00:00Z', 'check/report.md', 'ENG-101'),
-    record(2, '2026-11-19T09:00:00Z', 'check/report.md', 'ENG-102'),
-    record(3, '2026-11-20T09:00:00Z', 'check/report.md', null),
-  ]
-  const deletes = await stubRecordsApi(page, records)
+  // 入れる順と日付の順をばらばらにし、秒の端数の有無も混ぜる（サーバーの並び＝新しい順をそのまま出す）。
+  const [r101, r103, r102] = seedRecords(server.db, [
+    { n: 101, createdAt: '2026-11-18T09:00:00Z', sourceIdentifier: 'ENG-101' },
+    { n: 103, createdAt: '2026-11-19T09:00:00.250Z', sourceIdentifier: null },
+    { n: 102, createdAt: '2026-11-19T09:00:00Z', sourceIdentifier: 'ENG-102' },
+  ])
 
   // 詳細画面から記録の一覧へ移る。
   await page.goto(`/harnesses/${HARNESS}`)
@@ -140,13 +124,13 @@ test('スペシャルハーネスの記録が新しい順に出て、確認ダ�
   // 新しい順（記録した日付の降順）。
   const rows = page.getByRole('table', { name: '記録の一覧' }).locator('tbody tr')
   await expect(rows).toHaveCount(3)
-  expect(await rows.evaluateAll((trs) => trs.map((tr) => tr.getAttribute('data-record')))).toEqual([records[2].id, records[1].id, records[0].id])
+  expect(await rows.evaluateAll((trs) => trs.map((tr) => tr.getAttribute('data-record')))).toEqual([r103.id, r102.id, r101.id])
   // 出所の識別子とタスク詳細へのリンク、成果物の内容へのリンク。
-  await expect(rows.nth(1).getByRole('link', { name: 'ENG-102' })).toHaveAttribute('href', `/tasks/${records[1].taskId}`)
-  await expect(rows.nth(0).getByRole('link', { name: records[2].taskId })).toHaveAttribute('href', `/tasks/${records[2].taskId}`)
+  await expect(rows.nth(1).getByRole('link', { name: 'ENG-102' })).toHaveAttribute('href', `/tasks/${r102.taskId}`)
+  await expect(rows.nth(0).getByRole('link', { name: r103.taskId })).toHaveAttribute('href', `/tasks/${r103.taskId}`)
   await expect(rows.nth(1).getByRole('link', { name: '内容を開く' })).toHaveAttribute(
     'href',
-    `/api/executions/${records[1].executionId}/artifacts/${records[1].artifactId}`,
+    `/api/executions/${r102.executionId}/artifacts/${r102.artifactId}`,
   )
   await screenshot(page, 'records')
 
@@ -158,19 +142,25 @@ test('スペシャルハーネスの記録が新しい順に出て、確認ダ�
   await expect(dialog).toContainText('ENG-102')
   await dialog.getByRole('button', { name: 'やめる' }).click()
   await expect(dialog).toHaveCount(0)
-  expect(deletes).toHaveLength(0)
   await expect(page.getByText('削除済み', { exact: true })).toHaveCount(0)
 
   // 確認ダイアログを経て消すと「削除済み」になる。
   await target.getByRole('button', { name: '消す' }).click()
   await screenshot(page, 'confirm')
-  await page.getByRole('alertdialog').getByRole('button', { name: '消す' }).click()
+  const [deleted] = await Promise.all([
+    page.waitForResponse((r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname === `/api/harness-records/${r102.id}`),
+    page.getByRole('alertdialog').getByRole('button', { name: '消す' }).click(),
+  ])
+  expect(deleted.status()).toBe(204)
   await expect(target).toContainText('削除済み')
   await expect(target.getByRole('button', { name: '消す' })).toHaveCount(0)
   await expect(page.getByRole('status')).toContainText('次の仕事に渡しません')
-  expect(deletes).toHaveLength(1)
-  expect(deletes[0].id).toBe(records[1].id)
-  expect(deletes[0].csrf).toBeTruthy()
+  // DB でも deleted_at が入り、ほかの記録は消えていない（次の仕事に渡さない、19 3.8）。
+  const deletedAt = run('sqlite3', [server.db, `SELECT id FROM harness_records WHERE deleted_at IS NOT NULL;`]).trim()
+  expect(deletedAt).toBe(r102.id)
+  // 読み直しても「削除済み」のまま。
+  await page.reload()
+  await expect(rows.filter({ hasText: 'ENG-102' })).toContainText('削除済み')
   // ほかの記録は消えていない。
   await expect(rows).toHaveCount(3)
   await expect(page.getByText('削除済み', { exact: true })).toHaveCount(1)

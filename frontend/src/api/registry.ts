@@ -121,7 +121,7 @@ export type Route = { label: string; projectId: string | null; harnessId: string
 
 /**
  * スペシャルハーネスの記録（GET /api/harnesses/{id}/records、02 3.2 harness_records、契約 9章）。
- * 01 5.3 の命名どおり列名を camelCase にした形。消した記録も deletedAt 付きで返る前提（13 3.8「削除済み」として区別して出す）。
+ * backend/internal/api/harness_records.go harnessRecordResponse の形。消した記録も deletedAt 付きで返る（13 3.8「削除済み」）。
  */
 export type HarnessRecord = {
   id: string
@@ -182,8 +182,8 @@ export const registry = {
   /** スペシャルハーネスの記録の一覧（13 3.8）。 */
   listHarnessRecords: (api: ApiClient, harnessId: string, signal?: AbortSignal) =>
     listAll<HarnessRecord>(api, `${harnessPath(harnessId)}/records`, signal),
-  /** 記録を消す（次の仕事に渡さない、契約 9章）。 */
-  deleteHarnessRecord: (api: ApiClient, id: string) => api.delete<unknown>(`/api/harness-records/${encodeURIComponent(id)}`),
+  /** 記録を消す（次の仕事に渡さない、契約 9章）。成功は 204、消し済みの再送も 204、無ければ 404。 */
+  deleteHarnessRecord: (api: ApiClient, id: string) => api.delete<void>(`/api/harness-records/${encodeURIComponent(id)}`),
   /** すべてのスペシャルハーネスの版（一覧で既定の版の表示に使う）。 */
   listAllHarnessProfiles: (api: ApiClient, signal?: AbortSignal) => listAll<HarnessProfile>(api, '/api/harness-profiles', signal),
 }
