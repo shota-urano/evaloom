@@ -169,3 +169,62 @@ func TestMissingDefaultProfilePrecedesAcceptanceCriteria(t *testing.T) {
 		t.Fatalf("missing default wrote comments: %v", comments)
 	}
 }
+
+// 受け入れ基準 (spec 16 3.2, 9章): required の Profile で
+// missing_acceptance_criteria で保留したタスクの Issue に記入依頼のコメントが
+// 1回付く; config_missing_profile の保留ではコメントの行ができない. A direct
+// special-harness task moves between the two holds on rechecks as its
+// default Profile is set and cleared: the config_missing_profile holds never
+// write a row, the first missing_acceptance_criteria hold writes the request,
+// and returning to it later writes no second row (dedupe_key, 3.5 rule 3).
+func TestCriteriaRequestAcrossProfileHolds(t *testing.T) {
+	db := startDB(t)
+	label := criteriaDestination(t, db, "harness", "required")
+	exec(t, db, `UPDATE harnesses SET default_profile_id=NULL WHERE id='fixture-harness'`)
+	issue := routedIssue("1", label)
+	issue.Description = "No criteria heading."
+	if d, err := start(t, db, issue, 1); err != nil || d != DecisionHeld {
+		t.Fatalf("start=%q err=%v", d, err)
+	}
+	held := readStarted(t, db, "1", 1)
+	recheck := func(defaultProfile any, wantCause string) {
+		t.Helper()
+		exec(t, db, `UPDATE harnesses SET default_profile_id=? WHERE id='fixture-harness'`, defaultProfile)
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := (&TaskStarter{}).RecheckHeldTask(context.Background(), tx, issue); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		got := readStarted(t, db, "1", 1)
+		if got.id != held.id || got.status != "blocked" || got.cause.String != wantCause || got.executions != 0 {
+			t.Fatalf("task=%+v; want blocked/%s", got, wantCause)
+		}
+	}
+	commentRows := func() int {
+		t.Helper()
+		return countRows(t, db, `SELECT count(*) FROM linear_outbox WHERE task_id = '`+held.id+`' AND action = 'comment'`)
+	}
+
+	if held.cause.String != "config_missing_profile" || commentRows() != 0 {
+		t.Fatalf("config_missing_profile hold: task=%+v comment rows=%d", held, commentRows())
+	}
+	recheck("fixture-profile", "missing_acceptance_criteria")
+	got := outboxKeys(t, db, held.id)
+	if len(got) != 1 || len(got["missing_acceptance_criteria"]) != 1 ||
+		got["missing_acceptance_criteria"][0] != held.id+":missing_acceptance_criteria:missing_acceptance_criteria" {
+		t.Fatalf("outbox after missing_acceptance_criteria hold = %v", got)
+	}
+	bodyHas(t, outboxBody(t, db, held.id), "受け入れ条件の記入をお願いします",
+		"「受け入れ条件」または「Acceptance Criteria」という見出し")
+	recheck(nil, "config_missing_profile")
+	recheck("fixture-profile", "missing_acceptance_criteria")
+	if n := commentRows(); n != 1 {
+		t.Fatalf("comment rows after returning to the criteria hold = %d; want 1", n)
+	}
+}
