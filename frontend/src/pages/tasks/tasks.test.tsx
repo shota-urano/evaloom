@@ -244,7 +244,7 @@ describe('Tasks 一覧', () => {
     TASKS = [
       task('task-005', '', 'blocked', {
         source: 'linear',
-        intakeBlockCause: 'routing_multiple_labels',
+        intakeBlockCause: 'missing_acceptance_criteria',
         linear: { identifier: 'ENG-9', url: 'https://linear.app/acme/issue/ENG-9' },
         latestExecution: null,
       }),
@@ -256,13 +256,47 @@ describe('Tasks 一覧', () => {
     const [held, started, manual] = rows()
     expect(within(held).getByRole('link', { name: 'ENG-9' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-9')
     expect(held).toHaveTextContent('Blocked')
-    expect(within(held).getByTestId('held-reason')).toHaveTextContent('保留の理由: 実行先ラベルが2つ以上ある')
+    expect(within(held).getByTestId('held-reason')).toHaveTextContent('保留の理由: 振り分け先の版が受け入れ条件を求めているのに、Issue に受け入れ条件が無い')
     // 振り分け先が決まっていない保留のタスクは、振り分け先を「なし」と出す。
     expect(held.querySelectorAll('td')[2]).toHaveTextContent('なし')
     expect(within(held).queryByRole('link', { name: /^\/projects/ })).not.toBeInTheDocument()
     expect(within(started).getByRole('link', { name: 'ENG-8' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-8')
     expect(within(started).queryByTestId('held-reason')).not.toBeInTheDocument()
     expect(within(manual).queryByTestId('linear-issue-link')).not.toBeInTheDocument()
+  })
+
+  it('振り分けを待つタスクには、そのことと開いている振り分けの判断待ちへのリンクを出す', async () => {
+    const linear = (n: number) => ({ source: 'linear' as const, intakeBlockCause: null, linear: { identifier: `ENG-${n}`, url: `https://linear.app/acme/issue/ENG-${n}` } })
+    TASKS = [
+      task('task-011', '', 'routing', { ...linear(11), latestExecution: null }),
+      task('task-010', '', 'routing', { ...linear(10), latestExecution: null }),
+      task('task-004', 'alpha', 'queued', linear(4)),
+    ]
+    const decisionCalls: string[] = []
+    renderAt('/tasks', (request) => {
+      if (!request.url.startsWith('/api/decisions?')) return undefined
+      decisionCalls.push(request.url)
+      // task-010 は判断待ちが開いている。task-011 は提案を作っている途中で、判断待ちがまだ無い。
+      return page([
+        { id: 'D10', kind: 'route', taskId: 'task-010', executionId: null, subjectId: 'P10', cause: null, status: 'open', detail: {}, createdAt: '2026-10-28T00:00:00Z' },
+      ])
+    })
+    await screen.findByRole('table', { name: 'タスク' })
+    const [pending, open, started] = rows()
+    await waitFor(() => expect(within(open).getByRole('link', { name: '判断待ちを開く' })).toHaveAttribute('href', '/decisions/D10'))
+    expect(within(open).getByTestId('routing-wait')).toHaveTextContent('振り分けを待っています')
+    expect(within(open).getByRole('link', { name: 'ENG-10' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-10')
+    expect(within(pending).getByTestId('routing-wait')).toHaveTextContent('振り分けを待っています振り分けの提案を作っています')
+    expect(within(pending).queryByRole('link', { name: '判断待ちを開く' })).not.toBeInTheDocument()
+    expect(within(started).queryByTestId('routing-wait')).not.toBeInTheDocument()
+    expect(decisionCalls).toEqual(['/api/decisions?status=open&kind=route&limit=200'])
+  })
+
+  it('振り分けを待つタスクが無ければ判断待ちを読まない', async () => {
+    const fake = renderAt('/tasks')
+    await screen.findByRole('table', { name: 'タスク' })
+    expect(screen.queryByTestId('routing-wait')).not.toBeInTheDocument()
+    expect(fake.calls.some((c) => c.url.startsWith('/api/decisions'))).toBe(false)
   })
 
   it('状態と振り分け先で絞り込め、条件は URL に残る', async () => {

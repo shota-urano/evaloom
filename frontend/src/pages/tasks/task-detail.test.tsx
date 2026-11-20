@@ -405,19 +405,18 @@ describe('Linear 起因のタスク', () => {
   })
 
   it.each([
-    ['routing_multiple_labels', '実行先ラベルが2つ以上ある'],
-    ['routing_unknown_label', '実行先ラベルが登録されていない'],
-    ['routing_team_mismatch', 'ラベルは登録済みだが、Issue の Team がその Project の Team と違う'],
-    ['routing_no_label', '実行先ラベルが1つも無い'],
-    ['missing_acceptance_criteria', '受け入れ条件が書かれていない'],
-    ['config_missing_assignment', 'Project の default_role に割り当てが無い'],
-  ])('保留中（%s）は理由を文字で出し、続行・再実行を出さずに中止だけを出す', async (cause, label) => {
+    ['missing_acceptance_criteria', '振り分け先の版が受け入れ条件を求めているのに、Issue に受け入れ条件が無い', 'Linear の Issue の本文に「受け入れ条件」の見出しで'],
+    ['config_missing_profile', 'スペシャルハーネスへ直接振り分けたが、そのスペシャルハーネスに既定の版が無い', 'このスペシャルハーネスに既定の版を設定すると'],
+    ['some_future_cause', 'some_future_cause', '保留の理由が解消されると'],
+  ])('保留中（%s）は理由を文字で出し、続行・再実行を出さずに中止だけを出す', async (cause, label, hint) => {
     TASK = heldTask(cause)
     EXECUTIONS = {}
     const { calls } = renderTask()
     const held = await screen.findByTestId('held-review')
     expect(within(held).getByTestId('held-cause')).toHaveTextContent(label)
     expect(within(held).getByTestId('held-cause')).toHaveTextContent(cause)
+    expect(within(held).getByTestId('held-hint')).toHaveTextContent(hint)
+    expect(screen.queryByTestId('routing-review')).not.toBeInTheDocument()
     expect(within(held).getByRole('button', { name: '中止する' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /続行/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /再実行/ })).not.toBeInTheDocument()
@@ -428,8 +427,41 @@ describe('Linear 起因のタスク', () => {
     expect(screen.getByRole('link', { name: 'ENG-123' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-123/login')
   })
 
+  it('config_missing_profile の保留では、既定の版を設定するスペシャルハーネスへのリンクを出す', async () => {
+    TASK = heldTask('config_missing_profile', { harnessId: 'web' })
+    EXECUTIONS = {}
+    renderTask((request) => (request.url === '/api/harnesses/web' ? json(200, { id: 'web', name: 'Web ハーネス' }) : undefined))
+    const held = await screen.findByTestId('held-review')
+    expect(within(held).getByRole('link', { name: 'スペシャルハーネスを開く' })).toHaveAttribute('href', '/harnesses/web')
+  })
+
+  it('振り分けを待つタスクは、そのことと振り分けの判断待ちへのリンクを出し、中止できる', async () => {
+    TASK = { ...heldTask('missing_acceptance_criteria'), status: 'routing', intakeBlockCause: null }
+    EXECUTIONS = {}
+    DECISIONS = [
+      { id: 'D7', kind: 'route', taskId: 'task-001', executionId: null, subjectId: 'P7', cause: null, status: 'open', detail: {}, createdAt: '2026-10-28T03:00:00Z' },
+    ]
+    renderTask()
+    const routing = await screen.findByTestId('routing-review')
+    expect(within(routing).getByRole('heading', { name: '振り分けを待っています' })).toBeInTheDocument()
+    expect(await within(routing).findByRole('link', { name: '振り分けの判断待ちを開く' })).toHaveAttribute('href', '/decisions/D7')
+    expect(screen.queryByTestId('held-review')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'ENG-123' })).toHaveAttribute('href', 'https://linear.app/acme/issue/ENG-123/login')
+    expect(screen.getByRole('button', { name: '停止（中止）' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /続行|再実行/ })).not.toBeInTheDocument()
+  })
+
+  it('振り分けを待つタスクで判断待ちがまだ無ければ、提案を作っていることを出す', async () => {
+    TASK = { ...heldTask('missing_acceptance_criteria'), status: 'routing', intakeBlockCause: null }
+    EXECUTIONS = {}
+    renderTask()
+    const routing = await screen.findByTestId('routing-review')
+    expect(await within(routing).findByTestId('routing-pending')).toHaveTextContent('振り分けの提案を作っています。提案ができると判断待ちが開きます。')
+    expect(within(routing).queryByRole('link', { name: '振り分けの判断待ちを開く' })).not.toBeInTheDocument()
+  })
+
   it('保留中のタスクを中止すると cancel を送り、中止済みになって再実行も出さない', async () => {
-    TASK = heldTask('routing_unknown_label')
+    TASK = heldTask('missing_acceptance_criteria')
     EXECUTIONS = {}
     const cancels: Recorded[] = []
     renderTask((request) => {
@@ -450,7 +482,7 @@ describe('Linear 起因のタスク', () => {
   })
 
   it('保留中のタスクの中止が 409 なら状態が変わったことを表示して読み直す', async () => {
-    TASK = heldTask('routing_no_label')
+    TASK = heldTask('config_missing_profile', { harnessId: 'web' })
     EXECUTIONS = {}
     let gets = 0
     renderTask((request) => {

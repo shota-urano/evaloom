@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { decisions, type Decision } from '@/api/decisions'
 import { registry } from '@/api/registry'
 import { tasks, type ExecutionOutput, type TaskFilter, type TaskSummary } from '@/api/tasks'
 import { useSession } from '@/auth/session'
@@ -15,7 +16,8 @@ import type { NavigationState } from '@/lib/router'
 import { cn } from '@/lib/utils'
 import { DESTINATION_KIND_LABELS, decodeDestination, destinationPath, encodeDestination, taskDestination } from './destination'
 import { useLiveTaskList } from './live'
-import { heldCause, intakeBlockCauseLabel } from './intake'
+import { decisionDetailPath } from '@/pages/decisions/labels'
+import { heldCause, intakeBlockCauseLabel, routeDecisionOf } from './intake'
 import { TASK_NEW_PATH, TASK_STATUS_FILTERS, taskDetailPath, taskStatusLabel } from './labels'
 import { LinearIssueLink } from './linear-issue-link'
 
@@ -123,6 +125,26 @@ function HeldReason({ task }: { task: TaskSummary }) {
   )
 }
 
+/** 振り分けを待つタスク（15-linear-intake 3.6.4）。開いている振り分けの判断待ちがあればリンクを出す。 */
+function RoutingWait({ task, routeDecisions }: { task: TaskSummary; routeDecisions: readonly Decision[] | undefined }) {
+  if (task.status !== 'routing') return null
+  const decision = routeDecisionOf(routeDecisions, task.id)
+  return (
+    <div className="mt-1 max-w-72 text-xs" data-testid="routing-wait">
+      振り分けを待っています
+      {decision ? (
+        <div>
+          <Link to={decisionDetailPath(decision.id)} className="underline underline-offset-4">
+            判断待ちを開く
+          </Link>
+        </div>
+      ) : routeDecisions !== undefined ? (
+        <div className="text-muted-foreground">振り分けの提案を作っています</div>
+      ) : null}
+    </div>
+  )
+}
+
 /** Tasks 一覧（13 3.2）。タスク、状態、振り分け先、最新 Execution、外に出したもの、Linear の識別子。状態と振り分け先で絞り込む。 */
 export function TaskListPage({ state }: { state?: NavigationState }) {
   const { api } = useSession()
@@ -131,6 +153,12 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
   const projects = useResource((signal) => registry.listProjects(api, signal), 'projects')
   const harnesses = useResource((signal) => registry.listHarnesses(api, signal), 'harnesses')
   useLiveTaskList(api, list.data, list.reload)
+  // 振り分けを待つタスクがあるときだけ、開いている振り分けの判断待ち（kind=route）を読んでリンクにする。
+  const routingIds = (list.data ?? []).filter((task) => task.status === 'routing').map((task) => task.id)
+  const routeDecisions = useResource(
+    (signal) => (routingIds.length > 0 ? decisions.list(api, 'open', 'route', signal) : Promise.resolve([])),
+    `route-decisions:${routingIds.join(',')}`,
+  )
   const names = {
     project: new Map((projects.data ?? []).map((p) => [p.id, p.name])),
     harness: new Map((harnesses.data ?? []).map((h) => [h.id, h.name])),
@@ -269,6 +297,7 @@ export function TaskListPage({ state }: { state?: NavigationState }) {
                   <td className="px-4 py-3">
                     <TaskStatusBadge status={task.status} />
                     <HeldReason task={task} />
+                    <RoutingWait task={task} routeDecisions={routeDecisions.data} />
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
                     <Destination task={task} names={names} />

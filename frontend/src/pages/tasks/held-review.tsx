@@ -1,20 +1,23 @@
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { intakeBlockCauseLabel } from './intake'
+import { Link } from '@/lib/link'
+import { intakeBlockCauseHint, intakeBlockCauseLabel } from './intake'
 
 type Props = {
   cause: string
   busy: boolean
+  /** 保留の理由が config_missing_profile のとき、既定の版を設定しに行くスペシャルハーネスの画面。 */
+  harnessPath?: string | null
   /** 中止（POST /api/tasks/{id}/cancel、04 3.5 の blocked の経路）。 */
   onCancel: () => void
 }
 
 /**
- * Linear からの取り込みで保留したタスク（15-linear-intake 3.6・3.6.3）の確認。
+ * Linear からの取り込みで保留したタスク（15-linear-intake 3.6・3.6.3、02 5.7）の確認。
  * 保留は Execution を持たないため続行（04 3.8）はできず、本人ができるのは中止だけ。
- * Issue を直して更新すると、次の照会で判定をやり直す（15 3.6.3）。
+ * 理由が解消されると、次の照会で判定をやり直す（15 3.6.3）。
  */
-export function HeldReview({ cause, busy, onCancel }: Props) {
+export function HeldReview({ cause, busy, harnessPath, onCancel }: Props) {
   return (
     <Card className="border-amber-300" data-testid="held-review">
       <CardHeader>
@@ -30,7 +33,18 @@ export function HeldReview({ cause, busy, onCancel }: Props) {
             {intakeBlockCauseLabel(cause)} <span className="text-muted-foreground font-mono text-xs">{cause}</span>
           </dd>
         </dl>
-        <p className="text-sm">Linear の Issue を直して更新すると、次の照会で判定をやり直します。このタスクをやめる場合は中止してください。</p>
+        <p className="text-sm" data-testid="held-hint">
+          {intakeBlockCauseHint(cause)}
+          {cause === 'config_missing_profile' && harnessPath ? (
+            <>
+              {' '}
+              <Link to={harnessPath} className="underline underline-offset-4">
+                スペシャルハーネスを開く
+              </Link>
+            </>
+          ) : null}
+        </p>
+        <p className="text-sm">このタスクをやめる場合は中止してください。</p>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="destructive" disabled={busy} onClick={onCancel}>
             中止する
