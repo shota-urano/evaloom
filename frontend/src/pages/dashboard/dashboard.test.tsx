@@ -24,6 +24,7 @@ const PROJECTS = [{ id: 'alpha', name: 'Alpha', harnesses: [] }] as unknown as P
 const task = (id: string, status: TaskSummary['status'], executionStatus: string, errorClass: string | null = null): TaskSummary => ({
   id,
   projectId: 'alpha',
+  harnessId: '',
   title: `件名 ${id}`,
   body: '本文',
   acceptanceCriteria: '条件',
@@ -38,7 +39,7 @@ const task = (id: string, status: TaskSummary['status'], executionStatus: string
 
 const TASKS = [
   task('task-001', 'running', 'running'),
-  task('task-002', 'verifying', 'verifying'),
+  task('task-002', 'running', 'checking'),
   task('task-003', 'queued', 'pending'),
   task('task-004', 'blocked', 'blocked'),
   task('task-005', 'failed', 'failed', 'test_failed'),

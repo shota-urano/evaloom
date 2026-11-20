@@ -2,13 +2,13 @@ import type { Runner } from '@/api/registry'
 import type { TaskStatus, TaskSummary } from '@/api/tasks'
 
 // Dashboard の区分（13 3.2「実行中タスク、待機中タスク、Blocked のタスク、エラー状況」）とタスク状態の対応。
-// 02-data-model 5.2 で、動いている Execution（claimed〜publishing）に対応するタスク状態は running と verifying。
+// 02-data-model 5.2 で、動いている Execution（claimed〜publishing）に対応するタスク状態は running。
 // claim 待ち（pending）の Execution に対応するタスク状態は queued。
 
 export type TaskGroup = 'running' | 'waiting' | 'blocked' | 'error'
 
 export const TASK_GROUP_STATUSES: Readonly<Record<TaskGroup, readonly TaskStatus[]>> = {
-  running: ['running', 'verifying'],
+  running: ['running'],
   waiting: ['queued'],
   blocked: ['blocked'],
   error: ['failed', 'timed_out'],

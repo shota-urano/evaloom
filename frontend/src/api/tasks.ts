@@ -3,13 +3,12 @@ import { listAll } from './registry'
 
 // タスクの本人用 API（01-architecture 5.1、04-task-lifecycle 3.1、backend/internal/api/tasks.go・tasks.md）の形。
 
-/** 02-data-model 5.1 のタスク状態。 */
+/** 02-data-model 5.1 のタスク状態（10個）。requirements 8.3 の planning・verifying は使わない（02 Q119）。 */
 export type TaskStatus =
   | 'received'
-  | 'planning'
+  | 'routing'
   | 'queued'
   | 'running'
-  | 'verifying'
   | 'waiting_approval'
   | 'completed'
   | 'failed'
@@ -19,7 +18,9 @@ export type TaskStatus =
 
 export type Task = {
   id: string
+  /** 振り分け先は projectId と harnessId のどちらか一方（02 3.3）。もう一方は空文字列（backend/internal/api/tasks.md）。 */
   projectId: string
+  harnessId: string
   title: string
   body: string
   acceptanceCriteria: string
@@ -31,12 +32,18 @@ export type Task = {
   updatedAt: string
 }
 
+/** 出す段が報告した外に出したもの（02 3.2 executions.outputs、契約）。不透明な値なので、画面は label と url をそのまま出す（13 3.1）。 */
+export type ExecutionOutput = { kind: string; label: string; url: string }
+
 /** 最新の Execution（seq が最大のもの）。状態の値は 02-data-model 5.2。 */
 export type ExecutionSummary = { id: string; seq: number; mode: string; status: string; errorClass: string | null }
 
+/** GET /api/tasks の latestExecution。一覧だけが outputs を返す（無ければ空配列、backend/internal/api/tasks.go）。 */
+export type LatestExecutionSummary = ExecutionSummary & { outputs?: ExecutionOutput[] }
+
 /** GET /api/tasks の要素。 */
 export type TaskSummary = Task & {
-  latestExecution: ExecutionSummary | null
+  latestExecution: LatestExecutionSummary | null
   /** 15-linear-intake 5章。`manual` / `linear`。 */
   source?: 'manual' | 'linear'
   /** 15-linear-intake 3.6 の保留の理由。保留していなければ null。 */
@@ -45,21 +52,24 @@ export type TaskSummary = Task & {
   linear?: { identifier: string; url: string } | null
 }
 
-export type TaskFilter = { status?: string; projectId?: string }
+/** 振り分け先の絞り込みは projectId と harnessId のどちらか一方だけを使う。 */
+export type TaskFilter = { status?: string; projectId?: string; harnessId?: string }
 
-/** 04 3.1 の入力。shortName は省略するとサーバーが `task` にする。 */
-export type TaskInput = {
-  projectId: string
+/** 04 3.1 の振り分け先。Project かスペシャルハーネスのどちらか一方だけを送る（01 5.1 POST /api/tasks）。 */
+export type TaskDestination = { projectId: string } | { harnessId: string }
+
+/** 04 3.1 の入力（13 3.2「タスク作成」）。 */
+export type TaskInput = TaskDestination & {
   title: string
   body: string
   acceptanceCriteria: string
-  shortName?: string
 }
 
 export function taskListPath(filter: TaskFilter = {}): string {
   const params = new URLSearchParams()
   if (filter.status) params.set('status', filter.status)
   if (filter.projectId) params.set('projectId', filter.projectId)
+  if (filter.harnessId) params.set('harnessId', filter.harnessId)
   const query = params.toString()
   return query ? `/api/tasks?${query}` : '/api/tasks'
 }
