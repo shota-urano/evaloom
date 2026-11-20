@@ -177,6 +177,52 @@ describe('Settings（13 3.2・4節）', () => {
     expect(within(form).queryByRole('status')).toBeNull()
   })
 
+  it('起動の合図のラベルが接頭辞で始まる 400（Q160）を、起動の合図のラベルの欄に出す', async () => {
+    renderSettings((request) =>
+      request.method === 'PATCH'
+        ? apiError(400, 'validation_failed', 'invalid', [{ field: 'linear.triggerLabel', reason: 'starts_with_routing_label_prefix' }])
+        : undefined,
+    )
+    const form = await screen.findByRole('form', { name: '全体設定' })
+    const trigger = await within(form).findByLabelText(/linear\.triggerLabel/)
+    await userEvent.clear(trigger)
+    await userEvent.type(trigger, 'route:go')
+    await userEvent.click(within(form).getByRole('button', { name: '保存' }))
+    expect(await within(trigger.closest('[data-field]') as HTMLElement).findByText(/起動の合図のラベルが振り分けのラベルの接頭辞で始まっています/)).toBeVisible()
+    expect(trigger).toHaveAttribute('aria-invalid', 'true')
+    expect(within(form).getByRole('alert')).toHaveTextContent('入力内容を確認してください')
+    // 保存されていないので、入力した値はそのまま残る。
+    expect(trigger).toHaveValue('route:go')
+    expect(within(form).queryByRole('status')).toBeNull()
+  })
+
+  it('振り分けの表のラベルが新しい接頭辞で始まらない 422（Q160）を、接頭辞の欄とフォーム上部に出す', async () => {
+    const fake = renderSettings((request) =>
+      request.method === 'PATCH'
+        ? apiError(422, 'precondition_failed', 'routes labels must start with the routing label prefix', [
+            { field: 'routes.route:web', reason: 'outside_routing_label_prefix' },
+            { field: 'routes.route:ops', reason: 'outside_routing_label_prefix' },
+          ])
+        : undefined,
+    )
+    const form = await screen.findByRole('form', { name: '全体設定' })
+    const prefix = await within(form).findByLabelText(/linear\.routingLabelPrefix/)
+    await userEvent.clear(prefix)
+    await userEvent.type(prefix, 'to:')
+    await userEvent.click(within(form).getByRole('button', { name: '保存' }))
+    expect(JSON.parse(fake.calls.find((c) => c.method === 'PATCH')?.body ?? '')).toEqual({ linear: { routingLabelPrefix: 'to:' } })
+    const field = prefix.closest('[data-field]') as HTMLElement
+    expect(await within(field).findByText('振り分けの表のラベル「route:web」、「route:ops」がこの接頭辞で始まりません')).toBeVisible()
+    expect(prefix).toHaveAttribute('aria-invalid', 'true')
+    const alert = within(form).getByRole('alert')
+    expect(alert).toHaveTextContent('前提条件が満たされていません')
+    expect(alert).toHaveTextContent('どの項目も変わっていません')
+    expect(alert).toHaveTextContent('振り分けの表のラベル「route:web」: 振り分けのラベルの接頭辞で始まりません')
+    expect(alert).toHaveTextContent('振り分けの表のラベル「route:ops」')
+    expect(within(form).getByRole('link', { name: '振り分けの表を開く' })).toHaveAttribute('href', '/routes')
+    expect(within(form).queryByRole('status')).toBeNull()
+  })
+
   it('GET /api/settings が失敗したら、全体設定の欄にエラーを出す', async () => {
     renderSettings((request) => (request.url === '/api/settings' ? json(500, {}) : undefined))
     const card = await screen.findByTestId('settings-global')

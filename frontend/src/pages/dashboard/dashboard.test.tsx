@@ -289,6 +289,42 @@ describe('Dashboard（13 3.2）', () => {
     expect(screen.getByText('続けて失敗している照会はありません。')).toBeVisible()
   })
 
+  it('照会先 Team（uslab）が決まらないとき、Linear の取り込みの欄に Control Plane の文と理由を出す（15 6章、Q216）', async () => {
+    const status: LinearStatus = {
+      teams: [],
+      teamProblem: { reason: 'not_found', message: '照会先 Team（uslab）が見つからない' },
+      routingRunnerProblem: null,
+      issues: [],
+    }
+    renderDashboard((request) => (request.url === '/api/linear/status' ? json(200, status) : undefined))
+    const problem = await within(await screen.findByTestId('linear-status')).findByTestId('linear-team-problem')
+    expect(problem).toHaveAttribute('data-reason', 'not_found')
+    expect(problem).toHaveTextContent('照会先 Team（uslab）が見つからない')
+    expect(problem).toHaveTextContent('照会先 Team が見つからない・not_found')
+    expect(screen.queryByTestId('linear-routing-runner-problem')).toBeNull()
+  })
+
+  it.each([
+    ['unset', '振り分けの提案を動かす Runner が未設定です', '未設定'],
+    ['not_found', '振り分けの提案を動かす Runner が見つかりません', 'Runner が無い'],
+    ['offline', '振り分けの提案を動かす Runner が offline です', 'offline'],
+  ])('routingRunnerProblem が %s のとき、Runner が無いことと理由を出す（15 6章、Q229）', async (reason, message, label) => {
+    const status: LinearStatus = { teams: [], teamProblem: null, routingRunnerProblem: { reason, message }, issues: [] }
+    renderDashboard((request) => (request.url === '/api/linear/status' ? json(200, status) : undefined))
+    const problem = await screen.findByTestId('linear-routing-runner-problem')
+    expect(problem).toHaveAttribute('data-reason', reason)
+    expect(problem).toHaveTextContent(message)
+    expect(problem).toHaveTextContent(label === reason ? `理由: ${label}）` : `理由: ${label}・${reason}）`)
+    expect(screen.queryByTestId('linear-team-problem')).toBeNull()
+  })
+
+  it('teamProblem と routingRunnerProblem が null（または応答に無い）なら、理由の欄を出さない', async () => {
+    renderDashboard()
+    expect(await screen.findByText(/照会の対象の Linear Team はありません。/)).toBeVisible()
+    expect(screen.queryByTestId('linear-team-problem')).toBeNull()
+    expect(screen.queryByTestId('linear-routing-runner-problem')).toBeNull()
+  })
+
   it('GET /api/linear/status が失敗しても、ほかの欄は表示し、Linear の欄にエラーを出す', async () => {
     renderDashboard((request) => (request.url === '/api/linear/status' ? json(500, {}) : undefined))
     expect(await within(await screen.findByTestId('linear-status')).findByTestId('api-error')).toHaveTextContent('サーバーでエラーが発生しました')

@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 
+import { ApiError } from '@/api/client'
 import { registry, type Runner } from '@/api/registry'
 import {
   settingsApi,
@@ -20,6 +21,8 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApiErrors } from '@/hooks/use-api-errors'
 import { useResource, type Resource } from '@/hooks/use-resource'
+import { Link } from '@/lib/link'
+import { ROUTES_PATH } from '@/pages/routes/labels'
 
 function Row({ label, children, testId }: { label: string; children: ReactNode; testId?: string }) {
   return (
@@ -75,6 +78,17 @@ function toValues(view: SettingsView): Values {
   } as Values
   for (const stage of STAGES) values[`limits.stageTimeoutMaxSec.${stage}`] = String(view.limits.stageTimeoutMaxSec[stage])
   return values
+}
+
+/**
+ * 422（15 Q160）: 変えた接頭辞で始まらない振り分けの表のラベル。details[].field は `routes.<ラベル>`、
+ * reason は outside_routing_label_prefix（backend/internal/api/linear.go patchSettings）。
+ */
+function labelsOutsidePrefix(error: unknown): string[] {
+  if (!(error instanceof ApiError) || error.status !== 422) return []
+  return error.details
+    .filter((detail) => detail.reason === 'outside_routing_label_prefix' && detail.field.startsWith('routes.'))
+    .map((detail) => detail.field.slice('routes.'.length))
 }
 
 const isPositiveInteger = (text: string) => /^[1-9][0-9]*$/.test(text.trim())
@@ -134,10 +148,17 @@ function GlobalSettingsForm({ initial, runners }: { initial: SettingsView; runne
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const { error, setError, clear, fieldErrors, unmatched } = useApiErrors(FIELDS)
+  const outside = labelsOutsidePrefix(error)
   const errorsFor = (field: Field) => {
     const messages = [...(local[field] ?? []), ...(fieldErrors[field] ?? [])]
+    if (field === 'linear.routingLabelPrefix' && outside.length > 0) {
+      messages.push(`振り分けの表のラベル${outside.map((label) => `「${label}」`).join('、')}がこの接頭辞で始まりません`)
+    }
     return messages.length > 0 ? messages : undefined
   }
+  // 422 の details は routes.<ラベル> なので、一覧ではラベルを名前にして出す。
+  const alertLabels: Record<string, string> = { ...LABELS }
+  for (const label of outside) alertLabels[`routes.${label}`] = `振り分けの表のラベル「${label}」`
   const set = (field: Field) => (event: { target: { value: string } }) => {
     setMessage(null)
     setValues((previous) => ({ ...previous, [field]: event.target.value }))
@@ -192,7 +213,19 @@ function GlobalSettingsForm({ initial, runners }: { initial: SettingsView; runne
 
   return (
     <form className="grid gap-6" noValidate onSubmit={handleSubmit} aria-label="全体設定">
-      <ApiErrorAlert error={error} unmatchedDetails={unmatched} fieldLabels={LABELS} />
+      <ApiErrorAlert
+        error={error}
+        unmatchedDetails={unmatched}
+        fieldLabels={alertLabels}
+        description={outside.length > 0 ? '新しい接頭辞で始まらないラベルが振り分けの表に残るため、保存しませんでした。どの項目も変わっていません。' : undefined}
+      />
+      {outside.length > 0 ? (
+        <p className="text-sm">
+          <Link to={ROUTES_PATH} className="underline underline-offset-4">
+            振り分けの表を開く
+          </Link>
+        </p>
+      ) : null}
 
       <fieldset className="grid gap-4" data-testid="settings-linear">
         <legend className="mb-2 text-sm font-semibold">Linear の取り込み</legend>
