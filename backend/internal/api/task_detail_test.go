@@ -52,6 +52,7 @@ func TestGetTaskReturnsOverviewAndPendingExecution(t *testing.T) {
 	requireDetailFields(t, execution, map[string]any{
 		"seq": float64(1), "mode": "continue", "status": "pending", "profileVersion": nil,
 		"profileCommitSha": nil, "startedAt": nil, "finishedAt": nil, "errorClass": nil,
+		"outputs": []any{},
 	})
 	if id, ok := execution["id"].(string); !ok || ValidateID("id", id, ULID) != nil {
 		t.Fatalf("invalid execution ID: %v", execution["id"])
@@ -88,6 +89,10 @@ func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 	status, body = requestClaim(t, f, token)
 	second := requireClaim(t, status, body).Execution.ID
 	finish(second, "failed")
+	execSQL(t, f, `UPDATE executions SET outputs = ? WHERE id = ?`,
+		`[{"kind":"document","label":"最初の成果","url":"https://example.invalid/first"}]`, first)
+	execSQL(t, f, `UPDATE executions SET outputs = ? WHERE id = ?`,
+		`[{"kind":"report","label":"二回目の成果","url":"https://example.invalid/second"}]`, second)
 	status, body = requestRetry(t, f, created.ID, `{"mode":"continue"}`, nil)
 	requireRetrySuccess(t, status, body)
 	// Another task must not appear in this history.
@@ -106,11 +111,13 @@ func TestGetTaskReturnsOrderedHistory(t *testing.T) {
 	}
 	for i, want := range []map[string]any{
 		{"id": first, "seq": float64(1), "mode": "continue", "status": "succeeded",
-			"profileVersion": profiles[0].Version, "profileCommitSha": profiles[0].CommitSHA, "errorClass": nil},
+			"profileVersion": profiles[0].Version, "profileCommitSha": profiles[0].CommitSHA, "errorClass": nil,
+			"outputs": []any{map[string]any{"kind": "document", "label": "最初の成果", "url": "https://example.invalid/first"}}},
 		{"id": second, "seq": float64(2), "mode": "fresh", "status": "failed",
-			"profileVersion": profiles[1].Version, "profileCommitSha": profiles[1].CommitSHA, "errorClass": "work_failed"},
+			"profileVersion": profiles[1].Version, "profileCommitSha": profiles[1].CommitSHA, "errorClass": "work_failed",
+			"outputs": []any{map[string]any{"kind": "report", "label": "二回目の成果", "url": "https://example.invalid/second"}}},
 		{"seq": float64(3), "mode": "continue", "status": "pending", "profileVersion": nil,
-			"profileCommitSha": nil, "errorClass": nil, "startedAt": nil, "finishedAt": nil},
+			"profileCommitSha": nil, "errorClass": nil, "startedAt": nil, "finishedAt": nil, "outputs": []any{}},
 	} {
 		execution := executions[i].(map[string]any)
 		requireDetailFields(t, execution, want)

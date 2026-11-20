@@ -201,7 +201,7 @@ type executionSummaryView struct {
 	Mode       string  `json:"mode"`
 	Status     string  `json:"status"`
 	ErrorClass *string `json:"errorClass"`
-	// The task list loads outputs; other summary readers leave them unset.
+	// Task and Execution detail readers also load outputs.
 	Outputs json.RawMessage `json:"outputs,omitempty"`
 }
 
