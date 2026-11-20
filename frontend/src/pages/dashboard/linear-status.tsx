@@ -1,8 +1,18 @@
 import type { ReactNode } from 'react'
 
-import { decisionLabel, isPollFailing, LINEAR_FAILURE_ALERT_THRESHOLD, pollErrorLabel, type LinearStatus, type LinearTeamStatus } from '@/api/linear'
+import {
+  decisionLabel,
+  isPollFailing,
+  LINEAR_FAILURE_ALERT_THRESHOLD,
+  pollErrorLabel,
+  routingRunnerProblemLabel,
+  teamProblemLabel,
+  type LinearStatus,
+  type LinearTeamStatus,
+} from '@/api/linear'
 import { ApiErrorAlert } from '@/components/api-error-alert'
 import { Loading } from '@/components/page'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 
 // Dashboard の Linear の取り込みの状況（15-linear-intake 5章 GET /api/linear/status・6章）。
 
@@ -66,7 +76,55 @@ export function LinearPollFailures({ teams, error }: { teams: LinearTeamStatus[]
   )
 }
 
-/** Linear の取り込みの状況。照会の対象の Team ごとの状況と、トリガーのラベルが付いている Issue の最後の判定。 */
+/**
+ * 取り込みを止めている・遅らせている理由（15 6章）。照会先 Team（uslab）が決まらない（teamProblem、Q216）と、
+ * 振り分けの提案を動かす Runner が無い（routingRunnerProblem、Q229）。文は Control Plane の message をそのまま出し、
+ * 理由の値を添える。
+ */
+function LinearProblems({ status }: { status: LinearStatus }) {
+  const team = status.teamProblem ?? null
+  const runner = status.routingRunnerProblem ?? null
+  if (team === null && runner === null) return null
+  return (
+    <div className="grid gap-2">
+      {team ? (
+        <Alert variant="warning" data-testid="linear-team-problem" data-reason={team.reason}>
+          <AlertTitle>照会を止めています</AlertTitle>
+          <AlertDescription>
+            <p>
+              {team.message}
+              <span className="text-muted-foreground text-xs">
+                （{teamProblemLabel(team.reason)}・<span className="font-mono">{team.reason}</span>）
+              </span>
+            </p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {runner ? (
+        <Alert variant="warning" data-testid="linear-routing-runner-problem" data-reason={runner.reason}>
+          <AlertTitle>振り分けの提案を動かせません</AlertTitle>
+          <AlertDescription>
+            <p>
+              {runner.message}
+              <span className="text-muted-foreground text-xs">
+                （理由: {routingRunnerProblemLabel(runner.reason)}
+                {routingRunnerProblemLabel(runner.reason) === runner.reason ? null : (
+                  <>
+                    ・<span className="font-mono">{runner.reason}</span>
+                  </>
+                )}
+                ）
+              </span>
+            </p>
+            <p className="text-xs">Settings の「提案と直接振り分けたタスクを動かす Runner」を確認してください。</p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  )
+}
+
+/** Linear の取り込みの状況。照会先 Team の状況、取り込みを止めている理由、起動の合図のラベルが付いている Issue の最後の判定。 */
 export function LinearStatusSection({ status, error, onReload }: { status: LinearStatus | undefined; error: unknown; onReload: () => void }) {
   return (
     <section aria-labelledby="dashboard-linear" className="grid gap-3" data-testid="linear-status">
@@ -78,8 +136,9 @@ export function LinearStatusSection({ status, error, onReload }: { status: Linea
         error ? null : <Loading />
       ) : (
         <>
+          <LinearProblems status={status} />
           {status.teams.length === 0 ? (
-            <p className="text-muted-foreground text-sm">照会の対象の Linear Team はありません。プロジェクトに Linear Team ID を登録すると照会します。</p>
+            <p className="text-muted-foreground text-sm">照会の対象の Linear Team はありません。照会先 Team（uslab）を照会すると、ここに状況が出ます。</p>
           ) : (
             <div className="overflow-x-auto rounded-xl border">
               <table className="w-full text-sm">

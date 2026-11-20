@@ -31,6 +31,7 @@ import { HeldReview } from './held-review'
 import { heldCause } from './intake'
 import { CANCELLABLE_TASK_STATUSES, RETRY_MODE_LABELS, RETRYABLE_TASK_STATUSES, TASKS_PATH } from './labels'
 import { LinearIssueLink } from './linear-issue-link'
+import { RoutingReview } from './routing-review'
 import { TaskStatusBadge } from './task-list-page'
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -510,7 +511,8 @@ export function TaskDetailPage({ id }: { id: string }) {
       <ApiErrorAlert error={actionError} onReload={task.reload} />
       {task.error ? <ApiErrorAlert error={task.error} onReload={task.reload} /> : null}
 
-      {held ? <HeldReview cause={held} busy={busy} onCancel={cancel} /> : null}
+      {held ? <HeldReview cause={held} busy={busy} harnessPath={destinationRef?.kind === 'harness' ? destinationPath(destinationRef) : null} onCancel={cancel} /> : null}
+      {data.status === 'routing' ? <RoutingReview taskId={data.id} decisions={openDecisions.data} error={openDecisions.error} /> : null}
 
       <OverviewCard task={data} destination={destination} latest={latest} openDecisions={openDecisions} />
 
