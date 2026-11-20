@@ -31,6 +31,7 @@ function taskWith(status: TaskDetail['status'], executions: ExecutionHistoryItem
   return {
     id: 'task-001',
     projectId: 'alpha',
+    harnessId: '',
     title: 'ログイン画面',
     body: 'ログイン画面を作る',
     acceptanceCriteria: 'ログインできる',
@@ -54,16 +55,26 @@ function detailOf(item: ExecutionHistoryItem, extra: Partial<ExecutionDetail> = 
     harnessId: 'claude-developer',
     profileId: 'p1',
     contextRevisions: [],
+    params: {},
+    contractVersion: '1',
+    resumeStage: null,
+    stageRuns: [],
+    checkResults: [],
+    artifacts: [],
     ...extra,
   }
 }
 
 let TASK: TaskDetail
 let EXECUTIONS: Record<string, ExecutionDetail>
+let DECISIONS: unknown[]
+let APPROVALS: unknown[]
 let streams: FakeStream[]
 
 beforeEach(() => {
   streams = []
+  DECISIONS = []
+  APPROVALS = []
   streamTiming.reconnectDelayMs = 1
   streamTiming.maxReconnectDelayMs = 4
 })
@@ -80,6 +91,8 @@ function renderTask(handler: (request: Recorded) => Response | Promise<Response>
     if (handled) return handled
     if (request.url === '/api/tasks/task-001' && request.method === 'GET') return json(200, TASK)
     if (request.url === '/api/projects/alpha') return json(200, { id: 'alpha', name: 'Alpha アプリ' })
+    if (request.url.startsWith('/api/decisions?')) return json(200, { items: DECISIONS, nextCursor: null })
+    if (request.url.startsWith('/api/approvals?')) return json(200, { items: APPROVALS, nextCursor: null })
     const execution = /^\/api\/executions\/([^/]+)$/.exec(request.url)
     if (execution && EXECUTIONS[execution[1]]) return json(200, EXECUTIONS[execution[1]])
     if (/^\/api\/executions\/[^/]+\/events$/.test(request.url)) {
@@ -115,7 +128,7 @@ describe('タスク詳細', () => {
     expect(historyRows()).toHaveLength(1)
     expect(historyRows()[0]).toHaveTextContent('#1')
     expect(historyRows()[0]).toHaveTextContent('1.0.0 · abcdef0')
-    const context = await screen.findByRole('table', { name: '固定した Context' })
+    const context = await screen.findByRole('table', { name: '固定した文脈' })
     expect(context).toHaveTextContent('project')
     expect(context).toHaveTextContent('AGENTS.md')
     expect(context).toHaveTextContent('f'.repeat(64))
@@ -138,15 +151,15 @@ describe('タスク詳細', () => {
     expect(logLines()).toEqual([])
     expect(screen.getByTestId('log-source')).toHaveTextContent('受信中')
 
-    act(() => streams[0].log(10, 'harness', 'npm install'))
+    act(() => streams[0].log(10, 'work', 'npm install'))
     await screen.findByText('npm install')
     expect(logLines()).toEqual(['npm install'])
 
-    act(() => streams[0].log(11, 'harness', 'テストを実行しています'))
+    act(() => streams[0].log(11, 'work', 'テストを実行しています'))
     await screen.findByText('テストを実行しています')
     expect(logLines()).toEqual(['npm install', 'テストを実行しています'])
 
-    // stream で切り替える。別の stream の行は harness には出ない。
+    // stream で切り替える。別の stream の行は work には出ない。
     act(() => streams[0].log(12, 'runner', 'worktree を準備しました'))
     await screen.findByRole('tab', { name: 'runner (1)' })
     expect(logLines()).toEqual(['npm install', 'テストを実行しています'])
@@ -164,8 +177,8 @@ describe('タスク詳細', () => {
     await screen.findByRole('log')
     await waitFor(() => expect(streams).toHaveLength(1))
     act(() => {
-      streams[0].log(20, 'harness', 'line 1')
-      streams[0].log(21, 'harness', 'line 2')
+      streams[0].log(20, 'work', 'line 1')
+      streams[0].log(21, 'work', 'line 2')
     })
     await screen.findByText('line 2')
 
@@ -176,9 +189,9 @@ describe('タスク詳細', () => {
 
     // 切断中に出たログ（22, 23）は再接続後に届く。境目の 21 が重ねて届いても1回だけ表示する。
     act(() => {
-      streams[1].log(21, 'harness', 'line 2')
-      streams[1].log(22, 'harness', 'line 3')
-      streams[1].log(23, 'harness', 'line 4')
+      streams[1].log(21, 'work', 'line 2')
+      streams[1].log(22, 'work', 'line 3')
+      streams[1].log(23, 'work', 'line 4')
     })
     await screen.findByText('line 4')
     expect(logLines()).toEqual(['line 1', 'line 2', 'line 3', 'line 4'])
@@ -195,9 +208,9 @@ describe('タスク詳細', () => {
     await screen.findByText('b')
     expect(logLines()).toEqual(['a', 'b'])
     expect(screen.getByTestId('log-source')).toHaveTextContent('保存済み')
-    await userEvent.click(screen.getByRole('tab', { name: 'test (1)' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'check (1)' }))
     expect(logLines()).toEqual(['FAIL x'])
-    await userEvent.click(screen.getByRole('tab', { name: 'setup (0)' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'prepare (0)' }))
     expect(screen.getByRole('log')).toHaveTextContent('この stream の保存済みログはありません。')
     expect(streams).toHaveLength(0)
     expect(calls.some((c) => c.url.endsWith('/events'))).toBe(false)
@@ -214,8 +227,8 @@ describe('タスク詳細', () => {
     await screen.findByRole('log')
     await waitFor(() => expect(streams).toHaveLength(1))
     act(() => {
-      streams[0].log(40, 'harness', 'live 1')
-      streams[0].log(41, 'harness', 'live 2')
+      streams[0].log(40, 'work', 'live 1')
+      streams[0].log(41, 'work', 'live 2')
     })
     await screen.findByText('live 2')
     expect(screen.getByTestId('log-source')).toHaveTextContent('受信中')
@@ -448,5 +461,102 @@ describe('Linear 起因のタスク', () => {
     await userEvent.click(await within(await screen.findByTestId('held-review')).findByRole('button', { name: '中止する' }))
     expect(await screen.findByText('状態が変わりました')).toBeInTheDocument()
     await waitFor(() => expect(gets).toBeGreaterThanOrEqual(2))
+  })
+})
+
+describe('タスク詳細の区画（13 3.3）', () => {
+  it('概要に最新の Execution の outputs と、このタスクの開いている判断待ちへのリンクを出す', async () => {
+    const first = history(E1, 1, 'failed', { finishedAt: '2026-10-28T02:00:00Z', outputs: [{ kind: 'pr', label: '古い PR', url: 'https://example.com/old' }] })
+    const second = history(E2, 2, 'waiting_approval', { outputs: [{ kind: 'pull_request', label: 'PR #7', url: 'https://github.com/acme/app/pull/7' }] })
+    TASK = taskWith('waiting_approval', [first, second])
+    EXECUTIONS = { [E1]: detailOf(first), [E2]: detailOf(second) }
+    DECISIONS = [
+      { id: 'D1', kind: 'approval', taskId: 'task-001', executionId: E2, subjectId: 'A1', cause: null, status: 'open', detail: {}, createdAt: '2026-10-28T03:00:00Z' },
+      { id: 'D2', kind: 'question', taskId: 'task-999', executionId: 'X', subjectId: null, cause: 'question', status: 'open', detail: {}, createdAt: '2026-10-28T03:00:00Z' },
+    ]
+    const { calls } = renderTask()
+    const outputs = await screen.findByRole('list', { name: '外に出したもの' })
+    expect(within(outputs).getByRole('link', { name: 'PR #7' })).toHaveAttribute('href', 'https://github.com/acme/app/pull/7')
+    expect(screen.queryByRole('link', { name: '古い PR' })).toBeNull()
+    const decisions = await screen.findByRole('list', { name: '開いている判断待ち' })
+    expect(within(decisions).getByRole('link', { name: '操作の承認' })).toHaveAttribute('href', '/decisions/D1')
+    expect(within(decisions).getAllByRole('link')).toHaveLength(1)
+    expect(calls.some((c) => c.url.startsWith('/api/decisions?status=open'))).toBe(true)
+  })
+
+  it('段の結果・確かめた結果・承認・固定した文脈・成果物・渡した値を出す', async () => {
+    const item = history(E1, 1, 'succeeded', { finishedAt: '2026-10-28T03:00:00Z' })
+    TASK = taskWith('completed', [item])
+    EXECUTIONS = {
+      [E1]: detailOf(item, {
+        params: { branch: 'main' },
+        contractVersion: '1',
+        resumeStage: 'publish',
+        stageRuns: [
+          { id: 's1', stage: 'work', attempt: 1, status: 'succeeded', errorClass: null, startedAt: '2026-10-28T01:00:00Z', finishedAt: '2026-10-28T02:00:00Z', message: '実装しました', summary: 'ログイン画面' },
+          { id: 's2', stage: 'check', attempt: 2, status: 'failed', errorClass: 'check_failed', startedAt: '2026-10-28T02:00:00Z', finishedAt: null, message: null, summary: null },
+        ],
+        checkResults: [
+          { id: 'c1', result: 'fail', contentId: 'sha-1', summary: 'lint が落ちた', findings: [{ rule: 'no-unused', severity: 'error', message: '未使用の変数', location: { path: 'src/a.ts', line: 3 } }] },
+        ],
+        contextRevisions: [
+          { id: 'r1', layer: 'reported', kind: 'file', sourcePath: 'NOTES.md', sourceCommitSha: 'b'.repeat(40), contentHash: 'e'.repeat(64) },
+        ],
+        artifacts: [
+          { id: 'A1', kind: 'work_summary', stage: 'work', name: 'out/summary.md' },
+          { id: 'A2', kind: 'result_json', stage: 'check', name: 'result.json' },
+        ],
+      }),
+    }
+    APPROVALS = [
+      { id: 'P1', decisionId: 'D1', taskId: 'task-001', executionId: E1, requestedStage: 'publish', operation: 'merge_pull_request', target: { label: 'PR #7', url: 'https://example.com/pr/7' }, summary: null, contentId: 'sha-1', status: 'consumed', invalidatedReason: null, decidedAt: '2026-10-28T02:30:00Z', expiresAt: null, consumedAt: '2026-10-28T02:40:00Z', createdAt: '2026-10-28T02:00:00Z' },
+      { id: 'P2', decisionId: 'D9', taskId: 'task-999', executionId: 'X', requestedStage: 'publish', operation: 'deploy', target: {}, summary: null, contentId: 'other', status: 'pending', invalidatedReason: null, decidedAt: null, expiresAt: null, consumedAt: null, createdAt: '2026-10-28T02:00:00Z' },
+    ]
+    renderTask((request) => (request.url === `/api/executions/${E1}/logs` ? json(200, { harness: '', setup: '', test: '', publish: '', runner: '' }) : undefined))
+    const stages = await screen.findByRole('table', { name: '段の結果' })
+    expect(within(stages).getAllByRole('row')).toHaveLength(3)
+    expect(stages).toHaveTextContent('実装しました')
+    expect(stages).toHaveTextContent('ログイン画面')
+    expect(stages).toHaveTextContent('check_failed')
+    expect(screen.getByTestId('execution-params')).toHaveTextContent('"branch": "main"')
+    expect(screen.getByText('publish', { selector: 'dd span' })).toBeInTheDocument()
+    const check = screen.getByRole('article', { name: '確かめた結果 c1' })
+    expect(check).toHaveTextContent('lint が落ちた')
+    expect(check).toHaveTextContent('sha-1')
+    expect(within(check).getByRole('table', { name: 'finding' })).toHaveTextContent('src/a.ts:3')
+    expect(screen.getByRole('table', { name: '固定した文脈' })).toHaveTextContent('reported（記録のみ）')
+    const artifacts = screen.getByRole('table', { name: '成果物' })
+    expect(within(artifacts).getByRole('link', { name: 'out/summary.md' })).toHaveAttribute('href', `/api/executions/${E1}/artifacts/A1`)
+    expect(artifacts).toHaveTextContent('作業の概要')
+    expect(artifacts).toHaveTextContent('結果 JSON')
+    const approvals = await screen.findByRole('table', { name: '承認' })
+    expect(within(approvals).getAllByRole('row')).toHaveLength(2)
+    expect(within(approvals).getByRole('link', { name: 'PR #7' })).toHaveAttribute('href', 'https://example.com/pr/7')
+    expect(approvals).toHaveTextContent('consumed')
+  })
+
+  it('旧名の stream（harness / setup / test）で届いたログは work / prepare / check に出す', async () => {
+    const item = history(E1, 1, 'working')
+    TASK = taskWith('running', [item])
+    EXECUTIONS = { [E1]: detailOf(item) }
+    renderTask()
+    await screen.findByRole('log')
+    await waitFor(() => expect(streams).toHaveLength(1))
+    act(() => {
+      streams[0].log(1, 'harness', '作業')
+      streams[0].log(2, 'setup', '準備')
+      streams[0].log(3, 'test', '確認')
+      streams[0].log(4, 'publish', '出す')
+    })
+    await screen.findByText('作業')
+    for (const [tab, line] of [
+      ['prepare (1)', '準備'],
+      ['check (1)', '確認'],
+      ['publish (1)', '出す'],
+      ['work (1)', '作業'],
+    ]) {
+      await userEvent.click(screen.getByRole('tab', { name: tab }))
+      expect(logLines()).toEqual([line])
+    }
   })
 })

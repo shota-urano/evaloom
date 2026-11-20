@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,7 @@ import { expect, test as base, type Page } from '@playwright/test'
 import { loginOwner, run, setupOwner, startEvaloomd, type Evaloomd } from './evaloomd.ts'
 import { createRepo, tagProfile, type Repo } from '../../scripts/fixtures.mts'
 
-// evaloom-71p.13: Approvals 画面（承認待ち一覧、詳細、承認・却下、履歴）と Dashboard の承認待ち（17 3.3・3.4・3.6・5章・6章）。
+// evaloom-71p.13: Approvals 画面（承認待ち一覧、詳細、承認・却下、履歴）（17 3.3・3.4・3.6・5章・6章）。
 //
 // global-setup がビルドしたバイナリを空きポートで別に起動し、Runner の役はテストが Runner 用 API を直接呼んで務める。
 // Git Publisher（PR の作成）は software-engineer へ移した（19-routing-and-stages 3.11）ので、Control Plane は承認待ちを作らない。
@@ -185,22 +185,14 @@ async function openDetail(page: Page, pending: Pending, projectId: string) {
   await expect(page.getByRole('heading', { name: '承認の詳細' })).toBeVisible()
 }
 
-test('承認待ちの件数が Dashboard に出て、承認待ちの一覧から詳細へ移れる', async ({ page, server }) => {
+// Dashboard の承認待ちの欄は、本人の判断待ちの件数（種類ごと、GET /api/decisions）に置き換えた（evaloom-oxe.10、13 3.2）。
+test('承認待ちの一覧に承認待ちが出る', async ({ page, server }) => {
   const first = await openApproval(server, PROJECTS[0].id, 'Alpha のログイン修正')
   const second = await openApproval(server, PROJECTS[1].id, 'Beta の設定画面')
   const expected = await pendingCount(server)
   expect(expected).toBeGreaterThanOrEqual(2)
 
-  await page.goto('/')
-  await expect(page.getByTestId('approval-count-pending').locator('dd')).toHaveText(`${expected}件`)
-  const list = page.getByRole('list', { name: '承認待ち' })
-  await expect(list.getByRole('link', { name: `example/${PROJECTS[0].id}#${first.prNumber}` })).toHaveAttribute('href', `/approvals/${first.approval.id}`)
-  await expect(list.getByRole('link', { name: `example/${PROJECTS[1].id}#${second.prNumber}` })).toBeVisible()
-  mkdirSync(SCREENSHOTS, { recursive: true })
-  await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-71p.13-dashboard.png'), fullPage: true })
-
-  await page.getByRole('link', { name: 'Approvals 画面を開く' }).click()
-  await expect(page).toHaveURL('/approvals')
+  await page.goto('/approvals')
   const table = page.getByRole('table', { name: '承認待ち' })
   await expect(table.locator(`[data-approval-id="${first.approval.id}"]`)).toContainText(first.headSha.slice(0, 12))
   await expect(table.locator(`[data-approval-id="${second.approval.id}"]`)).toContainText(second.headSha.slice(0, 12))

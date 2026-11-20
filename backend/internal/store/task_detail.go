@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
@@ -29,7 +30,7 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 		t.collaboration_mode, t.status, t.created_at, t.updated_at,
 		`+taskOriginColumns+`,
 		e.id, e.seq, e.mode, e.status, e.error_class, e.profile_version, e.profile_commit_sha,
-		e.started_at, e.finished_at
+		e.started_at, e.finished_at, coalesce(e.outputs, '[]')
 		FROM tasks t LEFT JOIN executions e ON e.task_id = t.id
 		WHERE t.id = ? ORDER BY e.seq ASC`, id)
 	if err != nil {
@@ -40,15 +41,17 @@ func GetTaskDetail(ctx context.Context, db *sql.DB, id string) (TaskDetail, erro
 		var e TaskExecution
 		var executionID, mode, status sql.NullString
 		var seq sql.NullInt64
+		var outputs string
 		if err := rows.Scan(&result.ID, &result.ProjectID, &result.HarnessID, &result.Title, &result.Body, &result.AcceptanceCriteria,
 			&result.CollaborationMode, &result.Status, &result.CreatedAt, &result.UpdatedAt,
 			&result.Source, &result.IntakeBlockCause, &result.LinearIdentifier, &result.LinearURL,
 			&executionID, &seq, &mode, &status, &e.ErrorClass, &e.ProfileVersion, &e.ProfileCommitSHA,
-			&e.StartedAt, &e.FinishedAt); err != nil {
+			&e.StartedAt, &e.FinishedAt, &outputs); err != nil {
 			return result, err
 		}
 		if executionID.Valid {
 			e.ID, e.Seq, e.Mode, e.Status = executionID.String, int(seq.Int64), mode.String, status.String
+			e.Outputs = json.RawMessage(outputs)
 			result.Executions = append(result.Executions, e)
 		}
 	}

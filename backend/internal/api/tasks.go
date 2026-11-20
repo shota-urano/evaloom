@@ -201,6 +201,15 @@ type executionSummaryView struct {
 	Mode       string  `json:"mode"`
 	Status     string  `json:"status"`
 	ErrorClass *string `json:"errorClass"`
+	// Task and Execution detail readers also load outputs.
+	Outputs json.RawMessage `json:"outputs,omitempty"`
+}
+
+func newExecutionSummaryView(e store.ExecutionSummary) executionSummaryView {
+	return executionSummaryView{
+		ID: e.ID, Seq: e.Seq, Mode: e.Mode, Status: e.Status,
+		ErrorClass: e.ErrorClass, Outputs: e.Outputs,
+	}
 }
 
 type taskSummaryView struct {
@@ -227,8 +236,8 @@ func newTaskSummaryView(t model.Task, origin store.TaskOrigin) taskSummaryView {
 }
 
 // listTasks serves GET /api/tasks (13 3.2 Tasks 一覧). Optional filters are
-// ?status= (a task status from data-model 5.1) and ?projectId=; both match
-// exactly. Results are newest first with the shared limit/cursor paging.
+// ?status= (a task status from data-model 5.1), ?projectId= and ?harnessId=;
+// all match exactly. Results are newest first with shared limit/cursor paging.
 func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query, err := url.ParseQuery(r.URL.RawQuery)
@@ -254,6 +263,7 @@ func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 				return nil
 			}},
 			{"projectId", &filter.ProjectID, func(v string) error { return ValidateID("projectId", v, SlugID) }},
+			{"harnessId", &filter.HarnessID, func(v string) error { return ValidateID("harnessId", v, SlugID) }},
 		} {
 			values, ok := query[param.name]
 			if !ok || (len(values) == 1 && values[0] == "") {
@@ -290,7 +300,8 @@ func listTasks(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		for _, row := range rows {
 			view := newTaskSummaryView(row.Task, row.TaskOrigin)
 			if e := row.LatestExecution; e != nil {
-				view.LatestExecution = &executionSummaryView{e.ID, e.Seq, e.Mode, e.Status, e.ErrorClass}
+				summary := newExecutionSummaryView(*e)
+				view.LatestExecution = &summary
 			}
 			views = append(views, view)
 		}

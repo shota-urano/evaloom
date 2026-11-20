@@ -44,7 +44,7 @@ func getTask(db *sql.DB, logger *slog.Logger) http.HandlerFunc {
 		}
 		for _, e := range detail.Executions {
 			execution := taskExecutionView{
-				executionSummaryView: executionSummaryView{e.ID, e.Seq, e.Mode, e.Status, e.ErrorClass},
+				executionSummaryView: newExecutionSummaryView(e.ExecutionSummary),
 				ProfileVersion:       e.ProfileVersion, ProfileCommitSHA: e.ProfileCommitSHA,
 			}
 			for _, field := range []struct {

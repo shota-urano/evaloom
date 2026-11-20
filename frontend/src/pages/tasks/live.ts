@@ -5,7 +5,7 @@ import { FINAL_EXECUTION_STATUSES, type TaskSummary } from '@/api/tasks'
 import { useExecutionStatusEvents, type StatusChanged } from '@/hooks/use-execution-events'
 
 // 購読の優先順（タスク状態）。実行中のものを先にし、待機中は古いもの（先に claim されるもの）から。
-const WATCH_PRIORITY: Record<string, number> = { running: 0, verifying: 1, blocked: 2, received: 3, queued: 4 }
+const WATCH_PRIORITY: Record<string, number> = { running: 0, waiting_approval: 1, blocked: 2, received: 3, routing: 3, queued: 4 }
 /**
  * 同時に張る SSE の上限。evaloomd は HTTP/1.1 なので、ブラウザの同一オリジン6接続の枠を SSE で使い切らないよう抑える。
  * 上限から漏れたタスクがある間は、TASK_LIST_POLL_MS ごとに一覧を取り直して遷移を拾う。
