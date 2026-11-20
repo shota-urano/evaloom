@@ -99,6 +99,8 @@ func newOwnerRoutes(db *sql.DB, logger *slog.Logger, adapters *adapter.Registry,
 	mux.HandleFunc("PATCH /api/projects/{id}", writeProject(db, logger, false))
 	mux.HandleFunc("GET /api/harnesses", listHarnesses(db, logger))
 	mux.HandleFunc("GET /api/harnesses/{id}", getHarness(db, logger))
+	mux.HandleFunc("GET /api/harnesses/{id}/records", listHarnessRecords(db, logger))
+	mux.HandleFunc("DELETE /api/harness-records/{id}", deleteHarnessRecord(db, logger))
 	mux.HandleFunc("POST /api/harnesses", writeHarness(db, logger, adapters, true))
 	mux.HandleFunc("PATCH /api/harnesses/{id}", writeHarness(db, logger, adapters, false))
 	mux.HandleFunc("GET /api/harness-profiles", listHarnessProfiles(db, logger))
