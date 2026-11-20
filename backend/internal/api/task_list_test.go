@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -92,9 +93,105 @@ func TestListTasksFiltersByStatusAndProjectNewestFirst(t *testing.T) {
 
 func TestListTasksRejectsInvalidFilters(t *testing.T) {
 	f := taskFixture(t)
-	for _, query := range []string{"?status=unknown", "?projectId=Bad_ID", "?status=queued&status=failed", "?limit=0", "?cursor=bad"} {
+	for _, query := range []string{"?status=unknown", "?projectId=Bad_ID", "?harnessId=Bad_ID", "?harnessId=harness-a&harnessId=harness-b", "?status=queued&status=failed", "?limit=0", "?cursor=bad"} {
 		if status, body := listTaskRequest(t, f, query); status != 400 {
 			t.Fatalf("%s status=%d body=%s", query, status, body)
+		}
+	}
+}
+
+func TestListTasksFiltersByDirectHarnessDestination(t *testing.T) {
+	f := taskFixture(t)
+	// Use the same harness as project-a, to distinguish direct routing from
+	// the project's assignment and the Execution's claim-time harness pin.
+	if _, err := f.db.Exec(`UPDATE harnesses SET default_profile_id =
+		(SELECT profile_id FROM projects WHERE id = 'project-a') WHERE id = 'harness-a'`); err != nil {
+		t.Fatal(err)
+	}
+	for i, direct := range []bool{false, true, true, true} {
+		input := manualTaskInput()
+		if direct {
+			delete(input, "projectId")
+			input["harnessId"] = "harness-a"
+		}
+		status, body := taskRequest(t, f, fmt.Sprintf("harness-list-%d", i), input, nil)
+		requireTask(t, status, body, 201)
+	}
+	if status, body := requestCancellation(t, f, "task-003"); status != 204 {
+		t.Fatalf("cancel status=%d body=%s", status, body)
+	}
+	for query, want := range map[string]string{
+		"?harnessId=harness-a":                     "[task-004 task-003 task-002]",
+		"?harnessId=harness-a&status=queued":       "[task-004 task-002]",
+		"?harnessId=harness-a&status=cancelled":    "[task-003]",
+		"?harnessId=harness-a&projectId=project-a": "[]",
+		"?harnessId=missing":                       "[]",
+		"?harnessId=":                              "[task-004 task-003 task-002 task-001]",
+	} {
+		if got := fmt.Sprint(taskIDs(requireTaskList(t, f, query))); got != want {
+			t.Fatalf("%s => %s; want %s", query, got, want)
+		}
+	}
+	page1 := requireTaskList(t, f, "?harnessId=harness-a&status=queued&limit=1")
+	page2 := requireTaskList(t, f, "?harnessId=harness-a&status=queued&limit=1&cursor="+page1.NextCursor)
+	if fmt.Sprint(taskIDs(page1)) != "[task-004]" || page1.NextCursor == "" ||
+		fmt.Sprint(taskIDs(page2)) != "[task-002]" || page2.NextCursor != "" {
+		t.Fatalf("pages=%v %v", taskIDs(page1), taskIDs(page2))
+	}
+}
+
+func TestListTasksReturnsLatestExecutionOutputs(t *testing.T) {
+	f := taskFixture(t)
+	for i := 0; i < 3; i++ {
+		status, body := taskRequest(t, f, fmt.Sprintf("outputs-%d", i), manualTaskInput(), nil)
+		requireTask(t, status, body, 201)
+	}
+	old := `[{"kind":"old","label":"Earlier output","url":"https://example.invalid/old"}]`
+	latest := `[{"kind":"report","label":"調査結果","url":"https://example.invalid/report?a=1&b=2"},{"kind":"post","label":"投稿","url":"https://example.invalid/post"}]`
+	if _, err := f.db.Exec(`UPDATE executions SET outputs = ? WHERE task_id IN ('task-001', 'task-002')`, old); err != nil {
+		t.Fatal(err)
+	}
+	// seq, rather than ID or creation time, defines the latest Execution.
+	if _, err := f.db.Exec(`INSERT INTO executions (id, task_id, seq, mode, status, outputs, created_at)
+		VALUES ('01AAAAAAAAAAAAAAAAAAAAAAA1', 'task-001', 2, 'fresh', 'succeeded', ?, '2026-01-01T00:00:00Z'),
+		('01AAAAAAAAAAAAAAAAAAAAAAA2', 'task-002', 2, 'fresh', 'pending', NULL, '2026-01-01T00:00:00Z')`, latest); err != nil {
+		t.Fatal(err)
+	}
+	status, body := listTaskRequest(t, f, "")
+	if status != 200 {
+		t.Fatalf("list status=%d body=%s", status, body)
+	}
+	// Decode independently of the view so a missing outputs key cannot pass.
+	var page struct {
+		Items []struct {
+			ID              string `json:"id"`
+			LatestExecution struct {
+				Seq     int             `json:"seq"`
+				Outputs json.RawMessage `json:"outputs"`
+			} `json:"latestExecution"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("items=%s", body)
+	}
+	for i, want := range []struct {
+		id, outputs string
+		seq         int
+	}{{"task-003", "[]", 1}, {"task-002", "[]", 2}, {"task-001", latest, 2}} {
+		got := page.Items[i]
+		// Compare JSON values, allowing the encoder to escape URL characters.
+		var gotValue, wantValue any
+		if err := json.Unmarshal(got.LatestExecution.Outputs, &gotValue); err != nil {
+			t.Fatalf("%s outputs=%s: %v", got.ID, got.LatestExecution.Outputs, err)
+		}
+		if err := json.Unmarshal([]byte(want.outputs), &wantValue); err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != want.id || got.LatestExecution.Seq != want.seq || !reflect.DeepEqual(gotValue, wantValue) {
+			t.Fatalf("item=%+v outputs=%s; want %+v", got, got.LatestExecution.Outputs, want)
 		}
 	}
 }
