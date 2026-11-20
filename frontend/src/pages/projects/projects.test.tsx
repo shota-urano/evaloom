@@ -89,6 +89,9 @@ describe('Project の登録・編集（13 3.5）', () => {
 
     await userEvent.click(within(group).getByRole('checkbox', { name: /merge_pull_request/ }))
     const dialog = screen.getByRole('alertdialog', { name: '承認を省く操作を足しますか' })
+    expect(dialog).toHaveTextContent('merge_pull_request')
+    expect(dialog).toHaveTextContent('PR をマージする')
+    expect(dialog).toHaveTextContent('この Project では、この操作を本人の承認なしにスペシャルハーネスが行います。')
     await userEvent.click(within(dialog).getByRole('button', { name: 'やめる' }))
     expect(within(group).getByRole('checkbox', { name: /merge_pull_request/ })).not.toBeChecked()
 
