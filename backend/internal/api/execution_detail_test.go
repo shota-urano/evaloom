@@ -38,6 +38,8 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	created := createClaimTask(t, f, "project-a", "execution-detail-pins")
 	status, body := requestClaim(t, f, token)
 	id := requireClaim(t, status, body).Execution.ID
+	// Seed an opaque saved value independently of the current Project schema.
+	execSQL(t, f, `UPDATE executions SET params = '{"nested":{"value":[1,true,"入力"]}}' WHERE id = ?`, id)
 	pin := readExecutionPin(t, f, id)
 	from := "claimed"
 	for _, next := range []string{"working", "checking", "publishing", "succeeded"} {
@@ -56,6 +58,7 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 	requireRetrySuccess(t, status, body)
 	status, body = requestClaim(t, f, token)
 	otherID := requireClaim(t, status, body).Execution.ID
+	execSQL(t, f, `UPDATE projects SET params = '{"changed":true}' WHERE id = 'project-a'`)
 
 	const baseSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const recordedAt = "2026-10-28T02:03:04.123456Z"
@@ -98,6 +101,8 @@ func TestGetExecutionReturnsPinnedVersionAndContexts(t *testing.T) {
 		"runnerId": pin.Runner, "role": nil, "harnessId": pin.Harness, "profileId": pin.Profile,
 		"profileVersion": profiles[0].Version, "profileCommitSha": profiles[0].CommitSHA,
 		"errorClass": nil, "startedAt": started, "finishedAt": finished,
+		"params":          map[string]any{"nested": map[string]any{"value": []any{float64(1), true, "入力"}}},
+		"contractVersion": "1", "resumeStage": nil,
 		"contextRevisions": wantContexts,
 	})
 	// Execution fields common to the task detail must retain the same names,
@@ -118,6 +123,8 @@ func TestGetExecutionPendingReturnsNullPinsAndEmptyCollections(t *testing.T) {
 		"profileVersion": nil, "profileCommitSha": nil,
 		"startedAt": nil, "finishedAt": nil, "errorClass": nil,
 		"contextRevisions": []any{},
+		"params":           nil, "contractVersion": nil, "resumeStage": nil,
+		"stageRuns": []any{}, "checkResults": []any{}, "outputs": []any{}, "artifacts": []any{},
 	})
 }
 
