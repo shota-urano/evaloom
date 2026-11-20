@@ -21,6 +21,9 @@ Runnerの結果報告、Context Builderのfailed・blocked、heartbeatのbootId�
 `Dispatcher`が登録先すべてに要求する。ある送信先が失敗しても残りを呼ぶ。
 macOSでは`MacOS`を`macos`経路として登録する。ヘルパーのビルド・署名・配置と
 許可拒否の結果受信は`backend/launchd/README.md`を参照する。
+通知要求の本文は仕様3.1に従う。macOSの本文はQ17と実装単位の受け入れ基準に従い、
+件名・ID・分類（判断待ちの種類と検証済みの原因を含む）だけから組み立て直す。
+出力ラベル・残りの件数・停止した段・理由・組み立て済みの本文はmacOSへ渡さない。
 失敗した送信先ごとに`notification_failed`イベントを保存する。
 payloadは`kind`・`channel`・`reason`だけとし、エラー詳細はControl Planeのログに出す。
 `reason`は許可なし・起動失敗・時間切れのsentinelとdeadlineから分類し、
@@ -69,3 +72,7 @@ Dashboardへの表示は管理画面の別タスクで扱う。
 記録の保存に失敗したら、判断待ちID・通知先・送信成否とDBエラーを呼び出し元へ返し、
 Control Planeのログに出す。questionとrouteのテストで、保存失敗時のログ、
 同じDispatcherでの再試行の抑止、DBを開き直した後の再送、成功記録保存後の重複防止を確かめる。
+
+仕様12の3.1は出力ラベルや停止した段を本文に含める一方、Q17とmacOS実装単位の
+受け入れ基準は本文を件名・ID・分類までに限定している。この差は仕様の穴として残し、
+macOSでは後者を適用する。確定済み仕様書と、ほかの送信先へ渡す通知要求は変更しない。

@@ -92,7 +92,7 @@ func (d *Dispatcher) dispatchDecisions(ctx context.Context) error {
 		}
 		batch.ids = ids
 		batch.n.DecisionID = ids[0]
-		_, batch.n.Body, err = macOSContent(batch.n)
+		_, batch.n.Body, err = notificationContent(batch.n)
 		if err != nil {
 			errs = errors.Join(errs, err)
 			continue

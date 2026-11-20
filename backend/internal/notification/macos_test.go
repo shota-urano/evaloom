@@ -32,11 +32,28 @@ func TestMacOSContentAllowsOnlyTitleIDAndClassification(t *testing.T) {
 				TaskID: "task-001", Title: "件名 $(touch /tmp/should-not-exist)\n引用 \"", Status: tc.status,
 				ErrorClass:  model.ErrorTestFailed,
 				ExecutionID: "PRIVATE-EXECUTION",
-				Reason:      "PRIVATE-REASON secret-token log context task-body", Stage: "PRIVATE-STAGE",
+				Reason:      "PRIVATE-REASON secret-token log context task-body", Stage: model.ExecutionPublishing,
+				OutputLabel: "PRIVATE-OUTPUT https://example.com/secret", OutputRemaining: 42,
+				Body: "PRIVATE-BODY question choices target finding summary",
 			}
 			title, body, err := macOSContent(n)
 			if err != nil || title != tc.title || body != n.Title+"\n"+n.TaskID+"\n"+tc.class {
 				t.Fatalf("content = %q %q, %v", title, body, err)
+			}
+			// Verify the actual launch boundary too, including a pre-built Body
+			// with private details that MacOS must never forward.
+			m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
+			m.run = func(cmd *exec.Cmd) error {
+				want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args",
+					tc.title, n.Title + "\n" + n.TaskID + "\n" + tc.class,
+					"http://127.0.0.1:49123/tasks/task-001"}
+				if !reflect.DeepEqual(cmd.Args, want) {
+					t.Fatalf("command = %q; want %q", cmd.Args, want)
+				}
+				return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+			}
+			if err := m.Notify(context.Background(), n); err != nil {
+				t.Fatal(err)
 			}
 			// Even malformed typed classifications must not expose free-form text.
 			n.ErrorClass = "SECRET-ERROR"
@@ -93,6 +110,51 @@ func TestMacOSDecisionOpenArguments(t *testing.T) {
 	}
 	if err := m.Notify(context.Background(), n); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMacOSDecisionContentAllowsOnlyTitleIDAndClassifications(t *testing.T) {
+	for _, tc := range []struct {
+		kind  model.DecisionKind
+		cause model.DecisionCause
+		class string
+	}{
+		{model.DecisionRoute, "", "振り分け"},
+		{model.DecisionApproval, "", "承認"},
+		{model.DecisionQuestion, "", "質問"},
+		{model.DecisionBlocked, model.CauseCheckBlocked, "続行\n確かめた結果に本人の判断が必要"},
+		{model.DecisionBlocked, model.CausePublishUnknown, "続行\n出す操作の結果がわからない"},
+		{model.DecisionBlocked, model.CauseContextConflict, "続行\n固定した文脈に解決できない矛盾"},
+		{model.DecisionBlocked, model.CauseWorkspaceMissing, "続行\n再開に要る作業領域がない"},
+	} {
+		t.Run(string(tc.kind)+"/"+string(tc.cause), func(t *testing.T) {
+			n := Notification{TaskID: "task-001", Title: "件名", DecisionID: "decision-001",
+				DecisionKind: tc.kind, DecisionCause: tc.cause,
+				ExecutionID: "PRIVATE-EXECUTION", Reason: "PRIVATE-REASON", Body: "PRIVATE-BODY",
+				OutputLabel: "PRIVATE-OUTPUT", OutputRemaining: 42, Stage: model.ExecutionPublishing,
+				ErrorClass: "PRIVATE-CLASS"}
+			m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
+			m.run = func(cmd *exec.Cmd) error {
+				want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: 判断待ち",
+					"件名\ntask-001\n" + tc.class, "http://127.0.0.1:49123/decisions/decision-001"}
+				if !reflect.DeepEqual(cmd.Args, want) {
+					t.Fatalf("command = %q; want %q", cmd.Args, want)
+				}
+				return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+			}
+			if err := m.Notify(context.Background(), n); err != nil {
+				t.Fatal(err)
+			}
+			if tc.kind == model.DecisionBlocked {
+				n.DecisionCause = "PRIVATE-CAUSE"
+			} else {
+				n.DecisionKind = "PRIVATE-KIND"
+			}
+			m.run = func(*exec.Cmd) error { t.Fatal("invalid classification launched helper"); return nil }
+			if err := m.Notify(context.Background(), n); err == nil {
+				t.Fatal("accepted a free-form decision classification")
+			}
+		})
 	}
 }
 
