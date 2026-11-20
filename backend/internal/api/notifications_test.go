@@ -463,29 +463,61 @@ func TestConcurrentDispatchersNeverDeliverSameRequestTwice(t *testing.T) {
 	}
 }
 
-func TestReceiptWriteFailureNeverCausesResendAfterRestart(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "working")
-	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
-	if status != 204 {
-		t.Fatalf("result status=%d body=%s", status, body)
-	}
-	if _, err := f.db.Exec(`CREATE TRIGGER reject_receipt BEFORE INSERT ON execution_events
-		WHEN NEW.type = 'notification_sent' BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END`); err != nil {
-		t.Fatal(err)
-	}
-	fake := &recordingNotifier{}
-	d := notificationDispatcher(f, fake)
-	if err := d.DispatchPending(context.Background()); err == nil || !strings.Contains(err.Error(), "receipt unavailable") {
-		t.Fatalf("receipt failure=%v", err)
-	}
-	if len(fake.recorded()) != 1 {
-		t.Fatal("transport was not called")
-	}
-	restartNotificationFixture(t, f)
-	fresh := &recordingNotifier{}
-	restarted := notificationDispatcher(f, fresh)
-	if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 0 {
-		t.Fatalf("receipt failure resent notification: %v %v", fresh.recorded(), err)
+func TestReceiptWriteFailureMayResendAfterRestart(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		err   error
+	}{
+		{"notification_sent", nil},
+		{"notification_failed", notification.ErrPermissionDenied},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			f, token, id, _ := resultFixture(t, "working")
+			status, body := postResult(t, f, token, id, resultBody("working", "failed"))
+			if status != 204 {
+				t.Fatalf("result status=%d body=%s", status, body)
+			}
+			before := readResultSnapshot(t, f, id)
+			if _, err := f.db.Exec(`CREATE TRIGGER reject_receipt BEFORE INSERT ON execution_events
+				WHEN NEW.type = '` + tc.event + `' BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END`); err != nil {
+				t.Fatal(err)
+			}
+			fake := &recordingNotifier{err: tc.err}
+			d := notificationDispatcher(f, fake)
+			err := d.DispatchPending(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "receipt unavailable") || (tc.err != nil && !errors.Is(err, tc.err)) {
+				t.Fatalf("missing receipt or transport failure: %v", err)
+			}
+			for _, want := range []string{id, "failed", "fake", fmt.Sprintf("send_succeeded=%t", tc.err == nil)} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("receipt failure missing context %q: %v", want, err)
+				}
+			}
+			if after := readResultSnapshot(t, f, id); after != before || len(fake.recorded()) != 1 {
+				t.Fatalf("receipt failure changed state: got=%+v want=%+v calls=%v", after, before, fake.recorded())
+			}
+			if err := d.DispatchPending(context.Background()); err != nil || len(fake.recorded()) != 1 {
+				t.Fatalf("same worker retried after receipt failure: %v %v", fake.recorded(), err)
+			}
+			restartNotificationFixture(t, f)
+			if _, err := f.db.Exec(`DROP TRIGGER reject_receipt`); err != nil {
+				t.Fatal(err)
+			}
+			fresh := &recordingNotifier{}
+			restarted := notificationDispatcher(f, fresh)
+			if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 1 {
+				t.Fatalf("unrecorded send did not retry after restart: %v %v", fresh.recorded(), err)
+			}
+			before.Events++
+			if after := readResultSnapshot(t, f, id); after != before {
+				t.Fatalf("restart changed state or lost receipt: got=%+v want=%+v", after, before)
+			}
+			restartNotificationFixture(t, f)
+			restarted = notificationDispatcher(f, fresh)
+			if err := restarted.DispatchPending(context.Background()); err != nil || len(fresh.recorded()) != 1 {
+				t.Fatalf("recorded send retried after restart: %v %v", fresh.recorded(), err)
+			}
+		})
 	}
 }
 

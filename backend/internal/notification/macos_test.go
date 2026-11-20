@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -262,31 +263,53 @@ func TestMacOSRejectsInvalidInputWithoutLaunching(t *testing.T) {
 }
 
 func TestMacOSLinearPollAlertShowsOnlyClassAndCountAndOpensDashboard(t *testing.T) {
-	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
-	var launched bool
-	m.run = func(cmd *exec.Cmd) error {
-		launched = true
-		want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear の照会が失敗",
-			"network\n5 回連続", "http://127.0.0.1:49123/"}
-		if !reflect.DeepEqual(cmd.Args, want) {
-			t.Fatalf("command = %q; want %q", cmd.Args, want)
-		}
-		return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
-	}
-	if err := m.NotifyLinearPollFailing(context.Background(), "network", 5); err != nil || !launched {
-		t.Fatalf("alert err = %v, launched = %v", err, launched)
-	}
-	// Free-form classifications (which could carry a response body or key)
-	// and invalid counts never reach the helper.
-	launched = false
 	for _, tc := range []struct {
 		class string
 		count int
-	}{{"lin_api_SECRET", 5}, {"", 5}, {"auth", 0}} {
-		if err := m.NotifyLinearPollFailing(context.Background(), tc.class, tc.count); err == nil || launched {
-			t.Fatalf("%q/%d accepted: err=%v launched=%v", tc.class, tc.count, err, launched)
+		port  int
+		body  string
+	}{
+		{"auth", 1, 1, "auth\n1 回連続"},
+		{"rate_limited", 5, 8080, "rate_limited\n5 回連続"},
+		{"network", 5, 49123, "network\n5 回連続"},
+		{"other", 17, 65535, "other\n17 回連続"},
+	} {
+		t.Run(tc.class, func(t *testing.T) {
+			m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", tc.port)
+			var launched bool
+			m.run = func(cmd *exec.Cmd) error {
+				launched = true
+				want := []string{"/usr/bin/open", "-n", "-a", m.helperPath, "--args", "evaloom: Linear の照会が失敗",
+					tc.body, "http://127.0.0.1:" + strconv.Itoa(tc.port) + "/"}
+				if !reflect.DeepEqual(cmd.Args, want) {
+					t.Fatalf("command = %q; want %q", cmd.Args, want)
+				}
+				return os.WriteFile(helperResultPath(t, cmd), []byte("sent"), 0o600)
+			}
+			if err := m.NotifyLinearPollFailing(context.Background(), tc.class, tc.count); err != nil || !launched {
+				t.Fatalf("alert err = %v, launched = %v", err, launched)
+			}
+		})
+	}
+	// Free-form classifications (which could carry a response body or key)
+	// and invalid counts never reach the helper.
+	m := NewMacOS("/Users/owner/Applications/Evaloom Notifications.app", 49123)
+	m.run = func(*exec.Cmd) error { t.Fatal("invalid polling alert launched helper"); return nil }
+	for _, tc := range []struct {
+		class string
+		count int
+	}{{"lin_api_SECRET", 5}, {"", 5}, {"network\nPRIVATE-RESPONSE", 5}, {"auth", 0}, {"other", -1}} {
+		if err := m.NotifyLinearPollFailing(context.Background(), tc.class, tc.count); err == nil {
+			t.Fatalf("%q/%d accepted", tc.class, tc.count)
 		}
 	}
+	for _, port := range []int{0, 65536} {
+		m.port = port
+		if err := m.NotifyLinearPollFailing(context.Background(), "network", 5); err == nil {
+			t.Fatalf("invalid port %d accepted", port)
+		}
+	}
+	m.port = 49123
 	m.run = func(cmd *exec.Cmd) error {
 		return os.WriteFile(helperResultPath(t, cmd), []byte("permission_denied"), 0o600)
 	}
