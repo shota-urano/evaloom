@@ -47,8 +47,9 @@ type Error struct {
 	ResetAt time.Time
 	// OutcomeUnknown is set when the request may have reached Linear but no
 	// response was read: the connection broke or timed out after it was
-	// opened (spec 16 3.4, 6章 "送った結果が分からない"). A failure to
-	// connect, and every failure that Linear answered, leave it false.
+	// opened (spec 16 3.4, 6章 "送った結果が分からない"), or a 200 response
+	// whose body could not be read (3.4.1 step 3). A failure to connect, and
+	// every failure that Linear answered, leave it false.
 	OutcomeUnknown bool
 }
 
@@ -437,8 +438,15 @@ func (c *Client) do(ctx context.Context, op, key, query string, vars map[string]
 	if err != nil {
 		return &Error{Op: op, Class: ClassNetwork, OutcomeUnknown: true}
 	}
+	// A 200 response whose body cannot be read may still report a mutation
+	// that took effect, so its outcome is unknown (spec 16 3.4.1 step 3,
+	// "応答の本文を読めなかったとき"). Any other status is a failure Linear
+	// answered, whatever its body.
+	unreadable := func() error {
+		return &Error{Op: op, Class: ClassOther, OutcomeUnknown: resp.StatusCode == http.StatusOK}
+	}
 	if len(raw) > responseMaxBytes {
-		return fail(ClassOther)
+		return unreadable()
 	}
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
@@ -467,11 +475,14 @@ func (c *Client) do(ctx context.Context, op, key, query string, vars map[string]
 	if class == ClassRateLimited {
 		return &Error{Op: op, Class: class, ResetAt: resetAt(resp.Header, time.Now())}
 	}
+	if resp.StatusCode == http.StatusOK && decodeErr != nil {
+		return unreadable()
+	}
 	if resp.StatusCode != http.StatusOK || decodeErr != nil || len(envelope.Errors) > 0 || len(envelope.Data) == 0 {
 		return fail(class)
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
-		return fail(ClassOther)
+		return unreadable()
 	}
 	return nil
 }
