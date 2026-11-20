@@ -216,7 +216,7 @@ func TestCommentBodyManagementReferences(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			checkBody(t, body, []string{"管理画面で判断待ち", want[1]}, []string{"DECISION-CONTENT-CANARY", "実行ステータス", "作業概要"})
+			checkBody(t, body, []string{"管理画面で判断待ち", strings.TrimPrefix(want[1], "判断待ち ID: ")}, []string{"DECISION-CONTENT-CANARY", "実行ステータス", "作業概要"})
 		})
 	}
 }

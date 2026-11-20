@@ -562,7 +562,13 @@ func openDecision(ctx context.Context, tx *sql.Tx, e *reportExecution, kind mode
 		}
 		fields["notificationBatch"] = e.notificationBatch
 	}
-	return id, appendEvent(ctx, tx, e.id, model.EventDecisionOpened, fields)
+	if err := appendEvent(ctx, tx, e.id, model.EventDecisionOpened, fields); err != nil {
+		return "", err
+	}
+	// Every kind of decision uses the same transaction for its Linear notice
+	// (spec 16 3.2), including questions and each blocked cause.
+	return id, linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: e.taskID,
+		Kind: linearoutbox.KindDecisionOpen, TargetID: id, ExecutionID: e.id})
 }
 
 func finishProgram(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFinish, result contract.Result,
@@ -742,12 +748,6 @@ func requestApproval(ctx context.Context, tx *sql.Tx, e *reportExecution, stage 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
 		approvalID, e.taskID, e.id, decisionID, stage, a.Operation, string(targetJSON), a.Summary, a.ContentID,
 		hex.EncodeToString(sum[:]), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return err
-	}
-	// Spec 17 3.3 step 7, spec 16 3.2: a Linear task gets one "管理画面で判断待ち"
-	// comment per approval decision; a manual task writes nothing.
-	if err := linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: e.taskID, Kind: linearoutbox.KindDecisionOpen,
-		TargetID: decisionID, ExecutionID: e.id}); err != nil {
 		return err
 	}
 	return appendEvent(ctx, tx, e.id, model.EventApprovalRequested, map[string]any{

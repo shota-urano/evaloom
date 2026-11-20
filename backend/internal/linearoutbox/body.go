@@ -142,7 +142,7 @@ func Body(ctx context.Context, tx *sql.Tx, t Trigger) (string, error) {
 // The decision's content (the approval target,
 // findings, question text) never appears.
 func decisionOpenBody(t Trigger) string {
-	return fmt.Sprintf("Evaloom: %s\n管理画面で判断待ち\n判断待ち ID: %s\n\n%s", t.Kind, managementReference("decisions", t.TargetID), t.DedupeKey())
+	return fmt.Sprintf("管理画面で判断待ち\n%s\n\n%s", managementReference("decisions", t.TargetID), t.DedupeKey())
 }
 
 // holdTexts are the reason and the fix of each intake hold (spec 16 3.2,
