@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/adapter/dummy"
 	"github.com/shota-urano/evaloom/backend/internal/harnessenv"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -64,6 +66,21 @@ func TestWorkResultAssembly(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.controlPlaneURL, r.client, r.token = process.controlPlaneURL, process.client, process.token
+			if tt.name == "summary" {
+				// Exercise the complete Runner -> artifact API -> outbox path.
+				// Only the fake micro-harness writes the deliberately secret text;
+				// the Control Plane never receives the Runner's literal secrets.
+				t.Cleanup(linearoutbox.SetSummarySource(f.files.HarnessSummaryTx))
+				for _, query := range []string{
+					`UPDATE tasks SET source='linear' WHERE id='task-001'`,
+					`INSERT INTO linear_issue_links (id,linear_issue_id,issue_identifier,issue_url,team_id,task_id,attach_seq,created_at)
+					 VALUES ('link','issue','ENG-1','https://linear.app/test','team','task-001',1,'now')`,
+				} {
+					if _, err := f.db.Exec(query); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			claim.Execution.ID, claim.Execution.TaskID, claim.Task.ID = logExecution, "task-001", "task-001"
 			claim.Profile.HarnessID = "fixture-harness"
 			if _, err := f.db.Exec(`UPDATE harness_profiles SET definition=? WHERE id='fixture-profile'`, string(claim.Profile.Definition)); err != nil {
@@ -222,6 +239,55 @@ func TestWorkResultAssembly(t *testing.T) {
 			}
 			if tt.name == "summary" && (!redacted || !strings.Contains(string(data), "[REDACTED]")) {
 				t.Fatalf("summary redaction metadata=%v data=%q", redacted, data)
+			}
+			if tt.name == "summary" {
+				// Start/finish the real check report path. The fake check executor
+				// deliberately echoes the Runner token into its result summary.
+				err := r.WithProfile(t.Context(), claim, func(ctx context.Context, profile LoadedProfile) error {
+					request, err := stageRequest(claim, model.StageCheck, e.paths, stageResume{})
+					if err != nil {
+						return err
+					}
+					attempt, err := r.StartStage(ctx, logExecution, model.StageCheck, request)
+					if err != nil {
+						return err
+					}
+					directory, err := r.prepareStageFiles(logExecution, model.StageCheck, attempt, request, nil)
+					if err != nil {
+						return err
+					}
+					result, err := json.Marshal(map[string]any{
+						"contractVersion": "1", "stage": "check", "status": "failed", "errorClass": "check_failed",
+						"message": "checks failed", "summary": "check summary " + r.token + " path=" + directory,
+						"findings": []map[string]any{{"rule": "check_failed", "severity": "error", "message": "FINDING-BODY-CANARY"}},
+						"usage":    nil,
+					})
+					if err != nil {
+						return err
+					}
+					in := StageInvocation{Stage: model.StageCheck, Attempt: attempt, Profile: profile,
+						Workspace: claim.Workspace.Path, Directory: directory, timeout: time.Minute}
+					outcome := r.runStageWithSecrets(ctx, logExecution, claim.Profile.HarnessID, in,
+						stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
+							return StageOutcome{ExitCode: stagePtr(1), Result: result}
+						}))
+					_, err = r.FinishStage(ctx, logExecution, model.StageCheck, attempt, outcome)
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body string
+				if err := f.db.QueryRow(`SELECT body FROM linear_outbox WHERE action='comment' AND kind='failed'`).Scan(&body); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(body, "作業概要:\ncompleted [REDACTED] [REDACTED] Authorization: [REDACTED]") ||
+					!strings.Contains(body, "check summary [REDACTED] path=[REDACTED]") ||
+					!strings.Contains(body, "finding 件数: error=1, warning=0, info=0") ||
+					strings.Contains(body, r.token) || strings.Contains(body, "model-private-credential") || strings.Contains(body, "private-header") ||
+					strings.Contains(body, "FINDING-BODY-CANARY") || strings.Contains(body, r.dataDir) {
+					t.Fatalf("Linear body did not exclude Runner secrets: %s", body)
+				}
 			}
 			if tt.name == "secret crossing summary limit" && strings.Contains(string(data), r.token[:10]) {
 				t.Fatal("truncation retained a credential prefix")
