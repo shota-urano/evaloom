@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
 const resultEnvironment = "EVALOOM_NOTIFICATION_RESULT"
@@ -41,7 +39,11 @@ func (m *MacOS) Notify(ctx context.Context, n Notification) error {
 	if m.port < 1 || m.port > 65535 || n.TaskID == "" {
 		return fmt.Errorf("notification: invalid macOS port or task ID")
 	}
-	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + "/tasks/" + url.PathEscape(n.TaskID)
+	path := "/tasks/" + url.PathEscape(n.TaskID)
+	if n.DecisionID != "" {
+		path = "/decisions/" + url.PathEscape(n.DecisionID)
+	}
+	taskURL := "http://127.0.0.1:" + strconv.Itoa(m.port) + path
 	return m.launch(ctx, title, body, taskURL)
 }
 
@@ -141,25 +143,10 @@ func (m *MacOS) launch(ctx context.Context, title, body, openURL string) error {
 	}
 }
 
-// Construct visible content from an allowlist. Free-form reasons,
-// execution IDs and stage descriptions must never reach desktop notifications.
+// macOSContent applies Q17's stricter desktop privacy policy. Keep the
+// transport-independent request intact, but omit output labels/counts and stage
+// names. Body and Reason are never used; only the title, task ID and validated
+// classifications (including decision kind/cause) reach the desktop.
 func macOSContent(n Notification) (string, string, error) {
-	var title string
-	switch n.Status {
-	case model.ExecutionSucceeded:
-		title = "evaloom: 完了"
-	case model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut:
-		title = "evaloom: 失敗"
-	case model.ExecutionBlocked:
-		title = "evaloom: 対応が必要"
-	case model.ExecutionWaitingApproval:
-		title = "evaloom: 承認待ち"
-	default:
-		return "", "", errors.New("notification: unsupported macOS notification status")
-	}
-	classification := string(n.Status)
-	if n.Status != model.ExecutionSucceeded && n.Status != model.ExecutionWaitingApproval && n.ErrorClass != "" && n.ErrorClass.Validate() == nil {
-		classification = string(n.ErrorClass)
-	}
-	return title, n.Title + "\n" + n.TaskID + "\n" + classification, nil
+	return classifiedContent(n)
 }

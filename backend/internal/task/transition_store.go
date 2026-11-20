@@ -178,13 +178,10 @@ func recordTransitionEffects(ctx context.Context, tx *sql.Tx, id string, status 
 			return err
 		}
 	}
-	// Spec 12 section 3.1 explicitly excludes cancellation. The unique key
-	// survives restart and a second blocked episode after an owner continuation.
-	// Spec 17 3.3 step 4 adds the approval wait; the same key notifies once
-	// per Execution even if a refused consume returns it to the wait.
+	// Spec 12 3.1: terminal states notify once. Decision notifications are
+	// requested by owner_decisions rows, independently of Execution transitions.
 	switch status {
-	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut, model.ExecutionBlocked,
-		model.ExecutionWaitingApproval:
+	case model.ExecutionSucceeded, model.ExecutionFailed, model.ExecutionInterrupted, model.ExecutionTimedOut:
 		_, err := tx.ExecContext(ctx, `INSERT INTO notification_requests (execution_id, status, created_at)
 			VALUES (?, ?, ?) ON CONFLICT (execution_id, status) DO NOTHING`, id, status, now)
 		return err

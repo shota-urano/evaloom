@@ -70,7 +70,7 @@ func restartNotificationFixture(t *testing.T, f *authFixture) {
 }
 
 func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
-	for _, target := range []string{"succeeded", "failed", "timed_out", "blocked", "cancelled", "interrupted-boot", "interrupted-startup"} {
+	for _, target := range []string{"succeeded", "failed", "timed_out", "cancelled", "interrupted-boot", "interrupted-startup"} {
 		t.Run(target, func(t *testing.T) {
 			from := "working"
 			if target == "succeeded" {
@@ -94,10 +94,6 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 					t.Fatal(err)
 				}
 				want = "interrupted"
-			case "blocked":
-				// The Runner no longer reports blocked: its causes were the
-				// development stages (spec 19 3.11). Owner/system paths remain.
-				blockExecution(t, f, id, model.ExecutionRunning)
 			default:
 				status, body := postResult(t, f, token, id, input)
 				if status != 204 {
@@ -160,11 +156,8 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 			if target == want {
 				// A resend of the same stage report returns the saved response
 				// and records nothing (spec 04 3.4.1).
-				// blocked was set without a stage report, so nothing is resent.
 				status, body := postResult(t, f, token, id, input)
-				if target == "blocked" {
-					assertAuthError(t, status, body, 409, Conflict)
-				} else if status != 204 {
+				if status != 204 {
 					t.Fatalf("resend status=%d body=%s", status, body)
 				}
 			}
@@ -180,48 +173,24 @@ func TestLifecycleNotifiesOncePerStateAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestContinuedExecutionNotifiesEachStateOnlyOnce(t *testing.T) {
-	f, token, id, _ := resultFixture(t, "working")
+// Spec 12 3.1: another decision of the same Execution is a new notice,
+// even if no new Execution state is entered.
+func TestContinuedExecutionNotifiesEachDecision(t *testing.T) {
+	f, id := questionFixture(t)
+	first := openDecisionID(t, f, id, "question")
 	fake := &recordingNotifier{}
 	d := notificationDispatcher(f, fake)
-	block := func() {
-		t.Helper()
-		blockExecution(t, f, id, model.ExecutionRunning)
-		if err := d.DispatchPending(context.Background()); err != nil {
-			t.Fatal(err)
-		}
+	if err := d.DispatchPending(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	block()
-	restartNotificationFixture(t, f)
-	d.DB = f.db
-	resume := func() {
-		t.Helper()
-		// Spec 02 5.2: an answered question resumes at work.
-		for _, edge := range [][2]model.ExecutionStatus{{"blocked", "pending"}, {"pending", "claimed"}, {"claimed", "working"}} {
-			fromTask, _ := task.TaskStatusForExecution(edge[0])
-			var stage model.Stage
-			if edge[1] == model.ExecutionPending {
-				stage = model.StageWork
-			}
-			if err := task.TransitionExecution(context.Background(), f.db, task.Transition{TaskID: executionTaskID(t, f, id),
-				ExecutionID: id, FromTask: fromTask, FromExecution: edge[0], ToExecution: edge[1], ResumeStage: stage}); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	resume()
-	block() // A second blocked episode of the same Execution must not resend.
-	resume()
-	status, body := postResult(t, f, token, id, resultBody("working", "failed"))
-	if status != 204 {
-		t.Fatalf("failure status=%d body=%s", status, body)
-	}
+	answer(t, f, first, `{"action":"answer","text":"keep it","option":"keep"}`, 200)
+	second := seedDecision(t, f, id, "question", "question")
 	if err := d.DispatchPending(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	calls := fake.recorded()
-	if len(calls) != 2 || calls[0].Status != "blocked" || calls[1].Status != "failed" {
-		t.Fatalf("per-state notifications=%+v", calls)
+	if len(calls) != 2 || calls[0].DecisionID != first || calls[1].DecisionID != second {
+		t.Fatalf("per-decision notifications=%+v", calls)
 	}
 }
 

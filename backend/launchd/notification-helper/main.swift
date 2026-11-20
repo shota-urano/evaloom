@@ -116,6 +116,18 @@ final class NotificationDelegate: NSObject, NSApplicationDelegate, UNUserNotific
     }
 }
 
+// Invalid requests must not initialize AppKit or Notification Center. Besides
+// avoiding any permission request, this lets the helper reject bad input even
+// when no GUI connection is available. A one-argument relaunch still waits for
+// a notification-click response through the normal application lifecycle.
+let arguments = CommandLine.arguments
+if arguments.count != 1 && launchURL(arguments) == nil {
+    if let path = ProcessInfo.processInfo.environment["EVALOOM_NOTIFICATION_RESULT"] {
+        try? Data("invalid_arguments".utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+    exit(0)
+}
+
 let app = NSApplication.shared
 let delegate = NotificationDelegate()
 app.delegate = delegate

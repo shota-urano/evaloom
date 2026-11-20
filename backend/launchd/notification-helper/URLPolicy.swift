@@ -1,8 +1,9 @@
 import Foundation
 import UserNotifications
 
-// The URL allowlist of spec 12 3.6 (Q77). The helper opens only
-//   http://127.0.0.1:<port>/tasks/<taskId>  (task notifications), or
+// The URL allowlist of spec 12 3.6 (Q77, Q149). The helper opens only
+//   http://127.0.0.1:<port>/tasks/<taskId>  (task notifications),
+//   http://127.0.0.1:<port>/decisions/<decisionId> (owner decisions), or
 //   http://127.0.0.1:<port>/                (the Dashboard, spec 12 3.5).
 // Every condition must hold; any other URL is rejected. When the allowlist
 // changes, change spec 12 3.6 and the URLs evaloomd's Notifier passes together.
@@ -22,16 +23,17 @@ func allowedNotificationURL(_ value: String) -> URL? {
     return parts.url
 }
 
-// "/" exactly, or "/tasks/<taskId>" with a non-empty taskId. evaloomd
-// percent-encodes the task ID, so a raw "/" after the prefix is another path.
+// "/" exactly, or a task/decision detail with a non-empty ID. evaloomd
+// percent-encodes the ID, so a raw "/" after the prefix is another path.
 private func allowedNotificationPath(_ path: String) -> Bool {
     if path == "/" {
         return true
     }
-    let prefix = "/tasks/"
-    guard path.hasPrefix(prefix) else { return false }
-    let taskID = path.dropFirst(prefix.count)
-    return !taskID.isEmpty && !taskID.contains("/")
+    for prefix in ["/tasks/", "/decisions/"] where path.hasPrefix(prefix) {
+        let id = path.dropFirst(prefix.count)
+        return !id.isEmpty && !id.contains("/")
+    }
+    return false
 }
 
 // The key under which the helper stores the URL in the notification.
