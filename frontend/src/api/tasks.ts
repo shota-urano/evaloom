@@ -1,4 +1,6 @@
 import type { ApiClient } from './client'
+import type { CheckResult, Decision, DecisionApproval } from './decisions'
+import { decisions } from './decisions'
 import { listAll } from './registry'
 
 // タスクの本人用 API（01-architecture 5.1、04-task-lifecycle 3.1、backend/internal/api/tasks.go・tasks.md）の形。
@@ -79,8 +81,9 @@ export function newIdempotencyKey(): string {
   return globalThis.crypto.randomUUID()
 }
 
-/** GET /api/tasks/{id} の executions の要素（backend/internal/api/task_detail.go）。seq の昇順。 */
+/** GET /api/tasks/{id} の executions の要素（backend/internal/api/task_detail.go）。seq の昇順。outputs は無ければ空配列。 */
 export type ExecutionHistoryItem = ExecutionSummary & {
+  outputs?: ExecutionOutput[]
   profileVersion: string | null
   profileCommitSha: string | null
   startedAt: string | null
@@ -92,6 +95,28 @@ export type TaskDetail = TaskSummary & { executions: ExecutionHistoryItem[] }
 
 export type ContextRevision = { id: string; layer: string; kind: string; sourcePath: string; sourceCommitSha: string; contentHash: string }
 
+/** 02 3.4 stage_runs の段。 */
+export type Stage = 'prepare' | 'work' | 'check' | 'publish'
+
+/** GET /api/executions/{id} の stageRuns の要素。message と summary は結果 JSON（契約 6.5）から読んだ値。 */
+export type StageRun = {
+  id: string
+  stage: Stage
+  attempt: number
+  status: string
+  errorClass: string | null
+  startedAt: string
+  finishedAt: string | null
+  message: string | null
+  summary: string | null
+}
+
+/** GET /api/executions/{id} の checkResults の要素（check_results の行）。 */
+export type ExecutionCheckResult = Omit<CheckResult, 'createdAt'>
+
+/** GET /api/executions/{id} の artifacts の要素（artifacts の行のうち本文を除いたもの）。 */
+export type ExecutionArtifact = { id: string; kind: string; stage: string; name: string }
+
 /** GET /api/executions/{id}（backend/internal/api/execution_detail.go）。 */
 export type ExecutionDetail = ExecutionHistoryItem & {
   taskId: string
@@ -100,14 +125,29 @@ export type ExecutionDetail = ExecutionHistoryItem & {
   harnessId: string | null
   profileId: string | null
   contextRevisions: ContextRevision[]
+  params: unknown
+  contractVersion: string | null
+  resumeStage: string | null
+  stageRuns: StageRun[]
+  checkResults: ExecutionCheckResult[]
+  artifacts: ExecutionArtifact[]
 }
 
-/** 05-runner 3.4 のログの stream。 */
-export const LOG_STREAMS = ['harness', 'setup', 'test', 'runner'] as const
+/** 13 3.3 のログの stream。段（prepare / work / check / publish）と Runner 自身のログ。 */
+export const LOG_STREAMS = ['prepare', 'work', 'check', 'publish', 'runner'] as const
 export type LogStream = (typeof LOG_STREAMS)[number]
 
-/** GET /api/executions/{id}/logs（backend/internal/api/execution_logs.md）。未保存の stream は空文字列。 */
-export type ExecutionLogs = Record<LogStream, string>
+/**
+ * 保存済みログの応答のキー（backend/internal/api/execution_logs.md）。応答は旧名のキーを使うので、stream 名との対応をここに置く。
+ * work=harness、prepare=setup、check=test。
+ */
+export const SAVED_LOG_KEYS: Record<LogStream, string> = { prepare: 'setup', work: 'harness', check: 'test', publish: 'publish', runner: 'runner' }
+
+/** Runner が旧名で送った log イベントの stream を、13 3.3 の stream 名に読み替える（backend/internal/api/runner_logs.go は両方を受け付ける）。 */
+export const LEGACY_LOG_STREAMS: Record<string, LogStream> = { harness: 'work', setup: 'prepare', test: 'check' }
+
+/** GET /api/executions/{id}/logs。未保存の stream は空文字列。キーは SAVED_LOG_KEYS の旧名。 */
+export type ExecutionLogs = Record<string, string>
 
 /** 04 3.7 の再実行の種類。continue=継続、fresh=最初から。 */
 export type RetryMode = 'continue' | 'fresh'
@@ -120,6 +160,15 @@ export function artifactPath(executionId: string, artifactId: string) {
   return `/api/executions/${encodeURIComponent(executionId)}/artifacts/${encodeURIComponent(artifactId)}`
 }
 
+/** GET /api/approvals の要素（backend/internal/api/approvals.go approvalView）。 */
+export type TaskApproval = DecisionApproval & { consumedAt: string | null }
+
+/** 外に出したもの（outputs）の要素のうち、label と url が文字列のものだけ（不透明な値なので形を確かめてから出す）。 */
+export function outputLinks(outputs: unknown): ExecutionOutput[] {
+  if (!Array.isArray(outputs)) return []
+  return outputs.filter((o): o is ExecutionOutput => o !== null && typeof o === 'object' && typeof o.label === 'string' && typeof o.url === 'string')
+}
+
 const taskPath = (id: string) => `/api/tasks/${encodeURIComponent(id)}`
 const executionPath = (id: string) => `/api/executions/${encodeURIComponent(id)}`
 
@@ -127,6 +176,12 @@ export const tasks = {
   get: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<TaskDetail>(taskPath(id), { signal }),
   getExecution: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<ExecutionDetail>(executionPath(id), { signal }),
   getLogs: (api: ApiClient, id: string, signal?: AbortSignal) => api.get<ExecutionLogs>(`${executionPath(id)}/logs`, { signal }),
+  /** このタスクの承認（GET /api/approvals をすべて読み、taskId で絞る。サーバーに taskId の絞り込みは無い）。 */
+  approvals: async (api: ApiClient, id: string, signal?: AbortSignal) =>
+    (await listAll<TaskApproval>(api, '/api/approvals', signal)).filter((approval) => approval.taskId === id),
+  /** このタスクの開いている判断待ち（GET /api/decisions?status=open をすべて読み、taskId で絞る）。 */
+  openDecisions: async (api: ApiClient, id: string, signal?: AbortSignal): Promise<Decision[]> =>
+    (await decisions.list(api, 'open', undefined, signal)).filter((decision) => decision.taskId === id),
   /** 成功は 204。対象外の状態は 409。 */
   cancel: (api: ApiClient, id: string) => api.post<void>(`${taskPath(id)}/cancel`),
   /** 新しい Execution を作る（成功は 204）。対象外の状態は 409。 */
