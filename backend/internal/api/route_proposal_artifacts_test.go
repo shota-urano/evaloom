@@ -83,5 +83,8 @@ func TestProposalArtifactUnknownProposalCreatesNoRow(t *testing.T) {
 	f, token, dir, _ := proposalArtifactFixture(t)
 	status, body := postArtifact(t, f, token, proposalArtifactPath(ulid.Make().String())+proposalArtifactQuery, "content")
 	assertAuthError(t, status, body, 404, NotFound)
+	if !strings.Contains(string(body), "Route proposal not found") || strings.Contains(string(body), "Execution not found") {
+		t.Fatalf("unknown proposal error=%s; want route proposal not found without Execution not found", body)
+	}
 	assertArtifactCount(t, f, dir, 0)
 }
