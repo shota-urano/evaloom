@@ -38,6 +38,8 @@ export const LINEAR_NOTIFICATION_FAILURE_REASONS: Readonly<Record<string, string
   auth: 'Linear API の認証エラー',
   issue_removed: 'Issue が削除・アーカイブされていた',
   retries_exhausted: '一時的な失敗が続き、5回目も失敗した',
+  state_not_found: '状態の変更で、付ける名前の状態が Issue の Team に無かった',
+  label_not_found: '振り分けのラベルの追加で、付けるラベルが Linear の Team に無かった',
   other: 'その他の失敗',
 }
 

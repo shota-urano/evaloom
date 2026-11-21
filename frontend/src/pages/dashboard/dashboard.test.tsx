@@ -356,14 +356,16 @@ describe('Dashboard の通知失敗: linear_outbox の行（13 3.2、16 3.4.2、
     expect(screen.getByTestId('notification-failure-count')).toHaveTextContent('通知失敗1件')
   })
 
-  it('channel=linear の reason の4つの値に、16 3.4.2 の表に沿った説明を出す', async () => {
+  it('channel=linear の reason の6つの値に、16 3.4.2 の表に沿った説明を出す', async () => {
     renderDashboard((request) =>
       request.url === '/api/notification-failures'
         ? failurePage([
-            outboxFailure('ob-4', 'task-001', 'auth'),
-            outboxFailure('ob-3', 'task-002', 'issue_removed'),
-            outboxFailure('ob-2', 'task-003', 'retries_exhausted'),
-            outboxFailure('ob-1', 'task-004', 'other'),
+            outboxFailure('ob-6', 'task-001', 'auth'),
+            outboxFailure('ob-5', 'task-002', 'issue_removed'),
+            outboxFailure('ob-4', 'task-003', 'retries_exhausted'),
+            outboxFailure('ob-3', 'task-004', 'state_not_found'),
+            outboxFailure('ob-2', 'task-005', 'label_not_found'),
+            outboxFailure('ob-1', 'task-006', 'other'),
           ])
         : undefined,
     )
@@ -372,6 +374,8 @@ describe('Dashboard の通知失敗: linear_outbox の行（13 3.2、16 3.4.2、
       'Linear API の認証エラー',
       'Issue が削除・アーカイブされていた',
       '一時的な失敗が続き、5回目も失敗した',
+      '状態の変更で、付ける名前の状態が Issue の Team に無かった',
+      '振り分けのラベルの追加で、付けるラベルが Linear の Team に無かった',
       'その他の失敗',
     ])
   })
