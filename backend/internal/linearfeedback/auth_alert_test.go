@@ -328,49 +328,75 @@ func TestConcurrentDetectionAlertsOnce(t *testing.T) {
 // 認証エラーとして共通の抑止で通知が1回出て、その後に照会か送信が認証エラーに
 // なっても、どちらかが1回成功するまで通知は出ない（Q86）。
 func TestKeyFileProblemJoinsSharedSuppression(t *testing.T) {
-	t.Run("poller detects the key file", func(t *testing.T) {
-		fake := &fakeLinear{commentStatus: http.StatusUnauthorized, commentBody: unauthorized, issueBody: issueJSON(false)}
-		db, worker, _, _ := setup(t, fake)
-		gate, alerter := &linear.AuthAlertGate{}, &recordingAuthAlerter{}
-		worker.AuthGate, worker.Alerter = gate, alerter
-		// The real client with a missing key file.
-		missing, err := linear.NewClient(nil, "https://linear.invalid/graphql", filepath.Join(t.TempDir(), "missing"), nil)
+	cases := map[string]struct {
+		path    func(t *testing.T) string
+		problem linear.KeyProblem
+	}{
+		"missing": {
+			path:    func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") },
+			problem: linear.KeyMissing,
+		},
+		"0644": {
+			path: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), linear.APIKeyFileName)
+				mustWrite(t, path, 0o644)
+				return path
+			},
+			problem: linear.KeyPermission,
+		},
+		"unreadable": {
+			path: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), linear.APIKeyFileName)
+				// A symlink loop makes Open fail even when tests run as root.
+				if err := os.Symlink(linear.APIKeyFileName, path); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			problem: linear.KeyUnreadable,
+		},
+	}
+	badClient := func(t *testing.T, path string, problem linear.KeyProblem) *linear.Client {
+		t.Helper()
+		client, err := linear.NewClient(nil, "https://linear.invalid/graphql", path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		poller := sharedPoller(t, db, missing, gate, alerter)
-		pollOnce(t, poller)
-		alerter.want(t, "poll:auth")
-		// The key is fixed for sending but still rejected; a poll with
-		// another auth error: still one alert.
-		sendDue(t, worker)
-		poller.Client = &pollClient{class: linear.ClassAuth}
-		pollOnce(t, poller)
-		alerter.want(t, "poll:auth")
-		// One success, then auth again: alert again.
-		poller.Client = &pollClient{}
-		pollOnce(t, poller)
-		queueRows(t, db, "after", 1)
-		sendDue(t, worker)
-		alerter.want(t, "poll:auth", "comment")
-	})
-	cases := map[string]func(t *testing.T) string{
-		"missing": func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") },
-		"0644": func(t *testing.T) string {
-			path := filepath.Join(t.TempDir(), linear.APIKeyFileName)
-			mustWrite(t, path, 0o644)
-			return path
-		},
+		var keyErr *linear.KeyError
+		if err := client.CheckKey(); !errors.As(err, &keyErr) || keyErr.Problem != problem || linear.ClassOf(err) != linear.ClassAuth {
+			t.Fatalf("key error = %v; want %s classified auth", err, problem)
+		}
+		return client
 	}
-	for name, keyPath := range cases {
+	for name, tc := range cases {
+		t.Run("poller detects the key file "+name, func(t *testing.T) {
+			fake := &fakeLinear{commentStatus: http.StatusUnauthorized, commentBody: unauthorized, issueBody: issueJSON(false)}
+			db, worker, _, _ := setup(t, fake)
+			gate, alerter := &linear.AuthAlertGate{}, &recordingAuthAlerter{}
+			worker.AuthGate, worker.Alerter = gate, alerter
+			poller := sharedPoller(t, db, badClient(t, tc.path(t), tc.problem), gate, alerter)
+			for range linearintake.FailureAlertThreshold + 1 {
+				pollOnce(t, poller)
+			}
+			alerter.want(t, "poll:auth")
+			// The key is fixed for sending but still rejected; a poll with
+			// another auth error: still one alert.
+			sendDue(t, worker)
+			poller.Client = &pollClient{class: linear.ClassAuth}
+			pollOnce(t, poller)
+			alerter.want(t, "poll:auth")
+			// One success, then auth again: alert again.
+			poller.Client = &pollClient{}
+			pollOnce(t, poller)
+			queueRows(t, db, "after", 1)
+			sendDue(t, worker)
+			alerter.want(t, "poll:auth", "comment")
+		})
 		t.Run("worker detects the key file "+name, func(t *testing.T) {
 			fake := &fakeLinear{commentStatus: http.StatusOK, commentBody: okComment}
 			db, worker, _, _ := setup(t, fake)
 			gate, alerter := &linear.AuthAlertGate{}, &recordingAuthAlerter{}
-			bad, err := linear.NewClient(nil, "https://linear.invalid/graphql", keyPath(t), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			bad := badClient(t, tc.path(t), tc.problem)
 			good := worker.Client
 			worker.Client, worker.AuthGate, worker.Alerter = bad, gate, alerter
 			sendDue(t, worker)

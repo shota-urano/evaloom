@@ -13,7 +13,7 @@ import (
 // and fails on a row that is not a pending comment for Issue "1".
 func outboxKeys(t *testing.T, db *sql.DB, taskID string) map[string][]string {
 	t.Helper()
-	rows, err := db.Query(`SELECT kind, dedupe_key, linear_issue_id, status FROM linear_outbox
+	rows, err := db.Query(`SELECT kind, dedupe_key, linear_issue_id, status, action FROM linear_outbox
 		WHERE task_id = ? ORDER BY created_at, id`, taskID)
 	if err != nil {
 		t.Fatal(err)
@@ -21,12 +21,12 @@ func outboxKeys(t *testing.T, db *sql.DB, taskID string) map[string][]string {
 	defer rows.Close()
 	got := map[string][]string{}
 	for rows.Next() {
-		var kind, key, issue, status string
-		if err := rows.Scan(&kind, &key, &issue, &status); err != nil {
+		var kind, key, issue, status, action string
+		if err := rows.Scan(&kind, &key, &issue, &status, &action); err != nil {
 			t.Fatal(err)
 		}
-		if issue != "1" || status != "pending" {
-			t.Fatalf("outbox row %s: issue %q status %q", key, issue, status)
+		if issue != "1" || status != "pending" || action != "comment" {
+			t.Fatalf("outbox row %s: issue %q status %q action %q", key, issue, status, action)
 		}
 		got[kind] = append(got[kind], key)
 	}

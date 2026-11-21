@@ -87,6 +87,16 @@ func TestLinearDecisionOpenComments(t *testing.T) {
 					if n := count(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND action='comment'`, taskID); n != wantCount {
 						t.Fatalf("comment rows=%d; want %d", n, wantCount)
 					}
+					if source == "manual" || kind == "route" {
+						if n := count(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND action='set_state'`, taskID); n != 0 {
+							t.Fatalf("unexpected state rows=%d", n)
+						}
+					} else {
+						requireLinearStateRow(t, f, taskID, executionID, "waiting_decision", decisionID, "In Review", "pending")
+						if n := count(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND kind='waiting_decision' AND action='set_state'`, taskID); n != 1 {
+							t.Fatalf("duplicate wait state rows=%d", n)
+						}
+					}
 					if wantCount == 0 {
 						return
 					}
@@ -224,6 +234,7 @@ func TestLinearBlockedDecisionCommentsAdditionalCauses(t *testing.T) {
 			}
 			requireState(t, f, executionID, "blocked", "blocked", "")
 			decisionID := openDecisionID(t, f, executionID, "blocked")
+			requireLinearStateRow(t, f, taskID, executionID, "waiting_decision", decisionID, "In Review", "pending")
 			key := taskID + ":decision_open:" + decisionID
 			wantBody := "管理画面で判断待ち\n" + decisionID + "\n\n" + key
 			if n := count(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND kind='decision_open'

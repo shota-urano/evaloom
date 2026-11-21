@@ -64,7 +64,7 @@ linear.triggerLabelの除外を検証する。設定行が無ければai-ready�
 ラベルの検証は追加とaction・label_nameの変更時に行う。後でroutesを変更しても、
 過去の送信行や失敗の記録は更新できる。既存の送信履歴と旧呼び出し側のkindは保持する。
 kindのGo型と列挙値の整理は後続の実装単位で扱う。
-既存の送信Workerはcommentとset_stateだけを取得し、ラベル追加の行は送信実装を待つ。
+送信Workerはcomment・set_state・add_labelを取得する。
 
 settingsは3.8の7キーだけを許す。未知の旧キーやNULLのキーがあれば0030全体を
 取り消して起動を失敗させる。未知の設定の移行・廃止規則は仕様に無いため削除しない。
@@ -76,3 +76,8 @@ settingsは3.8の7キーだけを許す。未知の旧キーやNULLのキーが�
 
 0032は全体設定から`linear.teamId`を外す（仕様15のQ216。照会先Teamはキーまたは名前が`uslab`のTeamを起動時にLinearから引く）。
 残っている`linear.teamId`の行は削除し、settingsの許可キーからも除く。settingsを読むlinear_outboxのラベルのトリガーは作り直す。
+
+0033はlinear_outboxのラベル追加に、linear.routingLabelPrefixとの前方一致の検証を加える。
+追加とaction・label_nameの変更時だけ検証し、既存の送信履歴は保持する。
+接頭辞は大文字・小文字と記号を区別する。設定が無いか有効な文字列でなければroute:を使う。
+送信Workerも毎回routesと設定を読み直し、送信直前に条件を満たさない行をfailedにする。

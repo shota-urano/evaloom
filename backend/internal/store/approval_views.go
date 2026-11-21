@@ -9,7 +9,6 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -185,8 +184,7 @@ func RenewApprovalTx(ctx context.Context, tx *sql.Tx, old Approval, now string) 
 		"decisionId": decisionID, "kind": model.DecisionApproval, "cause": nil}); err != nil {
 		return "", err
 	}
-	if err := linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: old.TaskID, Kind: linearoutbox.KindDecisionOpen,
-		TargetID: decisionID, ExecutionID: old.ExecutionID}); err != nil {
+	if err := recordExecutionDecisionOutbox(ctx, tx, old.TaskID, old.ExecutionID, decisionID); err != nil {
 		return "", err
 	}
 	if err := appendEvent(ctx, tx, old.ExecutionID, model.EventApprovalRequested, map[string]any{
