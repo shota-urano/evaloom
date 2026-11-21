@@ -40,7 +40,8 @@ export const LINEAR_NOTIFICATION_FAILURE_REASONS: Readonly<Record<string, string
   retries_exhausted: '一時的な失敗が続き、5回目も失敗した',
   state_not_found: '状態の変更で、付ける名前の状態が Issue の Team に無かった',
   label_not_found: '振り分けのラベルの追加で、付けるラベルが Linear の Team に無かった',
-  other: 'その他の失敗',
+  // 16 3.4.2 の other の行の前半（起こる場面）。コメントと状態の変更では使わない取り決めは画面に出さない。
+  other: '振り分けのラベルの追加で、付ける直前にそのラベルが振り分けの表から消されていた',
 }
 
 /** 項目の reason の説明。channel で表を選ぶ。どの表にも無い値は undefined。 */

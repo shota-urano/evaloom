@@ -46,7 +46,11 @@ func reportTransaction(w http.ResponseWriter, r *http.Request, db *sql.DB, logge
 	}
 	err = tx.QueryRowContext(r.Context(), query, r.PathValue("id")).Scan(&owner)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = &Error{Code: NotFound, Message: "Execution not found"}
+		message := "Execution not found"
+		if proposal {
+			message = "Route proposal not found"
+		}
+		err = &Error{Code: NotFound, Message: message}
 	}
 	if err != nil {
 		tx.Rollback()

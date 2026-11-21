@@ -153,7 +153,7 @@ func TestProposalAdapterRuntime(t *testing.T) {
 					fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"stdout is not the proposal"}`)
 				}
 				switch os.Getenv("PROPOSAL_RUNTIME_MODE") {
-				case "secret_log":
+				case "secret_log", "cli_failure":
 					// The CLI echoes the credential it read and the Runner token.
 					fmt.Println("leak proposal-initial " + os.Getenv("PROPOSAL_RUNTIME_RUNNER_TOKEN"))
 				case "slow":
@@ -517,6 +517,16 @@ func TestProposalAdapterFailuresReportAndReleaseCapacity(t *testing.T) {
 				if mode == "missing_auth_config" || mode == "missing_auth_file" || mode == "unknown_adapter" {
 					if _, err := os.Stat(filepath.Join(state, "workload-created")); !os.IsNotExist(err) {
 						t.Fatal("CLI launched without configuration/authentication")
+					}
+					rows := proposalArtifactRows(t, db, claim.ID)
+					if mode == "missing_auth_file" {
+						// The Adapter emits an authentication diagnostic without
+						// launching the CLI; retain that existing non-empty log.
+						if len(rows) != 1 || rows[0].kind != "log" || rows[0].stage != "proposal" || rows[0].executionIsNull != 1 {
+							t.Fatalf("authentication diagnostic log missing: %+v", rows)
+						}
+					} else if len(rows) != 0 {
+						t.Fatalf("empty output registered as artifacts: %+v", rows)
 					}
 				} else {
 					auth, err := os.ReadFile(config.MicroHarnessAuthFiles[name])
