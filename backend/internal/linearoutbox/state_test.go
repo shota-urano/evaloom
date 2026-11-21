@@ -66,7 +66,8 @@ func TestStateStartedOncePerExecution(t *testing.T) {
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionClaimed, model.ExecutionPreparing)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPreparing, model.ExecutionRunning)
 	wantState(t, db, "started", "In Progress", "linear-1-e1")
-	// Resume reuses the same Execution. A retried Execution has a new key.
+	// Returning to pending without an answered decision retains the initial
+	// key. Decision-based resumes are covered by the API lifecycle tests.
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionRunning, model.ExecutionBlocked)
 	transition(t, db, "linear-1", model.TaskBlocked, model.ExecutionBlocked, model.ExecutionPending)
 	transition(t, db, "linear-1", model.TaskQueued, model.ExecutionPending, model.ExecutionClaimed)
@@ -102,8 +103,8 @@ func TestStateTransitionMapping(t *testing.T) {
 		kind, name string
 	}{
 		{model.TaskRunning, model.ExecutionPreparing, model.ExecutionRunning, "started", "In Progress"},
-		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "waiting_decision", "In Review"},
-		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
+		// A transition without an owner_decision is not a wait trigger.
+		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval, "", ""},
 		{model.TaskRunning, model.ExecutionPublishing, model.ExecutionSucceeded, "completed", "Done"},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionFailed, "", ""},
 		{model.TaskRunning, model.ExecutionRunning, model.ExecutionInterrupted, "", ""},
@@ -143,7 +144,7 @@ func cancel(t *testing.T, db *sql.DB, c store.TaskCancellation) {
 }
 
 func TestStateCancellationRequester(t *testing.T) {
-	for _, phase := range []string{"queued", "blocked", "waiting_approval", "working", "checking", "publishing", "held"} {
+	for _, phase := range []string{"queued", "blocked", "waiting_approval", "working", "checking", "publishing", "held", "routing"} {
 		for _, reason := range []string{"", "linear_label_removed", "linear_issue_cancelled", "linear_issue_removed", "linear_issue_moved"} {
 			for _, source := range []string{"linear", "manual"} {
 				if phase == "held" && source == "manual" {
@@ -152,9 +153,13 @@ func TestStateCancellationRequester(t *testing.T) {
 				t.Run(source+"/"+phase+"/"+reason, func(t *testing.T) {
 					db := outboxDB(t)
 					id, execStatus := source+"-1", model.ExecutionStatus(phase)
-					if phase == "held" {
+					if phase == "held" || phase == "routing" {
 						mustExec(t, db, `DELETE FROM executions WHERE task_id = ?`, id)
-						mustExec(t, db, `UPDATE tasks SET status = 'blocked', intake_block_cause = 'missing_acceptance_criteria' WHERE id = ?`, id)
+						if phase == "held" {
+							mustExec(t, db, `UPDATE tasks SET status = 'blocked', intake_block_cause = 'missing_acceptance_criteria' WHERE id = ?`, id)
+						} else {
+							mustExec(t, db, `UPDATE tasks SET status = 'routing' WHERE id = ?`, id)
+						}
 					} else {
 						if phase == "queued" {
 							execStatus = model.ExecutionPending
@@ -186,7 +191,7 @@ func TestStateCancellationRequester(t *testing.T) {
 						}
 					} else {
 						execID := id + "-e1"
-						if phase == "held" {
+						if phase == "held" || phase == "routing" {
 							execID = ""
 						}
 						wantState(t, db, "cancelled", "Canceled", execID)
@@ -215,6 +220,36 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 	mustExec(t, db, `UPDATE linear_outbox SET next_attempt_at = '2099-01-01T00:00:00Z'`)
 	setStates(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing)
 	transition(t, db, "linear-1", model.TaskRunning, model.ExecutionPublishing, model.ExecutionWaitingApproval)
+	txWait, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txWait.Rollback()
+	if err := linearoutbox.EnqueueStateTx(t.Context(), txWait, linearoutbox.Trigger{TaskID: "linear-1",
+		Kind: linearoutbox.KindWaitingDecision, TargetID: "decision-1", ExecutionID: "linear-1-e1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := txWait.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// Labels, like comments, stay pending when a newer state arrives.
+	mustExec(t, db, `INSERT INTO routes VALUES ('route:test','project',NULL,?,?)`, testTime, testTime)
+	txLabel, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer txLabel.Rollback()
+	if err := linearoutbox.EnqueueRouteLabelTx(t.Context(), txLabel, "linear-1", "route-decision", "route:test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := txLabel.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var labelBefore string
+	if err := db.QueryRow(`SELECT json_object('id',id,'status',status,'attempts',attempts,'next',next_attempt_at)
+		FROM linear_outbox WHERE action='add_label'`).Scan(&labelBefore); err != nil {
+		t.Fatal(err)
+	}
 	for _, status := range []string{"sent", "failed", "skipped"} {
 		mustExec(t, db, `INSERT INTO linear_outbox (id, task_id, linear_issue_id, action, kind, state_name,
 			dedupe_key, status, created_at) VALUES (?, 'linear-1', 'issue-1', 'set_state', 'started', 'In Progress', ?, ?, ?)`,
@@ -256,6 +291,11 @@ func TestStateSupersedesOnlyPendingStatesOnNewInsert(t *testing.T) {
 			t.Errorf("comment changed: %+v", r)
 		}
 	}
+	var labelAfter string
+	if err := db.QueryRow(`SELECT json_object('id',id,'status',status,'attempts',attempts,'next',next_attempt_at)
+		FROM linear_outbox WHERE action='add_label'`).Scan(&labelAfter); err != nil || labelAfter != labelBefore {
+		t.Fatalf("label changed: before=%s after=%s err=%v", labelBefore, labelAfter, err)
+	}
 }
 
 func TestStateEnqueueRollsBackWithTransition(t *testing.T) {
@@ -269,7 +309,7 @@ func TestStateEnqueueRollsBackWithTransition(t *testing.T) {
 	defer tx.Rollback()
 	if err := task.TransitionExecutionTx(context.Background(), tx, task.Transition{TaskID: "linear-1",
 		ExecutionID: "linear-1-e1", FromTask: model.TaskRunning, FromExecution: model.ExecutionPublishing,
-		ToExecution: model.ExecutionWaitingApproval}); err != nil {
+		ToExecution: model.ExecutionSucceeded}); err != nil {
 		t.Fatal(err)
 	}
 	var pending, skipped int

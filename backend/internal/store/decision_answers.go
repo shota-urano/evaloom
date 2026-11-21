@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 )
 
@@ -46,7 +47,11 @@ func ApplyBlockedOrQuestionAnswerTx(ctx context.Context, tx *sql.Tx, d OwnerDeci
 		if _, err := tx.ExecContext(ctx, `UPDATE executions SET error_class = ? WHERE id = ?`, model.ErrorCancelled, e.id); err != nil {
 			return err
 		}
-		return e.move(ctx, tx, model.ExecutionCancelled, "", "owner_abort")
+		if err := e.move(ctx, tx, model.ExecutionCancelled, "", "owner_abort"); err != nil {
+			return err
+		}
+		return linearoutbox.EnqueueStateTx(ctx, tx, linearoutbox.Trigger{TaskID: d.TaskID,
+			ExecutionID: e.id, TargetID: e.id, Kind: linearoutbox.KindCancelled})
 	}
 	return fmt.Errorf("store: no lifecycle change for decision kind %q cause %q action %q", d.Kind, *d.Cause, action)
 }

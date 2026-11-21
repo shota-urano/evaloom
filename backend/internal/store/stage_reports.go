@@ -17,7 +17,6 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/shota-urano/evaloom/backend/internal/contract"
-	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/task"
 )
@@ -567,8 +566,7 @@ func openDecision(ctx context.Context, tx *sql.Tx, e *reportExecution, kind mode
 	}
 	// Every kind of decision uses the same transaction for its Linear notice
 	// (spec 16 3.2), including questions and each blocked cause.
-	return id, linearoutbox.EnqueueTx(ctx, tx, linearoutbox.Trigger{TaskID: e.taskID,
-		Kind: linearoutbox.KindDecisionOpen, TargetID: id, ExecutionID: e.id})
+	return id, recordExecutionDecisionOutbox(ctx, tx, e.taskID, e.id, id)
 }
 
 func finishProgram(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFinish, result contract.Result,

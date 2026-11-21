@@ -9,6 +9,7 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
 	"github.com/shota-urano/evaloom/backend/internal/linearintake"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/model"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 	"github.com/shota-urano/evaloom/backend/internal/task"
@@ -241,8 +242,24 @@ func TestLinearWorkflowStateUpdatesDoNotRestartAttachedIssue(t *testing.T) {
 				if to == model.ExecutionPending {
 					resume = model.StagePublish
 				}
-				if err := task.TransitionExecution(context.Background(), h.db, task.Transition{TaskID: id,
+				tx, err := h.db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := task.TransitionExecutionTx(context.Background(), tx, task.Transition{TaskID: id,
 					ExecutionID: executionID, FromTask: fromTask, FromExecution: from, ToExecution: to, ResumeStage: resume}); err != nil {
+					t.Fatal(err)
+				}
+				// This loop test simulates stage transitions; decision producers
+				// now own the In Review trigger (covered by API report tests).
+				if to == model.ExecutionWaitingApproval {
+					if err := linearoutbox.EnqueueStateTx(t.Context(), tx, linearoutbox.Trigger{TaskID: id,
+						ExecutionID: executionID, Kind: linearoutbox.KindWaitingDecision, TargetID: "loop-decision"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
 				from = to
