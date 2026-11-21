@@ -67,6 +67,7 @@ func TestOwnerCannotAccessAnyDeclaredRunnerAPI(t *testing.T) {
 		"/api/runners/mac-mini/claim", "/api/runners/mac-mini/heartbeat",
 		"/api/executions/example/events", "/api/executions/example/result",
 		"/api/executions/example/artifacts",
+		"/api/route-proposals/example/artifacts", "/api/route-proposals/example/result",
 	} {
 		t.Run(path, func(t *testing.T) {
 			f := newAuthFixture(t)

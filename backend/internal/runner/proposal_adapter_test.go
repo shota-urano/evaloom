@@ -135,7 +135,7 @@ func TestProposalAdapterRuntime(t *testing.T) {
 					switch os.Getenv("PROPOSAL_RUNTIME_MODE") {
 					case "extra":
 						body = []byte(`{"label":"route:project","reason":"fits","extra":true}`)
-					case "missing":
+					case "missing", "slow":
 						continue
 					case "symlink":
 						_ = os.Symlink(filepath.Join(source, "other"), filepath.Join(source, "proposal.json"))
@@ -151,6 +151,14 @@ func TestProposalAdapterRuntime(t *testing.T) {
 				} else {
 					fmt.Println(`{"type":"system","subtype":"init","session_id":"proposal-native"}`)
 					fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"stdout is not the proposal"}`)
+				}
+				switch os.Getenv("PROPOSAL_RUNTIME_MODE") {
+				case "secret_log":
+					// The CLI echoes the credential it read and the Runner token.
+					fmt.Println("leak proposal-initial " + os.Getenv("PROPOSAL_RUNTIME_RUNNER_TOKEN"))
+				case "slow":
+					// Outlive the claim's timeoutSec; the Runner must stop it.
+					time.Sleep(4 * time.Second)
 				}
 			}
 		}
