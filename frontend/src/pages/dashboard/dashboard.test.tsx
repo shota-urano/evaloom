@@ -376,8 +376,25 @@ describe('Dashboard の通知失敗: linear_outbox の行（13 3.2、16 3.4.2、
       '一時的な失敗が続き、5回目も失敗した',
       '状態の変更で、付ける名前の状態が Issue の Team に無かった',
       '振り分けのラベルの追加で、付けるラベルが Linear の Team に無かった',
-      'その他の失敗',
+      '振り分けのラベルの追加で、付ける直前にそのラベルが振り分けの表から消されていた',
     ])
+  })
+
+  it('evaloom-ax2: channel=linear の reason=other は起こる場面の文を出し、channel=macos の reason=other は「その他の失敗」のまま', async () => {
+    renderDashboard((request) =>
+      request.url === '/api/notification-failures'
+        ? failurePage([outboxFailure('ob-1', 'task-001', 'other'), { ...failure(1, 'task-002', 'other', 'failed'), outboxId: null }])
+        : undefined,
+    )
+    const [linear, macos] = within(await screen.findByRole('list', { name: '通知失敗' })).getAllByRole('listitem')
+    expect(linear).toHaveTextContent('channel: linear')
+    expect(linear).toHaveTextContent('reason: other')
+    expect(linear).toHaveTextContent('振り分けのラベルの追加で、付ける直前にそのラベルが振り分けの表から消されていた')
+    expect(linear).not.toHaveTextContent('その他の失敗')
+    expect(linear).not.toHaveTextContent('上のどれにも当てはまらない')
+    expect(macos).toHaveTextContent('channel: macos')
+    expect(macos).toHaveTextContent('reason: other')
+    expect(macos).toHaveTextContent('その他の失敗')
   })
 
   it('eventId が null の項目が複数あり execution_events の項目と混ざっても、応答の順のまま欠けず重複せずに出し、「さらに表示」の続きも同じ', async () => {
