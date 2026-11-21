@@ -72,7 +72,7 @@ func (h *proposalAdapterHarness) ModelAPIDestinations() []string {
 	return h.implementation.ModelAPIDestinations()
 }
 
-func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInput, launch ProposalLaunch) (ProposalHarnessOutcome, error) {
+func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInput, launch ProposalLaunch) (outcome ProposalHarnessOutcome, runErr error) {
 	spec, err := BuildProposalSandboxSpec(in)
 	if err != nil {
 		return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
@@ -92,7 +92,14 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 	if err != nil {
 		return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
 	}
-	defer log.Finish(false)
+	// Finalize every exit, including StartProposal and Logs failures. Delivery
+	// uses the job context so retries survive the CLI's execution deadline.
+	defer func() {
+		_ = log.Finish(false)
+		if err := log.Deliver(in.deliveryCtx); err != nil {
+			outcome, runErr = ProposalHarnessOutcome{}, err
+		}
+	}()
 	id, err := h.implementation.StartProposal(ctx, adapter.ProposalRequest{Model: proposer.Model,
 		InputPath: filepath.Join(in.Paths.Inputs, "proposal-input.json"), OutPath: filepath.Join(in.Paths.Out, "proposal.json")},
 		adapter.SandboxEnv{ConfigDir: env.ConfigDir(), Env: env.Env()})
@@ -119,12 +126,6 @@ func (h *proposalAdapterHarness) Run(ctx context.Context, in ProposalHarnessInpu
 	// writeback, lock release and stopped Sandbox writers, just as for work.
 	result, resultErr := h.implementation.Result(id)
 	logErr := <-done
-	if err := log.Finish(false); err != nil {
-		logErr = err
-	}
-	if err := log.Deliver(in.deliveryCtx); err != nil {
-		return ProposalHarnessOutcome{}, err
-	}
 	if resultErr != nil || logErr != nil {
 		return ProposalHarnessOutcome{ErrorClass: strPtr("sandbox_error")}, nil
 	}

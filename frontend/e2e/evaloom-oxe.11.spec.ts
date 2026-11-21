@@ -34,7 +34,8 @@ const LINEAR_REASONS: ReadonlyArray<readonly [string, string]> = [
   ['retries_exhausted', '一時的な失敗が続き、5回目も失敗した'],
   ['state_not_found', '状態の変更で、付ける名前の状態が Issue の Team に無かった'],
   ['label_not_found', '振り分けのラベルの追加で、付けるラベルが Linear の Team に無かった'],
-  ['other', 'その他の失敗'],
+  // evaloom-ax2: other は起こる場面の文（16 3.4.2、2026-11-21 本人決定）。
+  ['other', '振り分けのラベルの追加で、付ける直前にそのラベルが振り分けの表から消されていた'],
 ]
 const OUTBOX_KINDS = ['missing_acceptance_criteria', 'decision_open', 'cancelled'] as const
 const MACOS_REASONS = ['permission_denied', 'launch_failed', 'timeout', 'other'] as const
@@ -140,6 +141,14 @@ const itemKey = (item: Item) => (item.outboxId != null ? `outbox:${item.outboxId
 async function screenshot(page: Page) {
   mkdirSync(SCREENSHOTS, { recursive: true })
   await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-oxe.11-dashboard.png'), fullPage: true })
+  // evaloom-ax2: channel=linear の reason=other の項目（起こる場面の文）が見える位置の画面。
+  const other = page
+    .getByRole('list', { name: '通知失敗' })
+    .locator('[data-source="linear_outbox"]')
+    .filter({ hasText: 'reason: other' })
+    .first()
+  await other.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: join(SCREENSHOTS, 'evaloom-ax2-dashboard.png') })
 }
 
 /** 一覧の各項目を、画面上の並びのまま、出所と ID（outbox は件名から引く）で読み出す。 */
@@ -191,6 +200,9 @@ test('Dashboard: linear_outbox の項目が件名・kind・channel=linear・reas
     const [reason, description] = LINEAR_REASONS[k % LINEAR_REASONS.length]
     await expect(item).toContainText(description)
     await expect(item).toContainText(`reason: ${reason}`)
+    // evaloom-ax2: channel=linear の項目に「その他の失敗」「上のどれにも当てはまらない」は出ない。
+    await expect(item).not.toContainText('その他の失敗')
+    await expect(item).not.toContainText('上のどれにも当てはまらない')
     await expect(item).toContainText(`kind: ${OUTBOX_KINDS[k % OUTBOX_KINDS.length]}`)
     await expect(item).toContainText('channel: linear')
     await expect(item.locator('time')).toHaveAttribute('dateTime', response!.createdAt)
@@ -207,6 +219,15 @@ test('Dashboard: linear_outbox の項目が件名・kind・channel=linear・reas
   await expect(eventItems.filter({ has: page.getByRole('link', { name: eventTitle(3), exact: true }) }).getByTestId('notification-failure-execution')).toContainText(
     executionId(3),
   )
+
+  // evaloom-ax2: channel=macos の reason=other の説明は「その他の失敗」のまま変わらない。
+  for (let k = 0; k < PAIRS; k += 1) {
+    if (MACOS_REASONS[k % MACOS_REASONS.length] !== 'other') continue
+    const item = eventItems.filter({ has: page.getByRole('link', { name: eventTitle(k), exact: true }) })
+    await expect(item).toContainText('その他の失敗')
+    await expect(item).toContainText('reason: other')
+    await expect(item).toContainText('channel: macos')
+  }
 
   // コメントの本文とエラーの文字列は出ない。
   const section = page.getByTestId('notification-failures')

@@ -230,7 +230,11 @@ func (log *Log) Deliver(ctx context.Context) error {
 			if log.stream == "proposal" {
 				artifact.RouteProposalID, artifact.ExecutionID = log.executionID, ""
 			}
-			err := log.registrar.RegisterLogArtifact(ctx, artifact)
+			// A proposal that emitted nothing has no log artifact (spec 05 3.13).
+			var err error
+			if log.stream != "proposal" || size > 0 {
+				err = log.registrar.RegisterLogArtifact(ctx, artifact)
+			}
 			if err == nil {
 				log.mu.Lock()
 				log.delivered = true

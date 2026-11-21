@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
 )
 
 // runProposalRuntime runs one route proposal through the production Runner,
@@ -143,6 +145,116 @@ func TestProposalTimeoutStillRegistersLog(t *testing.T) {
 			rows := proposalArtifactRows(t, db, proposalID)
 			if len(rows) != 1 || rows[0].kind != "log" || rows[0].stage != "proposal" || rows[0].executionIsNull != 1 {
 				t.Fatalf("artifacts=%+v", rows)
+			}
+		})
+	}
+}
+
+func TestProposalFailedCLIStillRegistersRedactedLog(t *testing.T) {
+	for _, name := range []string{"claude_code", "codex"} {
+		t.Run(name, func(t *testing.T) {
+			db, artifactDir, proposalID, r := runProposalRuntime(t, name, "cli_failure", 30)
+			var status, class string
+			if err := db.QueryRow(`SELECT status,error_class FROM route_proposals WHERE id=?`, proposalID).Scan(&status, &class); err != nil {
+				t.Fatal(err)
+			}
+			if status != "failed" || class != "work_failed" {
+				t.Fatalf("proposal status=%s class=%s", status, class)
+			}
+			rows := proposalArtifactRows(t, db, proposalID)
+			if len(rows) != 1 || rows[0].kind != "log" || rows[0].stage != "proposal" || rows[0].executionIsNull != 1 || rows[0].redacted != 1 {
+				t.Fatalf("artifacts=%+v", rows)
+			}
+			content, err := os.ReadFile(filepath.Join(artifactDir, rows[0].storagePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"proposal-initial", "proposal-refreshed", r.token} {
+				if strings.Contains(string(content), secret) {
+					t.Fatalf("secret stored in failed proposal log: %q", content)
+				}
+			}
+			if !strings.Contains(string(content), "stdout is not the proposal") || !strings.Contains(string(content), "leak [REDACTED]") {
+				t.Fatalf("partial CLI output missing: %q", content)
+			}
+		})
+	}
+}
+
+// The production adapters do not emit any log lines when StartProposal fails,
+// and Logs fails only when no session is available. Keep these paths empty.
+type emptyFailedProposalAdapter struct {
+	adapter.ProposalAdapter
+	failure               string
+	cancelled, resultRead bool
+}
+
+func (*emptyFailedProposalAdapter) ProposalConfigVariable() string { return "CODEX_HOME" }
+func (*emptyFailedProposalAdapter) ModelAPIDestinations() []string {
+	return []string{"api.openai.com:443"}
+}
+func (a *emptyFailedProposalAdapter) StartProposal(context.Context, adapter.ProposalRequest, adapter.SandboxEnv) (adapter.SessionID, error) {
+	if a.failure == "start" {
+		return "", fmt.Errorf("start failed")
+	}
+	return "session", nil
+}
+func (a *emptyFailedProposalAdapter) Logs(adapter.SessionID) (<-chan adapter.LogLine, error) {
+	if a.failure == "logs" {
+		return nil, fmt.Errorf("logs failed")
+	}
+	lines := make(chan adapter.LogLine)
+	close(lines)
+	return lines, nil
+}
+func (a *emptyFailedProposalAdapter) Cancel(adapter.SessionID) error {
+	a.cancelled = true
+	return nil
+}
+func (a *emptyFailedProposalAdapter) Result(adapter.SessionID) (adapter.HarnessResult, error) {
+	a.resultRead = true
+	return adapter.HarnessResult{Status: adapter.ResultFailed, ErrorClass: stagePtr(adapter.ErrorExecutionFailed)}, nil
+}
+
+func TestProposalFailuresWithoutOutputDoNotRegisterLog(t *testing.T) {
+	for _, failure := range []string{"start", "logs", "cli"} {
+		t.Run(failure, func(t *testing.T) {
+			db, config, _ := controlPlaneFixture(t, nil)
+			r, err := New(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &emptyFailedProposalAdapter{failure: failure}
+			claim := proposalClaim(ulid.Make().String(), 30)
+			insertRoutingProposal(t, db, claim.ID, ulid.Make().String(), config.RunnerID)
+			services := ProposalServicesFromConfig(config)
+			services.Launch = immediateProposalLaunch(t)
+			services.Adapters = func(WorkAdapterConfig) *adapter.Registry {
+				registry := &adapter.Registry{}
+				if err := registry.Register("codex", a); err != nil {
+					t.Fatal(err)
+				}
+				return registry
+			}
+			if err := r.ExecuteProposal(t.Context(), claim, services); err != nil {
+				t.Fatal(err)
+			}
+			var status, class string
+			if err := db.QueryRow(`SELECT status,error_class FROM route_proposals WHERE id=?`, claim.ID).Scan(&status, &class); err != nil {
+				t.Fatal(err)
+			}
+			wantClass := "work_failed"
+			if failure == "start" {
+				wantClass = "config_error"
+			}
+			if status != "failed" || class != wantClass {
+				t.Fatalf("result=%s/%s; want failed/%s", status, class, wantClass)
+			}
+			if rows := proposalArtifactRows(t, db, claim.ID); len(rows) != 0 {
+				t.Fatalf("empty output registered as artifacts: %+v", rows)
+			}
+			if a.cancelled != (failure == "logs") || a.resultRead != (failure != "start") {
+				t.Fatalf("session cleanup: cancelled=%v resultRead=%v", a.cancelled, a.resultRead)
 			}
 		})
 	}

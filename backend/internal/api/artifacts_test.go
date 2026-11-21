@@ -162,6 +162,16 @@ func assertArtifactCount(t *testing.T, f *authFixture, dir string, want int) {
 	}
 }
 
+func TestArtifactUnknownExecutionCreatesNoRow(t *testing.T) {
+	f, token, dir := artifactFixture(t)
+	status, body := postArtifact(t, f, token, "/api/executions/"+artifactID+"/artifacts"+artifactQuery, "content")
+	assertAuthError(t, status, body, 404, NotFound)
+	if !strings.Contains(string(body), `"message":"Execution not found"`) {
+		t.Fatalf("unknown Execution error=%s; want Execution not found", body)
+	}
+	assertArtifactCount(t, f, dir, 0)
+}
+
 func TestArtifactSameContentRetryDoesNotAddRows(t *testing.T) {
 	f, token, dir := artifactFixture(t)
 	// Concurrent requests must be serialized by the same ownership/write tx.
