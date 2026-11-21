@@ -4,7 +4,22 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 )
+
+// recordExecutionDecisionOutbox writes the notice and In Review in the same
+// transaction as an Execution's new owner decision (spec 16 3.2, 3.6.3).
+// Route decisions have no Execution and use their comment-only path.
+func recordExecutionDecisionOutbox(ctx context.Context, tx *sql.Tx, taskID, executionID, decisionID string) error {
+	trigger := linearoutbox.Trigger{TaskID: taskID, ExecutionID: executionID, TargetID: decisionID,
+		Kind: linearoutbox.KindDecisionOpen}
+	if err := linearoutbox.EnqueueTx(ctx, tx, trigger); err != nil {
+		return err
+	}
+	trigger.Kind = linearoutbox.KindWaitingDecision
+	return linearoutbox.EnqueueStateTx(ctx, tx, trigger)
+}
 
 type OwnerDecision struct {
 	ID              string          `json:"id"`

@@ -107,16 +107,28 @@ func TransitionExecutionTx(ctx context.Context, tx *sql.Tx, change Transition) e
 	return recordLinearState(ctx, tx, change)
 }
 
-// State changes share the transition transaction and dedupe per Execution.
+// State changes share the transition transaction. Starts dedupe per initial
+// Execution or answered decision; waits are recorded when the decision opens.
 func recordLinearState(ctx context.Context, tx *sql.Tx, change Transition) error {
 	var kind linearoutbox.Kind
+	targetID := change.ExecutionID
 	switch change.ToExecution {
 	case model.ExecutionClaimed, model.ExecutionRunning:
 		// A Task enters running at claim (spec 02 5.2). The subsequent
-		// harness start and a resumed claim reuse the same dedupe key.
+		// harness start reuses that key. A decision resumes the same Execution
+		// but needs a new key to return the Issue from In Review (spec 16 3.6.3).
 		kind = linearoutbox.KindStarted
-	case model.ExecutionWaitingApproval:
-		kind = linearoutbox.KindWaitingDecision
+		var decisionID string
+		err := tx.QueryRowContext(ctx, `SELECT json_extract(payload, '$.decisionId')
+			FROM execution_events WHERE execution_id = ? AND type = 'decision_answered'
+			AND json_extract(payload, '$.action') IN ('approve', 'continue', 'answer')
+			ORDER BY id DESC LIMIT 1`, change.ExecutionID).Scan(&decisionID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			targetID = decisionID
+		}
 	case model.ExecutionSucceeded:
 		kind = linearoutbox.KindCompleted
 	case model.ExecutionCancelled:
@@ -136,7 +148,7 @@ func recordLinearState(ctx context.Context, tx *sql.Tx, change Transition) error
 		return nil
 	}
 	return linearoutbox.EnqueueStateTx(ctx, tx, linearoutbox.Trigger{
-		TaskID: change.TaskID, ExecutionID: change.ExecutionID, TargetID: change.ExecutionID, Kind: kind,
+		TaskID: change.TaskID, ExecutionID: change.ExecutionID, TargetID: targetID, Kind: kind,
 	})
 }
 

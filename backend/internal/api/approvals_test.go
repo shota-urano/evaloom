@@ -459,6 +459,11 @@ func TestRenewWritesDecisionOpenAndRequestEvents(t *testing.T) {
 			if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE kind='decision_open'`); n != want {
 				t.Fatalf("all decision_open rows = %d; want %d", n, want)
 			}
+			if linear {
+				requireLinearStateRow(t, f, taskID, id, "waiting_decision", view.DecisionID, "In Review", "pending")
+			} else if n := stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE action='set_state'`); n != 0 {
+				t.Fatalf("manual renew wrote %d state rows", n)
+			}
 		})
 	}
 }
