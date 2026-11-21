@@ -46,6 +46,14 @@ func (c *failingLinear) SetIssueState(context.Context, string, string) error {
 	return errors.New("unexpected SetIssueState")
 }
 
+func (c *failingLinear) TeamLabels(context.Context, string) ([]linear.Label, error) {
+	return nil, errors.New("unexpected TeamLabels")
+}
+
+func (c *failingLinear) AddIssueLabel(context.Context, string, string) error {
+	return errors.New("unexpected AddIssueLabel")
+}
+
 type missingStateLinear struct {
 	failingLinear
 	reads, updates int
@@ -398,9 +406,8 @@ func TestNotificationFailuresMixedSourcesOrderAndCursor(t *testing.T) {
 // は null）。reason は linear_outbox.failure_reason（other を含む）をその
 // まま返し、notification_failed は書かれない。
 //
-// The Worker does not send add_label rows yet (spec 16 9章, 振り分けの
-// ラベルの追加), so the route_approved row is marked failed the way spec 16
-// 6章 describes for a label not in routes (reason=other).
+// The Worker rejects the route_approved row after the route is removed
+// immediately before delivery (spec 16 6章, reason=other).
 func TestNotificationFailuresListRouteTriggersWithoutExecution(t *testing.T) {
 	f := newAuthFixture(t)
 	seedStreamExecutions(t, f)
@@ -431,6 +438,10 @@ func TestNotificationFailuresListRouteTriggersWithoutExecution(t *testing.T) {
 		AND kind IN ('decision_open', 'route_approved') AND execution_id IS NULL`); n != 2 {
 		t.Fatalf("rows without an Execution = %d; want 2", n)
 	}
+	// Deliver the label after the comment retries, so pagination also
+	// exercises the failure times of two independent actions.
+	stageExec(t, f, `UPDATE linear_outbox SET next_attempt_at='2026-11-09T00:00:00.000000000Z'
+		WHERE kind='route_approved'`)
 
 	now := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
 	client := &failingLinear{}
@@ -444,8 +455,9 @@ func TestNotificationFailuresListRouteTriggersWithoutExecution(t *testing.T) {
 	if client.creates != linearfeedback.MaxAttempts {
 		t.Fatalf("comment sends = %d; want %d", client.creates, linearfeedback.MaxAttempts)
 	}
-	if _, err := f.db.Exec(`UPDATE linear_outbox SET status = 'failed', failure_reason = ?, failed_at = ?
-		WHERE kind = 'route_approved'`, linearfeedback.ReasonOther, "2026-11-09T00:00:00Z"); err != nil {
+	stageExec(t, f, `DELETE FROM routes WHERE label='route:a'`)
+	now = time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
+	if err := worker.SendDue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 

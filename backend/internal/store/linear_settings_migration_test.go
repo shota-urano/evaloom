@@ -92,6 +92,8 @@ func TestLinearOutboxLabelMustBeRouteAndNotTrigger(t *testing.T) {
 	_, err := db.Exec(`UPDATE linear_outbox SET label_name='custom-trigger' WHERE id='allowed'`)
 	assertRegistryConstraint(t, err, sqlite3.SQLITE_CONSTRAINT_TRIGGER)
 	// The configured value replaces the default, rather than banning both.
+	// The former trigger must also satisfy the routing prefix (16 3.6.5).
+	mustTaskExec(t, db, `INSERT INTO settings VALUES ('linear.routingLabelPrefix','"ai-"','t')`)
 	if err := insertLabelFeedback(db, "old-trigger", "ai-ready"); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +253,8 @@ func TestMigrationRemovesStoredLinearTeamID(t *testing.T) {
 		t.Fatalf("settings = %v, err=%v", rows, err)
 	}
 	var triggers int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'linear_outbox_label_%'`).Scan(&triggers); err != nil || triggers != 2 {
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='trigger'
+		AND name IN ('linear_outbox_label_insert','linear_outbox_label_update')`).Scan(&triggers); err != nil || triggers != 2 {
 		t.Fatalf("outbox label triggers = %d, err=%v", triggers, err)
 	}
 }
