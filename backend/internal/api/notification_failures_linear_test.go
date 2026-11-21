@@ -57,7 +57,7 @@ func (c *missingStateLinear) IssueState(context.Context, string) (linear.IssueSt
 
 func (c *missingStateLinear) TeamStates(context.Context, string) ([]linear.WorkflowState, error) {
 	c.reads++
-	return []linear.WorkflowState{{ID: "wrong-case", Name: "pr review", Type: "started"}}, nil
+	return []linear.WorkflowState{{ID: "wrong-case", Name: "in review", Type: "started"}}, nil
 }
 
 func (c *missingStateLinear) SetIssueState(context.Context, string, string) error {
