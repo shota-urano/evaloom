@@ -32,6 +32,7 @@ type loopLinear struct {
 	issues       map[string]map[string]any
 	comments     []map[string]any // commentCreate variables, in order
 	stateUpdates []map[string]any // issueUpdate variables, in order
+	labelAdds    []map[string]any // issueAddLabel variables, in order
 	queries      []string
 }
 
@@ -131,6 +132,28 @@ func (l *loopLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(req.Query, "EvaloomTeamStates"):
 		data = map[string]any{"team": map[string]any{"id": req.Variables["id"], "states": map[string]any{
 			"nodes": loopWorkflowStates, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}}
+	case strings.Contains(req.Query, "EvaloomTeamLabels"):
+		data = map[string]any{"team": map[string]any{"id": req.Variables["id"], "labels": map[string]any{
+			"nodes":    []linear.Label{{ID: "route-p", Name: "route:p"}},
+			"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}}
+	case strings.Contains(req.Query, "EvaloomIssueAddLabel"):
+		id, _ := req.Variables["id"].(string)
+		if l.issues[id] == nil || req.Variables["labelId"] != "route-p" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		issue, err := l.advanceIssue(id)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !hasLabel(issue, "route:p") {
+			nodes := issue["labels"].(map[string]any)["nodes"].([]any)
+			issue["labels"] = map[string]any{"nodes": append(nodes, map[string]any{"name": "route:p"}),
+				"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}
+		}
+		l.labelAdds = append(l.labelAdds, req.Variables)
+		data = map[string]any{"issueAddLabel": map[string]any{"success": true}}
 	case strings.Contains(req.Query, "EvaloomIssueSetState"):
 		id, _ := req.Variables["id"].(string)
 		if _, ok := l.issues[id]; !ok {

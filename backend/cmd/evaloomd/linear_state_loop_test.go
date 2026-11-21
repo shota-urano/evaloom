@@ -35,7 +35,7 @@ func attachLoopIssue(t *testing.T, h *loopHarness, body string, labels ...string
 func (h *loopHarness) effects(t *testing.T) map[string][][]any {
 	t.Helper()
 	result := map[string][][]any{}
-	for _, table := range []string{"tasks", "executions", "audit_logs", "linear_outbox"} {
+	for _, table := range []string{"tasks", "executions", "audit_logs", "linear_outbox", "route_proposals", "owner_decisions"} {
 		result[table] = nil
 		rows, err := h.db.Query(`SELECT * FROM ` + table + ` ORDER BY id`)
 		if err != nil {
