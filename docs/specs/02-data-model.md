@@ -371,7 +371,7 @@ Execution ごとに固定した文脈を保存する（requirements 7.1、8.3）
 | storage_path | TEXT | Evaloom のデータディレクトリ内のパス（Git には入れない） |
 | sha256 | TEXT | |
 | size_bytes | INTEGER | |
-| redacted | INTEGER | 機密情報の除外処理を通したか（0 / 1） |
+| redacted | INTEGER | 機密情報の除外で実際に置き換えが起きたか（0 / 1。05 の 3.9。除外の処理はどの成果物も通す。2026-11-21 本人決定） |
 | created_at | TEXT | |
 
 #### harness_records（スペシャルハーネスの記録）
