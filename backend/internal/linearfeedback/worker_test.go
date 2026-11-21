@@ -187,8 +187,8 @@ func setup(t *testing.T, fake http.Handler) (*sql.DB, *linearfeedback.Worker, *c
 		ToExecution: model.ExecutionSucceeded}); err != nil {
 		t.Fatal(err)
 	}
-	// These fixtures exercise comment delivery. State tests explicitly make
-	// the generated state row pending again (see setupState).
+	// These fixtures exercise comment delivery. State tests enqueue their
+	// own pending state change (see setupState).
 	mustExec(t, db, `UPDATE linear_outbox SET status = 'skipped' WHERE action = 'set_state'`)
 
 	server := httptest.NewTLSServer(fake)

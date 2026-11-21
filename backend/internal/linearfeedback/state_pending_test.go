@@ -14,10 +14,11 @@ import (
 
 	"github.com/shota-urano/evaloom/backend/internal/linear"
 	"github.com/shota-urano/evaloom/backend/internal/linearfeedback"
+	"github.com/shota-urano/evaloom/backend/internal/linearoutbox"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
 
-const stateKey = "linear-1:state_waiting_approval:linear-1-e1"
+const stateKey = "linear-1:state_waiting_decision:decision-1"
 
 // stateLinear uses the real client's GraphQL boundary, alongside the existing
 // comment server. Reads and updates can fail independently.
@@ -45,7 +46,7 @@ func newStateLinear() *stateLinear {
 		current:    linear.WorkflowState{ID: "progress", Name: "In Progress", Type: "started"},
 		teams: [][]linear.WorkflowState{{
 			{ID: "progress", Name: "In Progress", Type: "started"},
-			{ID: "review", Name: "PR Review", Type: "started"},
+			{ID: "review", Name: "In Review", Type: "started"},
 		}},
 	}
 }
@@ -140,14 +141,32 @@ func setupState(t *testing.T, fake *stateLinear) (*sql.DB, *linearfeedback.Worke
 	t.Helper()
 	db, worker, c, _ := setup(t, fake)
 	mustExec(t, db, `UPDATE linear_outbox SET status = 'sent' WHERE action = 'comment'`)
-	mustExec(t, db, `UPDATE linear_outbox SET status = 'pending', kind = 'waiting_approval',
-		state_name = 'PR Review', dedupe_key = ? WHERE action = 'set_state'`, stateKey)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := linearoutbox.EnqueueStateTx(context.Background(), tx, linearoutbox.Trigger{
+		TaskID: "linear-1", Kind: linearoutbox.KindWaitingDecision,
+		TargetID: "decision-1", ExecutionID: "linear-1-e1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	return db, worker, c
 }
 
 // 3.6.2: the two started states must be distinguished by exact name.
 func TestStateSelectsExactNameAndSendsOnce(t *testing.T) {
 	fake := newStateLinear()
+	// Similar names must not hide the exact match later in the same list.
+	fake.teams[0] = append([]linear.WorkflowState{
+		{ID: "wrong-case", Name: "in review", Type: "started"},
+		{ID: "wrong-space", Name: "In Review ", Type: "started"},
+		{ID: "old-name", Name: "PR Review", Type: "started"},
+	}, fake.teams[0]...)
 	db, worker, c := setupState(t, fake)
 	sendDue(t, worker)
 	c.advance(time.Hour)
@@ -159,14 +178,14 @@ func TestStateSelectsExactNameAndSendsOnce(t *testing.T) {
 		t.Fatalf("state row = %+v", r)
 	}
 	events := notificationEvents(t, db)
-	if len(events) != 1 || events[0].kind != "notification_sent" || events[0].payload["kind"] != "waiting_approval" ||
+	if len(events) != 1 || events[0].kind != "notification_sent" || events[0].payload["kind"] != "waiting_decision" ||
 		events[0].payload["channel"] != "linear" {
 		t.Fatalf("events = %+v", events)
 	}
 }
 
 func TestStateMissingNameRefreshesThenFails(t *testing.T) {
-	for _, name := range []string{"pr review", "PR REVIEW", "PR Review ", " PR Review", "Review"} {
+	for _, name := range []string{"in review", "IN REVIEW", "In Review ", " In Review", "PR Review", "Review"} {
 		for _, withExecution := range []bool{true, false} {
 			t.Run(name+"/execution="+strconv.FormatBool(withExecution), func(t *testing.T) {
 				fake := newStateLinear()
@@ -191,7 +210,7 @@ func TestStateMissingNameRefreshesThenFails(t *testing.T) {
 				events := notificationEvents(t, db)
 				if withExecution {
 					if len(events) != 1 || events[0].kind != "notification_failed" || len(events[0].payload) != 3 ||
-						events[0].payload["channel"] != "linear" || events[0].payload["kind"] != "waiting_approval" ||
+						events[0].payload["channel"] != "linear" || events[0].payload["kind"] != "waiting_decision" ||
 						events[0].payload["reason"] != "state_not_found" {
 						t.Fatalf("events=%+v", events)
 					}
@@ -279,7 +298,7 @@ func TestStateFoundOnRefreshIsUsed(t *testing.T) {
 
 func TestStateAlreadySetOrTerminalIsSentWithoutUpdate(t *testing.T) {
 	for _, state := range []linear.WorkflowState{
-		{ID: "review", Name: "PR Review", Type: "started"},
+		{ID: "review", Name: "In Review", Type: "started"},
 		{ID: "done", Name: "Done", Type: "completed"},
 		{ID: "canceled", Name: "Canceled", Type: "canceled"},
 	} {
@@ -293,6 +312,23 @@ func TestStateAlreadySetOrTerminalIsSentWithoutUpdate(t *testing.T) {
 			}
 			if len(fake.updates) != 0 || fake.teamReads != 0 {
 				t.Fatalf("updates=%v reads=%d", fake.updates, fake.teamReads)
+			}
+		})
+	}
+}
+
+func TestStateSimilarCurrentNameStillUpdates(t *testing.T) {
+	for _, name := range []string{"in review", "IN REVIEW", "In Review ", " In Review", "PR Review"} {
+		t.Run(name, func(t *testing.T) {
+			fake := newStateLinear()
+			fake.current = linear.WorkflowState{ID: "similar", Name: name, Type: "started"}
+			db, worker, _ := setupState(t, fake)
+			sendDue(t, worker)
+			if len(fake.updates) != 1 || fake.updates[0]["stateId"] != "review" {
+				t.Fatalf("issueUpdate = %v; want exact In Review state", fake.updates)
+			}
+			if r := outboxRow(t, db, stateKey); r.status != "sent" || r.outcomeUnknown != 0 {
+				t.Fatalf("row=%+v", r)
 			}
 		})
 	}
@@ -387,7 +423,7 @@ func TestStateAuthSharesSuppressionAndSuccessReleasesIt(t *testing.T) {
 			fake.mu.Lock()
 			fake.stateStatus, fake.teamStatus, fake.updateStatus = 0, 0, 0
 			fake.mu.Unlock()
-			mustExec(t, db, `UPDATE linear_outbox SET status = 'pending', attempts = 0 WHERE action = 'set_state'`)
+			mustExec(t, db, `UPDATE linear_outbox SET status = 'pending', attempts = 0 WHERE dedupe_key = ?`, stateKey)
 			sendDue(t, worker)
 			if outboxRow(t, db, stateKey).status != "sent" || len(fake.updates) == 0 {
 				t.Fatal("state was not sent")
