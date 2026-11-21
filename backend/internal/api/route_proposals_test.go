@@ -123,6 +123,32 @@ func TestRouteProposalProposedThenApproveQueuesTask(t *testing.T) {
 	assertAuthError(t, status, body, 409, Conflict)
 }
 
+func TestRouteApprovalRollsBackWhenLabelOutboxWriteFails(t *testing.T) {
+	f, token, proposalID, taskID := routeProposalFixture(t)
+	if status, body := proposalResult(t, f, token, proposalID, `{"label":"route:a","reason":"fits A","errorClass":null}`); status != 200 {
+		t.Fatalf("result=%d %s", status, body)
+	}
+	decisionID := routeDecisionOf(t, f, proposalID)
+	stageExec(t, f, `CREATE TRIGGER fail_label_outbox BEFORE INSERT ON linear_outbox
+		WHEN NEW.action='add_label' BEGIN SELECT RAISE(ABORT,'test label write failure'); END`)
+	status, body := approvalRequest(t, f, "POST", "/api/decisions/"+decisionID+"/answer",
+		`{"action":"approve","label":"route:b","basis":"`+proposalID+`"}`)
+	if status != 500 {
+		t.Fatalf("approve=%d %s", status, body)
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM tasks WHERE id=? AND status='routing' AND project_id IS NULL AND harness_id IS NULL`, taskID); n != 1 {
+		t.Fatal("outbox failure committed task destination or state")
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM owner_decisions WHERE id=? AND status='open' AND answer IS NULL`, decisionID); n != 1 {
+		t.Fatal("outbox failure committed the approval")
+	}
+	if n := stageCount(t, f, `SELECT count(*) FROM executions WHERE task_id=?`, taskID) +
+		stageCount(t, f, `SELECT count(*) FROM linear_outbox WHERE task_id=? AND action='add_label'`, taskID); n != 0 {
+		t.Fatal("outbox failure left partial rows")
+	}
+	requireProposal(t, f, proposalID, "proposed", "route:a", nil)
+}
+
 func TestRouteProposalFailedStillOpensDecision(t *testing.T) {
 	for _, tc := range []struct{ name, body, errorClass string }{
 		{"runner error", `{"label":null,"reason":null,"errorClass":"timeout"}`, "timeout"},

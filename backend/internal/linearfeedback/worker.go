@@ -1,4 +1,4 @@
-// Package linearfeedback sends Linear comments and Workflow state changes queued in linear_outbox
+// Package linearfeedback sends Linear comments, Workflow state changes and routing labels queued in linear_outbox
 // (spec 16 3.4 steps 2-5, 6章). It is the Linear transport of spec 16 3.1:
 // rows are written by linearoutbox in the transaction of the state change,
 // and the Worker here delivers them with retries.
@@ -34,18 +34,20 @@ const Channel = "linear"
 
 // The notification_failed reasons for channel=linear, also written to
 // linear_outbox.failure_reason (spec 16 3.4.2, Q85). ReasonOther is for a
-// failure none of the others describes; the Worker's own failures are
-// always one of the specific reasons, so only rows migrated by 0018 carry
-// it.
+// failure none of the others describes, including a route label that is no
+// longer allowed when it is about to be sent (3.6.5).
 const (
 	ReasonAuth             = "auth"
 	ReasonIssueRemoved     = "issue_removed"
 	ReasonRetriesExhausted = "retries_exhausted"
 	ReasonStateNotFound    = "state_not_found"
+	ReasonLabelNotFound    = "label_not_found"
 	ReasonOther            = "other"
 )
 
 var errStateNotFound = errors.New("linearfeedback: state name not found")
+var errLabelNotFound = errors.New("linearfeedback: label name not found")
+var errLabelNotAllowed = errors.New("linearfeedback: route label not allowed")
 
 // MaxAttempts and RetryDelays are the retry policy of spec 16 3.4 and 4
 // (Q80, decided 2026-11-08): at most 5 sends, waiting 1, 2, 4 and 8 minutes
@@ -80,6 +82,8 @@ type Client interface {
 	IssueState(ctx context.Context, issueID string) (linear.IssueState, error)
 	TeamStates(ctx context.Context, teamID string) ([]linear.WorkflowState, error)
 	SetIssueState(ctx context.Context, issueID, stateID string) error
+	TeamLabels(ctx context.Context, teamID string) ([]linear.Label, error)
+	AddIssueLabel(ctx context.Context, issueID, labelID string) error
 }
 
 // AuthAlerter tells the owner that a comment could not be sent because of an
@@ -187,7 +191,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 type outboxRow struct {
 	id, taskID, issueID, kind, dedupeKey, body string
-	action, stateName                          string
+	action, stateName, labelName               string
 	attempts                                   int
 	// executionID is linear_outbox.execution_id, "" for triggers without
 	// an Execution (3.4.2, 3.7).
@@ -242,11 +246,11 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 	// so a shorter fractional prefix sorts before a later timestamp (for
 	// example .1Z before .100000001Z), without rounding to milliseconds.
 	err := w.DB.QueryRowContext(ctx, `SELECT id, task_id, linear_issue_id, kind, dedupe_key, coalesce(body, ''), attempts,
-		outcome_unknown != 0, execution_id, action, coalesce(state_name, '') FROM linear_outbox
-		WHERE status = 'pending' AND action IN ('comment', 'set_state')
+		outcome_unknown != 0, execution_id, action, coalesce(state_name, ''), coalesce(label_name, '') FROM linear_outbox
+		WHERE status = 'pending' AND action IN ('comment', 'set_state', 'add_label')
 		AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY rtrim(created_at, 'Z'), id LIMIT 1`, w.now().Format(timeLayout)).Scan(
-		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID, &r.action, &r.stateName)
+		&r.id, &r.taskID, &r.issueID, &r.kind, &r.dedupeKey, &r.body, &r.attempts, &r.outcomeUnknown, &executionID, &r.action, &r.stateName, &r.labelName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -277,6 +281,9 @@ func (w *Worker) next(ctx context.Context) (*outboxRow, error) {
 func (w *Worker) send(ctx context.Context, r outboxRow, round *sendRound) error {
 	if r.action == "set_state" {
 		return w.sendState(ctx, r, round)
+	}
+	if r.action == "add_label" {
+		return w.sendLabel(ctx, r, round)
 	}
 	if r.outcomeUnknown {
 		commentID, err := w.findSent(ctx, r)
@@ -375,6 +382,10 @@ func (w *Worker) failAttempt(ctx context.Context, r outboxRow, failure error, me
 		return nil
 	case errors.Is(failure, errStateNotFound):
 		return w.markFailed(ctx, r, attempts, false, ReasonStateNotFound)
+	case errors.Is(failure, errLabelNotFound):
+		return w.markFailed(ctx, r, attempts, false, ReasonLabelNotFound)
+	case errors.Is(failure, errLabelNotAllowed):
+		return w.markFailed(ctx, r, attempts, false, ReasonOther)
 	case errors.Is(failure, linear.ErrIssueNotFound) || w.issueRemoved(ctx, r.issueID):
 		// 6章: a deleted or archived Issue fails at once and does not
 		// affect the task.
