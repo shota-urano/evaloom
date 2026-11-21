@@ -130,7 +130,7 @@ launchd (ユーザーエージェント)
 - 起動時の一回限りのログイン URL は使わない（[`18-remote-access.md`](./18-remote-access.md) 3.6）。
 - セッションは `HttpOnly; SameSite=Strict; Path=/` の Cookie で持ち、tailnet からの HTTPS では `Secure` を付ける（18 の 3.5）。
 - 状態を変える要求（POST / PUT / PATCH / DELETE）は、Cookie とは別に `X-CSRF-Token` ヘッダを必須にする。
-- `Host` / `Origin` は次の値だけを許可し、完全一致で照合する（DNS リバインディング対策）。`127.0.0.1:<port>` と `http://127.0.0.1:<port>`、起動時に指定した Tailscale の名前（`orionmac-mini.tailb76d84.ts.net`）と `https://<その名前>`（18 の 3.2）。
+- `Host` / `Origin` は次の値だけを許可し、完全一致で照合する（DNS リバインディング対策）。`127.0.0.1:<port>` と `http://127.0.0.1:<port>`、起動時に指定した Tailscale の名前（`evaloom.tailb76d84.ts.net`）と `https://<その名前>`（18 の 3.2）。
 
 選択の判断基準: 同じマシンの不正なプログラムが Cookie を持たずに状態変更 API を呼べないこと、ブラウザ経由の CSRF が通らないこと。この2点を [`14-security-tests.md`](./14-security-tests.md) のテストで確認する。
 
@@ -339,4 +339,4 @@ Runner 用の認証は次のとおりとする（Q3 の案）。
 |---|---|---|
 | Q114 | 段の通話口の方式（3.2、契約 7.4） | 決定（2026-11-10 本人、案を採用）: Runner が段ごとに作る Unix ドメインソケットを Sandbox の中に置く。コンテナと macOS VM の両方で使えるかを実装時に確かめ、使えなければ別のファイル記述子で同じ形の要求と応答をやり取りする |
 | Q116 | 鍵の保管場所（3.5） | 決定（2026-11-10 本人、案を採用）: Runner のデータディレクトリの鍵ファイル（1つの鍵に1ファイル、0600）。macOS のキーチェーンは、launchd の常駐から確実に読めることを実測するまで使わない |
-| Q122 | Linear の「管理画面で判断待ち」のコメントに載せる管理画面の URL | 決定（2026-11-10 本人、案を採用）: 18 で決めた Tailscale の名前の URL（`https://orionmac-mini.tailb76d84.ts.net/decisions/<id>`）を載せる。`-remote-host` の指定が無いときは判断待ちの ID だけを載せる |
+| Q122 | Linear の「管理画面で判断待ち」のコメントに載せる管理画面の URL | 決定（2026-11-10 本人、案を採用）: 18 で決めた Tailscale の名前の URL（`https://orionmac-mini.tailb76d84.ts.net/decisions/<id>`。2026-11-21 に名前を `evaloom.tailb76d84.ts.net` に変えたため、いまは `https://evaloom.tailb76d84.ts.net/decisions/<id>`）を載せる。`-remote-host` の指定が無いときは判断待ちの ID だけを載せる |

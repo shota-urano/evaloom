@@ -31,7 +31,8 @@ confirmed_rev: 79ef932
 ### 3.1 公開の経路（決定: Tailscale のネットワーク内だけ）
 
 - `evaloomd` は今までどおり `127.0.0.1:<port>` だけで待ち受ける。待ち受けのホストを変えるフラグは作らない（[`01-architecture.md`](./01-architecture.md) 3.2）。
-- 別端末からは `tailscale serve` を使い、tailnet の中の HTTPS（`https://orionmac-mini.tailb76d84.ts.net`）から `http://127.0.0.1:<port>` へ中継する。TLS は Tailscale が終端する。
+- 別端末からは `tailscale serve` を使い、tailnet の中の HTTPS（`https://evaloom.tailb76d84.ts.net`）から `http://127.0.0.1:<port>` へ中継する。TLS は Tailscale が終端する。
+- 名前は Mac mini の端末名ではなく、Tailscale Services のサービス `svc:evaloom`（tcp:443）の名前を使う（2026-11-21 本人決定）。Mac mini の端末名 `orionmac-mini.tailb76d84.ts.net` の「/」はほかのサービス（cerebellum）が使っているため。サービスを出す Mac mini にはタグ（`tag:server`）を付け、tailnet のポリシーの grants で本人の端末（`autogroup:member`）から `svc:evaloom` の tcp:443 への接続を許可する。
 - Tailscale Funnel（インターネットへの公開）は使わない（決定）。
 - `tailscale serve` の設定は本人が1回だけ行う（9章の人間タスク）。Evaloom は Tailscale の設定を書き換えない。
 - tailnet の中で管理画面に届く端末を本人の端末に絞るため、Tailscale のアクセス制御（ACL）を設定する案（Q95）。設定するかどうかと内容は本人が決める。
@@ -43,7 +44,7 @@ confirmed_rev: 79ef932
 | 経路 | Host | Origin |
 |---|---|---|
 | Mac mini から直接 | `127.0.0.1:<port>` | `http://127.0.0.1:<port>` |
-| tailnet から（`tailscale serve` の中継） | `orionmac-mini.tailb76d84.ts.net`（決定） | `https://orionmac-mini.tailb76d84.ts.net` |
+| tailnet から（`tailscale serve` の中継） | `evaloom.tailb76d84.ts.net`（決定） | `https://evaloom.tailb76d84.ts.net` |
 
 - 許可する Tailscale の名前は、起動時の設定で1つだけ指定する（案: `evaloomd -remote-host <名前>`、Q88）。指定が無ければ今までどおり `127.0.0.1:<port>` だけを許可する。
 - 値は完全一致で照合する。ワイルドカードや接頭辞での一致は使わない。
@@ -133,7 +134,7 @@ confirmed_rev: 79ef932
 | 項目 | 値 | 根拠 |
 |---|---|---|
 | 公開の範囲 | Tailscale のネットワーク内だけ（`tailscale serve`）。Funnel は使わない | 決定（2026-11-09、本人） |
-| 許可する Tailscale の名前 | `orionmac-mini.tailb76d84.ts.net` | 決定（2026-11-09、本人。Mac mini の Tailscale の名前） |
+| 許可する Tailscale の名前 | `evaloom.tailb76d84.ts.net` | 決定（2026-11-09、本人。2026-11-21 本人決定で Mac mini の端末名 `orionmac-mini.tailb76d84.ts.net` から Tailscale Services の `svc:evaloom` の名前に変更） |
 | セッションの有効期限 | ログインから3日 | 決定（2026-11-09、本人） |
 | ほかの端末のセッションを切る操作 | 作らない | 決定（2026-11-09、本人） |
 | 重要な操作でのパスワードの入れ直し | しない | 決定（2026-11-09、本人） |
@@ -167,7 +168,7 @@ API の共通規約（エラーの形、401 / 403 の使い分け）は [`01-arc
 
 14 の権限境界テストに足す項目は次のとおりとする。
 
-- 許可していない Host（例: `evil.example`）と、許可した名前に似た Host（例: `orionmac-mini.tailb76d84.ts.net.evil.example`）の要求が 403 になる。
+- 許可していない Host（例: `evil.example`）と、許可した名前に似た Host（例: `evaloom.tailb76d84.ts.net.evil.example`）の要求が 403 になる。
 - 期限切れのセッションの Cookie で本人用 API を呼ぶと 401 になる。
 - Control Plane を再起動しても、期限内のセッションで本人用 API を呼べる。
 - パスワードの再設定の後、前のセッションで本人用 API を呼ぶと 401 になる。
@@ -208,5 +209,5 @@ API の共通規約（エラーの形、401 / 403 の使い分け）は [`01-arc
   - 受け入れ基準: 6章の「14 の権限境界テストに足す項目」がすべてテストとして通る
 - [ ] [Frontend] ログイン画面（ID とパスワード）と、401 のときのログイン画面への移動（3.4）
   - 受け入れ基準: ログアウトの操作でログイン画面へ移る; ログイン画面から ID とパスワードでログインでき Dashboard が出る; 間違えると「ID かパスワードが違う」ことが出る; セッションが切れたら操作の途中でもログイン画面へ移り、ログインし直すと元の画面へ戻る; パスワードが未設定のとき設定の手順が出る
-- [ ] （人間） Mac mini で `tailscale serve` を設定し、別の端末から `https://orionmac-mini.tailb76d84.ts.net` で管理画面が開けることを確かめる。必要なら Tailscale の ACL で届く端末を絞る（3.1、Q95）
+- [ ] （人間） Mac mini で `tailscale serve` を設定し、別の端末から `https://evaloom.tailb76d84.ts.net` で管理画面が開けることを確かめる。必要なら Tailscale の ACL で届く端末を絞る（3.1、Q95）
 - [ ] （人間） requirements 15.5 のループバック限定の記述を、本書の条件に合わせて書き換える（3.9）
