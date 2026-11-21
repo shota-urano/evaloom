@@ -271,3 +271,63 @@ launchctl bootstrap "gui/$(id -u)" "$PWD/data/launchd/org.evaloom.evaloom-runner
 その後、通知許可を戻し、別のタスクまたは判断待ちで通知する。失敗した通知は再送しない。
 クリックの確認は表示直後と60秒以上経ってヘルパーが終了した後の両方で行う。
 これらは`make verify`の範囲外の手動確認とする。
+
+## 別の端末からのアクセス（Tailscale Services）
+
+仕様の正本は`docs/specs/18-remote-access.md`の3.1と3.2。
+管理画面は tailnet の中だけに、Tailscale Services のサービス`svc:evaloom`として`https://evaloom.tailb76d84.ts.net`で出す。
+Mac mini の端末名`orionmac-mini.tailb76d84.ts.net`の「/」はほかのサービス（cerebellum）が使っているため、端末名は使わない。
+Funnel（インターネットへの公開）は使わない。2026-11-21 に本人が以下の手順で設定し、別の端末からログインできることを確かめた。
+
+### Tailscale の管理画面（login.tailscale.com）
+
+1. Access controls のポリシーの`tagOwners`に`"tag:server": ["autogroup:admin"]`を足す。
+2. Services で`evaloom`（ポートは`tcp:443`）を定義する。
+3. ポリシーに、本人の端末からサービスへの接続を許す grants を足す。Tailscale Services は grants で明示的に許可しない限り届かない。
+
+   ```json
+   "grants": [
+       {
+           "src": ["autogroup:member"],
+           "dst": ["svc:evaloom"],
+           "ip":  ["tcp:443"],
+       },
+   ],
+   ```
+
+### Mac mini
+
+Tailscale の CLI は`/Applications/Tailscale.app/Contents/MacOS/Tailscale`にある。
+
+```sh
+TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+# Mac mini にタグを付ける（管理画面の Edit ACL tags が押せない場合）。
+# tailscale up は既定値以外の設定をすべて書く必要がある。出口ノードを使っていないのに
+# --exit-node-allow-lan-access が有効だと up が通らないため、先に無効にした。
+$TS set --exit-node-allow-lan-access=false
+$TS up --advertise-tags=tag:server --accept-routes
+# サービスとして evaloomd へ中継する
+$TS serve --service=svc:evaloom --https=443 http://127.0.0.1:8080
+$TS serve status
+```
+
+`serve`の後、管理画面の Services で Mac mini を`svc:evaloom`の出し手として承認する。
+
+### evaloomd
+
+evaloomd に、許可する名前を起動オプション`-remote-host`で1つだけ渡す（指定が無いと`127.0.0.1:<port>`以外の Host を 403 にする）。
+「ビルドとplist生成」で作った plist は`-remote-host`を含まないので、登録済みの plist に足して登録し直す。
+
+```sh
+P=~/Library/LaunchAgents/org.evaloom.evaloomd.plist
+cp "$P" ~/org.evaloom.evaloomd.plist.bak
+/usr/libexec/PlistBuddy -c "Add :ProgramArguments: string -remote-host" \
+  -c "Add :ProgramArguments: string evaloom.tailb76d84.ts.net" "$P"
+plutil -lint "$P"
+launchctl bootout "gui/$(id -u)/org.evaloom.evaloomd"
+launchctl bootstrap "gui/$(id -u)" "$P"
+```
+
+確かめ方: Mac mini で`curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: evaloom.tailb76d84.ts.net' http://127.0.0.1:8080/`が 200 を返す。
+tailnet の別の端末で`https://evaloom.tailb76d84.ts.net`を開き、「本人のパスワード設定」で設定した ID とパスワードでログインできる。
+サービスを出している Mac mini 自身からは`https://evaloom.tailb76d84.ts.net`に届かなかった（2026-11-21 実測）ので、確認は別の端末で行う。
