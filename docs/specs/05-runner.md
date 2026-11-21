@@ -202,7 +202,7 @@ claim の `job.kind` が `route_proposal` のときは、段の枠を使わず�
 - Proposal Sandbox には、鍵と、モデルの API のほかの外への接続を渡さない（本人決定 7）。
 - 全体設定 `routing.proposer` のミクロハーネスとモデルを Adapter で起動し、Issue の本文を外から来た文として区切って渡す（[`15-linear-intake.md`](./15-linear-intake.md)）。
 - 上限時間は claim の `proposal.timeoutSec`。中止とタイムアウトの止め方は 3.10 と同じとする。
-- ログは機密情報の除外を通して `POST /api/route-proposals/{id}/artifacts` で登録し、結果を `POST /api/route-proposals/{id}/result` で返す。Runner は選ばれたラベルが候補にあるかを確かめない。確かめるのは Control Plane である（02 の route_proposals）。
+- ログは機密情報の除外を通して `POST /api/route-proposals/{id}/artifacts` で登録し（CLI の異常終了や起動後の失敗で `failed` になったときも、それまでに出ていたログがあれば登録する。ログが空なら登録しない。2026-11-21 本人決定）、結果を `POST /api/route-proposals/{id}/result` で返す。Runner は選ばれたラベルが候補にあるかを確かめない。確かめるのは Control Plane である（02 の route_proposals）。
 
 ## 4. 設定値・確定値
 
