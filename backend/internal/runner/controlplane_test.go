@@ -48,6 +48,14 @@ func TestHeartbeatAcceptedByControlPlane(t *testing.T) {
 
 func controlPlaneFixture(t *testing.T, observe func(*http.Request, int)) (*sql.DB, Config, *httptest.Server) {
 	t.Helper()
+	db, config, server, _ := controlPlaneFixtureWithArtifactDir(t, observe)
+	return db, config, server
+}
+
+// controlPlaneFixtureWithArtifactDir also returns the Control Plane's artifact
+// data directory, so tests can read what the Control Plane stored.
+func controlPlaneFixtureWithArtifactDir(t *testing.T, observe func(*http.Request, int)) (*sql.DB, Config, *httptest.Server, string) {
+	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "evaloom.db"))
 	if err != nil {
@@ -61,7 +69,8 @@ func controlPlaneFixture(t *testing.T, observe func(*http.Request, int)) (*sql.D
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifactStore, err := store.NewArtifactStore(db, t.TempDir())
+	artifactDir := t.TempDir()
+	artifactStore, err := store.NewArtifactStore(db, artifactDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +100,7 @@ func controlPlaneFixture(t *testing.T, observe func(*http.Request, int)) (*sql.D
 	if err := os.WriteFile(config.TokenFile, []byte(token+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return db, config, server
+	return db, config, server, artifactDir
 }
 
 // Repeated real authenticated claims must create neither DB rows nor local
