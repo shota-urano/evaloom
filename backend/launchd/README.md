@@ -73,7 +73,76 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
 - launchdのラベルは`org.evaloom.evaloomd`と`org.evaloom.evaloom-runner`。バイナリ、DB、ログの配置例は`data/`配下とする。これらは仕様で固定された名称やパスではない。
 - 管理画面は`frontend`のビルド成果物（`frontend/dist`）を`evaloomd -web <ディレクトリ>`で同一オリジン配信する。`-web`を省略すると管理画面は配信しない。指定したディレクトリに`index.html`が無い場合は起動時にエラー終了する。`/api/`と`/auth/`以外で拡張子の無いパスは`index.html`を返す（画面側のルーティング用）。
 - Global Context（`docs/specs/07-context.md` 3.5、Q206・Q207）は`evaloomd -evaloom-repo <evaloomリポジトリの絶対パス>`で指定する。フラグ名は仕様で固定されたものではない。evaloomdは起動時にそのリポジトリのHEADのcommit SHAを1回だけ読み、以後の`context/global/`の読み出しはそのcommitから行う。作業ツリー・インデックスの未コミットの変更や、起動後のcommitは使わない。commitを変えたら再起動する。パスはリポジトリのルートの絶対パスとし、Gitリポジトリでない・サブディレクトリ・commitが無い場合は起動時にエラー終了する。`context/global/`が無いか空なら、globalの行を作らずに作業の段へ進む。`-evaloom-repo`を省略するとGlobal Contextは渡さない（globalの行を作らない）。plistは`__EVALOOM_ROOT__`を指定する。
-- Runnerは`-config <JSONファイル>`を読み、起動直後からheartbeatとclaimのpullループを動かす。設定例と通信時の動作は次節を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。
+- Runnerは`-config <JSONファイル>`を読み、起動直後からheartbeatとclaimのpullループを動かす。設定例と通信時の動作は「Runnerの設定と起動時heartbeat」を参照する。plistは`data/runner.json`を指定するため、登録前に設定ファイルとトークンファイルを用意する。
+
+## 製品用Sandboxイメージとプロキシのビルド
+
+仕様の正本は`docs/specs/05-runner.md`の4.1と`docs/specs/09-sandbox.md`。
+製品用Dockerfileは`backend/containers/`に置く。
+作業用イメージはEvaloom全体で共通の1つとし、Codex、Claude Code、Git、Python 3を含む。
+workとProposal Sandboxは常にこのイメージを使う。
+prepare・check・publishも、Profileで別のruntimeを宣言しなければ同じイメージを使う。
+テスト専用の`backend/internal/securitytest/Dockerfile.*`とは分けて管理する。
+
+Dockerサーバを起動してから、以下をリポジトリのルートで実行する。
+CLIの版は両方を明示する。どちらかが未指定または空なら、パッケージの取得前にビルドが失敗する。
+以下の版とイメージ名はビルド例であり、Runnerの暗黙の既定値にはしない。
+
+```sh
+set -eu
+sandbox_runtime=$(command -v docker)
+sandbox_arch=$("$sandbox_runtime" version --format '{{.Server.Arch}}')
+test -n "$sandbox_arch"
+"$sandbox_runtime" build --platform "linux/$sandbox_arch" \
+  -f backend/containers/Dockerfile.work \
+  --build-arg CODEX_VERSION=0.163.0 \
+  --build-arg CLAUDE_VERSION=2.1.316 \
+  -t evaloom-harness:local backend/containers
+"$sandbox_runtime" build --platform "linux/$sandbox_arch" \
+  -f backend/containers/Dockerfile.proxy \
+  -t evaloom-proxy:local backend/containers
+
+# macOSホストのCPUではなく、上で取得したDockerサーバのCPU種別に合わせる。
+# 既存バイナリを上書きしないよう、新しいディレクトリへ出力する。
+mkdir -p data/bin
+sandbox_build_dir=$(mktemp -d "$PWD/data/bin/sandbox.XXXXXX")
+(cd backend && GOOS=linux GOARCH="$sandbox_arch" CGO_ENABLED=0 \
+  go build -o "$sandbox_build_dir/evaloom-sandbox-proxy-linux" ./cmd/evaloom-sandbox-proxy)
+
+# data/runner.jsonへ組み込むcontainer欄を表示する。ファイルは作成しない。
+python3 - "$sandbox_runtime" "$sandbox_build_dir/evaloom-sandbox-proxy-linux" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+print(json.dumps({"container": {
+    "runtimePath": str(Path(sys.argv[1]).resolve()),
+    "image": "evaloom-harness:local",
+    "proxyImage": "evaloom-proxy:local",
+    "proxyBinary": str(Path(sys.argv[2]).resolve()),
+    "cpus": 4,
+    "memoryMiB": 8192,
+}}, indent=2))
+PY
+```
+
+表示された`container`欄を、次節のほかの必須項目と合わせて`data/runner.json`に指定する。
+`runtimePath`はDocker CLI、`proxyBinary`は上でビルドしたLinux用バイナリの絶対パスである。
+プロキシのイメージには`/usr/bin/env`、`/bin/busybox`、CA証明書を含む。
+Runnerが`proxyBinary`を読み取り専用でマウントして起動するため、プロキシ本体はイメージにCOPYしない。
+`proxyBinary`は作業領域、専用設定環境、`dataDir`などのマウント許可ルートの外に置く。
+上の`data/bin/`は、次節の`dataDir`を`data/runner/`とする例に合わせた配置である。
+Dockerを遠隔のサーバで動かす場合は、bind mountの参照先にも同じパスのバイナリが必要になる。
+
+両DockerfileともVOLUMEを宣言しない。認証情報・鍵・トークンはビルド引数や環境変数、
+COPYでイメージへ入れず、実行時にRunnerから渡す。
+Dockerの呼び出しに`DOCKER_HOST`などが必要な場合は、次節の`container.runtimeEnv`に明示する。
+launchdは対話シェルの環境を引き継がないため、ビルド時と同じDockerサーバに届く設定を使う。
+`cpus: 4`と`memoryMiB: 8192`は仕様05の既定値で、Sandboxごとの上限である。swapへの超過は許さない。
+
+`make verify`はDockerを呼ばず、Dockerfileの安全条件と版引数の必須検査を実行する。
+実際のイメージビルド、CLIの起動、段の実行は、統合後にMac miniで別途確認する。
+Runnerの登録、設定ファイルの作成、launchdへの登録はこのビルド手順には含めない。
 
 ## Runnerの設定と起動時heartbeat
 
@@ -99,7 +168,9 @@ Runnerは待ち受けソケットを作らず、管理DBにもアクセスしな
     "runtimePath": "/absolute/path/bin/docker",
     "image": "evaloom-harness:local",
     "proxyImage": "evaloom-proxy:local",
-    "proxyBinary": "/absolute/path/bin/evaloom-proxy-linux"
+    "proxyBinary": "/absolute/path/to/evaloom-sandbox-proxy-linux",
+    "cpus": 4,
+    "memoryMiB": 8192
   }
 }
 ```
