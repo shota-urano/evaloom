@@ -56,13 +56,16 @@ type Mount struct {
 }
 
 type SandboxSpec struct {
-	Mounts      []Mount
-	Secrets     map[string]string
-	ChannelPath string
-	Kind        SandboxKind
-	Worktree    string
-	GitDir      string
-	ConfigDir   string
+	Mounts  []Mount
+	Secrets map[string]string
+	// Channel is the Runner's stage channel handler (spec 09 3.6). Non-nil
+	// only for prepare/check/publish; Run places it in a private volume
+	// behind a relay sidecar and points EVALOOM_CHANNEL at its socket.
+	Channel   ChannelHandler
+	Kind      SandboxKind
+	Worktree  string
+	GitDir    string
+	ConfigDir string
 	// True only for an execution's disposable harness configuration copy.
 	ConfigWritable bool
 	Env            map[string]string
@@ -149,6 +152,10 @@ func (e *RuntimeError) Error() string { return "sandbox: runtime command failed"
 func runtimeFailure(err error) error {
 	if err == nil {
 		return nil
+	}
+	var runtime *RuntimeError
+	if errors.As(err, &runtime) {
+		return runtime
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {

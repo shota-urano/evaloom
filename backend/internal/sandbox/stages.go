@@ -98,7 +98,7 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 	if len(c.stageRoots) == 0 || spec.Worktree != "" || spec.GitDir != "" {
 		return nil, &Error{Op: "explicit stage mount wiring required"}
 	}
-	channelMount, err := c.channelMount(spec)
+	channelTarget, err := c.channelTarget(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -169,8 +169,10 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 		}
 		args = append(args, "--mount", mount)
 	}
-	if channelMount != "" {
-		args = append(args, "--mount", channelMount)
+	if channelTarget != "" {
+		// Only this stage's private channel volume, never a host socket
+		// (spec 09 3.6, Q232). Read-only still permits connecting.
+		args = append(args, "--mount", "type=volume,source="+channelVolume(name)+",target="+channelTarget+",volume-nocopy,readonly")
 	}
 	if c.config.StageRequestFile != "" {
 		source, err := resolve(c.config.StageRequestFile)
@@ -206,7 +208,7 @@ func (c *Container) stageArgs(spec SandboxSpec, command []string, name string, c
 		if !stageEnvAllowed(spec.Kind, key) {
 			continue
 		}
-		if key == "EVALOOM_CHANNEL" && spec.ChannelPath == "" {
+		if key == "EVALOOM_CHANNEL" && spec.Channel == nil {
 			continue // Never advertise an absent or caller-injected channel.
 		}
 		if strings.ContainsRune(value, 0) {

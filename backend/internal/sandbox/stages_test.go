@@ -337,7 +337,7 @@ func TestStageInvalidSpecsFailBeforeRuntime(t *testing.T) {
 				if authority == "secrets" {
 					f.spec.Secrets = map[string]string{"slot": "value"}
 				} else {
-					f.spec.ChannelPath = "/socket"
+					f.spec.Channel = &recordingChannel{kind: kind} // no relay image or binary
 				}
 				_, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/bin/true"})
 				requireClass(t, err, model.ExecutionFailed, model.ErrorSandbox)

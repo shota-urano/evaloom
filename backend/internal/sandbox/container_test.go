@@ -1,12 +1,15 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +22,7 @@ import (
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 )
 
 type invocation struct {
@@ -92,12 +96,31 @@ func TestRuntimeHelper(t *testing.T) {
 		os.Exit(0)
 	}
 	if args[0] == "volume" {
+		if mode == "relay-volume-fail" && args[1] == "create" {
+			fail()
+		}
 		fmt.Print("volume")
 		os.Exit(0)
 	}
 	if args[1] == "exec" {
-		if mode == "network-check-fail" {
+		if mode == "network-check-fail" || mode == "relay-check-fail" {
 			fail()
+		}
+		if slices.Contains(args, "channel-check") {
+			// The stage starts only after the relay sidecar listens.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if dir, err := os.ReadFile(filepath.Join(root, "channel.dir")); err == nil {
+					if conn, err := net.Dial("unix", filepath.Join(string(dir), sandboxproxy.ChannelName)); err == nil {
+						conn.Close()
+						break
+					}
+				}
+				if time.Now().After(deadline) {
+					fail()
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
 		}
 		fmt.Print("ready")
 		os.Exit(0)
@@ -105,6 +128,39 @@ func TestRuntimeHelper(t *testing.T) {
 	name := args[len(args)-1]
 	if index := slices.Index(args, "--name"); index >= 0 {
 		name = args[index+1]
+	}
+	if strings.HasSuffix(name, "-relay") {
+		// The channel relay sidecar: the production relay code, listening in a
+		// short directory that stands for the stage's private channel volume.
+		switch args[1] {
+		case "create":
+			if mode == "relay-create-fail" {
+				fail()
+			}
+			data, _ := json.Marshal(args)
+			write("relay.json", string(data))
+		case "start":
+			if mode == "relay-start-fail" {
+				fail()
+			}
+			dir, err := os.MkdirTemp("/tmp", "er-")
+			if err != nil {
+				os.Exit(97)
+			}
+			listener, err := net.Listen("unix", filepath.Join(dir, sandboxproxy.ChannelName))
+			if err != nil {
+				os.Exit(97)
+			}
+			write("channel.dir", dir)
+			_ = sandboxproxy.ServeChannel(listener, os.Stdin, os.Stdout)
+			_ = os.RemoveAll(dir)
+		case "rm":
+			write("relay-removed", "yes")
+		case "ls":
+		default:
+			fail()
+		}
+		os.Exit(0)
 	}
 	if strings.HasSuffix(name, "-ingress") || strings.HasSuffix(name, "-egress") {
 		switch args[1] {
@@ -192,6 +248,8 @@ func TestRuntimeHelper(t *testing.T) {
 				if err := probe.Run(); err != nil {
 					os.Exit(95)
 				}
+			} else if mode == "channel-probe" {
+				channelProbe(root)
 			} else {
 				fmt.Print("workload stdout")
 				fmt.Fprint(os.Stderr, "workload stderr")
@@ -257,6 +315,36 @@ func TestRuntimeHelper(t *testing.T) {
 		os.Exit(96)
 	}
 	os.Exit(0)
+}
+
+// channelProbe is a stage program using EVALOOM_CHANNEL through the relay
+// sidecar's socket. It prints one result per attempted request.
+func channelProbe(root string) {
+	dir, err := os.ReadFile(filepath.Join(root, "channel.dir"))
+	if err != nil {
+		os.Exit(98)
+	}
+	socket := filepath.Join(string(dir), sandboxproxy.ChannelName)
+	for _, request := range []string{
+		`{"op":"cancel_check"}`,
+		`{"op":"authorize","operation":"publish","approvalId":null,"contentId":"r1"}`,
+		`not json`,
+		`{"op":"cancel_check"}` + strings.Repeat(" ", sandboxproxy.ChannelLineLimit),
+	} {
+		conn, err := net.Dial("unix", socket)
+		if err != nil {
+			os.Exit(98)
+		}
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_, _ = io.WriteString(conn, request+"\n")
+		reply, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			fmt.Println("closed")
+		} else {
+			fmt.Print("reply " + reply)
+		}
+		conn.Close()
+	}
 }
 
 type fixture struct {

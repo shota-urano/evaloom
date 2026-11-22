@@ -35,17 +35,30 @@ Proposalの作業ディレクトリは仕様で未定義なので、`--workdir`�
 
 ### 通話口
 
-Runnerの段の実行枠は、Prepare・Check・Publishの実行前に、そのattempt内に
-Unixソケットを作る。段の実行が返ったら、待ち受けと全接続を閉じ、中継中のHTTP要求も中止する。
+Runnerの段の実行枠は、Prepare・Check・Publishの実行前に、段ごとの通話口の受け手
+（`ChannelHandler`）を作る。段の実行が返ったら受け手を閉じ、中継中のHTTP要求も中止する。
 Work・Proposalには通話口を作らない。executorは全プロセスの停止を確認してから返す。
 
-executorは`StageInvocation.ChannelPath`を`SandboxSpec.ChannelPath`へ渡し、
-`Env.EVALOOM_CHANNEL`にゲスト内のパスを明示する。受け取ったcontextもそのまま使う。
-contextには`WithStageChannel`による段・ソケットの照合情報があり、パスの指定だけでは
-ホスト上の任意のソケットを渡せない。起動前にソケットの同一性と待ち受けの生存を確かめる。
-マウントはソケット1つだけを読み取り専用で渡し、親ディレクトリは見せない。
-ゲストパスが段の領域と重なる場合や、Work・Proposalへの指定は起動前に拒否する。
-ソケットが無いときは`EVALOOM_CHANNEL`も渡さない。
+通話口の置き方は09の3.6（Q232）による。ホストのUnixソケットはどのコンテナにも渡さない。
+executorは`StageInvocation.Channel`を`SandboxSpec.Channel`へ渡し、`Env.EVALOOM_CHANNEL`に
+ゲスト内のソケットのパス（名前は`channel.sock`固定）を明示する。`Container.Run`は段の
+コンテナを作る前に、次を行う。
+
+1. 段専用のボリューム（`<段のコンテナ名>-channel`）を作る。
+2. 中継の補助コンテナ（`<段のコンテナ名>-relay`）を、プロキシのイメージと
+   `evaloom-sandbox-proxy channel`で作る。ネットワークは`none`、読み取り専用、
+   `--cap-drop ALL`、`no-new-privileges`で、環境変数と認証情報を渡さない。
+   マウントは中継のバイナリとこのボリュームだけ。
+3. `container start --attach --interactive`で標準入出力につなぎ、`channel-check`で
+   ソケットの待ち受けを確かめる。どれかに失敗したら段のコンテナを作らず、
+   Dockerの理由付きで`sandbox_error`を返す。
+
+段のコンテナは、このボリュームを`EVALOOM_CHANNEL`の親ディレクトリに読み取り専用で
+マウントする。補助コンテナは、ソケットに来た1行のJSON（64KiB以内）だけを標準出力へ
+1行ずつ渡し、それ以外は渡さずに接続を閉じる。Runner側（`RelayChannel`）は要求を
+受け手に渡し、要求の順に応答を1行ずつ標準入力へ返す。受け手が応答しない（拒否）ときは
+`null`を返し、補助コンテナはその接続を応答なしで閉じる。段が終わったら、段のコンテナの
+後に補助コンテナとボリュームを消す。
 
 Prepare・Checkは`cancel_check`だけ、Publishは加えて`authorize`を受け付ける。
 中止の応答には最新のheartbeatで受け取った指示を使い、APIへ問い合わせない。
@@ -53,8 +66,8 @@ authorizeはExecution IDをRunner側で固定して既存APIへ1回だけ中継�
 10秒以内に正常な応答を得られなければ`allowed:false / unavailable`を返す。
 Runnerトークンをソケットの応答やSandboxの環境に含めない。
 
-1行64KiBを超える要求、不正なJSON、重複・未知の項目、段で使えない要求には応答せず
-接続を閉じる。要求の本文をログへコピーせず、固定文の拒否理由だけを`runner`ストリームへ
+1行64KiBを超える要求と1行のJSONでない要求は補助コンテナが渡さない。重複・未知の項目、
+段で使えない要求はRunnerが拒否し、応答せずに接続を閉じる。要求の本文をログへコピーせず、固定文の拒否理由だけを`runner`ストリームへ
 記録する。段の終了後に既存のログ配信を使い、配信を中止した場合もローカルログを残す。
 
 ゲスト内のソケットパスや、各executorからの具体的な接続は内部の構築境界で渡す。

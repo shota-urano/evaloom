@@ -227,7 +227,7 @@ func (c *Container) createArgs(spec SandboxSpec, command []string, name string, 
 	if spec.Kind != Harness {
 		return c.stageArgs(spec, command, name, configVolume...)
 	}
-	if len(spec.Mounts) != 0 || len(spec.Secrets) != 0 || spec.ChannelPath != "" {
+	if len(spec.Mounts) != 0 || len(spec.Secrets) != 0 || spec.Channel != nil {
 		return nil, &Error{Op: "stage fields cannot be used by legacy harness"}
 	}
 	if spec.Worktree == "" || spec.GitDir == "" || spec.ConfigDir == "" {
@@ -324,9 +324,6 @@ func (c *Container) RunControlled(ctx context.Context, spec SandboxSpec, command
 }
 
 func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string, controlled bool) (Process, error) {
-	if err := validateStageChannel(ctx, spec); err != nil {
-		return nil, err
-	}
 	secretEnv, err := stageSecretEnvironment(spec)
 	if err != nil {
 		return nil, err
@@ -368,8 +365,12 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		return nil, &Error{Op: op, Cause: cause}
 	}
 	var network *networkResources
+	var channel *channelResources
 	started := false
 	defer func() {
+		if !started && channel != nil {
+			channel.cleanup()
+		}
 		if !started && network != nil {
 			network.cleanup()
 		}
@@ -425,9 +426,13 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			return nil, err
 		}
 	}
-	if err := validateStageChannel(ctx, spec); err != nil {
-		cancel()
-		return nil, err
+	if spec.Channel != nil {
+		// No stage container is created unless its channel relay is running
+		// (spec 09 3.6 item 6). Docker's reason reaches the stage log.
+		channel = &channelResources{container: c, name: name + "-relay", volume: channelVolume(name), handler: spec.Channel}
+		if err := channel.prepare(ctx, spec); err != nil {
+			return fail("stage channel relay unconfirmed", runtimeFailure(err))
+		}
 	}
 	if _, err = c.createWithSecrets(ctx, secretEnv, args); err != nil {
 		// create cannot run a workload. Remove any partially created container
@@ -451,7 +456,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			return nil, err
 		}
 	}
-	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{}), network: network}
+	p := &containerProcess{container: c, name: name, done: make(chan struct{}), removed: make(chan struct{}), network: network, channel: channel}
 	attachCtx, stopAttach := context.WithCancel(context.Background())
 	attach := c.command(attachCtx, "container", "start", "--attach", name)
 	attach.Stdout, attach.Stderr = c.config.Stdout, c.config.Stderr
