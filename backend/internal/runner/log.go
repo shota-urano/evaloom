@@ -47,6 +47,9 @@ type Log struct {
 	writeErr                                  error
 	retryInterval                             time.Duration
 	secrets                                   []string
+	// runnerLines holds the file offsets of Note lines, delivered as
+	// stream=runner (spec 05 3.8) while staying in this stage's log file.
+	runnerLines map[int64]bool
 }
 
 // The Runner token is always excluded. Stage handlers must also pass any other
@@ -97,7 +100,7 @@ func (log *Log) Read(source io.Reader) error {
 		line, readErr := reader.ReadString('\n')
 		if len(line) > 0 {
 			text := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-			if err := log.appendLine(text); err != nil {
+			if err := log.appendLine(text, false); err != nil {
 				return err
 			}
 		}
@@ -110,7 +113,27 @@ func (log *Log) Read(source io.Reader) error {
 	}
 }
 
-func (log *Log) appendLine(text string) error {
+// Note records one line of the Runner's own output in this log, delivered as
+// stream=runner. The text passes the same exclusion as Read (spec 05 3.9)
+// before newlines are folded and it is cut to maxRunes characters.
+func (log *Log) Note(text string, maxRunes int) error {
+	log.mu.Lock()
+	secrets := log.secrets
+	log.mu.Unlock()
+	clean, changed := logredact.Text(text, secrets)
+	clean = strings.Join(strings.Fields(clean), " ")
+	if runes := []rune(clean); maxRunes > 0 && len(runes) > maxRunes {
+		clean = string(runes[:maxRunes])
+	}
+	if changed {
+		log.mu.Lock()
+		log.redacted = true
+		log.mu.Unlock()
+	}
+	return log.appendLine(clean, true)
+}
+
+func (log *Log) appendLine(text string, runner bool) error {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 	// Harness adapters exclude recovered authentication values before Logs.
@@ -121,6 +144,12 @@ func (log *Log) appendLine(text string) error {
 	}
 	if log.writeErr != nil {
 		return log.writeErr
+	}
+	if runner {
+		if log.runnerLines == nil {
+			log.runnerLines = map[int64]bool{}
+		}
+		log.runnerLines[log.size] = true
 	}
 	n, err := io.WriteString(log.file, text+"\n")
 	if err == nil && n != len(text)+1 {
@@ -202,7 +231,13 @@ func (log *Log) Deliver(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("runner: read saved log failed")
 				}
-				events = append(events, logEvent{fmt.Sprintf("%s:%d", log.id, next), log.stream, strings.TrimSuffix(line, "\n")})
+				stream := log.stream
+				log.mu.Lock()
+				if log.runnerLines[next] {
+					stream = "runner"
+				}
+				log.mu.Unlock()
+				events = append(events, logEvent{fmt.Sprintf("%s:%d", log.id, next), stream, strings.TrimSuffix(line, "\n")})
 				next += int64(len(line))
 			}
 			body, err := json.Marshal(struct {

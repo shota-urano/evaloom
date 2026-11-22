@@ -62,7 +62,14 @@ func (in StageInvocation) RunProgram(ctx context.Context, launch func(context.Co
 		} else if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			code = stageInterruption(err)
 		}
-		return StageOutcome{RunnerError: &code}
+		outcome := StageOutcome{RunnerError: &code}
+		if code == "sandbox_error" {
+			outcome.Err = err
+			if err == nil {
+				outcome.Err = errors.New("sandbox: runtime returned no process")
+			}
+		}
+		return outcome
 	}
 	err = waitProgram(ctx, process)
 	outcome := StageOutcome{}
@@ -71,6 +78,7 @@ func (in StageInvocation) RunProgram(ctx context.Context, launch func(context.Co
 	} else if err == nil && ctx.Err() == nil {
 		code = "sandbox_error"
 		outcome.RunnerError = &code
+		outcome.Err = errors.New("sandbox: workload exit status unconfirmed")
 	}
 	if ctx.Err() != nil {
 		code = stageInterruption(ctx.Err())
@@ -81,6 +89,8 @@ func (in StageInvocation) RunProgram(ctx context.Context, launch func(context.Co
 			code = "sandbox_error"
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				code = stageInterruption(err)
+			} else {
+				outcome.Err = err
 			}
 			outcome.RunnerError = &code
 		}

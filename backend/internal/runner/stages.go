@@ -39,6 +39,10 @@ type StageOutcome struct {
 	ResultArtifactID *string         `json:"resultArtifactId"`
 	Work             *StageWork      `json:"work"`
 	Usage            StageUsage      `json:"usage"`
+	// Err is the cause behind a Runner-decided sandbox_error. It is not part
+	// of the stage_finished report; the executor records its redacted reason
+	// in the stage log (stream=runner) instead (spec 05 3.8, 3.9).
+	Err error `json:"-"`
 }
 
 type StageWork struct {

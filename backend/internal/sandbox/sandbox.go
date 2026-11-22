@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/model"
@@ -93,6 +94,7 @@ type Process interface {
 // Error carries only a safe diagnostic, never raw runtime output (which may
 // contain secrets). Status/ErrorClass use the existing spec 02 classifications.
 // A deadline remains discoverable with errors.Is for Runner's supervisor.
+// Cause may also wrap a *RuntimeError; Error() never includes its text.
 type Error struct {
 	Op    string
 	Cause error
@@ -126,4 +128,35 @@ type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string {
 	return fmt.Sprintf("sandbox: command exited with code %d", e.Code)
+}
+
+// RuntimeError is the runtime CLI's own reason for a failed control command
+// (e.g. Docker's "Error response from daemon: ..."). It is reachable only with
+// errors.As through Error.Cause; Error() never includes Stderr or Detail,
+// because they may contain host paths or values. Callers must truncate and
+// apply secret exclusion (spec 05 3.9) before recording them anywhere.
+type RuntimeError struct {
+	// ExitCode is the CLI's exit status, or -1 when it did not exit normally.
+	ExitCode int
+	Stderr   string
+	// Detail describes failures without CLI output (start error, bad state).
+	Detail string
+}
+
+func (e *RuntimeError) Error() string { return "sandbox: runtime command failed" }
+
+// runtimeFailure keeps the CLI's exit status and stderr from exec.Cmd.Output.
+func runtimeFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return &RuntimeError{ExitCode: exit.ExitCode(), Stderr: string(exit.Stderr)}
+	}
+	return &RuntimeError{ExitCode: -1, Detail: err.Error()}
+}
+
+func runtimeDetail(format string, args ...any) error {
+	return &RuntimeError{ExitCode: -1, Detail: fmt.Sprintf(format, args...)}
 }

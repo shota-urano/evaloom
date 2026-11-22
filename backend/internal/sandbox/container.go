@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -360,8 +361,9 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	}
 	limit := c.clock.now().Add(spec.Limits.Time)
 	ctx, cancel := c.clock.withDeadline(ctx, limit)
-	fail := func(op string) (Process, error) {
-		cause := ctx.Err()
+	// reason is the runtime's own explanation; it never enters Error().
+	fail := func(op string, reason error) (Process, error) {
+		cause := errors.Join(ctx.Err(), reason)
 		cancel()
 		return nil, &Error{Op: op, Cause: cause}
 	}
@@ -381,8 +383,19 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 			Env     []string
 		}
 	}
-	if err != nil || json.Unmarshal(image, &metadata) != nil || metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
-		return fail("Linux image without implicit volumes required")
+	if err != nil {
+		return fail("Linux image without implicit volumes required", runtimeFailure(err))
+	}
+	if err := json.Unmarshal(image, &metadata); err != nil {
+		return fail("Linux image without implicit volumes required", runtimeDetail("image metadata is not readable"))
+	}
+	if metadata.OS != "linux" || metadata.Config == nil || len(metadata.Config.Volumes) != 0 {
+		volumes := 0
+		if metadata.Config != nil {
+			volumes = len(metadata.Config.Volumes)
+		}
+		return fail("Linux image without implicit volumes required",
+			runtimeDetail("image os %q, config present %t, declared volumes %d", metadata.OS, metadata.Config != nil, volumes))
 	}
 	if len(secretEnv) != 0 {
 		entrypoint, err := secretEntrypoint(metadata.Config.Env, spec)
@@ -396,7 +409,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	if len(spec.AllowedDestinations) != 0 {
 		network = &networkResources{container: c, ingress: name + "-ingress", egress: name + "-egress", volume: name + "-ipc"}
 		if err := network.prepare(ctx, spec); err != nil {
-			return fail("network isolation unconfirmed")
+			return fail("network isolation unconfirmed", runtimeFailure(err))
 		}
 		// createArgs always starts with network none; only this trusted path
 		// may substitute a namespace whose complete proxy path was confirmed.
@@ -420,11 +433,11 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 		// create cannot run a workload. Remove any partially created container
 		// by its preassigned name, even if its response was lost or timed out.
 		_ = c.remove(name)
-		return fail("container creation failed")
+		return fail("container creation failed", runtimeFailure(err))
 	}
 	if ctx.Err() != nil {
 		_ = c.remove(name)
-		return fail("container creation interrupted")
+		return fail("container creation interrupted", nil)
 	}
 	if working != nil {
 		if err := working.seed(ctx, c, name); err != nil {
@@ -445,7 +458,7 @@ func (c *Container) run(ctx context.Context, spec SandboxSpec, command []string,
 	if err := attach.Start(); err != nil {
 		stopAttach()
 		_ = c.remove(name)
-		return fail("container start failed")
+		return fail("container start failed", runtimeFailure(err))
 	}
 	if controlled {
 		// Transfer ownership at the start boundary, before supervision begins.

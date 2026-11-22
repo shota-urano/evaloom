@@ -159,7 +159,7 @@ func (c *stageChannel) reject(reason string) {
 	if closed {
 		return // Closing the stage is not a malformed peer request.
 	}
-	_ = c.log.appendLine(fmt.Sprintf("channel %s: %s", c.stage, reason))
+	_ = c.log.appendLine(fmt.Sprintf("channel %s: %s", c.stage, reason), false)
 }
 
 func (c *stageChannel) close() {
