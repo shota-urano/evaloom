@@ -3,6 +3,7 @@ package claudecode
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
@@ -70,6 +71,8 @@ func (w *lineWriter) line(data []byte) {
 
 type events struct {
 	completed, failed, invalid bool
+	initSeen                   bool
+	isolationBreach            string
 	resultIndex                *int64
 	summary                    string
 	sessionID                  string
@@ -81,12 +84,14 @@ type events struct {
 // Assistant messages cannot establish a successful run.
 func (e *events) read(line []byte) {
 	var event struct {
-		Type        string  `json:"type"`
-		SessionID   string  `json:"session_id"`
-		Subtype     string  `json:"subtype"`
-		IsError     *bool   `json:"is_error"`
-		Result      *string `json:"result"`
-		ResultIndex *int64  `json:"result_index"`
+		Type        string          `json:"type"`
+		SessionID   string          `json:"session_id"`
+		Subtype     string          `json:"subtype"`
+		IsError     *bool           `json:"is_error"`
+		Result      *string         `json:"result"`
+		ResultIndex *int64          `json:"result_index"`
+		MCPServers  json.RawMessage `json:"mcp_servers"`
+		Skills      json.RawMessage `json:"skills"`
 		Usage       *struct {
 			Input  *int64 `json:"input_tokens"`
 			Output *int64 `json:"output_tokens"`
@@ -106,6 +111,11 @@ func (e *events) read(line []byte) {
 		}
 	}
 	switch event.Type {
+	case "system":
+		if event.Subtype == "init" && !e.initSeen {
+			e.initSeen = true
+			e.isolationBreach = accountStateLoaded(event.MCPServers, event.Skills)
+		}
 	case "result":
 		// Older CLIs omit the index: accept one such result. Multiple results
 		// need explicit, increasing indices. Gaps are allowed because failed
@@ -133,4 +143,36 @@ func (e *events) read(line []byte) {
 	case "error":
 		e.failed = true
 	}
+}
+
+// accountStateLoaded reports claude.ai account state in the first system init:
+// connectors (mcp_servers[].source == "claudeai") or synced skills (names with
+// the anthropic-skills: prefix). Unknown shapes are ignored, not rejected.
+func accountStateLoaded(mcpServers, skills json.RawMessage) string {
+	var servers []json.RawMessage
+	_ = json.Unmarshal(mcpServers, &servers)
+	for _, raw := range servers {
+		var server struct {
+			Source string `json:"source"`
+		}
+		if json.Unmarshal(raw, &server) == nil && server.Source == "claudeai" {
+			return "claude.ai connector in mcp_servers"
+		}
+	}
+	var names []json.RawMessage
+	_ = json.Unmarshal(skills, &names)
+	for _, raw := range names {
+		var name string
+		if json.Unmarshal(raw, &name) != nil {
+			var skill struct {
+				Name string `json:"name"`
+			}
+			_ = json.Unmarshal(raw, &skill)
+			name = skill.Name
+		}
+		if strings.HasPrefix(name, "anthropic-skills:") {
+			return "claude.ai synced skill in skills"
+		}
+	}
+	return ""
 }

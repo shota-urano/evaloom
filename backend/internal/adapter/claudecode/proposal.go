@@ -24,7 +24,7 @@ func (h *harness) StartProposal(ctx context.Context, req adapter.ProposalRequest
 }
 
 func proposalPermissions(req adapter.ProposalRequest) (json.RawMessage, error) {
-	return json.Marshal(map[string]any{"permissions": map[string][]string{
+	return isolatedSettings(map[string][]string{
 		"allow": {"Read", "Edit(//" + strings.TrimPrefix(filepath.ToSlash(req.OutPath), "/") + ")"},
-	}})
+	})
 }
