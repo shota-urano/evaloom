@@ -23,6 +23,35 @@ func run(args []string) error {
 	if err != nil || timeout <= 0 {
 		return fmt.Errorf("invalid timeout")
 	}
+	switch args[0] {
+	case "channel":
+		// Stage channel relay (spec 09 3.6): network none, stdio to the Runner.
+		// The socket lives in the stage's private volume. Any stage user may
+		// connect; nothing else shares this volume.
+		listener, err := net.Listen("unix", sandboxproxy.ChannelSocket)
+		if err != nil {
+			return err
+		}
+		if err := os.Chmod(sandboxproxy.ChannelSocket, 0666); err != nil {
+			listener.Close()
+			return err
+		}
+		// The Runner removes this sidecar when the stage ends; the stage's
+		// wall time bounds it even if that removal is delayed.
+		time.AfterFunc(timeout, func() { listener.Close() })
+		_ = sandboxproxy.ServeChannel(listener, os.Stdin, os.Stdout)
+		return nil
+	case "channel-check":
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if conn, err := net.DialTimeout("unix", sandboxproxy.ChannelSocket, time.Until(deadline)); err == nil {
+				// An empty connection is never forwarded to the Runner.
+				return conn.Close()
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return fmt.Errorf("channel unconfirmed")
+	}
 	if args[0] == "check" {
 		deadline := time.Now().Add(timeout)
 		for time.Now().Before(deadline) {

@@ -19,6 +19,8 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/sandbox"
+	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 	"github.com/shota-urano/evaloom/backend/internal/secretstore"
 )
 
@@ -42,9 +44,52 @@ func channelDirectory(t *testing.T) string {
 	return dir
 }
 
+// testChannelSocket serves handler the way a stage reaches it: through the
+// production relay sidecar code (sandboxproxy.ServeChannel) on a socket, and
+// the production Runner side of the sidecar's stdio (sandbox.RelayChannel).
+// Only the container runtime is absent.
+func testChannelSocket(t *testing.T, handler sandbox.ChannelHandler) string {
+	t.Helper()
+	if handler == nil {
+		t.Fatal("stage has no channel")
+	}
+	dir, err := os.MkdirTemp("", "ch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "c.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	served, relayed := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = sandboxproxy.ServeChannel(listener, stdinReader, stdoutWriter)
+		stdoutWriter.Close()
+	}()
+	go func() {
+		defer close(relayed)
+		sandbox.RelayChannel(stdoutReader, stdinWriter, handler)
+		stdinWriter.Close()
+	}()
+	t.Cleanup(func() {
+		// Removing the sidecar: its stdio and every stage connection close.
+		stdinWriter.Close()
+		stdoutReader.Close()
+		listener.Close()
+		<-served
+		<-relayed
+		_ = os.RemoveAll(dir)
+	})
+	return path
+}
+
 func channelConnection(t *testing.T, path string) net.Conn {
 	t.Helper()
-	conn, err := dialTestChannel(path)
+	conn, err := net.Dial("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,18 +98,6 @@ func channelConnection(t *testing.T, path string) net.Conn {
 		t.Fatal(err)
 	}
 	return conn
-}
-
-// A sandbox connects through its short guest mount path. In host-side tests,
-// use the same inode through a short address without shortening the dataDir.
-func dialTestChannel(path string) (net.Conn, error) {
-	var conn net.Conn
-	err := withChannelAddress(path, func(address string) error {
-		var err error
-		conn, err = net.Dial("unix", address)
-		return err
-	})
-	return conn, err
 }
 
 func channelReply(t *testing.T, conn net.Conn, line string) string {
@@ -85,34 +118,6 @@ func requireChannelEOF(t *testing.T, conn net.Conn) {
 	n, err := conn.Read(data)
 	if n != 0 || err != io.EOF {
 		t.Fatalf("channel responded or remained open: n=%d err=%v", n, err)
-	}
-}
-
-func TestChannelBindingDoesNotChangeProcessDirectory(t *testing.T) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(channelDirectory(t), "channel.sock")
-	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error)
-	go func() {
-		done <- withChannelAddress(path, func(string) error {
-			close(entered)
-			<-release
-			return nil
-		})
-	}()
-	select {
-	case <-entered:
-	case err := <-done:
-		t.Fatalf("cannot enter bind directory: %v", err)
-	}
-	// Observe cwd while the binding operation is still in its stage directory,
-	// as another stage or any concurrent relative file access would do.
-	got, cwdErr := os.Getwd()
-	close(release)
-	if err := <-done; err != nil || cwdErr != nil || got != cwd {
-		t.Fatalf("process cwd changed: got=%q want=%q cwdErr=%v bindErr=%v", got, cwd, cwdErr, err)
 	}
 }
 
@@ -141,12 +146,10 @@ func TestStageChannelPublishRelaysToRunnerAPI(t *testing.T) {
 				t.Fatal(err)
 			}
 			var conn net.Conn
-			var path string
 			outcome := runner.runStageWithChannel(context.Background(), id,
 				StageInvocation{Stage: model.StagePublish, Directory: channelDirectory(t)},
 				stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
-					path = in.ChannelPath
-					conn = channelConnection(t, path)
+					conn = channelConnection(t, testChannelSocket(t, in.Channel))
 					request := `{"op":"authorize","operation":"merge_pull_request","approvalId":"` + approval + `","contentId":"opaque:revision-1"}`
 					got := channelReply(t, conn, request)
 					want := response
@@ -161,10 +164,9 @@ func TestStageChannelPublishRelaysToRunnerAPI(t *testing.T) {
 			if outcome.RunnerError != nil || calls.Load() != 1 {
 				t.Fatalf("outcome=%+v HTTP calls=%d", outcome, calls.Load())
 			}
+			// A finished stage answers nothing more, even on an open connection.
+			io.WriteString(conn, `{"op":"cancel_check"}`+"\n")
 			requireChannelEOF(t, conn)
-			if _, err := os.Lstat(path); !os.IsNotExist(err) {
-				t.Fatalf("finished stage socket remains: %v", err)
-			}
 		})
 	}
 }
@@ -183,11 +185,12 @@ func TestStageChannelRejectsForbiddenAndMalformedRequests(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), stage, filepath.Join(channelDirectory(t), "s"))
+			channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), stage)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(channel.close)
+			socket := testChannelSocket(t, channel)
 			requests := []string{
 				`{}`, `null`, `[]`, `{"op":null}`, `{"Op":"cancel_check"}`,
 				`{"op":"cancel_check","op":"cancel_check"}`, `{"op":"cancel_check","extra":1}`,
@@ -203,7 +206,7 @@ func TestStageChannelRejectsForbiddenAndMalformedRequests(t *testing.T) {
 				requests = append(requests, validAuthorize)
 			}
 			for _, request := range requests {
-				conn := channelConnection(t, channel.listener.Addr().String())
+				conn := channelConnection(t, socket)
 				if _, err := io.WriteString(conn, request+"\n"); err != nil {
 					t.Fatal(err)
 				}
@@ -214,8 +217,16 @@ func TestStageChannelRejectsForbiddenAndMalformedRequests(t *testing.T) {
 			if calls.Load() != 0 {
 				t.Fatalf("rejected requests reached Control Plane: %d", calls.Load())
 			}
+			// The relay sidecar drops lines that are not one JSON value within
+			// the limit; every other rejection is the Runner's and is logged.
+			relayed := 0
+			for _, request := range requests {
+				if json.Valid([]byte(request)) && len(request) <= channelLineLimit {
+					relayed++
+				}
+			}
 			log, err := os.ReadFile(channel.log.Path())
-			if err != nil || strings.Count(string(log), "\n") != len(requests) || strings.Contains(string(log), "contentId") {
+			if err != nil || relayed != len(requests)-2 || strings.Count(string(log), "\n") != relayed || strings.Contains(string(log), "contentId") {
 				t.Fatalf("unsafe/missing rejection diagnostics: %q err=%v", log, err)
 			}
 		})
@@ -224,12 +235,13 @@ func TestStageChannelRejectsForbiddenAndMalformedRequests(t *testing.T) {
 
 func TestStageChannelLineLimitAndMultipleRequests(t *testing.T) {
 	runner := &Runner{dataDir: t.TempDir()}
-	channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), model.StageCheck, filepath.Join(channelDirectory(t), "s"))
+	channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), model.StageCheck)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer channel.close()
-	conn := channelConnection(t, channel.listener.Addr().String())
+	socket := testChannelSocket(t, channel)
+	conn := channelConnection(t, socket)
 	request := `{"op":"cancel_check"}`
 	for _, line := range []string{request, request + strings.Repeat(" ", channelLineLimit-len(request)), request} {
 		if got := channelReply(t, conn, line); got != `{"cancelRequested":false}` {
@@ -237,7 +249,7 @@ func TestStageChannelLineLimitAndMultipleRequests(t *testing.T) {
 		}
 	}
 	// A second connection cannot turn a final unterminated JSON into a request.
-	partial := channelConnection(t, channel.listener.Addr().String()).(*net.UnixConn)
+	partial := channelConnection(t, socket).(*net.UnixConn)
 	io.WriteString(partial, request)
 	partial.CloseWrite()
 	requireChannelEOF(t, partial)
@@ -265,12 +277,12 @@ func TestStageChannelCancelCheckUsesLatestHeartbeat(t *testing.T) {
 	if err := runner.RegisterExecution(id, cancel); err != nil {
 		t.Fatal(err)
 	}
-	channel, err := runner.openStageChannel(ctx, id, model.StagePrepare, filepath.Join(channelDirectory(t), "s"))
+	channel, err := runner.openStageChannel(ctx, id, model.StagePrepare)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer channel.close()
-	conn := channelConnection(t, channel.listener.Addr().String())
+	conn := channelConnection(t, testChannelSocket(t, channel))
 	if got := channelReply(t, conn, `{"op":"cancel_check"}`); got != `{"cancelRequested":false}` || calls.Load() != 0 {
 		t.Fatalf("reply=%s HTTP=%d", got, calls.Load())
 	}
@@ -287,7 +299,9 @@ func TestStageChannelCancelCheckUsesLatestHeartbeat(t *testing.T) {
 	}
 }
 
-func TestStageChannelClosesIdlePartialAndInFlightConnections(t *testing.T) {
+// Closing the stage's channel cancels an in-flight authorize and answers
+// nothing more; the sidecar's removal then closes the stage's connections.
+func TestStageChannelCloseCancelsInFlightRequest(t *testing.T) {
 	started := make(chan struct{})
 	stopped := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,15 +315,14 @@ func TestStageChannelClosesIdlePartialAndInFlightConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), model.StagePublish, filepath.Join(channelDirectory(t), "s"))
+	channel, err := runner.openStageChannel(context.Background(), ulid.Make().String(), model.StagePublish)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer channel.close()
-	idle := channelConnection(t, channel.listener.Addr().String())
-	partial := channelConnection(t, channel.listener.Addr().String())
-	io.WriteString(partial, `{"op":`)
-	inFlight := channelConnection(t, channel.listener.Addr().String())
+	socket := testChannelSocket(t, channel)
+	idle := channelConnection(t, socket)
+	inFlight := channelConnection(t, socket)
 	io.WriteString(inFlight, "{\"op\":\"authorize\",\"operation\":\"publish\",\"approvalId\":null,\"contentId\":\"r1\"}\n")
 	select {
 	case <-started:
@@ -317,33 +330,30 @@ func TestStageChannelClosesIdlePartialAndInFlightConnections(t *testing.T) {
 		t.Fatal("relay did not start")
 	}
 	channel.close()
-	for _, conn := range []net.Conn{idle, partial, inFlight} {
-		requireChannelEOF(t, conn)
-	}
+	requireChannelEOF(t, inFlight)
 	select {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
 		t.Fatal("closing the stage did not cancel its relay")
 	}
+	io.WriteString(idle, `{"op":"cancel_check"}`+"\n")
+	requireChannelEOF(t, idle)
 }
 
 func TestStageChannelLifetimeInFramework(t *testing.T) {
 	runner, claim, _, services := stageFixture(t, true)
-	var previous string
+	var previous sandbox.ChannelHandler
 	services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
-		if previous != "" {
-			if conn, err := dialTestChannel(previous); err == nil {
-				conn.Close()
-				t.Fatal("previous stage channel is still listening")
-			}
+		if previous != nil && previous.HandleChannelRequest([]byte(`{"op":"cancel_check"}`)) != nil {
+			t.Fatal("previous stage channel still answers")
 		}
 		if in.Stage == model.StageWork {
-			if in.ChannelPath != "" {
+			if in.Channel != nil {
 				t.Fatal("work received a channel")
 			}
 		} else {
-			previous = in.ChannelPath
-			conn := channelConnection(t, in.ChannelPath)
+			previous = in.Channel
+			conn := channelConnection(t, testChannelSocket(t, in.Channel))
 			if got := channelReply(t, conn, `{"op":"cancel_check"}`); got != `{"cancelRequested":false}` {
 				t.Fatalf("reply=%s", got)
 			}
@@ -354,11 +364,11 @@ func TestStageChannelLifetimeInFramework(t *testing.T) {
 	if err := runner.ExecuteStages(context.Background(), claim, services); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(previous); !os.IsNotExist(err) {
-		t.Fatalf("last stage channel remains: %v", err)
+	if previous == nil || previous.HandleChannelRequest([]byte(`{"op":"cancel_check"}`)) != nil {
+		t.Fatal("last stage channel still answers")
 	}
 	for _, kind := range []model.Stage{model.StageWork, model.Stage("proposal")} {
-		if c, err := runner.openStageChannel(context.Background(), claim.Execution.ID, kind, filepath.Join(channelDirectory(t), "s")); err == nil {
+		if c, err := runner.openStageChannel(context.Background(), claim.Execution.ID, kind); err == nil {
 			c.close()
 			t.Fatalf("%s received a channel", kind)
 		}
@@ -367,8 +377,9 @@ func TestStageChannelLifetimeInFramework(t *testing.T) {
 
 func TestExecuteStagesLongDataDirChannelRelay(t *testing.T) {
 	runner, claim, reporter, services := stageFixture(t, true)
-	// Exceed both macOS and Linux sockaddr_un limits, including spaces as in
-	// ~/Library/Application Support/Evaloom/runner. Keep the specified layout.
+	// No host socket exists any more (spec 09 3.6, Q232), so a dataDir beyond
+	// the sockaddr_un limits, with spaces as in ~/Library/Application Support,
+	// changes nothing. Keep the specified layout.
 	runner.dataDir = filepath.Join(runner.dataDir, "Application Support", strings.Repeat("runner-data-", 12))
 	if err := secretstore.New(runner.dataDir).Set(claim.Profile.HarnessID, "delivery", "write", []byte("delivery-private-value")); err != nil {
 		t.Fatal(err)
@@ -398,30 +409,25 @@ func TestExecuteStagesLongDataDirChannelRelay(t *testing.T) {
 	defer server.Close()
 	runner.controlPlaneURL, runner.client = server.URL, server.Client()
 	var stages []model.Stage
-	var paths []string
 	var connections []net.Conn
 	services.Executor = stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
 		stages = append(stages, in.Stage)
-		for _, path := range paths {
-			if _, err := os.Lstat(path); !os.IsNotExist(err) {
-				t.Fatalf("previous stage socket remains: %s err=%v", path, err)
-			}
-		}
 		if in.Stage == model.StageWork {
-			if in.ChannelPath != "" {
+			if in.Channel != nil {
 				t.Fatal("work received a channel")
 			}
 		} else {
-			want := filepath.Join(runner.dataDir, "executions", id, string(in.Stage)+"-1", "channel.sock")
-			if in.ChannelPath != want || len(in.ChannelPath) <= 108 {
-				t.Fatalf("wrong or insufficiently long socket path: %q want=%q", in.ChannelPath, want)
+			if entries, err := os.ReadDir(in.Directory); err != nil {
+				t.Fatal(err)
+			} else {
+				for _, entry := range entries {
+					if entry.Type()&os.ModeSocket != 0 {
+						t.Fatalf("host socket in the attempt directory: %s", entry.Name())
+					}
+				}
 			}
-			info, err := os.Lstat(want)
-			if err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
-				t.Fatalf("missing or unprotected stage socket: %v err=%v", info, err)
-			}
-			conn := channelConnection(t, want)
-			paths, connections = append(paths, want), append(connections, conn)
+			conn := channelConnection(t, testChannelSocket(t, in.Channel))
+			connections = append(connections, conn)
 			if got := channelReply(t, conn, `{"op":"cancel_check"}`); got != `{"cancelRequested":false}` {
 				t.Fatalf("cancel_check reply=%s", got)
 			}
@@ -456,11 +462,9 @@ func TestExecuteStagesLongDataDirChannelRelay(t *testing.T) {
 			t.Fatalf("stage failed: %+v", outcome)
 		}
 	}
-	for i, path := range paths {
-		requireChannelEOF(t, connections[i])
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			t.Fatalf("finished socket remains: %s err=%v", path, err)
-		}
+	for _, conn := range connections {
+		io.WriteString(conn, `{"op":"cancel_check"}`+"\n")
+		requireChannelEOF(t, conn)
 	}
 }
 
@@ -475,7 +479,7 @@ func TestStageChannelRejectionDeliveredAsRunnerLog(t *testing.T) {
 	outcome := runner.runStageWithChannel(ctx, logExecution,
 		StageInvocation{Stage: model.StageCheck, Directory: channelDirectory(t)},
 		stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
-			conn := channelConnection(t, in.ChannelPath)
+			conn := channelConnection(t, testChannelSocket(t, in.Channel))
 			io.WriteString(conn, "{\"op\":\"authorize\",\"operation\":\"publish\",\"approvalId\":null,\"contentId\":\"private-content\"}\n")
 			requireChannelEOF(t, conn)
 			return successfulStage(in.Stage)
@@ -498,22 +502,21 @@ func TestStageChannelRejectionDeliveredAsRunnerLog(t *testing.T) {
 	}
 }
 
-func TestStageChannelCreationFailureDoesNotRunStageOrOverwriteFile(t *testing.T) {
-	runner := &Runner{dataDir: t.TempDir()}
-	dir := channelDirectory(t)
-	path := filepath.Join(dir, "channel.sock")
-	if err := os.WriteFile(path, []byte("existing file"), 0600); err != nil {
+func TestStageChannelCreationFailureDoesNotRunStage(t *testing.T) {
+	// The channel's runner log cannot be created: dataDir is a file.
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.WriteFile(dataDir, []byte("not a directory"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	runner := &Runner{dataDir: dataDir}
 	called := false
 	outcome := runner.runStageWithChannel(context.Background(), ulid.Make().String(),
-		StageInvocation{Stage: model.StagePrepare, Directory: dir},
+		StageInvocation{Stage: model.StagePrepare, Directory: channelDirectory(t)},
 		stageExecutorFunc(func(context.Context, StageInvocation) StageOutcome {
 			called = true
 			return StageOutcome{}
 		}))
-	data, err := os.ReadFile(path)
-	if called || outcome.RunnerError == nil || *outcome.RunnerError != "sandbox_error" || err != nil || string(data) != "existing file" {
-		t.Fatalf("called=%v outcome=%+v file=%q err=%v", called, outcome, data, err)
+	if called || outcome.RunnerError == nil || *outcome.RunnerError != "sandbox_error" {
+		t.Fatalf("called=%v outcome=%+v", called, outcome)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,7 +25,7 @@ func TestStageChannelFailsClosedWhenControlPlaneStops(t *testing.T) {
 	outcome := runner.runStageWithChannel(t.Context(), ulid.Make().String(),
 		StageInvocation{Stage: model.StagePublish, Directory: channelDirectory(t)},
 		stageExecutorFunc(func(_ context.Context, in StageInvocation) StageOutcome {
-			conn := channelConnection(t, in.ChannelPath)
+			conn := channelConnection(t, testChannelSocket(t, in.Channel))
 			request := `{"op":"authorize","operation":"publish","approvalId":null,"contentId":"r1"}`
 			if got := channelReply(t, conn, request); got != `{"allowed":true}` {
 				t.Fatalf("live Control Plane reply=%s", got)
@@ -55,13 +54,12 @@ func TestStageChannelRejectsValidJSONBeyondLineLimit(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			runner := &Runner{dataDir: t.TempDir()}
-			channel, err := runner.openStageChannel(t.Context(), ulid.Make().String(), model.StageCheck,
-				filepath.Join(channelDirectory(t), "s"))
+			channel, err := runner.openStageChannel(t.Context(), ulid.Make().String(), model.StageCheck)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer channel.close()
-			conn := channelConnection(t, channel.listener.Addr().String())
+			conn := channelConnection(t, testChannelSocket(t, channel))
 			request := `{"op":"cancel_check"}`
 			line := request + strings.Repeat(" ", channelLineLimit+1-len(request))
 			if !json.Valid([]byte(line)) || len(line) != 64*1024+1 {
@@ -70,9 +68,13 @@ func TestStageChannelRejectsValidJSONBeyondLineLimit(t *testing.T) {
 			if _, err := io.WriteString(conn, line+ending); err != nil {
 				t.Fatal(err)
 			}
-			// Keep the writing half open: reject oversize input even when the
-			// peer sends neither LF nor EOF, rather than buffering indefinitely.
+			// Keep the writing half open: the relay sidecar rejects oversize
+			// input even when the peer sends neither LF nor EOF, rather than
+			// buffering indefinitely. It never reaches the Runner.
 			requireChannelEOF(t, conn)
+			if reply := channel.HandleChannelRequest([]byte(line)); reply != nil {
+				t.Fatalf("Runner answered an oversized line: %s", reply)
+			}
 		})
 	}
 }

@@ -188,8 +188,9 @@ func TestStageTimeoutAndHeartbeatCancellationWithRuntime(t *testing.T) {
 					}
 					return p, nil
 				}
-				outcome := in.RunProgram(stageCtx, launch, sandbox.SandboxSpec{Mounts: mounts, ChannelPath: in.ChannelPath,
-					Env:    map[string]string{"EVALOOM_CHANNEL": "/sandbox/channel/channel.sock"},
+				// The channel relay sidecar is covered in sandbox and the
+				// runtime acceptance tests; this fake runtime has only the stage.
+				outcome := in.RunProgram(stageCtx, launch, sandbox.SandboxSpec{Mounts: mounts,
 					Limits: sandbox.ResourceLimits{CPU: 4, MemoryBytes: 8 << 30}})
 				if tc.ownResult {
 					// This is the executor's result-file collection boundary.

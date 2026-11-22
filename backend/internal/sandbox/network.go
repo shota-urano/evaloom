@@ -71,10 +71,27 @@ func (c *Container) validateNetwork(spec SandboxSpec) error {
 		strings.HasPrefix(c.config.ProxyImage, "-") || strings.ContainsAny(c.config.ProxyImage, "\x00\r\n\t ") {
 		return deny()
 	}
+	if !c.trustedProxyBinary() {
+		return deny()
+	}
+	for _, destination := range spec.AllowedDestinations {
+		if _, err := sandboxproxy.Destination(destination); err != nil {
+			return deny()
+		}
+		host, _, _ := net.SplitHostPort(destination)
+		if spec.Kind == Harness && (host == "github.com" || strings.HasSuffix(host, ".github.com")) {
+			return deny()
+		}
+	}
+	return nil
+}
+
+// trustedProxyBinary confirms the helper binary mounted into sidecars.
+func (c *Container) trustedProxyBinary() bool {
 	path, err := resolve(c.config.ProxyBinary)
 	info, statErr := os.Stat(path)
 	if err != nil || statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
-		return deny()
+		return false
 	}
 	// Neither a workload nor an earlier harness may replace the trusted helper.
 	roots := append([]string(nil), c.roots[:]...)
@@ -87,19 +104,10 @@ func (c *Container) validateNetwork(spec SandboxSpec) error {
 		}
 		inside, err := containsOnDisk(root, path)
 		if err != nil || inside {
-			return deny()
+			return false
 		}
 	}
-	for _, destination := range spec.AllowedDestinations {
-		if _, err := sandboxproxy.Destination(destination); err != nil {
-			return deny()
-		}
-		host, _, _ := net.SplitHostPort(destination)
-		if spec.Kind == Harness && (host == "github.com" || strings.HasSuffix(host, ".github.com")) {
-			return deny()
-		}
-	}
-	return nil
+	return true
 }
 
 type networkResources struct {

@@ -11,6 +11,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 	stageplan "github.com/shota-urano/evaloom/backend/internal/stage"
 )
 
@@ -74,10 +75,10 @@ type StageInvocation struct {
 	// Adapter is selected solely by stages.work.microHarness. Program stages
 	// receive nil; CLI details remain in the registered implementation.
 	Adapter adapter.Adapter
-	// Host socket source. The executor supplies its own sandbox-visible
-	// EVALOOM_CHANNEL path and copies this into SandboxSpec.ChannelPath.
-	// The context carries the matching, stage-scoped socket capability.
-	ChannelPath string
+	// Stage channel handler (nil for work). The executor supplies its own
+	// sandbox-visible EVALOOM_CHANNEL path and copies this into
+	// SandboxSpec.Channel, which places it behind a relay sidecar.
+	Channel     sandbox.ChannelHandler
 	security    *stageSecurity
 	timeout     time.Duration
 	measurement *stageMeasurement

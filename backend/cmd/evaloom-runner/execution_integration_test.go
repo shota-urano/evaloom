@@ -31,6 +31,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/ownerauth"
 	"github.com/shota-urano/evaloom/backend/internal/runner"
 	"github.com/shota-urano/evaloom/backend/internal/runnerauth"
+	"github.com/shota-urano/evaloom/backend/internal/sandboxproxy"
 	"github.com/shota-urano/evaloom/backend/internal/securitytest"
 	"github.com/shota-urano/evaloom/backend/internal/store"
 )
@@ -66,7 +67,11 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 		raw, _ := os.ReadFile(filepath.Join(root, args[len(args)-1]+".json"))
 		workContainer = bytes.Contains(raw, []byte("CODEX_HOME="))
 	}
-	if workContainer || failing != "" &&
+	// relay-create / relay-volume fail only the stage channel's relay sidecar
+	// or its volume (spec 09 3.6 item 6).
+	relayFailure := failing == "relay-create" && args[0]+" "+args[1] == "container create" && strings.HasSuffix(value("--name"), "-relay") ||
+		failing == "relay-volume" && args[0]+" "+args[1] == "volume create" && strings.HasSuffix(args[len(args)-1], "-channel")
+	if workContainer || relayFailure || failing != "" &&
 		map[string]string{"image": "image inspect", "create": "container create", "wait": "container inspect"}[failing] == args[0]+" "+args[1] {
 		token, _ := os.ReadFile(os.Getenv("EVALOOM_FAKE_TOKEN_FILE"))
 		fmt.Fprintf(os.Stderr, "%s\nrunner token %s\nAuthorization: Bearer fixture-bearer-value\n%s\n",
@@ -107,6 +112,15 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 		must(err)
 		var create []string
 		must(json.Unmarshal(raw, &create))
+		if strings.HasSuffix(name, "-relay") {
+			// The stage channel relay sidecar (spec 09 3.6): the production
+			// relay code listening in the stage's channel volume, over this
+			// attach client's stdio, as the sidecar's own stdio would be.
+			listener, err := net.Listen("unix", filepath.Join(fakeChannelVolume(root, create), sandboxproxy.ChannelName))
+			must(err)
+			_ = sandboxproxy.ServeChannel(listener, os.Stdin, os.Stdout)
+			os.Exit(0)
+		}
 		mounts := map[string]string{}
 		workdir := ""
 		for i := 2; i < len(create); i++ {
@@ -121,6 +135,11 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 						source = s
 						if volume {
 							source = filepath.Join(root, "volumes", s)
+							// A channel volume is a short directory, so its
+							// socket path fits sockaddr_un on the host.
+							if real, err := filepath.EvalSymlinks(source); err == nil {
+								source = real
+							}
 						}
 					}
 					if s, ok := strings.CutPrefix(part, "target="); ok {
@@ -192,8 +211,39 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 	case "volume create":
 		// Work sessions seed a private configuration volume (spec 09). The
 		// fake daemon keeps it as a directory plus the archive it received.
-		must(os.MkdirAll(filepath.Join(root, "volumes", args[len(args)-1]), 0700))
+		name := args[len(args)-1]
+		must(os.MkdirAll(filepath.Join(root, "volumes"), 0700))
+		if strings.HasSuffix(name, "-channel") {
+			// Stage channel volumes hold a Unix socket: keep the real
+			// directory short and link it from the fake daemon's volumes.
+			short, err := os.MkdirTemp("", "evc-")
+			must(err)
+			must(os.Symlink(short, filepath.Join(root, "volumes", name)))
+		} else {
+			must(os.MkdirAll(filepath.Join(root, "volumes", name), 0700))
+		}
+	case "container exec":
+		// Only the channel relay's readiness check: wait until it listens.
+		create, err := os.ReadFile(filepath.Join(root, args[2]+".json"))
+		must(err)
+		var createArgs []string
+		must(json.Unmarshal(create, &createArgs))
+		socket := filepath.Join(fakeChannelVolume(root, createArgs), sandboxproxy.ChannelName)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if conn, err := net.Dial("unix", socket); err == nil {
+				conn.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				must(fmt.Errorf("channel relay not listening"))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	case "volume rm":
+		if real, err := filepath.EvalSymlinks(filepath.Join(root, "volumes", args[len(args)-1])); err == nil {
+			must(os.RemoveAll(real))
+		}
 		must(os.RemoveAll(filepath.Join(root, "volumes", args[len(args)-1])))
 		_ = os.Remove(filepath.Join(root, "volumes", args[len(args)-1]+".tar"))
 	case "volume ls":
@@ -246,6 +296,22 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 		os.Exit(92)
 	}
 	os.Exit(0)
+}
+
+// fakeChannelVolume is the host directory of the relay sidecar's channel volume.
+func fakeChannelVolume(root string, create []string) string {
+	for i, arg := range create {
+		if i > 0 && create[i-1] == "--mount" && strings.HasPrefix(arg, "type=volume,") && strings.Contains(arg, ",target="+sandboxproxy.ChannelDirectory+",") {
+			for _, part := range strings.Split(arg, ",") {
+				if v, ok := strings.CutPrefix(part, "source="); ok {
+					if real, err := filepath.EvalSymlinks(filepath.Join(root, "volumes", v)); err == nil {
+						return real
+					}
+				}
+			}
+		}
+	}
+	return filepath.Join(root, "missing-channel-volume")
 }
 
 // This binary is the test special harness's prepare/check/publish program.
@@ -497,6 +563,12 @@ func newHarnessFixture(t *testing.T, scenario string, harness fixtureHarness) *e
 		t.Fatal(err)
 	}
 	f.config.Container.RuntimeEnv = map[string]string{"EVALOOM_FAKE_RUNTIME": runtimeDir}
+	// The stage channel relay sidecar's trusted binary (spec 09 3.6). The fake
+	// runtime runs the production relay code in its place.
+	f.config.Container.ProxyBinary = filepath.Join(root, "proxy")
+	if err := os.WriteFile(f.config.Container.ProxyBinary, []byte("fixture proxy"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	f.config.MicroHarnessAuthFiles = map[string]string{"codex": filepath.Join(f.config.DataDir, "auth.json")}
 	if err := os.WriteFile(f.config.MicroHarnessAuthFiles["codex"], []byte(`{"token":"fixture-auth"}`), 0600); err != nil {
 		t.Fatal(err)
@@ -942,11 +1014,21 @@ func TestCommandExecutionIntegration(t *testing.T) {
 			if workCalls != wantWork {
 				t.Fatalf("work calls %d; want %d", workCalls, wantWork)
 			}
-			calls, err := filepath.Glob(filepath.Join(f.config.Container.RuntimeEnv["EVALOOM_FAKE_RUNTIME"], "*.json"))
+			all, err := filepath.Glob(filepath.Join(f.config.Container.RuntimeEnv["EVALOOM_FAKE_RUNTIME"], "*.json"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(calls) != 3 {
+			// Each program stage also has its channel relay sidecar (spec 09 3.6).
+			var calls []string
+			relays := 0
+			for _, call := range all {
+				if strings.HasSuffix(call, "-relay.json") {
+					relays++
+				} else {
+					calls = append(calls, call)
+				}
+			}
+			if len(calls) != 3 || relays != 3 {
 				t.Fatalf("program launches %d; want exactly prepare/check/publish", len(calls))
 			}
 			for _, call := range calls {
