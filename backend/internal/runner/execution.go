@@ -133,13 +133,39 @@ func (e *executionExecutor) workAdapterConfig() WorkAdapterConfig {
 		}
 		process, err := box.RunControlled(ctx, spec, command)
 		if err != nil {
-			e.launchMu.Lock()
-			e.launchErr = err
-			e.launchMu.Unlock()
+			e.keepLaunchErr(err)
+			return process, err
 		}
-		return process, err
+		if process == nil {
+			return nil, nil
+		}
+		return &reasonProcess{Process: process, keep: e.keepLaunchErr}, nil
 	}
 	return WorkAdapterConfig{Launch: launch, ResolveConfig: resolveConfig, ResolveAuthentication: resolveAuth, ResolveToolPermissions: permissions, CancelGrace: StageCancelGrace}
+}
+
+// keepLaunchErr remembers a work Sandbox failure whose reason an Adapter
+// reduces to an error class (spec 05 3.8: the Runner logs the reason itself).
+func (e *executionExecutor) keepLaunchErr(err error) {
+	e.launchMu.Lock()
+	e.launchErr = err
+	e.launchMu.Unlock()
+}
+
+// reasonProcess keeps a Sandbox Wait failure (not an ordinary nonzero exit)
+// for the stage log, while returning it to the Adapter unchanged.
+type reasonProcess struct {
+	sandbox.Process
+	keep func(error)
+}
+
+func (p *reasonProcess) Wait() error {
+	err := p.Process.Wait()
+	var exit *sandbox.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		p.keep(err)
+	}
+	return err
 }
 
 func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) StageOutcome {
@@ -446,6 +472,12 @@ func (e *executionExecutor) runWork(ctx context.Context, in StageInvocation, spe
 	if err != nil {
 		if ctx.Err() != nil {
 			return fail(stageInterruption(ctx.Err()))
+		}
+		// An Adapter that returns the Sandbox's own failure from Start did not
+		// get to run the micro-harness (spec 08 6: sandbox_error).
+		var sandboxErr *sandbox.Error
+		if errors.As(err, &sandboxErr) && sandboxErr.ErrorClass() == model.ErrorSandbox {
+			return fail("sandbox_error")
 		}
 		return fail("work_failed")
 	}

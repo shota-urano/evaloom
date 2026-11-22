@@ -2,7 +2,11 @@ package main
 
 import (
 	"database/sql"
+
 	"encoding/json"
+	"github.com/shota-urano/evaloom/backend/internal/adapter"
+	"github.com/shota-urano/evaloom/backend/internal/runner"
+	"github.com/shota-urano/evaloom/backend/internal/securitytest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,9 +22,25 @@ const fakeDaemonMessage = `Error response from daemon: invalid mount config for 
 // with secrets excluded and the length bounded. error_class stays
 // sandbox_error. Real Docker is out of scope; only the runtime CLI is fake.
 func TestSandboxFailureReasonIsRecorded(t *testing.T) {
-	for _, mode := range []string{"image", "create", "wait"} {
+	for _, mode := range []string{"image", "create", "wait", "work-wait"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newExecutionFixture(t, "success")
+			stage := "prepare"
+			if mode == "work-wait" {
+				// A work Adapter on Runner's real Launch wiring. Like the
+				// production Adapters, it reduces a Sandbox Wait failure to an
+				// error class and drops the error (evaloom-6pi evaluation).
+				// codex/claude_code need the proxy network, which this fake
+				// runtime does not provide.
+				stage = "work"
+				f.workAdapter = func(w runner.WorkAdapterConfig) adapter.Adapter {
+					a, err := securitytest.NewWorkProbe(w, json.RawMessage(`{}`))
+					if err != nil {
+						t.Error(err)
+					}
+					return a
+				}
+			}
 			f.config.Container.RuntimeEnv["EVALOOM_FAKE_FAIL"] = mode
 			f.config.Container.RuntimeEnv["EVALOOM_FAKE_TOKEN_FILE"] = f.config.TokenFile
 			data, _ := json.Marshal(f.config)
@@ -33,15 +53,19 @@ func TestSandboxFailureReasonIsRecorded(t *testing.T) {
 			}
 			f.start()
 			f.waitStatus("failed")
-			f.stages([]string{"prepare-1"})
+			if stage == "work" {
+				f.stages([]string{"prepare-1", "work-1"})
+			} else {
+				f.stages([]string{"prepare-1"})
+			}
 			var class, stageClass string
 			var message sql.NullString
 			if err := f.db.QueryRow(`SELECT e.error_class, e.error_message, r.error_class FROM executions e
-				JOIN stage_runs r ON r.execution_id = e.id WHERE e.id = ?`, f.id).Scan(&class, &message, &stageClass); err != nil {
+				JOIN stage_runs r ON r.execution_id = e.id WHERE e.id = ? AND r.stage = ?`, f.id, stage).Scan(&class, &message, &stageClass); err != nil {
 				t.Fatal(err)
 			}
 			if class != "sandbox_error" || stageClass != "sandbox_error" {
-				t.Fatalf("error class %s / stage %s; want sandbox_error", class, stageClass)
+				t.Fatalf("error class %s / stage %s; want sandbox_error; msg=%q", class, stageClass, message.String)
 			}
 			requireSafeReason(t, "error_message", message.String, string(token))
 			if utf8.RuneCountInString(message.String) > 1000 {
@@ -80,7 +104,7 @@ func TestSandboxFailureReasonIsRecorded(t *testing.T) {
 			var storage string
 			var size, redacted int
 			if err := f.db.QueryRow(`SELECT storage_path, size_bytes, redacted FROM artifacts
-				WHERE execution_id = ? AND kind = 'log' AND stage = 'prepare'`, f.id).Scan(&storage, &size, &redacted); err != nil {
+				WHERE execution_id = ? AND kind = 'log' AND stage = ?`, f.id, stage).Scan(&storage, &size, &redacted); err != nil {
 				t.Fatal(err)
 			}
 			saved, err := os.ReadFile(filepath.Join(filepath.Dir(f.config.DataDir), "control-data", storage))

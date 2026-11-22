@@ -132,3 +132,24 @@ func TestStageFailureNoteIsRedactedBoundedAndRunnerStream(t *testing.T) {
 		t.Fatalf("log artifact redacted=%d err=%v", redacted, err)
 	}
 }
+
+// Work Adapters reduce a Wait failure to its class; the Launch wrapper keeps
+// the Sandbox error itself, but not an ordinary nonzero exit.
+func TestWorkLaunchKeepsWaitFailure(t *testing.T) {
+	var kept []error
+	keep := func(err error) { kept = append(kept, err) }
+	failure := &sandbox.Error{Op: "container execution state unconfirmed", Cause: &sandbox.RuntimeError{ExitCode: 1, Stderr: fakeDaemonStderr}}
+	if err := (&reasonProcess{Process: failingWaitProcess{failure}, keep: keep}).Wait(); err != failure {
+		t.Fatalf("Wait changed the error returned to the Adapter: %v", err)
+	}
+	if err := (&reasonProcess{Process: failingWaitProcess{&sandbox.ExitError{Code: 7}}, keep: keep}).Wait(); err == nil {
+		t.Fatal("exit error lost")
+	}
+	if err := (&reasonProcess{Process: exitedProcess{}, keep: keep}).Wait(); err != nil {
+		t.Fatal(err)
+	}
+	var cause *sandbox.RuntimeError
+	if len(kept) != 1 || !errors.As(kept[0], &cause) || cause.Stderr != fakeDaemonStderr {
+		t.Fatalf("kept %v", kept)
+	}
+}
