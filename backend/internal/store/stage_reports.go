@@ -468,7 +468,11 @@ func finishStage(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFi
 		case model.ErrorCancelled:
 			status = model.StageCancelled
 		}
-		err := failExecution(ctx, tx, e, class, nil)
+		message, err := runnerFailureMessage(ctx, tx, e.id, in.Stage, in.Attempt, in.RunnerError)
+		if err != nil {
+			return finishOutcome{}, err
+		}
+		err = failExecution(ctx, tx, e, class, message)
 		return finishOutcome{runStatus: status, errorClass: class, next: stop()}, err
 	}
 	if in.Stage == model.StageWork {
@@ -502,6 +506,44 @@ func finishStage(ctx context.Context, tx *sql.Tx, e *reportExecution, in StageFi
 	}
 	return finishProgram(ctx, tx, e, in, result, profile, declared)
 }
+
+// runnerFailureMessage summarizes the reason a Runner gave for its own
+// failure of this stage attempt. stage_finished has no message field, so the
+// Runner leaves the reason in the stage log as stream=runner lines starting
+// with "<runnerError>: " (already secret-excluded by the Runner, spec 05 3.9)
+// and delivers them before stage_finished. Nil keeps error_message unchanged.
+func runnerFailureMessage(ctx context.Context, tx *sql.Tx, executionID string, stage model.Stage, attempt int, runnerError string) (*string, error) {
+	var started sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT max(id) FROM execution_events WHERE execution_id = ? AND type = 'stage_started'
+		AND json_extract(payload, '$.stage') = ? AND json_extract(payload, '$.attempt') = ?`,
+		executionID, stage, attempt).Scan(&started); err != nil || !started.Valid {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT json_extract(payload, '$.text') FROM execution_events
+		WHERE execution_id = ? AND type = 'log' AND id > ? AND json_extract(payload, '$.stream') = 'runner'
+		AND substr(json_extract(payload, '$.text'), 1, ?) = ? ORDER BY id`,
+		executionID, started.Int64, len(runnerError)+2, runnerError+": ")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		lines = append(lines, strings.TrimPrefix(text, runnerError+": "))
+	}
+	if err := rows.Err(); err != nil || len(lines) == 0 {
+		return nil, err
+	}
+	message := truncate(strings.Join(lines, "\n"), runnerFailureMessageLimit)
+	return &message, nil
+}
+
+// runnerFailureMessageLimit matches the Runner's recorded reason bound.
+const runnerFailureMessageLimit = 1000
 
 func truncate(s string, limit int) string {
 	if utf8.RuneCountInString(s) <= limit {

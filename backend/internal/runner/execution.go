@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
@@ -79,6 +80,10 @@ type executionExecutor struct {
 	workSpec       sandbox.SandboxSpec
 	container      sandbox.ContainerConfig
 	workSession    *harnessenv.Session
+	// launchErr is the last work Sandbox launch failure, kept so its reason
+	// reaches the stage log even though the Adapter reports only a class.
+	launchMu  sync.Mutex
+	launchErr error
 }
 
 // WorkAdapterConfig connects registered micro-harnesses to one execution's
@@ -126,7 +131,13 @@ func (e *executionExecutor) workAdapterConfig() WorkAdapterConfig {
 		if err != nil {
 			return nil, err
 		}
-		return box.RunControlled(ctx, spec, command)
+		process, err := box.RunControlled(ctx, spec, command)
+		if err != nil {
+			e.launchMu.Lock()
+			e.launchErr = err
+			e.launchMu.Unlock()
+		}
+		return process, err
 	}
 	return WorkAdapterConfig{Launch: launch, ResolveConfig: resolveConfig, ResolveAuthentication: resolveAuth, ResolveToolPermissions: permissions, CancelGrace: StageCancelGrace}
 }
@@ -148,6 +159,12 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 	var outcome StageOutcome
 	if in.Stage == model.StageWork {
 		outcome = e.runWork(ctx, in, spec, config, log)
+		if outcome.RunnerError != nil && outcome.Err == nil &&
+			(*outcome.RunnerError == "sandbox_error" || *outcome.RunnerError == "work_failed") {
+			e.launchMu.Lock()
+			outcome.Err, e.launchErr = e.launchErr, nil
+			e.launchMu.Unlock()
+		}
 	} else {
 		// Pipes let Log.Read collect lines while the real container supervisor owns
 		// the runtime and waits for all attach writers to stop.
@@ -193,6 +210,7 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 			}
 		}
 	}
+	noteStageFailure(log, outcome)
 	if err := log.Finish(false); err != nil && outcome.RunnerError == nil {
 		outcome.RunnerError = strPtr("sandbox_error")
 	}
