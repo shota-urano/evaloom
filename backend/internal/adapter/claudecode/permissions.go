@@ -64,5 +64,18 @@ func (h *harness) configurePermissions(ctx context.Context, req adapter.HarnessR
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"permissions": map[string][]string{"allow": allow, "deny": deny}})
+	return isolatedSettings(map[string][]string{"allow": allow, "deny": deny})
+}
+
+// isolatedSettings adds the fixed account isolation to the CLI settings JSON
+// (spec 08 3.5, contract 6.3): no claude.ai connectors, synced skills or
+// plugins, and no automatic memory. permissions is passed through unchanged.
+func isolatedSettings(permissions any) (json.RawMessage, error) {
+	return json.Marshal(map[string]any{
+		"permissions":               permissions,
+		"disableClaudeAiConnectors": true,
+		"syncClaudeAiSkills":        false,
+		"syncClaudeAiPlugins":       false,
+		"autoMemoryEnabled":         false,
+	})
 }

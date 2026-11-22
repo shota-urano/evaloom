@@ -210,7 +210,8 @@ func (h *harness) run(ctx context.Context, s *session, req adapter.HarnessReques
 	if err != nil {
 		return
 	}
-	common := []string{"claude", "--setting-sources", "user,project", "--settings", string(settings)}
+	// --strict-mcp-config without --mcp-config also drops claude.ai connectors.
+	common := []string{"claude", "--setting-sources", "user,project", "--settings", string(settings), "--strict-mcp-config"}
 	stderr := &lineWriter{session: s, stream: "stderr", authentication: authentication}
 	// Missing CLI becomes workload exit 127, not a runtime entrypoint failure.
 	// Prompt and settings are positional data, never interpolated shell source.
@@ -256,7 +257,12 @@ func (h *harness) run(ctx context.Context, s *session, req adapter.HarnessReques
 	if parser.invalid {
 		result.Usage.InputTokens, result.Usage.OutputTokens = nil, nil
 	}
-	if err == nil && parser.sessionID != "" && parser.completed && !parser.failed && !parser.invalid {
+	if parser.isolationBreach != "" {
+		// The CLI loaded claude.ai account state despite the isolation settings.
+		warning := &lineWriter{session: s, stream: "stderr"}
+		_, _ = io.WriteString(warning, "claudecode: isolation breach in system init: "+parser.isolationBreach+"\n")
+	}
+	if err == nil && parser.sessionID != "" && parser.completed && !parser.failed && !parser.invalid && parser.isolationBreach == "" {
 		result.Status = adapter.ResultSucceeded
 	} else if err == nil {
 		class = adapter.ErrorExecutionFailed
