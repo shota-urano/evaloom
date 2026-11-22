@@ -1,0 +1,4 @@
+# Runner bind-mounts the separately built Linux evaloom-sandbox-proxy binary.
+# Alpine supplies /bin/busybox; coreutils supplies /usr/bin/env.
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates coreutils
