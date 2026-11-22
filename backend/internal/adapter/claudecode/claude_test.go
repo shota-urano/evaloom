@@ -46,10 +46,12 @@ func TestClaudeCodeCLIHelper(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".credentials.json")); err != nil {
 		os.Exit(1)
 	}
-	if len(args) < 4 || !slices.Equal(args[:3], []string{"--setting-sources", "user,project", "--settings"}) || args[3] != `{"permissions":{"allow":["Bash","Edit"],"deny":["WebFetch"]}}` {
+	if len(args) < 5 || !slices.Equal(args[:3], []string{"--setting-sources", "user,project", "--settings"}) ||
+		args[3] != `{"autoMemoryEnabled":false,"disableClaudeAiConnectors":true,"permissions":{"allow":["Bash","Edit"],"deny":["WebFetch"]},"syncClaudeAiPlugins":false,"syncClaudeAiSkills":false}` ||
+		args[4] != "--strict-mcp-config" {
 		exit("policy override missing")
 	}
-	args = args[4:]
+	args = args[5:]
 	mode := os.Getenv("FAKE_MODE")
 	if strings.HasPrefix(mode, "refresh-") {
 		// Emit currently known credential JSON and its bare token before refreshing.

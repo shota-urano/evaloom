@@ -6,6 +6,13 @@
 
 `__EVALOOM_ROOT__`はlaunchdが展開する変数ではない。利用前にリポジトリの絶対パスへ置換する。
 
+## 本番のデータの置き場所（2026-11-22 本人決定）
+
+Mac mini で常駐させる本番の Evaloom のデータ（DB、成果物、Runner の設定・トークン・ログイン情報、作業領域、ログ、ビルドしたバイナリ、管理画面のビルド）は、リポジトリの外の`~/evaloom-data/`に置く。
+以下の手順は`data/`を例にしているが、本番では`data/`を`~/evaloom-data/`に読み替える。管理画面は`-web ~/evaloom-data/web`のように、リポジトリの`frontend/dist`ではなく写しを指す。
+
+リポジトリの`data/`に本番の DB を置くと、Runner の heartbeat が5秒ごとに DB を書き換え、`make verify`の demo テスト（追跡ファイルと普段の DB が変わらないことを確かめる）が落ちる。開発のビルドで本番の管理画面が変わることも避けるため、本番と開発の置き場所を分けた。
+
 ## ビルドとplist生成
 
 リポジトリのルートから実行する。生成物はGit管理外の`data/`内に置く。
@@ -151,6 +158,18 @@ Runnerの登録、設定ファイルの作成、launchdへの登録はこのビ�
 起動引数は`evaloom-runner -config <JSONファイル>`。
 仕様表の必須項目を検査し、未知の項目、型が違う値、`null`、複数のJSON値を拒否する。
 設定パスの既定値は設けない。launchdのテンプレートは`data/runner.json`を指定する。
+
+Runner の登録とトークンファイルの作成は次のとおり。`evaloomd runner register`はトークンを**標準エラー出力**に1回だけ出す。
+標準出力だけをリダイレクトすると、トークンが端末やログに表示され、ファイルは空になる（2026-11-22 実測）。
+画面に出さないよう、標準エラー出力をファイルへ書き出す。
+
+```sh
+umask 077
+data/bin/evaloomd -db data/evaloom.db runner register -name "Mac mini" mac-mini \
+  2> data/runner.token.new >/dev/null
+mv data/runner.token.new data/runner.token
+wc -c < data/runner.token   # 44（43文字と改行）になる。中身は表示しない
+```
 
 ```json
 {

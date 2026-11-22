@@ -119,8 +119,11 @@ type containerState struct {
 func (p *containerProcess) state(ctx context.Context) (containerState, error) {
 	out, err := p.container.output(ctx, "container", "inspect", "--format", "{{json .State}}", p.name)
 	var state containerState
-	if err != nil || json.Unmarshal(out, &state) != nil {
-		return state, &Error{Op: "container state unconfirmed"}
+	if err != nil {
+		return state, &Error{Op: "container state unconfirmed", Cause: runtimeFailure(err)}
+	}
+	if json.Unmarshal(out, &state) != nil {
+		return state, &Error{Op: "container state unconfirmed", Cause: runtimeDetail("container state is not readable")}
 	}
 	return state, nil
 }
@@ -157,19 +160,23 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 		// the first forced removal until the control-command timeout.
 		state, err := p.state(ctx)
 		switch {
-		case err != nil || !state.stopped():
-			p.err = &Error{Op: "container execution state unconfirmed"}
+		case err != nil:
+			p.err = &Error{Op: "container execution state unconfirmed", Cause: runtimeCause(err)}
+		case !state.stopped():
+			p.err = &Error{Op: "container execution state unconfirmed",
+				Cause: runtimeDetail("container status %q, running %t", state.Status, state.Running)}
 		default:
 			p.exitCode, p.exitCodeSet = state.ExitCode, true
 			switch {
 			// A high exit code alone does not prove an infrastructure failure:
 			// the workload may deliberately return it or terminate on a signal.
 			case state.OOMKilled || state.Error != "":
-				p.err = &Error{Op: "container resource limit or runtime failure"}
+				p.err = &Error{Op: "container resource limit or runtime failure",
+					Cause: runtimeDetail("oom killed %t, exit code %d, runtime error %q", state.OOMKilled, state.ExitCode, state.Error)}
 			case state.ExitCode != 0:
 				p.err = &ExitError{Code: state.ExitCode}
 			case cliErr != nil:
-				p.err = &Error{Op: "container attach failed"}
+				p.err = &Error{Op: "container attach failed", Cause: runtimeFailure(cliErr)}
 			}
 		}
 	}
@@ -231,4 +238,14 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 	} else if ctx.Err() != nil {
 		p.err = &Error{Op: "container interrupted", Cause: ctx.Err()}
 	}
+}
+
+// runtimeCause keeps only the runtime's reason from a nested sandbox error, so
+// a wrapped control-command deadline cannot change the outer classification.
+func runtimeCause(err error) error {
+	var runtime *RuntimeError
+	if errors.As(err, &runtime) {
+		return runtime
+	}
+	return nil
 }

@@ -57,6 +57,22 @@ func TestExecutionRuntimeHelper(t *testing.T) {
 		}
 		return args[i+1]
 	}
+	// evaloom-6pi: the runtime refuses one control command with exit code 1
+	// and a daemon message, as Docker does (sandbox_failure_test.go).
+	// work-wait fails only the inspection of a work container (CODEX_HOME).
+	failing := os.Getenv("EVALOOM_FAKE_FAIL")
+	workContainer := false
+	if failing == "work-wait" && args[0]+" "+args[1] == "container inspect" {
+		raw, _ := os.ReadFile(filepath.Join(root, args[len(args)-1]+".json"))
+		workContainer = bytes.Contains(raw, []byte("CODEX_HOME="))
+	}
+	if workContainer || failing != "" &&
+		map[string]string{"image": "image inspect", "create": "container create", "wait": "container inspect"}[failing] == args[0]+" "+args[1] {
+		token, _ := os.ReadFile(os.Getenv("EVALOOM_FAKE_TOKEN_FILE"))
+		fmt.Fprintf(os.Stderr, "%s\nrunner token %s\nAuthorization: Bearer fixture-bearer-value\n%s\n",
+			fakeDaemonMessage, token, strings.Repeat("x", 3000))
+		os.Exit(1)
+	}
 	switch args[0] + " " + args[1] {
 	case "image inspect":
 		fmt.Print(`{"Os":"linux","Config":{}}`)
