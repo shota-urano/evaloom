@@ -1,0 +1,9 @@
+# Shared production image for work and proposal sandboxes.
+FROM node:22-bookworm-slim
+ARG CODEX_VERSION
+ARG CLAUDE_VERSION
+RUN test -n "$CODEX_VERSION" && test -n "$CLAUDE_VERSION"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 git ca-certificates \
+    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
