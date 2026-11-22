@@ -30,10 +30,15 @@ case "$1 $2" in
  'image inspect') printf '%s' '{"Os":"linux","Config":{}}' ;;
  'container create') printf '%s\n' "$@" > "$ASSEMBLY_STATE/args" ;;
  'container inspect') printf '%s' '{"Status":"exited","Running":false,"ExitCode":0}' ;;
- 'container start'|'container rm') ;;
+ 'container start'|'container rm'|'container exec'|'volume create'|'volume rm') ;;
  *) exit 99 ;;
 esac
 `), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// The channel relay sidecar's trusted binary, outside every stage region.
+	config.Container.ProxyBinary = filepath.Join(state, "proxy")
+	if err := os.WriteFile(config.Container.ProxyBinary, []byte("fixture proxy"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	e := &executionExecutor{runner: r, config: config, claim: claim, paths: services.Paths, adapters: services.Adapters}
@@ -84,6 +89,15 @@ esac
 		}
 		if !strings.Contains(args, workspace+"\n") {
 			t.Fatalf("wrong workspace permissions for %s: %s", in.Stage, args)
+		}
+		// spec 09 3.6 (Q232): no host socket; the stage's private volume.
+		if strings.Contains(args, "channel.sock,") || strings.Contains(args, "source="+in.Directory) {
+			t.Fatalf("host channel socket or attempt directory mounted for %s: %s", in.Stage, args)
+		}
+		hasChannel := strings.Contains(args, "-channel,target=/evaloom/channel,volume-nocopy,readonly\n") &&
+			strings.Contains(args, "\nEVALOOM_CHANNEL=/evaloom/channel/channel.sock\n")
+		if hasChannel != (in.Stage != model.StageWork) || strings.Contains(args, "EVALOOM_CHANNEL") != hasChannel {
+			t.Fatalf("wrong channel wiring for %s: %s", in.Stage, args)
 		}
 		if in.Stage == model.StageWork && strings.Contains(args, "source="+profilePath+",") {
 			t.Fatal("work can see full Profile")

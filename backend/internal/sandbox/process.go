@@ -59,6 +59,7 @@ type containerProcess struct {
 	exitCode    int
 	exitCodeSet bool
 	network     *networkResources
+	channel     *channelResources
 }
 
 func (p *containerProcess) Wait() error {
@@ -138,6 +139,9 @@ func (p *containerProcess) supervise(ctx context.Context, cancel context.CancelF
 	defer close(p.done)
 	if p.network != nil {
 		defer p.network.cleanup()
+	}
+	if p.channel != nil {
+		defer p.channel.cleanup()
 	}
 	defer cancel()
 	defer stopAttach()

@@ -22,7 +22,7 @@ const fakeDaemonMessage = `Error response from daemon: invalid mount config for 
 // with secrets excluded and the length bounded. error_class stays
 // sandbox_error. Real Docker is out of scope; only the runtime CLI is fake.
 func TestSandboxFailureReasonIsRecorded(t *testing.T) {
-	for _, mode := range []string{"image", "create", "wait", "work-wait"} {
+	for _, mode := range []string{"image", "create", "wait", "work-wait", "relay-create", "relay-volume"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newExecutionFixture(t, "success")
 			stage := "prepare"
@@ -115,6 +115,18 @@ func TestSandboxFailureReasonIsRecorded(t *testing.T) {
 				t.Fatalf("log artifact size=%d saved=%d redacted=%d", size, len(saved), redacted)
 			}
 			requireSafeReason(t, "log artifact", string(saved), string(token))
+			if strings.HasPrefix(mode, "relay-") {
+				// spec 09 3.6 item 6: no stage container without its channel.
+				created, _ := filepath.Glob(filepath.Join(f.config.Container.RuntimeEnv["EVALOOM_FAKE_RUNTIME"], "*.json"))
+				for _, path := range created {
+					if !strings.HasSuffix(path, "-relay.json") {
+						t.Fatalf("stage container created without its channel: %s", path)
+					}
+				}
+				if !strings.Contains(message.String, "stage channel relay unconfirmed") {
+					t.Fatalf("error_message lacks the channel failure: %q", message.String)
+				}
+			}
 		})
 	}
 }

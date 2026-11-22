@@ -274,8 +274,8 @@ func (e *executionExecutor) stageSandbox(in StageInvocation) (sandbox.SandboxSpe
 	}
 	spec.Env = map[string]string{"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "EVALOOM_REQUEST": "/evaloom/request.json"}
 	if in.Stage != model.StageWork {
-		spec.ChannelPath = in.ChannelPath
-		spec.Env["EVALOOM_CHANNEL"] = "/evaloom/channel.sock"
+		spec.Channel = in.Channel
+		spec.Env["EVALOOM_CHANNEL"] = "/evaloom/channel/channel.sock"
 		spec.Env["EVALOOM_RESULT"] = p.Scratch + "/result.json"
 	}
 	program, err := stage.Program(in.Profile.Definition, in.Stage)
