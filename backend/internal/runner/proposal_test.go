@@ -220,6 +220,8 @@ func TestProposalSandboxHasNoSecretsAndOnlyModelDestinations(t *testing.T) {
 	}
 	runner.client = server.Client()
 	claim := proposalClaim(ulid.Make().String(), 300)
+	// Task links are prepare only (spec 09 3.3, Q233): never added here.
+	claim.Task.Title, claim.Task.Body = "https://linked.example.com/a", "see https://linked-body.example.com/b"
 	if err := runner.ExecuteProposal(context.Background(), claim, services); err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +240,7 @@ func TestProposalSandboxHasNoSecretsAndOnlyModelDestinations(t *testing.T) {
 					t.Fatalf("egress create missing destination %q: %v", host, args)
 				}
 			}
-			for _, host := range []string{"other.example:443", "profile-injected.example:443"} {
+			for _, host := range []string{"other.example:443", "profile-injected.example:443", "linked.example.com:443", "linked-body.example.com:443"} {
 				if slices.Contains(args, host) {
 					t.Fatalf("unexpected extra destination %q in egress", host)
 				}
