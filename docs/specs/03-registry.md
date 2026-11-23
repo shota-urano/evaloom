@@ -122,6 +122,7 @@ Project を作っても、振り分けのラベルは自動では作らない。
 | `command` | prepare・check・publish で必須。文字列の配列で、空でない | 5.2、6.4 |
 | `timeoutSec` | どの段も 1 以上で、全体設定 `limits.stageTimeoutMaxSec` のその段の値以下 | 5.2、10.2 |
 | `network.allow` | prepare と publish にだけ書ける。各要素は小文字の DNS ホスト名と 1〜65535 のポートを `:` でつないだもの。ワイルドカード、IP リテラル、ローカルの名前（ドットを含まない1語の名前と、最後のラベルが `localhost`・`local`・`internal` の名前）は拒否する。同じ宛先の重複も拒否する | 5.2 |
+| `network.taskLinks` | prepare にだけ書ける。真偽値（既定 `false`）。work・check・publish に書いたら拒否する（契約 5.2、Q233） | 5.2 |
 | `secrets` | prepare には `access: read` だけ、publish には `read` と `write` を書ける。work と check には書けない。`slot` は `^[a-z][a-z0-9_]{0,31}$`（Q138）。同じ段で同じ `slot` を2回書けない | 5.2、11章 |
 | `network.allow` とモデルの API | prepare と publish の `network.allow` に、登録済みのすべての Adapter が宣言したモデルの API の宛先が1つでもあれば拒否する（[`09-sandbox.md`](./09-sandbox.md) 3.3、Q146） | 5.2、12章の5 |
 | `runtime` | prepare・check・publish にだけ書ける。`kind` が `container`（ダイジェスト付きのイメージ）か `macos_vm`。macOS VM の実装までは `macos_vm` を拒否する（[`09-sandbox.md`](./09-sandbox.md) 3.4、Q147） | 5.2 |
