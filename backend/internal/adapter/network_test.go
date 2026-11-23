@@ -21,7 +21,7 @@ func TestConcreteAdapterModelAPIDestinations(t *testing.T) {
 		want           []string
 	}{
 		{"codex", codex.New(codex.Config{}), []string{"chatgpt.com:443", "auth.openai.com:443", "api.openai.com:443"}},
-		{"claude_code", claudecode.New(claudecode.Config{}), []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443"}},
+		{"claude_code", claudecode.New(claudecode.Config{}), []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443", "platform.claude.com:443"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			declarer, ok := tc.implementation.(registry.ModelAPIDeclarer)

@@ -123,7 +123,7 @@ func TestClaudeCodeToolPermissionsLaunchArguments(t *testing.T) {
 }
 
 func TestContainerLaunchOnlyAdapterDestinations(t *testing.T) {
-	expected := []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443"}
+	expected := []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443", "platform.claude.com:443"}
 	for _, network := range []sandbox.NetworkPolicy{sandbox.NetworkHarness, sandbox.NetworkNone, "", sandbox.NetworkPolicy("setup")} {
 		t.Run(string(network), func(t *testing.T) {
 			env := adapter.SandboxEnv{Worktree: "/worktree", ConfigDir: "/config", Env: map[string]string{"CLAUDE_CONFIG_DIR": "/config"}}

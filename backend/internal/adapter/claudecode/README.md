@@ -61,7 +61,7 @@ Q142の指示ファイルは専用設定直下の`CLAUDE.md`。
 
 `ContainerLaunch`は既存の`Container.RunControlled`を使う。
 モデルAPIの許可先の候補は`api.anthropic.com:443`・`console.anthropic.com:443`・
-`claude.ai:443`。実モデル試験で認証確認と本実行を確かめるまで、最小一覧の確認済みとは扱わない。
+`claude.ai:443`と、Claude Code 2.1.316 の OAuth トークン更新先`platform.claude.com:443`。実モデル試験で認証確認と本実行を確かめるまで、最小一覧の確認済みとは扱わない。
 `NetworkNone`は全遮断。ホストでの直接実行へ切り替える処理は持たない。
 
 ## 検証
