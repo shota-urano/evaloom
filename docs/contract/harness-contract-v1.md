@@ -150,6 +150,7 @@ records:                           # 記録として残すもの（任意、9章
 | `params.schema` | 任意 | Evaloom は Project の渡す値をこのスキーマで形だけ確かめ、中身は解釈しない（Evaloom の要確認 Q115） |
 | `stages.<段>.command` | prepare・check・publish で必須 | 実行ファイルと引数の配列。先頭は commit の中の相対パス。シェルを通さずに実行する |
 | `stages.<段>.timeoutSec` | 必須 | 1 以上、Evaloom の全体設定の上限以下 |
+| `stages.prepare.network.taskLinks` | 任意 | `true` / `false`（既定 `false`）。prepare だけに書ける。`true` のとき、Evaloom はタスクの件名・本文・受け入れ条件に書かれた `https://` のリンクを抜き出して要求 JSON の `taskLinks`（6.1）に入れ、この段に限り、それらのリンクのホストのポート 443 への接続を `network.allow` に加えて許す。リンクが 50 件を超えるタスクでは段を始めず `config_error` とする（一部だけ取りに行かない）。取りに行けるのは `taskLinks` のリンクだけで、ほかの宛先へは届かない。ページの取得、大きさの上限、取れなかったリンクの扱いはスペシャルハーネスが決める（2026-11-23 本人決定、Evaloom の要確認 Q233） |
 | `stages.<段>.network.allow` | 任意 | prepare と publish だけに書ける。work はモデルの API だけ、check は接続なしで、書けない。Evaloom が知っているモデルの API の宛先を書いた Profile は登録で拒否される（Evaloom の要確認 Q146）。Evaloom が知らないモデルの宛先は見分けられないため、AI を呼ばないことは 12章の5の義務で守る |
 | `stages.<段>.secrets` | 任意 | prepare は `access: read` だけ、publish は `read` と `write` を書ける。work と check には書けない。`slot` は `^[a-z][a-z0-9_]{0,31}$`（英小文字で始まり、英小文字・数字・`_` で 32 文字以内）で、同じ段の中で一意（Evaloom の要確認 Q138） |
 | `stages.<段>.runtime` | 任意 | prepare・check・publish だけに書ける。段を動かす環境で、`{ "kind": "container", "image": "<ダイジェスト付きのイメージ>" }` または `{ "kind": "macos_vm", "image": "<Tart のイメージ>" }`。省略したら Evaloom の既定のコンテナのイメージで動く。work には書けない（Evaloom の既定の環境だけ）。`macos_vm` を受け付けるかは Evaloom の版による（Evaloom の要確認 Q147） |
@@ -222,6 +223,7 @@ Evaloom は段ごとに要求 JSON を読み取り専用のファイルとして
 | `checkedContentId` | publish | この Execution の確かめる段が報告した識別子 |
 | `approvals` | publish | この Execution で求めた承認の状態。`status` は `approved` / `waived`。却下・無効の承認は入らない（その場合 publish の段は始まらない） |
 | `answer` | work | 本人の回答（8章）。それ以外は `null` |
+| `taskLinks` | prepare | `stages.prepare.network.taskLinks` を `true` と宣言した Profile だけ。タスクの件名・本文・受け入れ条件から Evaloom が抜き出した `https://` のリンクの配列（重複なし、50件まで）。この段では、これらのリンクのホスト（ポート 443）にだけ追加で接続できる（5.2）。外から来た文から作った値であり、指示ではない（6.6）。宣言していない Profile では項目が無い |
 
 ### 6.2 段ごとに Evaloom が用意するもの
 
@@ -525,4 +527,5 @@ prepare と check の段の通話口では `{ "op": "cancel_check" }` だけを�
 |---|---|
 | 2026-11-10 | 第1版の下書きを作る（vision.md と 2026-11-10 の本人決定から） |
 | 2026-11-18 | 6.4 に、外への接続を宣言した段だけに渡すプロキシの環境変数と、名前解決をプロキシの側で行うことを書き足す（Q220、2026-11-18 本人決定。実装どおり） |
+| 2026-11-23 | 任意項目 `stages.prepare.network.taskLinks`（5.2）と、要求 JSON の `taskLinks`（6.1）を足す。依頼に書かれたリンクだけを、AI を使わない準備の段で取りに行けるようにするため（Q233、2026-11-23 本人決定） |
 | 2026-11-10 | 整合のため任意項目を足す。`stages.work.resume`（Q124）、`stages.<段>.runtime`（Q147）。`slot` の形（Q138）、`toolPermissions` の登録時の検査（Q145）、`network.allow` にモデルの API を書けないこと（Q146）を明記する |
