@@ -122,6 +122,21 @@ func (r Request) Validate() error {
 	if r.Answer != nil && r.Stage != model.StageWork {
 		return fmt.Errorf("answer: only available in work")
 	}
+	if r.TaskLinks != nil {
+		if r.Stage != model.StagePrepare {
+			return fmt.Errorf("taskLinks: only available in prepare")
+		}
+		if len(*r.TaskLinks) > MaxTaskLinks {
+			return fmt.Errorf("taskLinks: more than %d links", MaxTaskLinks)
+		}
+		seen := map[string]bool{}
+		for _, link := range *r.TaskLinks {
+			if !strings.HasPrefix(link, "https://") || seen[link] {
+				return fmt.Errorf("taskLinks: expected distinct https links")
+			}
+			seen[link] = true
+		}
+	}
 	if r.Previous != nil {
 		if err := optionalContentID(r.Previous.CheckedContentID); err != nil {
 			return err

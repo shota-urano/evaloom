@@ -309,6 +309,12 @@ func (p ProgramStage) issues(stage model.Stage, found *issues) {
 		return
 	}
 	if p.Network != nil {
+		if p.Network.TaskLinks != nil && stage != model.StagePrepare {
+			found.add(prefix+"network.taskLinks", "not_allowed_in_stage")
+		}
+		if p.Network.Allow == nil && (stage != model.StagePrepare || p.Network.TaskLinks == nil) {
+			found.add(prefix+"network.allow", "required")
+		}
 		seen := map[string]bool{}
 		for i, dest := range p.Network.Allow {
 			name := fmt.Sprintf("%snetwork.allow[%d]", prefix, i)
@@ -355,6 +361,11 @@ func (p ProgramStage) runtimeIssues(prefix string, found *issues) {
 		found.add(prefix+"runtime.kind", "invalid")
 	}
 }
+
+// DestinationIssue exposes the network.allow rule to other packages, e.g. to
+// apply "3.3 の宛先の書き方と同じ規則" to task link hosts (spec 09 3.3).
+// The empty string means the destination is acceptable.
+func DestinationIssue(value string) string { return destinationIssue(value) }
 
 // destinationIssue checks a network.allow entry (contract 5.1, spec 03 3.4):
 // a lowercase DNS host name and a port 1–65535 joined by ":". Wildcards, IP

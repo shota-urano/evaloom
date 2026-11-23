@@ -11,6 +11,9 @@ import (
 
 const Version = "1"
 
+// MaxTaskLinks is the upper bound of request taskLinks (contract 5.2・6.1).
+const MaxTaskLinks = 50
+
 type Request struct {
 	ContractVersion  string             `json:"contractVersion" required:"true"`
 	Stage            model.Stage        `json:"stage" required:"true"`
@@ -24,7 +27,10 @@ type Request struct {
 	CheckedContentID *string            `json:"checkedContentId,omitempty" nullable:"true"`
 	Approvals        []RequestApproval  `json:"approvals,omitempty"`
 	Answer           *Answer            `json:"answer" required:"true" nullable:"true"`
-	Limits           RequestLimits      `json:"limits" required:"true"`
+	// TaskLinks is present only in prepare of a Profile declaring
+	// stages.prepare.network.taskLinks: true (contract 6.1). Absent otherwise.
+	TaskLinks *[]string     `json:"taskLinks,omitempty"`
+	Limits    RequestLimits `json:"limits" required:"true"`
 }
 
 type RequestExecution struct {
@@ -179,8 +185,12 @@ type ProgramStage struct {
 	Runtime    *Runtime `json:"runtime,omitempty"`
 }
 
+// Network is a program stage's outbound declaration (contract 5.2). allow is
+// required unless prepare declares taskLinks (checked in ProgramStage.issues).
 type Network struct {
-	Allow []string `json:"allow" required:"true"`
+	Allow []string `json:"allow,omitempty"`
+	// TaskLinks is prepare only (contract 5.2, spec 09 3.3, Q233).
+	TaskLinks *bool `json:"taskLinks,omitempty"`
 }
 
 type Secret struct {
