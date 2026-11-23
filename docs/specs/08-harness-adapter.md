@@ -169,7 +169,7 @@ Evaloom から起動するミクロハーネスには、作業の段ごとに専
 | 指示の渡し方 | Q142 の案のとおり、`stages.work.instructions` を `CLAUDE_CONFIG_DIR` の指示ファイルとして置き、Execution Context の指示文は起動の入力で渡す |
 | ツール権限 | Profile の `stages.work.toolPermissions` を CLI の許可設定に反映する。変換の規則は 3.9（案 Q72） |
 | 認証 | Codex と同じく Q7・Q8 に従う |
-| ネットワークの許可先（案 Q71） | サブスクリプションのログインで使う `api.anthropic.com:443`、`console.anthropic.com:443`、`claude.ai:443` を候補とする。Codex と同じく実モデル試験で確かめてから確定する |
+| ネットワークの許可先（案 Q71） | サブスクリプションのログインで使う `api.anthropic.com:443`、`console.anthropic.com:443`、`claude.ai:443`、`platform.claude.com:443` を候補とする。Codex と同じく実モデル試験で確かめてから確定する。`platform.claude.com:443` は、アクセストークン（期限約8時間）が切れた後の OAuth のトークン更新先（Claude Code 2.1.316 の `https://platform.claude.com/v1/oauth/token`）で、許可しないと期限切れの後にモデル API が 401 になる（2026-11-23 実測、本人決定で追加） |
 
 ### 3.8 エラー分類の対応（requirements 9.5）
 

@@ -224,6 +224,47 @@ func TestWorkAndProposalUseOnlySelectedAdapterDestinations(t *testing.T) {
 	}
 }
 
+// The Claude Code Adapter's declaration (pinned in adapter's
+// TestConcreteAdapterModelAPIDestinations) includes the OAuth token refresh
+// endpoint. Work and Proposal must pass all of it to the egress proxy.
+func TestWorkAndProposalAllowClaudeCodeTokenRefresh(t *testing.T) {
+	claudeCode := []string{"api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443", "platform.claude.com:443"}
+	for _, kind := range []SandboxKind{Work, Proposal} {
+		t.Run(string(kind), func(t *testing.T) {
+			f := networkFixture(t, "normal", kind)
+			f.config.ModelAPI = modelDestinations(claudeCode)
+			p, err := f.sandbox(t).Run(context.Background(), f.spec, []string{"/network-probe"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := waitProcess(t, p); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, call := range f.calls(t) {
+				args := call.Args
+				if args[0] != "container" || args[1] != "create" || !strings.HasSuffix(flag(args, "--name"), "-egress") {
+					continue
+				}
+				found = true
+				i := slices.Index(args, "egress")
+				var destinations []string
+				for _, arg := range args[i+2:] {
+					if !strings.HasPrefix(arg, "--deny-ip=") {
+						destinations = append(destinations, arg)
+					}
+				}
+				if !slices.Equal(destinations, claudeCode) {
+					t.Fatalf("egress destinations = %q, want %q", destinations, claudeCode)
+				}
+			}
+			if !found {
+				t.Fatal("no egress proxy created")
+			}
+		})
+	}
+}
+
 func TestStageNetworkRejectsInvalidAuthorityBeforeRuntime(t *testing.T) {
 	for _, kind := range stageKinds {
 		for _, name := range []string{"wrong-policy", "local", "wildcard", "uppercase", "missing-source", "helper-in-stage"} {

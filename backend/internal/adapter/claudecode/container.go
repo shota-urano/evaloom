@@ -11,11 +11,14 @@ import (
 )
 
 // Model API and subscription-auth destinations adopted in spec 00, Q71.
+// platformClaudeDestination is Claude Code 2.1.316's OAuth token refresh
+// endpoint (https://platform.claude.com/v1/oauth/token, 2026-11-23).
 // Keep them in this adapter package; GitHub access belongs to Git Publisher.
 const (
 	anthropicAPIDestination     = "api.anthropic.com:443"
 	anthropicConsoleDestination = "console.anthropic.com:443"
 	claudeAIDestination         = "claude.ai:443"
+	platformClaudeDestination   = "platform.claude.com:443"
 )
 
 func (*harness) ModelAPIDestinations() []string {
@@ -23,7 +26,7 @@ func (*harness) ModelAPIDestinations() []string {
 }
 
 func modelAPIDestinations() []string {
-	return []string{anthropicAPIDestination, anthropicConsoleDestination, claudeAIDestination}
+	return []string{anthropicAPIDestination, anthropicConsoleDestination, claudeAIDestination, platformClaudeDestination}
 }
 
 // ContainerLaunch binds the existing container implementation to an execution's

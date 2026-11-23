@@ -22,7 +22,7 @@ func TestProfilesRejectRegisteredAdapterModelAPIs(t *testing.T) {
 	repo := requireHarness(t, status, body, 201).RepoPath
 	version := 0
 	for _, stage := range []string{"prepare", "publish"} {
-		for _, destination := range []string{"chatgpt.com:443", "auth.openai.com:443", "api.openai.com:443", "api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443"} {
+		for _, destination := range []string{"chatgpt.com:443", "auth.openai.com:443", "api.openai.com:443", "api.anthropic.com:443", "console.anthropic.com:443", "claude.ai:443", "platform.claude.com:443"} {
 			t.Run(stage+"/"+destination, func(t *testing.T) {
 				v := contractExampleProfile(t)
 				// The example selects Claude Code, while the denylist includes
