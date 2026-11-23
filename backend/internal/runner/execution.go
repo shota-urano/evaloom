@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +53,8 @@ func (r *Runner) ExecuteClaim(ctx context.Context, config Config, claim Claim, f
 		if json.Unmarshal(claim.Resume, &resume) == nil && resume.Stage != "" {
 			first = resume.Stage
 		}
-		request, requestErr := stageRequest(claim, first, e.paths, resume)
+		requestLinks, _, _ := stageTaskLinks(claim, def, first, adapters)
+		request, requestErr := stageRequestWithLinks(claim, first, e.paths, resume, requestLinks)
 		if requestErr != nil {
 			return requestErr
 		}
@@ -183,7 +185,11 @@ func (e *executionExecutor) RunStage(ctx context.Context, in StageInvocation) St
 	delivered := make(chan error, 1)
 	go func() { delivered <- log.Deliver(reportCtx) }()
 	var outcome StageOutcome
-	if in.Stage == model.StageWork {
+	if in.taskLinksErr != nil {
+		// spec 09 3.3 step 3: no container; the reason goes to the stage log
+		// (stream=runner) and from there to the execution record.
+		outcome = StageOutcome{RunnerError: strPtr("config_error"), Err: in.taskLinksErr}
+	} else if in.Stage == model.StageWork {
 		outcome = e.runWork(ctx, in, spec, config, log)
 		if outcome.RunnerError != nil && outcome.Err == nil &&
 			(*outcome.RunnerError == "sandbox_error" || *outcome.RunnerError == "work_failed") {
@@ -292,13 +298,17 @@ func (e *executionExecutor) stageSandbox(in StageInvocation) (sandbox.SandboxSpe
 		}
 	}
 	modelAPIs := map[string]bool{}
-	for _, name := range e.adapters.Names() {
-		a, _ := e.adapters.Lookup(name)
-		if d, ok := a.(registry.ModelAPIDeclarer); ok {
-			for _, host := range d.ModelAPIDestinations() {
-				modelAPIs[host] = true
+	for _, destination := range modelAPIDestinations(e.adapters) {
+		modelAPIs[destination] = true
+	}
+	if in.Stage == model.StagePrepare && len(in.taskLinks) > 0 {
+		// spec 09 3.3 step 4: prepare only, in addition to its network.allow.
+		for _, destination := range stage.TaskLinkDestinations(in.taskLinks) {
+			if !slices.Contains(spec.AllowedDestinations, destination) {
+				spec.AllowedDestinations = append(spec.AllowedDestinations, destination)
 			}
 		}
+		spec.Network = sandbox.NetworkDeclared
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

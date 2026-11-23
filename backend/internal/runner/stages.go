@@ -11,6 +11,7 @@ import (
 	"github.com/shota-urano/evaloom/backend/internal/adapter"
 	"github.com/shota-urano/evaloom/backend/internal/contract"
 	"github.com/shota-urano/evaloom/backend/internal/model"
+	"github.com/shota-urano/evaloom/backend/internal/registry"
 	"github.com/shota-urano/evaloom/backend/internal/sandbox"
 	stageplan "github.com/shota-urano/evaloom/backend/internal/stage"
 )
@@ -78,10 +79,16 @@ type StageInvocation struct {
 	// Stage channel handler (nil for work). The executor supplies its own
 	// sandbox-visible EVALOOM_CHANNEL path and copies this into
 	// SandboxSpec.Channel, which places it behind a relay sidecar.
-	Channel     sandbox.ChannelHandler
-	security    *stageSecurity
-	timeout     time.Duration
-	measurement *stageMeasurement
+	Channel sandbox.ChannelHandler
+	// taskLinks are the links granted to prepare (spec 09 3.3, Q233); their
+	// hosts' port 443 is added to the stage's network.allow. taskLinksErr is
+	// set when the links exceed the limit: the stage fails before a container
+	// is created.
+	taskLinks    []string
+	taskLinksErr error
+	security     *stageSecurity
+	timeout      time.Duration
+	measurement  *stageMeasurement
 }
 
 type StageExecutor interface {
@@ -169,7 +176,8 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		request, err := stageRequest(claim, stage, services.Paths, resume)
+		requestLinks, links, linksErr := stageTaskLinks(claim, profile.Definition, stage, services.Adapters)
+		request, err := stageRequestWithLinks(claim, stage, services.Paths, resume, requestLinks)
 		if err != nil {
 			return err
 		}
@@ -201,7 +209,7 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 			outcome.RunnerError = &code
 		} else {
 			invocation := StageInvocation{Stage: stage, Attempt: attempt, Profile: profile,
-				Workspace: claim.Workspace.Path, Directory: directory,
+				Workspace: claim.Workspace.Path, Directory: directory, taskLinks: links, taskLinksErr: linksErr,
 				timeout: time.Duration(claim.Limits.TimeoutSec[string(stage)]) * time.Second}
 			if stage == model.StageWork {
 				invocation.WorkSessionID = resume.WorkSessionID
@@ -246,7 +254,42 @@ func (runner *Runner) executeStages(ctx context.Context, claim Claim, profile Lo
 	}
 }
 
+// modelAPIDestinations is the union of the registered Adapters' model API
+// destinations (the Q146 list).
+func modelAPIDestinations(adapters *adapter.Registry) []string {
+	var out []string
+	if adapters == nil {
+		return out
+	}
+	for _, name := range adapters.Names() {
+		a, _ := adapters.Lookup(name)
+		if d, ok := a.(registry.ModelAPIDeclarer); ok {
+			out = append(out, d.ModelAPIDestinations()...)
+		}
+	}
+	return out
+}
+
+// stageTaskLinks applies spec 09 3.3 "タスクのリンク". Only prepare of a Profile
+// declaring taskLinks: true gets a request value (an empty array when there
+// are no links). Over the limit, the request carries no link, nothing is
+// granted, and the returned error fails the stage before its container.
+func stageTaskLinks(claim Claim, profile contract.ProfileDefinition, s model.Stage, adapters *adapter.Registry) (*[]string, []string, error) {
+	if s != model.StagePrepare || !stageplan.DeclaresTaskLinks(profile) {
+		return nil, nil, nil
+	}
+	links := stageplan.TaskLinks(modelAPIDestinations(adapters), claim.Task.Title, claim.Task.Body, claim.Task.AcceptanceCriteria)
+	if len(links) > contract.MaxTaskLinks {
+		return &[]string{}, nil, stageplan.ErrTooManyTaskLinks
+	}
+	return &links, links, nil
+}
+
 func stageRequest(claim Claim, stage model.Stage, paths contract.RequestPaths, resume stageResume) ([]byte, error) {
+	return stageRequestWithLinks(claim, stage, paths, resume, nil)
+}
+
+func stageRequestWithLinks(claim Claim, stage model.Stage, paths contract.RequestPaths, resume stageResume, taskLinks *[]string) ([]byte, error) {
 	if claim.Limits.TimeoutSec[string(stage)] > int(time.Duration(1<<63-1)/time.Second) {
 		return nil, fmt.Errorf("runner: stage timeout exceeds duration range")
 	}
@@ -273,6 +316,7 @@ func stageRequest(claim Claim, stage model.Stage, paths contract.RequestPaths, r
 	if stage == model.StagePublish {
 		r.CheckedContentID, r.Approvals = resume.CheckedContentID, resume.Approvals
 	}
+	r.TaskLinks = taskLinks
 	data, err := json.Marshal(r)
 	// Re-decode through the existing strict contract, including required and
 	// stage-specific fields. No Profile definition, secret values or host-only
