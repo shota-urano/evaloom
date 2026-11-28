@@ -22,7 +22,7 @@ Evaloom は、Linear などから仕事を受け取り、どの Project また�
 前提は次のとおりとする。
 
 - 利用者は本人1人。管理画面と Control API は Mac mini のループバックで待ち受け、別端末からは Tailscale のネットワークの中だけで届く（[`18-remote-access.md`](./18-remote-access.md)）。
-- 仕事の入口は Linear（API の定期照会）と管理画面からの手動作成である。ほかの入口（定期実行など）は後で足す。
+- 仕事の入口は Linear（API の定期照会）、管理画面からの手動作成、外のプログラムからの鍵付きの入口（ループバックだけ、[`20-program-intake.md`](./20-program-intake.md)）である。定期実行は Evaloom に作らず、起動は外のプログラムが行う。
 - 振り分けは Issue のラベルで決める。決まらないときは AI が振り分け先を提案し、本人が管理画面で承認してから実行する（本人決定 2）。
 - 本人の判断（振り分けの承認、操作の承認、止まった仕事の続行、作業中の AI の質問への回答）は、管理画面だけで受け付ける。Linear には「管理画面で判断待ち」と知らせるだけにする（本人決定 3）。
 - 危険な操作は指示で禁じず、権限の外に置く（requirements 1.3 原則13）。鍵を受け取る段（準備と出す）は AI を呼ばないプログラムだけで動かし、作業の段には鍵を渡さない（本人決定 4・7）。
@@ -117,6 +117,7 @@ vision.md 3章の流れと、担当する仕様の対応である。
 | 17 | [`17-approval.md`](./17-approval.md) | 承認の対象（スペシャルハーネスが宣言する操作）、承認を省く設定（Project と、直接振り分けたときのスペシャルハーネスの approval_waivers）、承認待ちの発生、承認と中身の識別子（content_id）の結び付け、出す直前の照合と消費（authorize）、却下・無効・期限切れ・中止 | Backend, Frontend |
 | 18 | [`18-remote-access.md`](./18-remote-access.md) | 別端末からの管理画面の利用（Tailscale のネットワーク内だけで公開）、ID とパスワードによる本人のログイン、再起動をまたいで端末ごとに保つセッション（有効期限3日）、一回限りのログイン URL の廃止 | Backend, Frontend |
 | 19 | [`19-routing-and-stages.md`](./19-routing-and-stages.md) | 振り分け先（Project とスペシャルハーネス）、スペシャルハーネスの登録と版の固定、段と段ごとの安全な場所、中身の識別子と承認の結び付け、鍵の受け渡し、承認の宣言、結果の受け取りと返却、記録の受け渡し、受け入れ条件の要否、同時実行の単位、software-engineer への切り替えの順番 | Backend, Frontend |
+| 20 | [`20-program-intake.md`](./20-program-intake.md) | プログラムから鍵付きで仕事を受け付ける入口（プログラム用の認証区分、ループバックだけ）と、その仕事の結果（確かめる段の成果物と作業の要約）を取り出す口、鍵の発行と無効化の CLI、受け付ける上限 | Backend |
 
 ### 3.1 受け入れ条件（requirements 20章）と担当仕様
 
@@ -184,7 +185,7 @@ requirements 20章は、次の方針で書き直した（vision-alignment.md 5�
 ## 5. スコープ外
 
 - 仕事の中身（準備・作業・確かめる・出すで何をするか）。スペシャルハーネスが決める（vision.md 4章）。開発の仕事の中身（worktree、テスト、push、PR、マージ、ブランチ、GitHub CI）は software-engineer が持つ
-- Linear 以外の入口（定期実行など）。後で足す（vision.md 3章）
+- 定期実行。起動は外のプログラムが行い、Evaloom はプログラムからの入口（20）で受け付けるだけにする
 - 評価（ルーブリック、LLM-as-a-Judge、人間による評価入力、非公開テスト）（requirements 19章 Phase 3）
 - 改善候補、比較実験、試験運用、Profile のロールバック API（Phase 4）
 - AI 協議（Review / Debate / Adaptive）（Phase 5）

@@ -61,6 +61,10 @@ func NewHandlerWithContextSource(db *sql.DB, logger *slog.Logger, auth *OwnerAut
 	mux.Handle("POST /api/executions/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts, false)))
 	mux.Handle("POST /api/route-proposals/{id}/artifacts", auth.protectRunner(registerArtifact(db, logger, auth, artifacts, true)))
 	mux.Handle("POST /api/route-proposals/{id}/result", auth.protectRunner(reportRouteProposalResult(db, logger, auth)))
+	// Program class (spec 20): its own prefix, loopback only, program keys only.
+	mux.Handle("POST /api/programs/tasks", auth.protectProgram(createProgramTask(db, logger)))
+	mux.Handle("GET /api/programs/tasks/{id}", auth.protectProgram(getProgramTask(db, logger)))
+	mux.Handle("GET /api/programs/tasks/{id}/files/{name...}", auth.protectProgram(getProgramFile(db, logger, artifacts)))
 	fallback := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, logger, &Error{Code: NotFound, Message: "API endpoint not found"})
 	}))

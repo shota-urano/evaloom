@@ -173,6 +173,9 @@ func runWithInput(ctx context.Context, args []string, input *os.File, output io.
 	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "runner" {
 		return registerRunner(ctx, *path, flags.Args()[1:], output)
 	}
+	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "client" {
+		return programClient(ctx, *path, flags.Args()[1:], output)
+	}
 	if *path != "" && flags.NArg() > 0 && flags.Arg(0) == "owner" {
 		return setOwnerPassword(ctx, *path, flags.Args()[1:], input, output)
 	}
