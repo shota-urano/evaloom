@@ -126,6 +126,18 @@ bd prime                # Refresh Beads context
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
 
+## オーケストレーター（2026-11-28 本人決定）
+
+本人「あなたはオーケストラーなのでどんどんNEUXとかbrain-harnessに指示してくださいね」。
+
+- このリポジトリで開いたセッション（対話の AI）は、ほかのプロジェクト（NEXUS、brain-harness、`~/workspace/harnesses/` のハーネスなど）への指示役を担う。本人に「別のセッションで〜して」と頼まない。Orca の worker（`orchestration` スキル）で対象のリポジトリに作業役を立て、指示書を渡して進める
+- 混同しない: evaloomd（Evaloom の本体）は、無人の仕事を隔離して動かす場所。オーケストレーターは、この対話のセッション
+- 指示書（`--spec-file`）に書くもの: 対象と変更、正本の場所、してよいこと・してはいけないこと、本人に聞く場面、報告（worker_done）に入れるもの
+- 作業役の質問: 本人の決定・仕様・指示書から答えられるものは、オーケストレーターが答える。好み・承認・仕様の確定・本番に関わるものは、推奨を付けて本人に聞く。本人に確かめている間は、作業役に「答えが来るまで実装を始めない」と返す（返さずにいると、作業役が先に進めてしまう。2026-11-28 に起きた）
+- 本人の明示の指示が要るもの: push と PR の作成、PR のマージ、本番への反映、鍵の発行。本番への反映を任されたときは、先にバックアップを取り、動いている仕事が無いことを確かめ、古いものを `.prev-<日時>` で残す
+- 鍵の値は、オーケストレーターも作業役も扱わない。本人のログインが要る操作（管理画面での版の登録など）は、本人に手順を渡す
+- 作業役の報告は、そのまま信じずに要点を確かめる（本番の DB・ログ・画面など、手元で見られるものは見る）。本人への報告は、結論、本人の番、詳細の順
+
 ## プロジェクト構成
 - `backend/`: Go（`evaloomd` と `evaloom-runner`）。`frontend/`: React + Vite + TypeScript の管理画面。
 - 仕様の正本は `docs/specs/`。タスクは `bd ready` から取る。
