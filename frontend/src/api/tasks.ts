@@ -47,7 +47,7 @@ export type LatestExecutionSummary = ExecutionSummary & { outputs?: ExecutionOut
 export type TaskSummary = Task & {
   latestExecution: LatestExecutionSummary | null
   /** 15-linear-intake 5章。`manual` / `linear`。 */
-  source?: 'manual' | 'linear'
+  source?: 'manual' | 'linear' | 'program'
   /** 15-linear-intake 3.6 の保留の理由。保留していなければ null。 */
   intakeBlockCause?: string | null
   /** Linear 起因のタスクの Issue の識別子と URL。手動作成のタスクは null。 */

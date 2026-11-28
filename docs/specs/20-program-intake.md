@@ -53,7 +53,7 @@ brain-harness の 15.10 の未確認点「Evaloom の成果物をプログラム
 
 ### 4.3 鍵の発行と無効化（CLI）
 
-- 発行: `evaloomd -db <DB> client register -harness <スペシャルハーネス ID> [-name <表示名>] <client ID>`、または `-project <Project ID>`。どちらか一方が必須。鍵は標準出力に1回だけ出す。ログ・DB・audit_logs には値を残さない。
+- 発行: `evaloomd -db <DB> client register -harness <スペシャルハーネス ID> [-name <表示名>] <client ID>`、または `-project <Project ID>`。どちらか一方が必須。鍵は標準エラーに1回だけ出す（`runner register` と同じ出し方）。ログ・DB・audit_logs には値を残さない。
 - 無効化: `evaloomd -db <DB> client revoke <client ID>`。revoked_at を書き、以後その鍵は 401。
 - 一覧: `evaloomd -db <DB> client list`（ID、表示名、振り分け先、作成・無効化の時刻。鍵もハッシュも出さない）。
 - 発行と無効化は audit_logs（`program_client.register`、`program_client.revoke`）に残す。
@@ -76,7 +76,7 @@ brain-harness の 15.10 の未確認点「Evaloom の成果物をプログラム
 - 処理は 04 の 3.1 と同じ1つのトランザクションで行う。違いは次のとおり。
   - tasks.source=`program`、program_client_id に鍵の client ID を書く。idempotency_key は `program:<client ID>:<Idempotency-Key>` とする（本人の手動作成のキーと混ざらないため）。
   - audit_logs は `task.create`（actor=`program:<client ID>`）。
-- 応答（201）: `{ "taskId", "status", "createdAt" }`。
+- 応答（201）: `{ "taskId", "status", "createdAt" }`。`taskId` は `task-<番号>` の形。同じキーの再送も同じ形で 200 を返す。
 - 振り分けの提案（`routing`）は通らない。振り分け先は鍵で決まっているため。
 - 仕事の後の流れ（順番待ち、段、承認、本人の判断待ち、通知）は手動のタスクと同じ。作業中の AI の質問や承認待ちは、今までどおり管理画面で本人が答える。プログラムからは答えられない（00-overview 1章「本人の判断は管理画面だけ」）。
 
@@ -89,7 +89,7 @@ brain-harness の 15.10 の未確認点「Evaloom の成果物をプログラム
 
 ```json
 {
-  "taskId": "01J...",
+  "taskId": "task-012",
   "status": "completed",
   "createdAt": "2026-11-29T05:30:00Z",
   "updatedAt": "2026-11-29T05:52:10Z",
@@ -98,7 +98,7 @@ brain-harness の 15.10 の未確認点「Evaloom の成果物をプログラム
     "seq": 1,
     "status": "completed",
     "errorClass": null,
-    "summary": "check の段の結果 JSON の summary"
+    "errorMessage": null
   },
   "files": [
     { "name": "report.md", "sizeBytes": 18234, "sha256": "..." },
@@ -108,7 +108,7 @@ brain-harness の 15.10 の未確認点「Evaloom の成果物をプログラム
 ```
 
 - `status` はタスクの状態（02 の 5.1）。`waiting_approval` と `blocked` は「管理画面で本人の判断待ち」を表す。プログラムは待つか、次の回に回す。
-- `execution` は最新の Execution。まだ無ければ null。
+- `execution` は最新の Execution（`status` は 02 の Execution の状態。終わって成功したものは `succeeded`）。失敗したときは `errorClass` と `errorMessage` が入る。まだ無ければ null。
 - `files` は、最新の Execution が `completed` のときだけ中身を入れる。それ以外は空の配列。中身は次の2種類だけ。
   - 確かめる段（`check`）の `out_file` の成果物。確かめた中身そのものであるため、作業の段の `out` ではなくこちらを渡す。
   - 作業の段の要約（`work_summary`）。名前は `summary.md`。
@@ -232,7 +232,7 @@ curl -sS -o report.md http://127.0.0.1:<port>/api/programs/tasks/<taskId>/files/
 ## 12. 実装単位
 
 - [ ] [Backend] program_clients のマイグレーション、tasks.source の `program` と program_client_id、鍵を発行・無効化・一覧する CLI（4.3、7章）
-  - 受け入れ基準: 発行した鍵の値が標準出力にだけ出て、DB にはハッシュだけが残る; 振り分け先がちょうど一方でないと発行しない; 無効化した鍵は以後認証されない; 発行と無効化が audit_logs に残る
+  - 受け入れ基準: 発行した鍵の値が標準エラーにだけ出て、DB にはハッシュだけが残る; 振り分け先がちょうど一方でないと発行しない; 無効化した鍵は以後認証されない; 発行と無効化が audit_logs に残る
 - [ ] [Backend] プログラム用の認証区分とループバックだけの境界、`POST /api/programs/tasks`（4.1、4.2、4.4、4.6）
   - 受け入れ基準: 9章の認証・境界・冪等・上限のテストが通る; 作ったタスクが手動のタスクと同じに claim される
 - [ ] [Backend] `GET /api/programs/tasks/{id}` と `GET /api/programs/tasks/{id}/files/{name...}`（4.5）

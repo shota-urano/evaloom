@@ -13,7 +13,7 @@ import (
 func TestTaskExecutionColumnsMatchSpecification(t *testing.T) {
 	db := openTaskTables(t)
 	for table, want := range map[string]string{
-		"tasks":             "id,source,project_id,harness_id,title,body,acceptance_criteria,collaboration_mode,status,intake_block_cause,idempotency_key,created_at,updated_at",
+		"tasks":             "id,source,project_id,harness_id,title,body,acceptance_criteria,collaboration_mode,status,intake_block_cause,idempotency_key,created_at,updated_at,program_client_id",
 		"executions":        "id,task_id,seq,mode,status,resume_stage,runner_id,route_kind,project_id,harness_id,profile_id,profile_version,profile_commit_sha,contract_version,params,workspace_id,work_session_id,content_id,outputs,error_class,error_message,cancel_requested_at,claimed_at,started_at,finished_at,last_heartbeat_at,created_at",
 		"task_workspaces":   "id,task_id,runner_id,path,status,created_by_execution_id,created_at,cleaned_at",
 		"stage_runs":        "id,execution_id,stage,attempt,status,exit_code,error_class,request_artifact_id,result_artifact_id,started_at,finished_at",

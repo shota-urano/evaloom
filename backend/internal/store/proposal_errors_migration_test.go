@@ -27,7 +27,7 @@ func TestProposalErrorMigrationPreservesRowsAndReferences(t *testing.T) {
 	queries := []string{
 		`SELECT * FROM route_proposals`, `SELECT * FROM owner_decisions`, `SELECT * FROM artifacts`,
 		`SELECT * FROM pragma_table_info('route_proposals')`,
-		`SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`,
+		`SELECT name FROM sqlite_master WHERE type='table' AND name != 'program_clients' ORDER BY name`, // 0034 adds program_clients
 	}
 	before := make([][][]any, len(queries))
 	for i, query := range queries {

@@ -60,6 +60,24 @@ data/bin/evaloomd -db data/evaloom.db owner set-password -id <本人のID>
 管理画面は `http://127.0.0.1:8080/` を開く。
 起動ログにはログインURLを出力しない。再設定も同じコマンドを使い、既存のセッションはすべて無効になる。
 
+## プログラム用の鍵（仕様 20）
+
+外のプログラム（brain-harness の起動・取り込みプログラムなど）が仕事を頼み、結果を取り出すための鍵。
+鍵1つに振り分け先を1つだけ登録する。発行は本人が Mac mini のターミナルで行い、鍵の値は標準エラーに1回だけ出る（`runner register` と同じ。DB にはハッシュだけが残る）。
+
+```sh
+# 鍵を画面に出さずにファイルへ置く例。失敗したときはファイルにエラーの文が入るので、中身が43文字の1行かを確かめる。
+mkdir -p "$HOME/Library/Application Support/brain-harness"
+(umask 077; data/bin/evaloomd -db data/evaloom.db client register -harness researcher -name "brain-harness research" brain-research \
+  2> "$HOME/Library/Application Support/brain-harness/evaloom-intake-key")
+data/bin/evaloomd -db data/evaloom.db client list
+data/bin/evaloomd -db data/evaloom.db client revoke brain-research
+```
+
+出た鍵は、使うプログラムだけが読むファイルに本人が置く（例: `~/Library/Application Support/brain-harness/evaloom-intake-key`、権限 0600）。リポジトリ・ログ・会話には書かない。
+発行は、移行 0034 を含む版の `evaloomd` に入れ替えて起動した後に行う。古い版の `evaloomd` が動いている DB に新しい版の CLI で発行すると、動いている古い版の知らない移行が DB に当たるため。
+入口は `http://127.0.0.1:<port>/api/programs/tasks`。`tailscale serve` の名前からは受け付けない。
+
 ## 待ち受けの確認
 
 `evaloomd`の起動ログに実際の待ち受けアドレスを出力する。

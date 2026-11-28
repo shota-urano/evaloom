@@ -134,7 +134,13 @@ func (a *OwnerAuth) protect(next http.Handler) http.Handler {
 			if err != nil {
 				WriteError(w, a.logger, err)
 			} else if id == "" {
-				a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+				if _, program, err := a.programClient(r); err != nil {
+					WriteError(w, a.logger, err)
+				} else if program {
+					a.reject(w, r, Forbidden, "wrong_auth_class", "program keys cannot access owner APIs")
+				} else {
+					a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+				}
 			} else {
 				a.reject(w, r, Forbidden, "wrong_auth_class", "Runner credentials cannot access owner APIs")
 			}
@@ -227,7 +233,13 @@ func (a *OwnerAuth) protectRunner(next http.Handler) http.Handler {
 			return
 		}
 		if id == "" {
-			a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+			if _, program, err := a.programClient(r); err != nil {
+				WriteError(w, a.logger, err)
+			} else if program {
+				a.reject(w, r, Forbidden, "wrong_auth_class", "program keys cannot access Runner APIs")
+			} else {
+				a.reject(w, r, Unauthenticated, "invalid_runner_token", "Runner token is missing or invalid")
+			}
 			return
 		}
 		if target := r.PathValue("runnerID"); target != "" && target != id {
